@@ -8,6 +8,8 @@ import { settingsRoutes } from "./routes/settingsRoutes.js";
 import { assistantRoutes } from "./routes/assistantRoutes.js";
 import { localRoutes } from "./routes/localRoutes.js";
 import { chatRoutes } from "./routes/chatRoutes.js";
+import { briefingRoutes } from "./routes/briefingRoutes.js";
+import { memoryRoutes } from "./routes/memoryRoutes.js";
 
 const app = express();
 const PORT = process.env.PORT ?? 4000;
@@ -22,6 +24,8 @@ app.use(settingsRoutes);
 app.use(assistantRoutes);
 app.use(localRoutes);
 app.use(chatRoutes);
+app.use(briefingRoutes);
+app.use(memoryRoutes);
 
 app.get("/health", (_req, res) => res.json({ ok: true }));
 

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { fetchSettings, sendChatMessage, type ChatMessage } from "../api/client";
 import { IconSend } from "../components/icons";
+import { BriefingCard } from "../components/BriefingCard";
 
 const SUGGESTIONS = [
   "Summarize my unread emails",
@@ -48,8 +49,9 @@ export function AssistantPage() {
   }
 
   return (
-    <div className="main">
+    <div className="main" style={{ display: "flex", flexDirection: "column", height: "100vh" }}>
       <h1>{assistantName}</h1>
+      <BriefingCard />
       <div className="chat-wrap">
         <div className="chat-scroll" ref={scrollRef}>
           {messages.length === 0 && (

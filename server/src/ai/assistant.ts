@@ -1,5 +1,5 @@
 import Anthropic from "@anthropic-ai/sdk";
-import { listAccounts, getSetting } from "../db/store.js";
+import { listAccounts, getSetting, listMemoryNotes, addMemoryNote } from "../db/store.js";
 import { listLocalFolders } from "../providers/local.js";
 import {
   hubListMessages,
@@ -9,6 +9,13 @@ import {
   hubCreateDraft,
   hubListChats,
   hubSearchChats,
+  hubCreateEvent,
+  hubUpdateEvent,
+  hubDeleteEvent,
+  hubArchiveMessages,
+  hubAddLabel,
+  hubSearchContacts,
+  hubFlaggedMessages,
 } from "../services/hub.js";
 
 const MODEL = process.env.ASSISTANT_MODEL ?? "claude-opus-4-8";
@@ -125,6 +132,112 @@ const tools: Anthropic.Tool[] = [
       required: ["account_id", "to", "subject", "body"],
     },
   },
+  {
+    name: "search_contacts",
+    description:
+      "Look up a person's email address by name across the user's connected accounts. Call this before drafting an email or creating an event with attendees when you only have a name (e.g. 'Sarah'), not an address.",
+    input_schema: {
+      type: "object",
+      properties: {
+        query: { type: "string", description: "Name or partial name to search for" },
+      },
+      required: ["query"],
+    },
+  },
+  {
+    name: "create_calendar_event",
+    description:
+      "Create a new event on the user's own calendar. This never invites other people — it only ever creates a personal event on the specified account's calendar. Times must be ISO 8601 datetimes (e.g. 2026-07-23T14:00:00Z).",
+    input_schema: {
+      type: "object",
+      properties: {
+        account_id: { type: "number", description: "Which connected account's calendar" },
+        title: { type: "string" },
+        start: { type: "string", description: "ISO 8601 start datetime" },
+        end: { type: "string", description: "ISO 8601 end datetime" },
+        location: { type: "string" },
+        description: { type: "string" },
+      },
+      required: ["account_id", "title", "start", "end"],
+    },
+  },
+  {
+    name: "update_calendar_event",
+    description:
+      "Reschedule or edit an existing calendar event. Get the event_id from list_upcoming_events first. Only pass the fields that should change.",
+    input_schema: {
+      type: "object",
+      properties: {
+        account_id: { type: "number" },
+        event_id: { type: "string" },
+        title: { type: "string" },
+        start: { type: "string", description: "ISO 8601 start datetime" },
+        end: { type: "string", description: "ISO 8601 end datetime" },
+        location: { type: "string" },
+        description: { type: "string" },
+      },
+      required: ["account_id", "event_id"],
+    },
+  },
+  {
+    name: "delete_calendar_event",
+    description:
+      "Delete/cancel a calendar event. Get the event_id from list_upcoming_events first. Confirm with the user before deleting unless they were explicit about which event.",
+    input_schema: {
+      type: "object",
+      properties: {
+        account_id: { type: "number" },
+        event_id: { type: "string" },
+      },
+      required: ["account_id", "event_id"],
+    },
+  },
+  {
+    name: "archive_messages",
+    description:
+      "Archive emails matching a search query (removes them from the inbox but keeps them, fully reversible). Call this when the user asks to archive, clean up, or clear out emails matching a description, e.g. 'archive everything from Nike'.",
+    input_schema: {
+      type: "object",
+      properties: {
+        account_id: { type: "number" },
+        query: { type: "string", description: "Search query identifying which messages to archive" },
+        limit: { type: "number", description: "Max messages to archive, default 50" },
+      },
+      required: ["account_id", "query"],
+    },
+  },
+  {
+    name: "label_message",
+    description:
+      "Apply a label (Gmail) or category (Outlook) to a message. Creates the label if it doesn't exist yet.",
+    input_schema: {
+      type: "object",
+      properties: {
+        account_id: { type: "number" },
+        message_id: { type: "string" },
+        label: { type: "string" },
+      },
+      required: ["account_id", "message_id", "label"],
+    },
+  },
+  {
+    name: "remember",
+    description:
+      "Save a fact or preference about the user for future conversations — e.g. which account belongs to which business, a standing instruction, or context they've shared. Call this whenever the user tells you something worth recalling later, without waiting to be asked. Keep it to one clear sentence.",
+    input_schema: {
+      type: "object",
+      properties: {
+        note: { type: "string", description: "One clear sentence to remember" },
+      },
+      required: ["note"],
+    },
+  },
+  {
+    name: "list_needs_attention",
+    description:
+      "List emails that look like they've been sitting unread for a while from real people (not newsletters/notifications). Call this when the user asks what needs attention, what they're missing, or what's falling through the cracks.",
+    input_schema: { type: "object", properties: {} },
+  },
 ];
 
 async function runTool(name: string, input: Record<string, unknown>): Promise<unknown> {
@@ -157,6 +270,43 @@ async function runTool(name: string, input: Record<string, unknown>): Promise<un
         input.subject as string,
         input.body as string
       );
+    case "search_contacts":
+      return hubSearchContacts(input.query as string);
+    case "create_calendar_event":
+      return hubCreateEvent(input.account_id as number, {
+        title: input.title as string,
+        start: input.start as string,
+        end: input.end as string,
+        location: input.location as string | undefined,
+        description: input.description as string | undefined,
+      });
+    case "update_calendar_event":
+      return hubUpdateEvent(input.account_id as number, input.event_id as string, {
+        title: input.title as string | undefined,
+        start: input.start as string | undefined,
+        end: input.end as string | undefined,
+        location: input.location as string | undefined,
+        description: input.description as string | undefined,
+      });
+    case "delete_calendar_event":
+      await hubDeleteEvent(input.account_id as number, input.event_id as string);
+      return { ok: true };
+    case "archive_messages":
+      return {
+        archived: await hubArchiveMessages(
+          input.account_id as number,
+          input.query as string,
+          (input.limit as number | undefined) ?? 50
+        ),
+      };
+    case "label_message":
+      await hubAddLabel(input.account_id as number, input.message_id as string, input.label as string);
+      return { ok: true };
+    case "remember":
+      addMemoryNote(input.note as string);
+      return { ok: true };
+    case "list_needs_attention":
+      return hubFlaggedMessages();
     default:
       return { error: `unknown tool: ${name}` };
   }
@@ -181,14 +331,24 @@ function buildSystemPrompt(): string {
     ? folders.map((f) => `- ${f.path}`).join("\n")
     : "(none configured)";
 
+  const memories = listMemoryNotes();
+  const memoryList = memories.length
+    ? memories.map((m) => `- ${m.content}`).join("\n")
+    : "(nothing remembered yet)";
+
   return [
     `You are ${name}, a personal assistant that manages the user's connected accounts. Today's date is ${new Date().toDateString()}.`,
     persona ? `The user described how they want you to behave:\n${persona}` : "",
     `Connected accounts:\n${accountList}`,
     `Local computer folders searchable by file name:\n${folderList}`,
+    `Things you've learned about the user over past conversations:\n${memoryList}`,
     `Rules:
 - Always look up real data with your tools before answering questions about email, calendar, or files — never invent contents.
 - You can create email drafts but can never send email. After creating a draft, tell the user to review and send it from their mailbox.
+- You can create, edit, and delete calendar events directly on the user's own calendar — these are low-risk and reversible. You can never invite other people to an event; calendar events you create are personal-only.
+- You can archive emails and apply labels/categories directly — archiving is fully reversible (the email is just removed from the inbox, never deleted) so you don't need to ask permission first, but do confirm if the query is broad or ambiguous (e.g. "archive everything" with no filter).
+- Use search_contacts to resolve a name to an email address before drafting to someone when you don't already have their address.
+- Use the remember tool proactively whenever the user shares something worth recalling later (preferences, which account is which, standing instructions) — don't wait to be asked.
 - When several accounts are connected and the user's request is ambiguous about which one, search across all of them or ask.
 - Keep answers concise and lead with the direct answer.`,
   ]

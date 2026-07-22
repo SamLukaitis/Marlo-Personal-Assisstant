@@ -74,6 +74,32 @@ export interface Settings {
   persona: string;
 }
 
+export type NewsTopic = "world" | "technology" | "business" | "sports";
+
+export const NEWS_TOPIC_LABELS: Record<NewsTopic, string> = {
+  world: "World",
+  technology: "Technology",
+  business: "Business",
+  sports: "Sports",
+};
+
+export interface BriefingSettings {
+  enabled: boolean;
+  includeNews: boolean;
+  topics: NewsTopic[];
+}
+
+export interface Briefing {
+  date: string;
+  content: string;
+}
+
+export interface MemoryNote {
+  id: number;
+  content: string;
+  createdAt: number;
+}
+
 export interface ChatMessage {
   role: "user" | "assistant";
   content: string;
@@ -132,6 +158,43 @@ export async function saveSettings(settings: Settings): Promise<void> {
     body: JSON.stringify(settings),
   });
   if (!res.ok) throw new Error("failed to save settings");
+}
+
+export const fetchBriefing = () => getJson<Briefing>("/api/briefing");
+export const fetchBriefingSettings = () => getJson<BriefingSettings>("/api/briefing/settings");
+
+export async function refreshBriefing(): Promise<Briefing> {
+  const res = await fetch(`${API_BASE}/api/briefing/refresh`, { method: "POST" });
+  if (!res.ok) throw new Error("failed to refresh briefing");
+  return res.json();
+}
+
+export async function saveBriefingSettings(settings: BriefingSettings): Promise<void> {
+  const res = await fetch(`${API_BASE}/api/briefing/settings`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(settings),
+  });
+  if (!res.ok) throw new Error("failed to save briefing settings");
+}
+
+export const fetchMemoryNotes = () => getJson<MemoryNote[]>("/api/memory");
+
+export async function addMemoryNote(content: string): Promise<MemoryNote> {
+  const res = await fetch(`${API_BASE}/api/memory`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ content }),
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.error ?? "failed to add memory note");
+  }
+  return res.json();
+}
+
+export async function removeMemoryNote(id: number): Promise<void> {
+  await fetch(`${API_BASE}/api/memory/${id}`, { method: "DELETE" });
 }
 
 export async function sendChatMessage(messages: ChatMessage[]): Promise<string> {

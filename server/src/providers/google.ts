@@ -4,13 +4,22 @@ import {
   updateAccountTokens,
   type AccountRow,
 } from "../db/store.js";
-import type { UnifiedMessage, CalendarEvent, FileHit, DraftResult } from "./types.js";
+import type {
+  UnifiedMessage,
+  CalendarEvent,
+  FileHit,
+  DraftResult,
+  ContactHit,
+  EventInput,
+} from "./types.js";
 
 const SCOPES = [
   "https://www.googleapis.com/auth/gmail.readonly",
+  "https://www.googleapis.com/auth/gmail.modify",
   "https://www.googleapis.com/auth/gmail.compose",
-  "https://www.googleapis.com/auth/calendar.readonly",
+  "https://www.googleapis.com/auth/calendar.events",
   "https://www.googleapis.com/auth/drive.readonly",
+  "https://www.googleapis.com/auth/contacts.readonly",
   "https://www.googleapis.com/auth/userinfo.email",
 ];
 
@@ -121,7 +130,9 @@ export async function googleListMessages(
   const gmail = google.gmail({ version: "v1", auth: authFor(account) });
   const list = await gmail.users.messages.list({
     userId: "me",
-    q: opts.query,
+    // Without a search query, "list recent messages" should mean the inbox —
+    // Gmail's API otherwise returns messages from the whole mailbox, archived or not.
+    q: opts.query ?? "in:inbox",
     maxResults: opts.limit ?? 20,
   });
   const ids = list.data.messages ?? [];
@@ -203,6 +214,142 @@ export async function googleSearchFiles(
     modifiedAt: f.modifiedTime ?? "",
     link: f.webViewLink ?? undefined,
   }));
+}
+
+function eventToCalendarEvent(account: AccountRow, e: {
+  id?: string | null;
+  summary?: string | null;
+  start?: { dateTime?: string | null; date?: string | null } | null;
+  end?: { dateTime?: string | null; date?: string | null } | null;
+  location?: string | null;
+  htmlLink?: string | null;
+}): CalendarEvent {
+  return {
+    id: e.id ?? "",
+    accountId: account.id,
+    accountEmail: account.email,
+    provider: "google",
+    title: e.summary ?? "(untitled)",
+    start: e.start?.dateTime ?? e.start?.date ?? "",
+    end: e.end?.dateTime ?? e.end?.date ?? "",
+    location: e.location ?? undefined,
+    link: e.htmlLink ?? undefined,
+  };
+}
+
+export async function googleCreateEvent(
+  account: AccountRow,
+  input: EventInput
+): Promise<CalendarEvent> {
+  const calendar = google.calendar({ version: "v3", auth: authFor(account) });
+  const res = await calendar.events.insert({
+    calendarId: "primary",
+    requestBody: {
+      summary: input.title,
+      location: input.location,
+      description: input.description,
+      start: { dateTime: input.start },
+      end: { dateTime: input.end },
+    },
+  });
+  return eventToCalendarEvent(account, res.data);
+}
+
+export async function googleUpdateEvent(
+  account: AccountRow,
+  eventId: string,
+  input: Partial<EventInput>
+): Promise<CalendarEvent> {
+  const calendar = google.calendar({ version: "v3", auth: authFor(account) });
+  const res = await calendar.events.patch({
+    calendarId: "primary",
+    eventId,
+    requestBody: {
+      ...(input.title !== undefined ? { summary: input.title } : {}),
+      ...(input.location !== undefined ? { location: input.location } : {}),
+      ...(input.description !== undefined ? { description: input.description } : {}),
+      ...(input.start !== undefined ? { start: { dateTime: input.start } } : {}),
+      ...(input.end !== undefined ? { end: { dateTime: input.end } } : {}),
+    },
+  });
+  return eventToCalendarEvent(account, res.data);
+}
+
+export async function googleDeleteEvent(account: AccountRow, eventId: string): Promise<void> {
+  const calendar = google.calendar({ version: "v3", auth: authFor(account) });
+  await calendar.events.delete({ calendarId: "primary", eventId });
+}
+
+export async function googleArchiveMessages(
+  account: AccountRow,
+  query: string,
+  limit = 50
+): Promise<number> {
+  const gmail = google.gmail({ version: "v1", auth: authFor(account) });
+  const list = await gmail.users.messages.list({ userId: "me", q: query, maxResults: limit });
+  const ids = (list.data.messages ?? []).map((m) => m.id!).filter(Boolean);
+  if (!ids.length) return 0;
+  await gmail.users.messages.batchModify({
+    userId: "me",
+    requestBody: { ids, removeLabelIds: ["INBOX"] },
+  });
+  return ids.length;
+}
+
+async function findOrCreateLabel(gmail: gmail_v1.Gmail, name: string): Promise<string> {
+  const existing = await gmail.users.labels.list({ userId: "me" });
+  const match = existing.data.labels?.find(
+    (l) => l.name?.toLowerCase() === name.toLowerCase()
+  );
+  if (match?.id) return match.id;
+  const created = await gmail.users.labels.create({
+    userId: "me",
+    requestBody: { name, labelListVisibility: "labelShow", messageListVisibility: "show" },
+  });
+  return created.data.id!;
+}
+
+export async function googleAddLabel(
+  account: AccountRow,
+  messageId: string,
+  label: string
+): Promise<void> {
+  const gmail = google.gmail({ version: "v1", auth: authFor(account) });
+  const labelId = await findOrCreateLabel(gmail, label);
+  await gmail.users.messages.modify({
+    userId: "me",
+    id: messageId,
+    requestBody: { addLabelIds: [labelId] },
+  });
+}
+
+export async function googleSearchContacts(
+  account: AccountRow,
+  query: string,
+  limit = 10
+): Promise<ContactHit[]> {
+  const people = google.people({ version: "v1", auth: authFor(account) });
+  const res = await people.people.searchContacts({
+    query,
+    readMask: "names,emailAddresses",
+    pageSize: limit,
+  });
+  const hits: ContactHit[] = [];
+  for (const result of res.data.results ?? []) {
+    const person = result.person;
+    const name = person?.names?.[0]?.displayName ?? "";
+    for (const email of person?.emailAddresses ?? []) {
+      if (!email.value) continue;
+      hits.push({
+        name: name || email.value,
+        email: email.value,
+        provider: "google",
+        accountId: account.id,
+        accountEmail: account.email,
+      });
+    }
+  }
+  return hits.slice(0, limit);
 }
 
 export async function googleCreateDraft(

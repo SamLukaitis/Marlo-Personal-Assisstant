@@ -26,6 +26,16 @@ db.exec(`
     path TEXT NOT NULL UNIQUE,
     label TEXT
   );
+  CREATE TABLE IF NOT EXISTS briefings (
+    date TEXT PRIMARY KEY,
+    content TEXT NOT NULL,
+    created_at INTEGER NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS memory_notes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    content TEXT NOT NULL,
+    created_at INTEGER NOT NULL
+  );
 `);
 
 export type Provider = "google" | "microsoft" | "local";
@@ -131,4 +141,50 @@ export function addLocalRoot(rootPath: string, label?: string): LocalRootRow {
 
 export function removeLocalRoot(id: number): void {
   db.prepare(`DELETE FROM local_roots WHERE id = ?`).run(id);
+}
+
+export interface BriefingRow {
+  date: string;
+  content: string;
+  createdAt: number;
+}
+
+export function getBriefing(date: string): BriefingRow | null {
+  const row = db
+    .prepare(`SELECT date, content, created_at AS createdAt FROM briefings WHERE date = ?`)
+    .get(date) as BriefingRow | undefined;
+  return row ?? null;
+}
+
+export function saveBriefing(date: string, content: string): BriefingRow {
+  db.prepare(
+    `INSERT INTO briefings (date, content, created_at) VALUES (?, ?, ?)
+     ON CONFLICT(date) DO UPDATE SET content = excluded.content, created_at = excluded.created_at`
+  ).run(date, content, Date.now());
+  return getBriefing(date)!;
+}
+
+export interface MemoryNoteRow {
+  id: number;
+  content: string;
+  createdAt: number;
+}
+
+export function listMemoryNotes(): MemoryNoteRow[] {
+  return db
+    .prepare(`SELECT id, content, created_at AS createdAt FROM memory_notes ORDER BY id DESC`)
+    .all() as MemoryNoteRow[];
+}
+
+export function addMemoryNote(content: string): MemoryNoteRow {
+  const info = db
+    .prepare(`INSERT INTO memory_notes (content, created_at) VALUES (?, ?)`)
+    .run(content, Date.now());
+  return db
+    .prepare(`SELECT id, content, created_at AS createdAt FROM memory_notes WHERE id = ?`)
+    .get(info.lastInsertRowid) as MemoryNoteRow;
+}
+
+export function removeMemoryNote(id: number): void {
+  db.prepare(`DELETE FROM memory_notes WHERE id = ?`).run(id);
 }

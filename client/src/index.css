@@ -138,6 +138,8 @@ body {
   flex: 1;
   padding: 32px 40px;
   max-width: 880px;
+  margin: 0 auto;
+  width: 100%;
 }
 
 h1 {
@@ -334,7 +336,8 @@ button.danger:hover {
 .chat-wrap {
   display: flex;
   flex-direction: column;
-  height: calc(100vh - 140px);
+  flex: 1;
+  min-height: 300px;
 }
 
 .chat-scroll {

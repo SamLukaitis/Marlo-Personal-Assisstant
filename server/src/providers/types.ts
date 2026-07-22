@@ -55,3 +55,19 @@ export interface ChatThread {
   updatedAt: string; // ISO date
   link?: string;
 }
+
+export interface ContactHit {
+  name: string;
+  email: string;
+  provider: Provider;
+  accountId: number;
+  accountEmail: string;
+}
+
+export interface EventInput {
+  title: string;
+  start: string; // ISO datetime
+  end: string; // ISO datetime
+  location?: string;
+  description?: string;
+}

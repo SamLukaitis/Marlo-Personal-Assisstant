@@ -3,12 +3,20 @@ import {
   updateAccountTokens,
   type AccountRow,
 } from "../db/store.js";
-import type { UnifiedMessage, CalendarEvent, DraftResult, FileHit, ChatThread } from "./types.js";
+import type {
+  UnifiedMessage,
+  CalendarEvent,
+  DraftResult,
+  FileHit,
+  ChatThread,
+  ContactHit,
+  EventInput,
+} from "./types.js";
 
 const AUTH_BASE = "https://login.microsoftonline.com/common/oauth2/v2.0";
 const GRAPH = "https://graph.microsoft.com/v1.0";
 const SCOPES =
-  "offline_access User.Read Mail.Read Mail.ReadWrite Calendars.Read Chat.Read Files.Read";
+  "offline_access User.Read Mail.Read Mail.ReadWrite Calendars.ReadWrite Chat.Read Files.Read People.Read";
 
 export function isMicrosoftConfigured(): boolean {
   return !!(process.env.MS_CLIENT_ID && process.env.MS_CLIENT_SECRET);
@@ -118,6 +126,26 @@ async function graphPost<T>(account: AccountRow, path: string, body: unknown): P
   return (await res.json()) as T;
 }
 
+async function graphPatch<T>(account: AccountRow, path: string, body: unknown): Promise<T> {
+  const token = await accessTokenFor(account);
+  const res = await fetch(`${GRAPH}${path}`, {
+    method: "PATCH",
+    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error(`Graph ${path} returned ${res.status}: ${await res.text()}`);
+  return (await res.json()) as T;
+}
+
+async function graphDelete(account: AccountRow, path: string): Promise<void> {
+  const token = await accessTokenFor(account);
+  const res = await fetch(`${GRAPH}${path}`, {
+    method: "DELETE",
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) throw new Error(`Graph ${path} returned ${res.status}: ${await res.text()}`);
+}
+
 interface GraphMessage {
   id: string;
   subject?: string;
@@ -152,9 +180,11 @@ export async function microsoftListMessages(
   opts: { query?: string; limit?: number } = {}
 ): Promise<UnifiedMessage[]> {
   const top = `$top=${opts.limit ?? 20}`;
+  // Without a search query, "list recent messages" should mean the inbox —
+  // /me/messages otherwise returns messages from every folder, archived or not.
   const path = opts.query
     ? `/me/messages?$search="${encodeURIComponent(opts.query)}"&${top}&${MSG_SELECT}`
-    : `/me/messages?$orderby=receivedDateTime desc&${top}&${MSG_SELECT}`;
+    : `/me/mailFolders/inbox/messages?$orderby=receivedDateTime desc&${top}&${MSG_SELECT}`;
   const data = await graphGet<{ value: GraphMessage[] }>(account, path);
   return data.value.map((m) => toUnified(account, m));
 }
@@ -364,4 +394,124 @@ export async function microsoftSearchFiles(
     modifiedAt: item.lastModifiedDateTime ?? "",
     link: item.webUrl,
   }));
+}
+
+interface GraphEvent {
+  id: string;
+  subject?: string;
+  start?: { dateTime?: string };
+  end?: { dateTime?: string };
+  location?: { displayName?: string };
+  webLink?: string;
+}
+
+function graphEventToCalendarEvent(account: AccountRow, e: GraphEvent): CalendarEvent {
+  return {
+    id: e.id,
+    accountId: account.id,
+    accountEmail: account.email,
+    provider: "microsoft",
+    title: e.subject ?? "(untitled)",
+    start: e.start?.dateTime ?? "",
+    end: e.end?.dateTime ?? "",
+    location: e.location?.displayName || undefined,
+    link: e.webLink,
+  };
+}
+
+export async function microsoftCreateEvent(
+  account: AccountRow,
+  input: EventInput
+): Promise<CalendarEvent> {
+  const event = await graphPost<GraphEvent>(account, "/me/events", {
+    subject: input.title,
+    location: input.location ? { displayName: input.location } : undefined,
+    body: input.description
+      ? { contentType: "Text", content: input.description }
+      : undefined,
+    start: { dateTime: input.start, timeZone: "UTC" },
+    end: { dateTime: input.end, timeZone: "UTC" },
+  });
+  return graphEventToCalendarEvent(account, event);
+}
+
+export async function microsoftUpdateEvent(
+  account: AccountRow,
+  eventId: string,
+  input: Partial<EventInput>
+): Promise<CalendarEvent> {
+  const event = await graphPatch<GraphEvent>(account, `/me/events/${encodeURIComponent(eventId)}`, {
+    ...(input.title !== undefined ? { subject: input.title } : {}),
+    ...(input.location !== undefined ? { location: { displayName: input.location } } : {}),
+    ...(input.description !== undefined
+      ? { body: { contentType: "Text", content: input.description } }
+      : {}),
+    ...(input.start !== undefined ? { start: { dateTime: input.start, timeZone: "UTC" } } : {}),
+    ...(input.end !== undefined ? { end: { dateTime: input.end, timeZone: "UTC" } } : {}),
+  });
+  return graphEventToCalendarEvent(account, event);
+}
+
+export async function microsoftDeleteEvent(account: AccountRow, eventId: string): Promise<void> {
+  await graphDelete(account, `/me/events/${encodeURIComponent(eventId)}`);
+}
+
+export async function microsoftArchiveMessages(
+  account: AccountRow,
+  query: string,
+  limit = 50
+): Promise<number> {
+  const data = await graphGet<{ value: GraphMessage[] }>(
+    account,
+    `/me/messages?$search="${encodeURIComponent(query)}"&$top=${limit}&$select=id`
+  );
+  const ids = data.value.map((m) => m.id).filter(Boolean);
+  await Promise.all(
+    ids.map((id) => graphPost(account, `/me/messages/${encodeURIComponent(id)}/move`, {
+      destinationId: "archive",
+    }))
+  );
+  return ids.length;
+}
+
+export async function microsoftAddCategory(
+  account: AccountRow,
+  messageId: string,
+  category: string
+): Promise<void> {
+  const current = await graphGet<{ categories?: string[] }>(
+    account,
+    `/me/messages/${encodeURIComponent(messageId)}?$select=categories`
+  );
+  const categories = Array.from(new Set([...(current.categories ?? []), category]));
+  await graphPatch(account, `/me/messages/${encodeURIComponent(messageId)}`, { categories });
+}
+
+interface GraphPerson {
+  displayName?: string;
+  scoredEmailAddresses?: Array<{ address?: string }>;
+}
+
+export async function microsoftSearchContacts(
+  account: AccountRow,
+  query: string,
+  limit = 10
+): Promise<ContactHit[]> {
+  const data = await graphGet<{ value: GraphPerson[] }>(
+    account,
+    `/me/people?$search="${encodeURIComponent(query)}"&$top=${limit}`
+  );
+  const hits: ContactHit[] = [];
+  for (const person of data.value) {
+    const email = person.scoredEmailAddresses?.[0]?.address;
+    if (!email) continue;
+    hits.push({
+      name: person.displayName || email,
+      email,
+      provider: "microsoft",
+      accountId: account.id,
+      accountEmail: account.email,
+    });
+  }
+  return hits.slice(0, limit);
 }

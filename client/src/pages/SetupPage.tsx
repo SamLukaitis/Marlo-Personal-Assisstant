@@ -10,9 +10,18 @@ import {
   fetchLocalFolders,
   addLocalFolder,
   removeLocalFolder,
+  fetchBriefingSettings,
+  saveBriefingSettings,
+  fetchMemoryNotes,
+  addMemoryNote,
+  removeMemoryNote,
+  NEWS_TOPIC_LABELS,
   type ProviderInfo,
   type Account,
   type LocalFolder,
+  type BriefingSettings,
+  type NewsTopic,
+  type MemoryNote,
 } from "../api/client";
 import { IconTrash, IconPlus } from "../components/icons";
 
@@ -25,6 +34,8 @@ const ERROR_TEXT: Record<string, string> = {
   missing_code: "The sign-in flow was cancelled.",
 };
 
+const ALL_TOPICS = Object.keys(NEWS_TOPIC_LABELS) as NewsTopic[];
+
 export function SetupPage() {
   const [providers, setProviders] = useState<ProviderInfo[]>([]);
   const [accounts, setAccounts] = useState<Account[]>([]);
@@ -34,20 +45,32 @@ export function SetupPage() {
   const [folders, setFolders] = useState<LocalFolder[]>([]);
   const [newFolder, setNewFolder] = useState("");
   const [folderError, setFolderError] = useState<string | null>(null);
+  const [briefing, setBriefing] = useState<BriefingSettings>({
+    enabled: true,
+    includeNews: false,
+    topics: [],
+  });
+  const [briefingSaved, setBriefingSaved] = useState(false);
+  const [memoryNotes, setMemoryNotes] = useState<MemoryNote[]>([]);
+  const [newNote, setNewNote] = useState("");
   const [searchParams] = useSearchParams();
 
   async function load() {
-    const [p, a, s, f] = await Promise.all([
+    const [p, a, s, f, b, m] = await Promise.all([
       fetchProviders(),
       fetchAccounts(),
       fetchSettings(),
       fetchLocalFolders(),
+      fetchBriefingSettings(),
+      fetchMemoryNotes(),
     ]);
     setProviders(p);
     setAccounts(a);
     setAssistantName(s.assistantName);
     setPersona(s.persona);
     setFolders(f);
+    setBriefing(b);
+    setMemoryNotes(m);
   }
 
   async function handleAddFolder(e: React.FormEvent) {
@@ -63,6 +86,14 @@ export function SetupPage() {
     }
   }
 
+  async function handleAddNote(e: React.FormEvent) {
+    e.preventDefault();
+    if (!newNote.trim()) return;
+    await addMemoryNote(newNote.trim());
+    setNewNote("");
+    load();
+  }
+
   useEffect(() => {
     load().catch(() => {});
   }, []);
@@ -74,6 +105,21 @@ export function SetupPage() {
     await saveSettings({ assistantName, persona });
     setSaved(true);
     setTimeout(() => setSaved(false), 2500);
+  }
+
+  async function handleSaveBriefing() {
+    await saveBriefingSettings(briefing);
+    setBriefingSaved(true);
+    setTimeout(() => setBriefingSaved(false), 2500);
+  }
+
+  function toggleTopic(topic: NewsTopic) {
+    setBriefing((prev) => ({
+      ...prev,
+      topics: prev.topics.includes(topic)
+        ? prev.topics.filter((t) => t !== topic)
+        : [...prev.topics, topic],
+    }));
   }
 
   return (
@@ -110,6 +156,12 @@ export function SetupPage() {
       </div>
 
       <h2>Connected accounts</h2>
+      {accounts.length > 0 && (
+        <div className="banner">
+          Calendar write, email archiving/labels, and contacts search were just added — they
+          need extra permissions. Disconnect and reconnect each account below to grant them.
+        </div>
+      )}
       <div className="card">
         {accounts.length === 0 && <p className="muted">No accounts connected yet.</p>}
         {accounts.map((a) => (
@@ -198,6 +250,96 @@ export function SetupPage() {
               >
                 <IconTrash />
                 Remove
+              </button>
+            </div>
+          ))
+        )}
+      </div>
+
+      <h2>Morning briefing</h2>
+      <div className="card">
+        <label className="row" style={{ marginBottom: 10 }}>
+          <input
+            type="checkbox"
+            style={{ width: "auto" }}
+            checked={briefing.enabled}
+            onChange={(e) => setBriefing((prev) => ({ ...prev, enabled: e.target.checked }))}
+          />
+          <span>Show a daily briefing (unread mail, today's calendar, needs-attention) on the Assistant page</span>
+        </label>
+        <label className="row" style={{ marginBottom: 10 }}>
+          <input
+            type="checkbox"
+            style={{ width: "auto" }}
+            checked={briefing.includeNews}
+            onChange={(e) => setBriefing((prev) => ({ ...prev, includeNews: e.target.checked }))}
+          />
+          <span>Include news headlines</span>
+        </label>
+        {briefing.includeNews && (
+          <div className="row" style={{ flexWrap: "wrap", marginBottom: 10, marginLeft: 24 }}>
+            {ALL_TOPICS.map((topic) => (
+              <label key={topic} className="row" style={{ gap: 5 }}>
+                <input
+                  type="checkbox"
+                  style={{ width: "auto" }}
+                  checked={briefing.topics.includes(topic)}
+                  onChange={() => toggleTopic(topic)}
+                />
+                <span className="muted">{NEWS_TOPIC_LABELS[topic]}</span>
+              </label>
+            ))}
+          </div>
+        )}
+        <p className="muted" style={{ fontSize: 12.5 }}>
+          News comes from free public RSS feeds — no account or API key needed. The briefing
+          regenerates once per day; use Refresh on the Assistant page to update it sooner.
+        </p>
+        <div className="row" style={{ marginTop: 8 }}>
+          <button onClick={handleSaveBriefing}>Save</button>
+          {briefingSaved && <span className="muted">Saved ✓</span>}
+        </div>
+      </div>
+
+      <h2>Assistant memory</h2>
+      <div className="card">
+        <p className="muted" style={{ marginTop: 0 }}>
+          Things your assistant remembers across conversations — it adds to this on its own,
+          or you can add a note directly.
+        </p>
+        <form className="row" onSubmit={handleAddNote}>
+          <input
+            value={newNote}
+            onChange={(e) => setNewNote(e.target.value)}
+            placeholder="e.g. The Acme account is my priority business"
+          />
+          <button type="submit" style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            <IconPlus />
+            Add
+          </button>
+        </form>
+        {memoryNotes.length === 0 ? (
+          <p className="muted" style={{ marginTop: 12 }}>
+            Nothing remembered yet.
+          </p>
+        ) : (
+          memoryNotes.map((n) => (
+            <div
+              key={n.id}
+              className="list-item row"
+              style={{ justifyContent: "space-between" }}
+            >
+              <span style={{ fontSize: 13.5 }}>{n.content}</span>
+              <button
+                className="danger"
+                style={{ display: "flex", alignItems: "center", gap: 6 }}
+                onClick={async () => {
+                  await removeMemoryNote(n.id);
+                  load();
+                }}
+              >
+                <IconTrash />
+                Forget
               </button>
             </div>
           ))
