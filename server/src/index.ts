@@ -10,12 +10,22 @@ import { localRoutes } from "./routes/localRoutes.js";
 import { chatRoutes } from "./routes/chatRoutes.js";
 import { briefingRoutes } from "./routes/briefingRoutes.js";
 import { memoryRoutes } from "./routes/memoryRoutes.js";
+import { whatsappRoutes } from "./routes/whatsappRoutes.js";
+import { whatsappSettingsRoutes } from "./routes/whatsappSettingsRoutes.js";
 
 const app = express();
 const PORT = process.env.PORT ?? 4000;
 
 app.use(cors({ origin: process.env.CLIENT_URL ?? "http://localhost:5173" }));
-app.use(express.json());
+app.use(
+  express.json({
+    // WhatsApp webhook signature verification needs the exact raw bytes, not the
+    // re-serialized parsed body — capture them here for every request (cheap, harmless).
+    verify: (req, _res, buf) => {
+      (req as unknown as { rawBody?: Buffer }).rawBody = Buffer.from(buf);
+    },
+  })
+);
 
 app.use(authRoutes);
 app.use(accountRoutes);
@@ -26,6 +36,8 @@ app.use(localRoutes);
 app.use(chatRoutes);
 app.use(briefingRoutes);
 app.use(memoryRoutes);
+app.use(whatsappRoutes);
+app.use(whatsappSettingsRoutes);
 
 app.get("/health", (_req, res) => res.json({ ok: true }));
 

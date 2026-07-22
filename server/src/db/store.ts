@@ -36,6 +36,14 @@ db.exec(`
     content TEXT NOT NULL,
     created_at INTEGER NOT NULL
   );
+  CREATE TABLE IF NOT EXISTS whatsapp_messages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    phone TEXT NOT NULL,
+    role TEXT NOT NULL,
+    content TEXT NOT NULL,
+    created_at INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_whatsapp_messages_phone ON whatsapp_messages(phone);
 `);
 
 export type Provider = "google" | "microsoft" | "local";
@@ -187,4 +195,56 @@ export function addMemoryNote(content: string): MemoryNoteRow {
 
 export function removeMemoryNote(id: number): void {
   db.prepare(`DELETE FROM memory_notes WHERE id = ?`).run(id);
+}
+
+export interface WhatsAppMessageRow {
+  id: number;
+  phone: string;
+  role: "user" | "assistant";
+  content: string;
+  createdAt: number;
+}
+
+export function getWhatsAppHistory(phone: string, limit = 20): WhatsAppMessageRow[] {
+  const rows = db
+    .prepare(
+      `SELECT id, phone, role, content, created_at AS createdAt FROM whatsapp_messages
+       WHERE phone = ? ORDER BY id DESC LIMIT ?`
+    )
+    .all(phone, limit) as WhatsAppMessageRow[];
+  return rows.reverse();
+}
+
+export function appendWhatsAppMessage(
+  phone: string,
+  role: "user" | "assistant",
+  content: string
+): void {
+  db.prepare(
+    `INSERT INTO whatsapp_messages (phone, role, content, created_at) VALUES (?, ?, ?, ?)`
+  ).run(phone, role, content, Date.now());
+}
+
+function normalizePhone(phone: string): string {
+  return phone.replace(/[^0-9]/g, "");
+}
+
+export function getWhatsAppAllowedNumbers(): string[] {
+  const raw = getSetting("whatsapp_allowed_numbers");
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+export function setWhatsAppAllowedNumbers(numbers: string[]): void {
+  setSetting("whatsapp_allowed_numbers", JSON.stringify(numbers.map(normalizePhone)));
+}
+
+export function isWhatsAppNumberAllowed(phone: string): boolean {
+  const normalized = normalizePhone(phone);
+  return getWhatsAppAllowedNumbers().includes(normalized);
 }

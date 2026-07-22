@@ -105,6 +105,11 @@ export interface ChatMessage {
   content: string;
 }
 
+export interface WhatsAppStatus {
+  configured: boolean;
+  signatureConfigured: boolean;
+}
+
 async function getJson<T>(path: string): Promise<T> {
   const res = await fetch(`${API_BASE}${path}`);
   if (!res.ok) {
@@ -195,6 +200,19 @@ export async function addMemoryNote(content: string): Promise<MemoryNote> {
 
 export async function removeMemoryNote(id: number): Promise<void> {
   await fetch(`${API_BASE}/api/memory/${id}`, { method: "DELETE" });
+}
+
+export const fetchWhatsAppStatus = () => getJson<WhatsAppStatus>("/api/whatsapp/status");
+export const fetchWhatsAppAllowedNumbers = () =>
+  getJson<string[]>("/api/whatsapp/allowed-numbers");
+
+export async function saveWhatsAppAllowedNumbers(numbers: string[]): Promise<void> {
+  const res = await fetch(`${API_BASE}/api/whatsapp/allowed-numbers`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ numbers }),
+  });
+  if (!res.ok) throw new Error("failed to save allowed numbers");
 }
 
 export async function sendChatMessage(messages: ChatMessage[]): Promise<string> {

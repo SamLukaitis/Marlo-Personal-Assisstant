@@ -16,13 +16,15 @@ ask it to find emails, summarize your day, locate documents, or draft replies.
 | **Morning briefing** | Auto-generated daily summary (unread mail, today's calendar, emails that look like they need a reply) shown at the top of the Assistant page, with an optional news section from free public RSS feeds |
 | **Memory** | The assistant remembers facts and preferences you share across conversations (e.g. "the Acme account is my priority business") — view/add/remove notes on the Setup page |
 | **Assistant** | Claude with tool-calling: looks up real messages/events/chats/files/contacts before answering; personalized via your Setup-page description |
+| **WhatsApp** | Message your assistant on WhatsApp via Meta's official Cloud API — a compliant bot channel, restricted to a phone-number allowlist you control |
 | **Safety** | The assistant can create email **drafts**, archive mail, and manage your **own** calendar — but can never send email or invite other people to an event. Archiving is fully reversible (mail is never deleted, just removed from the inbox) |
 
-Deliberately **not** included: **WhatsApp** — there's no API that gives compliant access to
-personal chats (Business API needs a registered business number; the only way to read
-personal chats is an unofficial library that violates WhatsApp's Terms of Service and risks
-an account ban). Also not yet built: Slack, iCloud sync. The provider layer is built so any
-of these can be added later without touching the UI or assistant logic.
+**About the WhatsApp integration**: it's deliberately built as a *new channel to message your
+assistant*, not a reader of your existing personal WhatsApp chats — there's no compliant API
+for that (the only way to read personal chats is an unofficial library that violates
+WhatsApp's Terms of Service and risks an account ban; see the setup section below for why we
+went this route instead). Also not yet built: Slack, iCloud sync. The provider layer is built
+so any of these can be added later without touching the UI or assistant logic.
 
 ## Architecture
 
@@ -30,10 +32,12 @@ of these can be added later without touching the UI or assistant logic.
   - `src/providers/google.ts`, `src/providers/microsoft.ts` — per-provider OAuth + data access (mail, calendar, Teams chat, Drive/OneDrive, contacts)
   - `src/providers/local.ts` — local filesystem search, no OAuth; folders are configured on the Setup page and stored in SQLite
   - `src/providers/news.ts` — free public RSS headlines (BBC feeds), no API key needed
+  - `src/providers/whatsapp.ts` — Meta Cloud API client (send message, verify webhook signature/handshake)
   - `src/services/hub.ts` — merges results across all connected accounts (and local folders); the UI and the AI only talk to this layer
   - `src/services/briefing.ts` — builds the daily briefing (gathers real data, then has Claude write it up); cached once per day in SQLite
   - `src/ai/assistant.ts` — Claude (Anthropic SDK) with tools: messages, calendar, Teams chats, files, contacts, archive/labels, memory
-  - SQLite (`server/data/app.db`) stores account tokens, local folder paths, briefings, memory notes, and your assistant settings
+  - `src/routes/whatsappRoutes.ts` — the public webhook (`GET`/`POST /webhooks/whatsapp`) Meta calls; reuses the same assistant engine as the web chat
+  - SQLite (`server/data/app.db`) stores account tokens, local folder paths, briefings, memory notes, WhatsApp conversation history, and your assistant settings
 - `client/` — React + Vite. Pages: Assistant (chat + daily briefing), Inbox, Chats, Calendar, Files, Setup.
 
 ## Safety boundaries (by design)
@@ -42,6 +46,7 @@ of these can be added later without touching the UI or assistant logic.
 - **Never invites people to calendar events** — event creation/editing is personal-only, even though the assistant can otherwise fully manage your calendar (create/reschedule/delete).
 - **Archiving is non-destructive** — "archive" only removes the inbox label; nothing is ever deleted.
 - **The morning briefing is grounded** — it's written by Claude, but only from real data the app fetched (your actual unread mail, actual calendar, actual RSS headlines). It's explicitly instructed never to fill in a section using general knowledge — if you enable news, the briefing shows real fetched headlines, not invented ones.
+- **WhatsApp is allowlisted and signature-verified** — only phone numbers you explicitly add on the Setup page get a response; every other sender is silently ignored. Every webhook request's HMAC signature is verified against your Meta app secret before anything is processed, so a spoofed payload claiming to be from an allowed number is rejected too. Without `WHATSAPP_APP_SECRET` set, the webhook refuses to process anything at all rather than trusting unverified requests.
 
 ## One-time setup
 
@@ -70,18 +75,56 @@ of these can be added later without touching the UI or assistant logic.
 
 Skip this and the Microsoft card on the Setup page simply shows "Not configured".
 
-### 3. Anthropic API key (required for the assistant)
+### 3. WhatsApp (optional — message your assistant, not a reader of existing chats)
+
+This uses Meta's official **WhatsApp Cloud API** — a compliant bot channel. It does **not**
+give the assistant access to your existing personal WhatsApp conversations; you get a new
+number to message *it* on. Skip this section entirely if you don't want it — the Setup page
+just shows "Not configured".
+
+1. [Meta for Developers](https://developers.facebook.com/) → **My Apps** → **Create App** →
+   choose the "Business" type.
+2. In your app's dashboard, **Add Product** → **WhatsApp** → **Set up**.
+3. On the WhatsApp → **API Setup** page you'll immediately get a **free test phone number**
+   (no business verification needed) plus a **temporary access token**. Copy:
+   - The **Phone number ID** → `WHATSAPP_PHONE_NUMBER_ID`
+   - The **temporary access token** → `WHATSAPP_TOKEN` (expires in 24h — generate a
+     **permanent token** later via System Users under Business Settings once you're happy it works)
+4. Same page → **To** field → **Manage phone number list** → add your own phone number as a
+   test recipient (the test number can message up to 5 approved recipients — plenty for
+   personal use).
+5. Make up any random string for `WHATSAPP_VERIFY_TOKEN` — you'll enter this same value in
+   Meta's dashboard in step 8.
+6. App dashboard → **App Settings → Basic** → copy **App Secret** → `WHATSAPP_APP_SECRET`.
+7. **Expose your local server publicly** — Meta cannot call `localhost`. For testing, run a
+   tunnel: [ngrok](https://ngrok.com/) → `ngrok http 4000` → copy the `https://...ngrok...`
+   URL it gives you. (For always-on use rather than just testing, you'd deploy the server
+   somewhere with a real public URL instead of tunneling.)
+8. Back in WhatsApp → **Configuration** → **Edit** webhook:
+   - Callback URL: `<your ngrok/public URL>/webhooks/whatsapp`
+   - Verify token: the same string you put in `WHATSAPP_VERIFY_TOKEN`
+   - **Verify and save**, then subscribe to the **messages** webhook field.
+9. Restart the server (env changes need a restart, unlike code changes) and add your own
+   phone number to the **allowed numbers** list on the Setup page — WhatsApp format, e.g.
+   `447911123456` (country code, no `+` or spaces; entering it with `+`/spaces is fine too,
+   it gets normalized automatically).
+10. Message your test number on WhatsApp — you should get a reply from your assistant.
+
+> Test numbers work indefinitely for personal use with up to 5 approved recipients — you
+> don't need Meta Business verification unless you want a dedicated permanent number.
+
+### 4. Anthropic API key (required for the assistant)
 Get a key at [console.anthropic.com](https://console.anthropic.com/) and put it in
 `server/.env` as `ANTHROPIC_API_KEY`.
 
-### 4. Environment files
+### 5. Environment files
 
 ```bash
 cp server/.env.example server/.env
 cp client/.env.example client/.env
 ```
 
-Fill in the values from steps 1–3 in `server/.env`.
+Fill in the values from the steps above in `server/.env`.
 
 ## Running
 
@@ -108,6 +151,7 @@ Open `http://localhost:5173`:
    - *"find the latest invoice from X"* / *"anything new in Teams?"*
    - *"email Sarah about the meeting"* (it looks up her address for you first)
    - *"remember that the Acme account is my priority business"*
+4. **WhatsApp** (if configured) → message your test number directly — same assistant, same tools.
 
 ## Known limitations
 
@@ -120,6 +164,14 @@ Open `http://localhost:5173`:
   saved; Microsoft's `/me/people` also surfaces people you've simply emailed before.
 - **The reconnect banner doesn't auto-detect granted scopes** — it just shows whenever any
   account is connected. Reconnecting again after you've already done so is harmless.
+- **WhatsApp needs a public URL** — the free ngrok URL changes every time you restart the
+  tunnel, so you'll need to update the webhook URL in Meta's dashboard each time unless you
+  use a paid static ngrok domain or deploy the server somewhere permanent.
+- **WhatsApp doesn't read your existing chats** — it's a new number/contact you message, not
+  a window into conversations you already have with other people (see the note near the top
+  of this README on why).
+- **Temporary access tokens expire in 24h** — fine for initial testing; generate a permanent
+  token via a System User in Meta Business Settings for anything longer-lived.
 
 ## Adding a new source later
 

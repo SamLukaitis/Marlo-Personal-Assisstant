@@ -15,6 +15,9 @@ import {
   fetchMemoryNotes,
   addMemoryNote,
   removeMemoryNote,
+  fetchWhatsAppStatus,
+  fetchWhatsAppAllowedNumbers,
+  saveWhatsAppAllowedNumbers,
   NEWS_TOPIC_LABELS,
   type ProviderInfo,
   type Account,
@@ -22,6 +25,7 @@ import {
   type BriefingSettings,
   type NewsTopic,
   type MemoryNote,
+  type WhatsAppStatus,
 } from "../api/client";
 import { IconTrash, IconPlus } from "../components/icons";
 
@@ -53,16 +57,25 @@ export function SetupPage() {
   const [briefingSaved, setBriefingSaved] = useState(false);
   const [memoryNotes, setMemoryNotes] = useState<MemoryNote[]>([]);
   const [newNote, setNewNote] = useState("");
+  const [whatsAppStatus, setWhatsAppStatus] = useState<WhatsAppStatus>({
+    configured: false,
+    signatureConfigured: false,
+  });
+  const [allowedNumbers, setAllowedNumbers] = useState<string[]>([]);
+  const [newNumber, setNewNumber] = useState("");
+  const [numbersSaved, setNumbersSaved] = useState(false);
   const [searchParams] = useSearchParams();
 
   async function load() {
-    const [p, a, s, f, b, m] = await Promise.all([
+    const [p, a, s, f, b, m, ws, nums] = await Promise.all([
       fetchProviders(),
       fetchAccounts(),
       fetchSettings(),
       fetchLocalFolders(),
       fetchBriefingSettings(),
       fetchMemoryNotes(),
+      fetchWhatsAppStatus(),
+      fetchWhatsAppAllowedNumbers(),
     ]);
     setProviders(p);
     setAccounts(a);
@@ -71,6 +84,8 @@ export function SetupPage() {
     setFolders(f);
     setBriefing(b);
     setMemoryNotes(m);
+    setWhatsAppStatus(ws);
+    setAllowedNumbers(nums);
   }
 
   async function handleAddFolder(e: React.FormEvent) {
@@ -111,6 +126,24 @@ export function SetupPage() {
     await saveBriefingSettings(briefing);
     setBriefingSaved(true);
     setTimeout(() => setBriefingSaved(false), 2500);
+  }
+
+  async function handleAddNumber(e: React.FormEvent) {
+    e.preventDefault();
+    if (!newNumber.trim()) return;
+    const next = [...allowedNumbers, newNumber.trim()];
+    setAllowedNumbers(next);
+    setNewNumber("");
+    await saveWhatsAppAllowedNumbers(next);
+    setNumbersSaved(true);
+    setTimeout(() => setNumbersSaved(false), 2500);
+    load();
+  }
+
+  async function handleRemoveNumber(number: string) {
+    const next = allowedNumbers.filter((n) => n !== number);
+    setAllowedNumbers(next);
+    await saveWhatsAppAllowedNumbers(next);
   }
 
   function toggleTopic(topic: NewsTopic) {
@@ -346,12 +379,74 @@ export function SetupPage() {
         )}
       </div>
 
-      <h2>Coming soon</h2>
-      <div className="card muted">
-        WhatsApp is intentionally left out — there's no compliant API for reading personal
-        chats without violating WhatsApp's Terms of Service and risking an account ban. Slack
-        and iCloud sync are on the roadmap.
+      <h2>WhatsApp (message your assistant)</h2>
+      <div className="card">
+        <p className="muted" style={{ marginTop: 0 }}>
+          Message your assistant on WhatsApp using Meta's official Cloud API — a compliant
+          bot channel, not a reader of your existing personal chats. Requires setup in Meta
+          for Developers (see README) plus the env vars below in <code>server/.env</code>.
+        </p>
+        {!whatsAppStatus.configured && (
+          <p className="error">
+            Not configured — add WHATSAPP_TOKEN, WHATSAPP_PHONE_NUMBER_ID, and
+            WHATSAPP_VERIFY_TOKEN to server/.env (see README).
+          </p>
+        )}
+        {whatsAppStatus.configured && !whatsAppStatus.signatureConfigured && (
+          <p className="error">
+            WHATSAPP_APP_SECRET is not set — the webhook will refuse to process messages
+            until it's added. Without it, incoming messages can't be verified as genuinely
+            from Meta.
+          </p>
+        )}
+        {whatsAppStatus.configured && whatsAppStatus.signatureConfigured && (
+          <div className="banner">Configured and ready.</div>
+        )}
+
+        <label className="muted" style={{ display: "block", marginBottom: 6, marginTop: 14 }}>
+          Allowed numbers — only these can message your assistant (WhatsApp format, e.g.
+          447911123456 including country code, no spaces or +)
+        </label>
+        <form className="row" onSubmit={handleAddNumber}>
+          <input
+            value={newNumber}
+            onChange={(e) => setNewNumber(e.target.value)}
+            placeholder="447911123456"
+          />
+          <button type="submit" style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            <IconPlus />
+            Add
+          </button>
+        </form>
+        {numbersSaved && (
+          <span className="muted" style={{ display: "block", marginTop: 6 }}>
+            Saved ✓
+          </span>
+        )}
+        {allowedNumbers.length === 0 ? (
+          <p className="muted" style={{ marginTop: 12 }}>
+            No numbers allowed yet — add your own number above once you've set up the Meta
+            test number and added it as a recipient there too.
+          </p>
+        ) : (
+          allowedNumbers.map((n) => (
+            <div key={n} className="list-item row" style={{ justifyContent: "space-between" }}>
+              <span style={{ fontSize: 13.5 }}>{n}</span>
+              <button
+                className="danger"
+                style={{ display: "flex", alignItems: "center", gap: 6 }}
+                onClick={() => handleRemoveNumber(n)}
+              >
+                <IconTrash />
+                Remove
+              </button>
+            </div>
+          ))
+        )}
       </div>
+
+      <h2>Coming soon</h2>
+      <div className="card muted">Slack and iCloud sync are on the roadmap.</div>
     </div>
   );
 }
