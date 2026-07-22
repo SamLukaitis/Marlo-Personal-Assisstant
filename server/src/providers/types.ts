@@ -43,3 +43,15 @@ export interface DraftResult {
   accountEmail: string;
   reviewNote: string;
 }
+
+export interface ChatThread {
+  id: string;
+  accountId: number;
+  accountEmail: string;
+  provider: Provider;
+  topic: string;
+  lastSender: string;
+  preview: string;
+  updatedAt: string; // ISO date
+  link?: string;
+}

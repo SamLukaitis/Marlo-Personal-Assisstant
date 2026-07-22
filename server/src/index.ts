@@ -6,6 +6,8 @@ import { accountRoutes } from "./routes/accountRoutes.js";
 import { dataRoutes } from "./routes/dataRoutes.js";
 import { settingsRoutes } from "./routes/settingsRoutes.js";
 import { assistantRoutes } from "./routes/assistantRoutes.js";
+import { localRoutes } from "./routes/localRoutes.js";
+import { chatRoutes } from "./routes/chatRoutes.js";
 
 const app = express();
 const PORT = process.env.PORT ?? 4000;
@@ -18,6 +20,8 @@ app.use(accountRoutes);
 app.use(dataRoutes);
 app.use(settingsRoutes);
 app.use(assistantRoutes);
+app.use(localRoutes);
+app.use(chatRoutes);
 
 app.get("/health", (_req, res) => res.json({ ok: true }));
 

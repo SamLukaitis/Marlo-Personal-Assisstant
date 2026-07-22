@@ -7,9 +7,14 @@ import {
   saveSettings,
   disconnectAccount,
   loginUrl,
+  fetchLocalFolders,
+  addLocalFolder,
+  removeLocalFolder,
   type ProviderInfo,
   type Account,
+  type LocalFolder,
 } from "../api/client";
+import { IconTrash, IconPlus } from "../components/icons";
 
 const ERROR_TEXT: Record<string, string> = {
   google_not_configured:
@@ -26,14 +31,36 @@ export function SetupPage() {
   const [assistantName, setAssistantName] = useState("Assistant");
   const [persona, setPersona] = useState("");
   const [saved, setSaved] = useState(false);
+  const [folders, setFolders] = useState<LocalFolder[]>([]);
+  const [newFolder, setNewFolder] = useState("");
+  const [folderError, setFolderError] = useState<string | null>(null);
   const [searchParams] = useSearchParams();
 
   async function load() {
-    const [p, a, s] = await Promise.all([fetchProviders(), fetchAccounts(), fetchSettings()]);
+    const [p, a, s, f] = await Promise.all([
+      fetchProviders(),
+      fetchAccounts(),
+      fetchSettings(),
+      fetchLocalFolders(),
+    ]);
     setProviders(p);
     setAccounts(a);
     setAssistantName(s.assistantName);
     setPersona(s.persona);
+    setFolders(f);
+  }
+
+  async function handleAddFolder(e: React.FormEvent) {
+    e.preventDefault();
+    if (!newFolder.trim()) return;
+    setFolderError(null);
+    try {
+      await addLocalFolder(newFolder.trim());
+      setNewFolder("");
+      load();
+    } catch (err) {
+      setFolderError((err as Error).message);
+    }
   }
 
   useEffect(() => {
@@ -127,10 +154,61 @@ export function SetupPage() {
         </div>
       ))}
 
+      <h2>Local computer folders</h2>
+      <div className="card">
+        <p className="muted" style={{ marginTop: 0 }}>
+          Search files on this computer by name — no account needed, since the app already
+          runs on your machine. Add any folder (e.g. Documents, Desktop).
+        </p>
+        <form className="row" onSubmit={handleAddFolder}>
+          <input
+            value={newFolder}
+            onChange={(e) => setNewFolder(e.target.value)}
+            placeholder="C:\Users\you\Documents"
+          />
+          <button type="submit" style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            <IconPlus />
+            Add
+          </button>
+        </form>
+        {folderError && (
+          <p className="error" style={{ marginTop: 8 }}>
+            {folderError}
+          </p>
+        )}
+        {folders.length === 0 ? (
+          <p className="muted" style={{ marginTop: 12 }}>
+            No folders added yet.
+          </p>
+        ) : (
+          folders.map((f) => (
+            <div
+              key={f.id}
+              className="list-item row"
+              style={{ justifyContent: "space-between" }}
+            >
+              <span style={{ fontSize: 13.5 }}>{f.path}</span>
+              <button
+                className="danger"
+                style={{ display: "flex", alignItems: "center", gap: 6 }}
+                onClick={async () => {
+                  await removeLocalFolder(f.id);
+                  load();
+                }}
+              >
+                <IconTrash />
+                Remove
+              </button>
+            </div>
+          ))
+        )}
+      </div>
+
       <h2>Coming soon</h2>
       <div className="card muted">
-        WhatsApp (blocked by platform API limits for personal accounts), Microsoft Teams,
-        OneDrive file search, Slack.
+        WhatsApp is intentionally left out — there's no compliant API for reading personal
+        chats without violating WhatsApp's Terms of Service and risking an account ban. Slack
+        and iCloud sync are on the roadmap.
       </div>
     </div>
   );

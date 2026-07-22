@@ -3,11 +3,12 @@ import {
   updateAccountTokens,
   type AccountRow,
 } from "../db/store.js";
-import type { UnifiedMessage, CalendarEvent, DraftResult } from "./types.js";
+import type { UnifiedMessage, CalendarEvent, DraftResult, FileHit, ChatThread } from "./types.js";
 
 const AUTH_BASE = "https://login.microsoftonline.com/common/oauth2/v2.0";
 const GRAPH = "https://graph.microsoft.com/v1.0";
-const SCOPES = "offline_access User.Read Mail.Read Mail.ReadWrite Calendars.Read";
+const SCOPES =
+  "offline_access User.Read Mail.Read Mail.ReadWrite Calendars.Read Chat.Read Files.Read";
 
 export function isMicrosoftConfigured(): boolean {
   return !!(process.env.MS_CLIENT_ID && process.env.MS_CLIENT_SECRET);
@@ -101,6 +102,17 @@ async function graphGet<T>(account: AccountRow, path: string): Promise<T> {
   const token = await accessTokenFor(account);
   const res = await fetch(`${GRAPH}${path}`, {
     headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) throw new Error(`Graph ${path} returned ${res.status}: ${await res.text()}`);
+  return (await res.json()) as T;
+}
+
+async function graphPost<T>(account: AccountRow, path: string, body: unknown): Promise<T> {
+  const token = await accessTokenFor(account);
+  const res = await fetch(`${GRAPH}${path}`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+    body: JSON.stringify(body),
   });
   if (!res.ok) throw new Error(`Graph ${path} returned ${res.status}: ${await res.text()}`);
   return (await res.json()) as T;
@@ -225,4 +237,131 @@ export async function microsoftCreateDraft(
     accountEmail: account.email,
     reviewNote: `Draft created in Outlook (${account.email}). Review and send it from Outlook — nothing has been sent.`,
   };
+}
+
+function stripHtml(html: string): string {
+  return html.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+}
+
+interface GraphChat {
+  id: string;
+  topic?: string | null;
+  chatType?: string;
+  webUrl?: string;
+  lastMessagePreview?: {
+    createdDateTime?: string;
+    from?: { user?: { displayName?: string } };
+    body?: { content?: string; contentType?: string };
+  };
+}
+
+export async function microsoftListChats(
+  account: AccountRow,
+  limit = 20
+): Promise<ChatThread[]> {
+  const data = await graphGet<{ value: GraphChat[] }>(
+    account,
+    `/me/chats?$expand=lastMessagePreview&$top=50`
+  );
+  const threads = data.value
+    .filter((c) => c.lastMessagePreview)
+    .map((c) => {
+      const preview = c.lastMessagePreview!;
+      const rawBody = preview.body?.content ?? "";
+      return {
+        id: c.id,
+        accountId: account.id,
+        accountEmail: account.email,
+        provider: "microsoft" as const,
+        topic: c.topic || (c.chatType === "oneOnOne" ? "Direct message" : "Group chat"),
+        lastSender: preview.from?.user?.displayName ?? "",
+        preview:
+          preview.body?.contentType === "html" ? stripHtml(rawBody) : rawBody,
+        updatedAt: preview.createdDateTime ?? "",
+        link: c.webUrl,
+      };
+    });
+  return threads.sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1)).slice(0, limit);
+}
+
+interface SearchHit {
+  hitId: string;
+  resource: {
+    id: string;
+    chatId?: string;
+    createdDateTime?: string;
+    from?: { user?: { displayName?: string } };
+    body?: { content?: string; contentType?: string };
+  };
+}
+
+interface SearchResponse {
+  value: Array<{
+    hitsContainers: Array<{ hits?: SearchHit[] }>;
+  }>;
+}
+
+export async function microsoftSearchChats(
+  account: AccountRow,
+  query: string,
+  limit = 20
+): Promise<ChatThread[]> {
+  const data = await graphPost<SearchResponse>(account, "/search/query", {
+    requests: [
+      {
+        entityTypes: ["chatMessage"],
+        query: { queryString: query },
+        from: 0,
+        size: limit,
+      },
+    ],
+  });
+
+  const hits = data.value.flatMap((v) => v.hitsContainers.flatMap((h) => h.hits ?? []));
+  return hits.map((hit) => {
+    const r = hit.resource;
+    const rawBody = r.body?.content ?? "";
+    return {
+      id: r.id,
+      accountId: account.id,
+      accountEmail: account.email,
+      provider: "microsoft" as const,
+      topic: "Teams chat",
+      lastSender: r.from?.user?.displayName ?? "",
+      preview: r.body?.contentType === "html" ? stripHtml(rawBody) : rawBody,
+      updatedAt: r.createdDateTime ?? "",
+    };
+  });
+}
+
+interface GraphDriveItem {
+  id: string;
+  name?: string;
+  file?: { mimeType?: string };
+  folder?: object;
+  lastModifiedDateTime?: string;
+  webUrl?: string;
+}
+
+export async function microsoftSearchFiles(
+  account: AccountRow,
+  query: string,
+  limit = 15
+): Promise<FileHit[]> {
+  const escaped = query.replace(/'/g, "''");
+  const data = await graphGet<{ value: GraphDriveItem[] }>(
+    account,
+    `/me/drive/root/search(q='${encodeURIComponent(escaped)}')` +
+      `?$top=${limit}&$select=id,name,file,folder,lastModifiedDateTime,webUrl`
+  );
+  return data.value.map((item) => ({
+    id: item.id,
+    accountId: account.id,
+    accountEmail: account.email,
+    provider: "microsoft" as const,
+    name: item.name ?? "(unnamed)",
+    mimeType: item.file?.mimeType ?? (item.folder ? "folder" : ""),
+    modifiedAt: item.lastModifiedDateTime ?? "",
+    link: item.webUrl,
+  }));
 }

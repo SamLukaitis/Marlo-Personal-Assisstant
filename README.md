@@ -10,23 +10,27 @@ ask it to find emails, summarize your day, locate documents, or draft replies.
 | Area | Capability |
 |---|---|
 | **Google** (per account) | Gmail read/search, Calendar read, Drive file search, Gmail draft creation |
-| **Microsoft** (per account) | Outlook mail read/search, Calendar read, Outlook draft creation |
-| **Multiple accounts** | Connect any number of Google + Microsoft accounts; everything is merged into one inbox/calendar and the assistant sees all of them |
-| **Assistant** | Claude with tool-calling: looks up real messages/events/files before answering; personalized via your Setup-page description |
+| **Microsoft** (per account) | Outlook mail read/search, Calendar read, Outlook draft creation, **Teams chat** read/search, **OneDrive** file search |
+| **This computer** | Search local folders you add (e.g. Documents, Desktop) by file name — no account or OAuth needed, since the server runs on your own machine |
+| **Multiple accounts** | Connect any number of Google + Microsoft accounts; everything is merged into one inbox/calendar/chats/files view and the assistant sees all of them |
+| **Assistant** | Claude with tool-calling: looks up real messages/events/chats/files before answering; personalized via your Setup-page description |
 | **Safety** | The assistant can create email **drafts** but can never send — you review and send from Gmail/Outlook yourself |
 
-Not yet included: WhatsApp (no compliant API for personal accounts), Teams chat, OneDrive
-search, Slack — the provider layer is built so these can be added without touching the UI
-or assistant logic.
+Deliberately **not** included: **WhatsApp** — there's no API that gives compliant access to
+personal chats (Business API needs a registered business number; the only way to read
+personal chats is an unofficial library that violates WhatsApp's Terms of Service and risks
+an account ban). Also not yet built: Slack, iCloud sync. The provider layer is built so any
+of these can be added later without touching the UI or assistant logic.
 
 ## Architecture
 
 - `server/` — Express + TypeScript API.
-  - `src/providers/google.ts`, `src/providers/microsoft.ts` — per-provider OAuth + data access
-  - `src/services/hub.ts` — merges results across all connected accounts; the UI and the AI only talk to this layer
-  - `src/ai/assistant.ts` — Claude (Anthropic SDK) with tools: list/search/read messages, calendar, file search, draft creation
-  - SQLite (`server/data/app.db`) stores account tokens and your assistant settings
-- `client/` — React + Vite. Pages: Assistant (chat), Inbox, Calendar, Files, Setup.
+  - `src/providers/google.ts`, `src/providers/microsoft.ts` — per-provider OAuth + data access (mail, calendar, Teams chat, Drive/OneDrive)
+  - `src/providers/local.ts` — local filesystem search, no OAuth; folders are configured on the Setup page and stored in SQLite
+  - `src/services/hub.ts` — merges results across all connected accounts (and local folders); the UI and the AI only talk to this layer
+  - `src/ai/assistant.ts` — Claude (Anthropic SDK) with tools: list/search/read messages, calendar, Teams chats, file search, draft creation
+  - SQLite (`server/data/app.db`) stores account tokens, local folder paths, and your assistant settings
+- `client/` — React + Vite. Pages: Assistant (chat), Inbox, Chats, Calendar, Files, Setup.
 
 ## One-time setup
 
@@ -79,12 +83,15 @@ npm run dev
 Open `http://localhost:5173`:
 
 1. **Setup** → describe your assistant (tone, priorities, context about your businesses) and save.
-2. **Setup** → Connect each Google/Microsoft account (repeat for multiple accounts).
+2. **Setup** → Connect each Google/Microsoft account (repeat for multiple accounts), and add
+   any local folders you want searchable (e.g. `C:\Users\you\Documents`).
 3. **Assistant** → ask things like *"summarize my unread emails"*, *"what's my week look
-   like?"*, *"find the latest invoice from X"*, or *"draft a reply to Sarah's email"*.
+   like?"*, *"find the latest invoice from X"*, *"anything new in Teams?"*, or *"draft a
+   reply to Sarah's email"*.
 
 ## Adding a new source later
 
 Add a provider module in `server/src/providers/` (OAuth + list/search functions), route it
-in `server/src/services/hub.ts`, and register its card in `/api/providers`. The inbox,
-calendar, files, and assistant tools pick it up automatically.
+in `server/src/services/hub.ts`, and register its card in `/api/providers` (skip this last
+step for non-account sources like local files). The inbox, chats, calendar, files, and
+assistant tools pick it up automatically.

@@ -15,7 +15,7 @@ accountRoutes.get("/api/providers", (_req, res) => {
     },
     {
       provider: "microsoft",
-      label: "Microsoft (Outlook mail, Calendar)",
+      label: "Microsoft 365 (Outlook mail, Calendar, Teams chat, OneDrive)",
       configured: isMicrosoftConfigured(),
       loginPath: "/auth/microsoft/login",
     },

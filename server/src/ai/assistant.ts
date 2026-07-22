@@ -1,11 +1,14 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { listAccounts, getSetting } from "../db/store.js";
+import { listLocalFolders } from "../providers/local.js";
 import {
   hubListMessages,
   hubGetMessage,
   hubListEvents,
   hubSearchFiles,
   hubCreateDraft,
+  hubListChats,
+  hubSearchChats,
 } from "../services/hub.js";
 
 const MODEL = process.env.ASSISTANT_MODEL ?? "claude-opus-4-8";
@@ -75,7 +78,30 @@ const tools: Anthropic.Tool[] = [
   {
     name: "search_files",
     description:
-      "Search files in the user's connected Google Drive accounts by name or content. Call this when the user asks to find a document, invoice, spreadsheet, or other file.",
+      "Search files by name across the user's connected Google Drive, OneDrive, and configured local computer folders. Call this when the user asks to find a document, invoice, spreadsheet, photo, or other file.",
+    input_schema: {
+      type: "object",
+      properties: {
+        query: { type: "string" },
+      },
+      required: ["query"],
+    },
+  },
+  {
+    name: "list_recent_chats",
+    description:
+      "List the user's most recent Microsoft Teams conversations (direct messages and group chats). Call this when the user asks what's new in Teams or about recent chat messages.",
+    input_schema: {
+      type: "object",
+      properties: {
+        limit: { type: "number", description: "Max chats, default 20" },
+      },
+    },
+  },
+  {
+    name: "search_chats",
+    description:
+      "Search the user's Microsoft Teams chat messages by keyword. Call this when the user asks to find something someone said in Teams.",
     input_schema: {
       type: "object",
       properties: {
@@ -120,6 +146,10 @@ async function runTool(name: string, input: Record<string, unknown>): Promise<un
       return hubListEvents((input.days as number | undefined) ?? 7);
     case "search_files":
       return hubSearchFiles(input.query as string);
+    case "list_recent_chats":
+      return hubListChats((input.limit as number | undefined) ?? 20);
+    case "search_chats":
+      return hubSearchChats(input.query as string);
     case "create_email_draft":
       return hubCreateDraft(
         input.account_id as number,
@@ -146,10 +176,16 @@ function buildSystemPrompt(): string {
     ? accounts.map((a) => `- id ${a.id}: ${a.email} (${a.provider})`).join("\n")
     : "(none connected — tell the user to connect an account on the Setup page first)";
 
+  const folders = listLocalFolders();
+  const folderList = folders.length
+    ? folders.map((f) => `- ${f.path}`).join("\n")
+    : "(none configured)";
+
   return [
     `You are ${name}, a personal assistant that manages the user's connected accounts. Today's date is ${new Date().toDateString()}.`,
     persona ? `The user described how they want you to behave:\n${persona}` : "",
     `Connected accounts:\n${accountList}`,
+    `Local computer folders searchable by file name:\n${folderList}`,
     `Rules:
 - Always look up real data with your tools before answering questions about email, calendar, or files — never invent contents.
 - You can create email drafts but can never send email. After creating a draft, tell the user to review and send it from their mailbox.

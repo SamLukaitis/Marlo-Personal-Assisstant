@@ -1,6 +1,6 @@
 const API_BASE = import.meta.env.VITE_API_BASE ?? "http://localhost:4000";
 
-export type Provider = "google" | "microsoft";
+export type Provider = "google" | "microsoft" | "local";
 
 export interface ProviderInfo {
   provider: Provider;
@@ -51,6 +51,24 @@ export interface FileHit {
   link?: string;
 }
 
+export interface ChatThread {
+  id: string;
+  accountId: number;
+  accountEmail: string;
+  provider: Provider;
+  topic: string;
+  lastSender: string;
+  preview: string;
+  updatedAt: string;
+  link?: string;
+}
+
+export interface LocalFolder {
+  id: number;
+  path: string;
+  label: string | null;
+}
+
 export interface Settings {
   assistantName: string;
   persona: string;
@@ -78,6 +96,26 @@ export const fetchEvents = (days = 7) => getJson<CalendarEvent[]>(`/api/events?d
 export const fetchFiles = (q: string) =>
   getJson<FileHit[]>(`/api/files?q=${encodeURIComponent(q)}`);
 export const fetchSettings = () => getJson<Settings>("/api/settings");
+export const fetchChats = (q?: string) =>
+  getJson<ChatThread[]>(`/api/chats${q ? `?q=${encodeURIComponent(q)}` : ""}`);
+export const fetchLocalFolders = () => getJson<LocalFolder[]>("/api/local-folders");
+
+export async function addLocalFolder(path: string): Promise<LocalFolder> {
+  const res = await fetch(`${API_BASE}/api/local-folders`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ path }),
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.error ?? "failed to add folder");
+  }
+  return res.json();
+}
+
+export async function removeLocalFolder(id: number): Promise<void> {
+  await fetch(`${API_BASE}/api/local-folders/${id}`, { method: "DELETE" });
+}
 
 export function loginUrl(loginPath: string): string {
   return `${API_BASE}${loginPath}`;

@@ -21,9 +21,14 @@ db.exec(`
     key TEXT PRIMARY KEY,
     value TEXT
   );
+  CREATE TABLE IF NOT EXISTS local_roots (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    path TEXT NOT NULL UNIQUE,
+    label TEXT
+  );
 `);
 
-export type Provider = "google" | "microsoft";
+export type Provider = "google" | "microsoft" | "local";
 
 export interface AccountRow {
   id: number;
@@ -103,4 +108,27 @@ export function setSetting(key: string, value: string): void {
     `INSERT INTO settings (key, value) VALUES (?, ?)
      ON CONFLICT(key) DO UPDATE SET value = excluded.value`
   ).run(key, value);
+}
+
+export interface LocalRootRow {
+  id: number;
+  path: string;
+  label: string | null;
+}
+
+export function listLocalRoots(): LocalRootRow[] {
+  return db.prepare(`SELECT id, path, label FROM local_roots`).all() as LocalRootRow[];
+}
+
+export function addLocalRoot(rootPath: string, label?: string): LocalRootRow {
+  const info = db
+    .prepare(`INSERT INTO local_roots (path, label) VALUES (?, ?)`)
+    .run(rootPath, label ?? null);
+  return db
+    .prepare(`SELECT id, path, label FROM local_roots WHERE id = ?`)
+    .get(info.lastInsertRowid) as LocalRootRow;
+}
+
+export function removeLocalRoot(id: number): void {
+  db.prepare(`DELETE FROM local_roots WHERE id = ?`).run(id);
 }

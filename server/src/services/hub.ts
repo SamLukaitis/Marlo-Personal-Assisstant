@@ -1,7 +1,14 @@
 import { listAccounts, getAccount, type AccountRow } from "../db/store.js";
 import * as g from "../providers/google.js";
 import * as ms from "../providers/microsoft.js";
-import type { UnifiedMessage, CalendarEvent, FileHit, DraftResult } from "../providers/types.js";
+import * as local from "../providers/local.js";
+import type {
+  UnifiedMessage,
+  CalendarEvent,
+  FileHit,
+  DraftResult,
+  ChatThread,
+} from "../providers/types.js";
 
 function settle<T>(results: PromiseSettledResult<T[]>[]): T[] {
   return results.flatMap((r) => {
@@ -55,11 +62,26 @@ export async function hubListEvents(days = 7): Promise<CalendarEvent[]> {
 }
 
 export async function hubSearchFiles(query: string): Promise<FileHit[]> {
-  // Drive only for now; OneDrive search can be added in the Microsoft provider later.
-  const results = await Promise.allSettled(
-    listAccounts("google").map((a) => g.googleSearchFiles(a, query))
-  );
+  const results = await Promise.allSettled([
+    ...listAccounts("google").map((a) => g.googleSearchFiles(a, query)),
+    ...listAccounts("microsoft").map((a) => ms.microsoftSearchFiles(a, query)),
+    local.localSearchFiles(query),
+  ]);
   return settle(results).sort((a, b) => (a.modifiedAt < b.modifiedAt ? 1 : -1));
+}
+
+export async function hubListChats(limit = 20): Promise<ChatThread[]> {
+  const results = await Promise.allSettled(
+    listAccounts("microsoft").map((a) => ms.microsoftListChats(a, limit))
+  );
+  return settle(results).sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1));
+}
+
+export async function hubSearchChats(query: string, limit = 20): Promise<ChatThread[]> {
+  const results = await Promise.allSettled(
+    listAccounts("microsoft").map((a) => ms.microsoftSearchChats(a, query, limit))
+  );
+  return settle(results).sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1));
 }
 
 export async function hubCreateDraft(

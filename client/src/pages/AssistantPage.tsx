@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { fetchSettings, sendChatMessage, type ChatMessage } from "../api/client";
+import { IconSend } from "../components/icons";
 
 const SUGGESTIONS = [
   "Summarize my unread emails",
@@ -87,7 +88,12 @@ export function AssistantPage() {
             onChange={(e) => setInput(e.target.value)}
             placeholder={`Message ${assistantName}…`}
           />
-          <button type="submit" disabled={loading}>
+          <button
+            type="submit"
+            disabled={loading}
+            style={{ display: "flex", alignItems: "center", gap: 6 }}
+          >
+            <IconSend />
             Send
           </button>
         </form>

@@ -36,7 +36,7 @@ export function FilesPage() {
         <input
           value={query}
           onChange={(e) => setQuery(e.target.value)}
-          placeholder="Search Google Drive by file name or content…"
+          placeholder="Search Drive, OneDrive, and local folders by name…"
         />
         <button type="submit" disabled={loading}>
           Search
@@ -48,7 +48,8 @@ export function FilesPage() {
         {error && <p className="error">{error}</p>}
         {!loading && !error && !searched && (
           <p className="muted">
-            Search your connected Google Drive accounts. OneDrive support is on the roadmap.
+            Searches Google Drive, OneDrive, and any local folders you've added on the Setup
+            page.
           </p>
         )}
         {!loading && !error && searched && files.length === 0 && (
