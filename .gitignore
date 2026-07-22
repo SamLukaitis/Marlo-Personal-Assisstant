@@ -1,0 +1,27 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+dist-ssr/
+
+# Env files (never commit secrets)
+.env
+.env.local
+.env.*.local
+
+# Server runtime data (SQLite DB with OAuth tokens)
+server/data/
+
+# Logs
+*.log
+npm-debug.log*
+
+# Editor/OS
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Vite cache
+*.local
