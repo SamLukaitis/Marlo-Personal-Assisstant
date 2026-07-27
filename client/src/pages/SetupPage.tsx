@@ -18,6 +18,7 @@ import {
   fetchWhatsAppStatus,
   fetchWhatsAppAllowedNumbers,
   saveWhatsAppAllowedNumbers,
+  fetchCheckins,
   NEWS_TOPIC_LABELS,
   type ProviderInfo,
   type Account,
@@ -26,6 +27,7 @@ import {
   type NewsTopic,
   type MemoryNote,
   type WhatsAppStatus,
+  type TravelCheckin,
 } from "../api/client";
 import { IconTrash, IconPlus } from "../components/icons";
 
@@ -64,10 +66,11 @@ export function SetupPage() {
   const [allowedNumbers, setAllowedNumbers] = useState<string[]>([]);
   const [newNumber, setNewNumber] = useState("");
   const [numbersSaved, setNumbersSaved] = useState(false);
+  const [checkins, setCheckins] = useState<TravelCheckin[]>([]);
   const [searchParams] = useSearchParams();
 
   async function load() {
-    const [p, a, s, f, b, m, ws, nums] = await Promise.all([
+    const [p, a, s, f, b, m, ws, nums, ci] = await Promise.all([
       fetchProviders(),
       fetchAccounts(),
       fetchSettings(),
@@ -76,6 +79,7 @@ export function SetupPage() {
       fetchMemoryNotes(),
       fetchWhatsAppStatus(),
       fetchWhatsAppAllowedNumbers(),
+      fetchCheckins(),
     ]);
     setProviders(p);
     setAccounts(a);
@@ -86,6 +90,7 @@ export function SetupPage() {
     setMemoryNotes(m);
     setWhatsAppStatus(ws);
     setAllowedNumbers(nums);
+    setCheckins(ci);
   }
 
   async function handleAddFolder(e: React.FormEvent) {
@@ -440,6 +445,34 @@ export function SetupPage() {
                 <IconTrash />
                 Remove
               </button>
+            </div>
+          ))
+        )}
+      </div>
+
+      <h2>Location check-ins</h2>
+      <div className="card">
+        <p className="muted" style={{ marginTop: 0 }}>
+          Logged automatically by a phone automation (iOS Shortcuts / Android Tasker) that
+          POSTs to <code>/api/checkin</code> when you land somewhere or cross a border — not
+          sent via WhatsApp, since that would need a manual tap each time. See the README for
+          how to set up the phone-side automation; the shared secret it needs is
+          <code> CHECKIN_SECRET</code> in <code>server/.env</code>.
+        </p>
+        {checkins.length === 0 ? (
+          <p className="muted" style={{ marginTop: 12 }}>
+            No check-ins logged yet.
+          </p>
+        ) : (
+          checkins.map((c) => (
+            <div key={c.id} className="list-item row" style={{ justifyContent: "space-between" }}>
+              <span style={{ fontSize: 13.5 }}>
+                {c.city ? `${c.city}, ` : ""}
+                {c.country ?? `${c.latitude.toFixed(3)}, ${c.longitude.toFixed(3)}`}
+              </span>
+              <span className="muted" style={{ fontSize: 12.5 }}>
+                {new Date(c.checkedInAt).toLocaleString()}
+              </span>
             </div>
           ))
         )}

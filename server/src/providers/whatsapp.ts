@@ -57,11 +57,24 @@ export async function sendWhatsAppMessage(to: string, text: string): Promise<voi
   }
 }
 
-export interface IncomingWhatsAppMessage {
+export interface IncomingTextMessage {
+  kind: "text";
   from: string;
   text: string;
   messageId: string;
 }
+
+export interface IncomingMediaMessage {
+  kind: "media";
+  from: string;
+  messageId: string;
+  mediaId: string;
+  mimeType: string;
+  filename?: string;
+  caption?: string;
+}
+
+export type IncomingWhatsAppMessage = IncomingTextMessage | IncomingMediaMessage;
 
 interface WebhookPayload {
   entry?: Array<{
@@ -72,6 +85,8 @@ interface WebhookPayload {
           id?: string;
           type?: string;
           text?: { body?: string };
+          image?: { id?: string; mime_type?: string; caption?: string };
+          document?: { id?: string; mime_type?: string; filename?: string; caption?: string };
         }>;
       };
     }>;
@@ -84,10 +99,57 @@ export function extractIncomingMessages(payload: WebhookPayload): IncomingWhatsA
     for (const change of entry.changes ?? []) {
       for (const m of change.value?.messages ?? []) {
         if (m.type === "text" && m.from && m.text?.body && m.id) {
-          messages.push({ from: m.from, text: m.text.body, messageId: m.id });
+          messages.push({ kind: "text", from: m.from, text: m.text.body, messageId: m.id });
+        } else if (m.type === "image" && m.from && m.id && m.image?.id && m.image.mime_type) {
+          messages.push({
+            kind: "media",
+            from: m.from,
+            messageId: m.id,
+            mediaId: m.image.id,
+            mimeType: m.image.mime_type,
+            caption: m.image.caption,
+          });
+        } else if (m.type === "document" && m.from && m.id && m.document?.id && m.document.mime_type) {
+          messages.push({
+            kind: "media",
+            from: m.from,
+            messageId: m.id,
+            mediaId: m.document.id,
+            mimeType: m.document.mime_type,
+            filename: m.document.filename,
+            caption: m.document.caption,
+          });
         }
       }
     }
   }
   return messages;
+}
+
+interface MediaUrlResponse {
+  url?: string;
+}
+
+// Meta's media download is two steps: resolve the (short-lived) CDN URL from the media ID,
+// then fetch the actual bytes from that URL — both calls need the same bearer token.
+export async function downloadWhatsAppMedia(
+  mediaId: string
+): Promise<{ buffer: Buffer; mimeType: string }> {
+  const token = process.env.WHATSAPP_TOKEN;
+  const metaRes = await fetch(`https://graph.facebook.com/${GRAPH_VERSION}/${mediaId}`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!metaRes.ok) {
+    throw new Error(`WhatsApp media lookup failed (${metaRes.status}): ${await metaRes.text()}`);
+  }
+  const meta = (await metaRes.json()) as MediaUrlResponse;
+  if (!meta.url) throw new Error("WhatsApp media lookup returned no URL");
+
+  const fileRes = await fetch(meta.url, { headers: { Authorization: `Bearer ${token}` } });
+  if (!fileRes.ok) {
+    throw new Error(`WhatsApp media download failed (${fileRes.status}): ${await fileRes.text()}`);
+  }
+  const mimeType = fileRes.headers.get("content-type") ?? "application/octet-stream";
+  const buffer = Buffer.from(await fileRes.arrayBuffer());
+  return { buffer, mimeType };
 }

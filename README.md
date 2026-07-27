@@ -17,6 +17,8 @@ ask it to find emails, summarize your day, locate documents, or draft replies.
 | **Memory** | The assistant remembers facts and preferences you share across conversations (e.g. "the Acme account is my priority business") — view/add/remove notes on the Setup page |
 | **Assistant** | Claude with tool-calling: looks up real messages/events/chats/files/contacts before answering; personalized via your Setup-page description |
 | **WhatsApp** | Message your assistant on WhatsApp via Meta's official Cloud API — a compliant bot channel, restricted to a phone-number allowlist you control |
+| **Documents (from WhatsApp)** | Send a photo or PDF (boarding pass, license, ticket, receipt) — Claude's vision analyzes it once on arrival and the extracted details are saved, so you can later ask things like "when did I fly to Berlin" or "what's the code on my license". Browse/download/delete what's been saved on the Files page |
+| **Location check-ins** | A phone automation (iOS Shortcuts / Android Tasker) posts your coordinates when you land somewhere or cross a border; the server reverse-geocodes it to a country/city and logs it — no WhatsApp round-trip, so it's genuinely automatic. Ask things like "where have I been this month" |
 | **Safety** | The assistant can create email **drafts**, archive mail, and manage your **own** calendar — but can never send email or invite other people to an event. Archiving is fully reversible (mail is never deleted, just removed from the inbox) |
 
 **About the WhatsApp integration**: it's deliberately built as a *new channel to message your
@@ -28,15 +30,10 @@ without touching the UI or assistant logic.
 
 ## Planned (not yet built)
 
-- **WhatsApp image/document ingestion** — e.g. sending a photo of a boarding pass so the
-  assistant can log the trip. Today the webhook only handles text messages; photos/documents
-  sent to the WhatsApp number are currently ignored. Would need: downloading the media from
-  Meta's Graph API, running it through Claude's vision to pull out structured fields (dates,
-  airports/countries), and a table to store it in.
-- **Travel day tracker** (e.g. "how many days have I spent in the EU this year?") — depends on
-  the above being built first, since it needs somewhere to pull entry/exit dates from. The day
-  math itself should be done in code once dates are stored, not estimated by the model from
-  raw text.
+- **Travel day tracker** (e.g. "how many days have I spent in the EU this year?") — both the
+  document-extraction pipeline and the location check-in log above provide raw material for
+  this, but there's no dedicated date-math logic yet. That should be done deterministically in
+  code once entry/exit dates are reliably known, not estimated by the model from raw text.
 - **Slack, iCloud sync** — no connector built yet.
 
 ## Architecture
@@ -45,13 +42,14 @@ without touching the UI or assistant logic.
   - `src/providers/google.ts`, `src/providers/microsoft.ts` — per-provider OAuth + data access (mail, calendar, Teams chat, Drive/OneDrive, contacts)
   - `src/providers/local.ts` — local filesystem search, no OAuth; folders are configured on the Setup page and stored in SQLite
   - `src/providers/news.ts` — free public RSS headlines (BBC feeds), no API key needed
-  - `src/providers/whatsapp.ts` — Meta Cloud API client (send message, verify webhook signature/handshake)
+  - `src/providers/whatsapp.ts` — Meta Cloud API client (send message, verify webhook signature/handshake, download media)
   - `src/services/hub.ts` — merges results across all connected accounts (and local folders); the UI and the AI only talk to this layer
   - `src/services/briefing.ts` — builds the daily briefing (gathers real data, then has Claude write it up); cached once per day in SQLite
-  - `src/ai/assistant.ts` — Claude (Anthropic SDK) with tools: messages, calendar, Teams chats, files, contacts, archive/labels, memory
-  - `src/routes/whatsappRoutes.ts` — the public webhook (`GET`/`POST /webhooks/whatsapp`) Meta calls; reuses the same assistant engine as the web chat
-  - SQLite (`server/data/app.db`) stores account tokens, local folder paths, briefings, memory notes, WhatsApp conversation history, and your assistant settings
-- `client/` — React + Vite. Pages: Assistant (chat + daily briefing), Inbox, Chats, Calendar, Files, Setup.
+  - `src/services/documents.ts` — downloads a WhatsApp photo/PDF, runs it through Claude's vision once to extract key facts, and stores both the file and the extracted text
+  - `src/ai/assistant.ts` — Claude (Anthropic SDK) with tools: messages, calendar, Teams chats, files, contacts, archive/labels, memory, saved documents
+  - `src/routes/whatsappRoutes.ts` — the public webhook (`GET`/`POST /webhooks/whatsapp`) Meta calls; reuses the same assistant engine as the web chat; branches to `documents.ts` for photo/PDF messages
+  - SQLite (`server/data/app.db`) stores account tokens, local folder paths, briefings, memory notes, WhatsApp conversation history, saved documents' extracted text, and your assistant settings; the raw uploaded files themselves live under `server/data/uploads/`
+- `client/` — React + Vite. Pages: Assistant (chat + daily briefing), Inbox, Chats, Calendar, Files, Setup (also lists saved WhatsApp documents).
 
 ## Safety boundaries (by design)
 
@@ -159,11 +157,34 @@ just shows "Not configured".
 > Test numbers work indefinitely for personal use with up to 5 approved recipients — you
 > don't need Meta Business verification unless you want a dedicated permanent number.
 
-### 4. Anthropic API key (required for the assistant)
+### 4. Location check-ins (optional — automatic travel logging)
+
+This logs where you've been without any WhatsApp round-trip — a phone automation posts your
+coordinates straight to the server when you land somewhere or cross a border. Make up any
+random string for `CHECKIN_SECRET` in `server/.env` (same idea as the WhatsApp verify token),
+then set up one of:
+
+**iOS (Shortcuts app):**
+1. Automation tab → **Create Personal Automation**.
+2. Trigger: either "Airplane Mode" → **is turned Off** (great for flights — fires the moment
+   you land and reconnect), or "Arrive" at a location (for driving across land borders — set
+   one per region you might cross into, since Shortcuts has no generic "new country" trigger).
+3. Action: **Get Current Location** → **Get Contents of URL**, POSTing to
+   `https://<your-server>/api/checkin?secret=YOUR_CHECKIN_SECRET&latitude=<lat>&longitude=<lon>`.
+4. Turn off "Ask Before Running" so it fires silently.
+
+**Android (Tasker, or the free/simpler MacroDroid):**
+1. Trigger: the built-in **Airplane Mode** state, or a **Location** context (geofence) — same
+   two options as iOS.
+2. Action: the built-in **HTTP Request** action, POSTing to the same URL as above.
+
+Skip this section entirely if you don't want it — nothing else depends on it.
+
+### 5. Anthropic API key (required for the assistant)
 Get a key at [console.anthropic.com](https://console.anthropic.com/) and put it in
 `server/.env` as `ANTHROPIC_API_KEY`.
 
-### 5. Environment files
+### 6. Environment files
 
 ```bash
 cp server/.env.example server/.env
@@ -197,7 +218,8 @@ Open `http://localhost:5173`:
    - *"find the latest invoice from X"* / *"anything new in Teams?"*
    - *"email Sarah about the meeting"* (it looks up her address for you first)
    - *"remember that the Acme account is my priority business"*
-4. **WhatsApp** (if configured) → message your test number directly — same assistant, same tools.
+   - *"when did I fly to Berlin"* / *"what's the code on my license"* (after sending the relevant photo/document via WhatsApp)
+4. **WhatsApp** (if configured) → message your test number directly — same assistant, same tools. Send a photo or PDF (boarding pass, license, ticket, receipt) and it gets analyzed and saved automatically.
 
 ## Known limitations
 
@@ -225,6 +247,15 @@ Open `http://localhost:5173`:
   older turns are dropped rather than condensed. Anything worth keeping needs to be an
   explicit memory note (the assistant is instructed to do this proactively, but it's not
   guaranteed for every fact).
+- **Document extraction is one-shot, at upload time** — a photo/PDF is analyzed once when it
+  arrives and that text is what the assistant searches later; there's no re-analysis if the
+  first pass missed something. Only images (jpeg/png/gif/webp) and PDFs are analyzed — other
+  file types (e.g. Word docs) are stored for download but skipped for extraction.
+- **Reverse geocoding uses OpenStreetMap's free Nominatim API** — no API key needed, but it's
+  a shared public service with a fair-use rate limit; fine for personal check-ins (a handful a
+  day), not for anything high-frequency.
+- **No delete UI for check-ins yet** — the Setup page lists them read-only; removing a bad
+  entry currently means editing the SQLite database directly.
 
 ## Adding a new source later
 

@@ -1,5 +1,14 @@
 import Anthropic from "@anthropic-ai/sdk";
-import { listAccounts, getSetting, listRecentMemoryNotes, addMemoryNote } from "../db/store.js";
+import {
+  listAccounts,
+  getSetting,
+  listRecentMemoryNotes,
+  addMemoryNote,
+  searchDocuments,
+  listDocuments,
+  listCheckins,
+  type DocumentRow,
+} from "../db/store.js";
 import { listLocalFolders } from "../providers/local.js";
 import {
   hubListMessages,
@@ -264,11 +273,50 @@ const tools: Anthropic.Tool[] = [
     description:
       "List emails that look like they've been sitting unread for a while from real people (not newsletters/notifications). Call this when the user asks what needs attention, what they're missing, or what's falling through the cracks.",
     input_schema: { type: "object", properties: {} },
-    // Cache breakpoint: these 15 tool schemas are identical on every call (web or WhatsApp),
+  },
+  {
+    name: "search_documents",
+    description:
+      "Search photos/documents the user has sent via WhatsApp (boarding passes, licenses, tickets, receipts, IDs, etc.) by keyword. Searches filenames, captions, and the extracted text/details from each file. Call this when the user asks about something they photographed or sent you, e.g. 'when did I fly to Berlin' or 'what's the code on my license'.",
+    input_schema: {
+      type: "object",
+      properties: {
+        query: { type: "string", description: "Keyword to search for" },
+      },
+      required: ["query"],
+    },
+  },
+  {
+    name: "list_recent_documents",
+    description:
+      "List the most recently saved photos/documents the user has sent via WhatsApp, newest first. Call this when the user asks what's been saved or wants a general overview rather than searching for something specific.",
+    input_schema: {
+      type: "object",
+      properties: {
+        limit: { type: "number", description: "Max documents, default 10" },
+      },
+    },
+  },
+  {
+    name: "list_travel_checkins",
+    description:
+      "List the user's location check-ins (country/city + timestamp), newest first. These are logged automatically by a phone automation when the user lands somewhere or crosses a border — not something they send manually. Call this for travel questions like 'where have I been' or 'when did I arrive in France'. This is raw location history, not day-counting — do the arithmetic yourself from the timestamps if asked to compute durations.",
+    input_schema: {
+      type: "object",
+      properties: {
+        limit: { type: "number", description: "Max check-ins, default 50" },
+      },
+    },
+    // Cache breakpoint: these 18 tool schemas are identical on every call (web or WhatsApp),
     // so this is close to free — Anthropic caches everything up to and including this block.
     cache_control: { type: "ephemeral", ttl: "1h" },
   },
 ];
+
+function forModel(doc: DocumentRow) {
+  const { storedPath: _storedPath, ...rest } = doc;
+  return rest;
+}
 
 async function runTool(name: string, input: Record<string, unknown>): Promise<unknown> {
   switch (name) {
@@ -337,6 +385,12 @@ async function runTool(name: string, input: Record<string, unknown>): Promise<un
       return { ok: true };
     case "list_needs_attention":
       return hubFlaggedMessages();
+    case "search_documents":
+      return searchDocuments(input.query as string).map(forModel);
+    case "list_recent_documents":
+      return listDocuments((input.limit as number | undefined) ?? 10).map(forModel);
+    case "list_travel_checkins":
+      return listCheckins((input.limit as number | undefined) ?? 50);
     default:
       return { error: `unknown tool: ${name}` };
   }
@@ -379,6 +433,8 @@ function buildSystemPrompt(): string {
 - You can archive emails and apply labels/categories directly — archiving is fully reversible (the email is just removed from the inbox, never deleted) so you don't need to ask permission first, but do confirm if the query is broad or ambiguous (e.g. "archive everything" with no filter).
 - Use search_contacts to resolve a name to an email address before drafting to someone when you don't already have their address.
 - Use the remember tool proactively whenever the user shares something worth recalling later (preferences, which account is which, standing instructions) — don't wait to be asked.
+- Use search_documents/list_recent_documents when the user asks about something they photographed or sent via WhatsApp (boarding passes, licenses, tickets, receipts) — e.g. "when did I fly to X" or "what's the code on my license".
+- Use list_travel_checkins for questions about where the user has physically been or when they arrived somewhere — this is automatic location history, separate from documents.
 - When several accounts are connected and the user's request is ambiguous about which one, search across all of them or ask.
 - Keep answers concise and lead with the direct answer.`,
   ]

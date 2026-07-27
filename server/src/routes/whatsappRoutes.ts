@@ -6,9 +6,11 @@ import {
   verifyWebhookSignature,
   sendWhatsAppMessage,
   extractIncomingMessages,
+  type IncomingWhatsAppMessage,
 } from "../providers/whatsapp.js";
 import { isWhatsAppNumberAllowed, getWhatsAppHistory, appendWhatsAppMessage } from "../db/store.js";
 import { runAssistantChat, MAX_HISTORY_MESSAGES } from "../ai/assistant.js";
+import { ingestWhatsAppMedia } from "../services/documents.js";
 
 export const whatsappRoutes = Router();
 
@@ -38,26 +40,55 @@ function alreadyProcessed(id: string): boolean {
   return false;
 }
 
-async function handleIncoming(from: string, text: string): Promise<void> {
-  if (!isWhatsAppNumberAllowed(from)) {
-    console.warn(`whatsapp: ignoring message from non-allowed number ${from}`);
-    return;
-  }
-
+async function handleText(from: string, text: string): Promise<void> {
   appendWhatsAppMessage(from, "user", text);
   const history = getWhatsAppHistory(from, MAX_HISTORY_MESSAGES).map((m) => ({
     role: m.role,
     content: m.content,
   }));
 
+  const reply = await runAssistantChat(history);
+  appendWhatsAppMessage(from, "assistant", reply);
+  await sendWhatsAppMessage(from, reply);
+}
+
+async function handleMedia(
+  from: string,
+  mediaId: string,
+  mimeType: string,
+  filename?: string,
+  caption?: string
+): Promise<void> {
+  const label = filename ?? caption ?? "a file";
+  appendWhatsAppMessage(from, "user", `[Sent ${label}]`);
+
+  const doc = await ingestWhatsAppMedia({ phone: from, mediaId, mimeType, filename, caption });
+
+  const summary =
+    doc.extractedText.length > 1500
+      ? doc.extractedText.slice(0, 1500) + "..."
+      : doc.extractedText;
+  const reply = `Saved. Here's what I found:\n\n${summary}`;
+  appendWhatsAppMessage(from, "assistant", reply);
+  await sendWhatsAppMessage(from, reply);
+}
+
+async function handleIncoming(message: IncomingWhatsAppMessage): Promise<void> {
+  if (!isWhatsAppNumberAllowed(message.from)) {
+    console.warn(`whatsapp: ignoring message from non-allowed number ${message.from}`);
+    return;
+  }
+
   try {
-    const reply = await runAssistantChat(history);
-    appendWhatsAppMessage(from, "assistant", reply);
-    await sendWhatsAppMessage(from, reply);
+    if (message.kind === "text") {
+      await handleText(message.from, message.text);
+    } else {
+      await handleMedia(message.from, message.mediaId, message.mimeType, message.filename, message.caption);
+    }
   } catch (err) {
     console.error("whatsapp: failed to handle message", err);
     await sendWhatsAppMessage(
-      from,
+      message.from,
       "Sorry, I hit an error handling that — check the server logs."
     ).catch(() => {});
   }
@@ -87,7 +118,7 @@ whatsappRoutes.post("/webhooks/whatsapp", (req, res) => {
   const messages = extractIncomingMessages(req.body);
   for (const m of messages) {
     if (alreadyProcessed(m.messageId)) continue;
-    handleIncoming(m.from, m.text).catch((err) =>
+    handleIncoming(m).catch((err) =>
       console.error("whatsapp: unhandled error processing message", err)
     );
   }

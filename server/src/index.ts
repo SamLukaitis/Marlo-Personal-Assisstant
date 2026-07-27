@@ -12,6 +12,8 @@ import { briefingRoutes } from "./routes/briefingRoutes.js";
 import { memoryRoutes } from "./routes/memoryRoutes.js";
 import { whatsappRoutes } from "./routes/whatsappRoutes.js";
 import { whatsappSettingsRoutes } from "./routes/whatsappSettingsRoutes.js";
+import { documentRoutes } from "./routes/documentRoutes.js";
+import { checkinRoutes } from "./routes/checkinRoutes.js";
 
 const app = express();
 const PORT = process.env.PORT ?? 4000;
@@ -38,6 +40,8 @@ app.use(briefingRoutes);
 app.use(memoryRoutes);
 app.use(whatsappRoutes);
 app.use(whatsappSettingsRoutes);
+app.use(documentRoutes);
+app.use(checkinRoutes);
 
 app.get("/health", (_req, res) => res.json({ ok: true }));
 

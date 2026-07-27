@@ -44,7 +44,28 @@ db.exec(`
     created_at INTEGER NOT NULL
   );
   CREATE INDEX IF NOT EXISTS idx_whatsapp_messages_phone ON whatsapp_messages(phone);
+  CREATE TABLE IF NOT EXISTS documents (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    phone TEXT NOT NULL,
+    filename TEXT,
+    mime_type TEXT NOT NULL,
+    stored_path TEXT NOT NULL,
+    caption TEXT,
+    extracted_text TEXT NOT NULL,
+    created_at INTEGER NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS travel_checkins (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    latitude REAL NOT NULL,
+    longitude REAL NOT NULL,
+    country TEXT,
+    city TEXT,
+    checked_in_at INTEGER NOT NULL
+  );
 `);
+
+export const uploadsDir = path.join(dataDir, "uploads");
+if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
 
 export type Provider = "google" | "microsoft" | "local";
 
@@ -258,4 +279,111 @@ export function setWhatsAppAllowedNumbers(numbers: string[]): void {
 export function isWhatsAppNumberAllowed(phone: string): boolean {
   const normalized = normalizePhone(phone);
   return getWhatsAppAllowedNumbers().includes(normalized);
+}
+
+export interface DocumentRow {
+  id: number;
+  phone: string;
+  filename: string | null;
+  mimeType: string;
+  storedPath: string;
+  caption: string | null;
+  extractedText: string;
+  createdAt: number;
+}
+
+const DOCUMENT_COLUMNS = `id, phone, filename, mime_type AS mimeType, stored_path AS storedPath,
+  caption, extracted_text AS extractedText, created_at AS createdAt`;
+
+export function saveDocument(doc: {
+  phone: string;
+  filename: string | null;
+  mimeType: string;
+  storedPath: string;
+  caption: string | null;
+  extractedText: string;
+}): DocumentRow {
+  const info = db
+    .prepare(
+      `INSERT INTO documents (phone, filename, mime_type, stored_path, caption, extracted_text, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`
+    )
+    .run(
+      doc.phone,
+      doc.filename,
+      doc.mimeType,
+      doc.storedPath,
+      doc.caption,
+      doc.extractedText,
+      Date.now()
+    );
+  return db
+    .prepare(`SELECT ${DOCUMENT_COLUMNS} FROM documents WHERE id = ?`)
+    .get(info.lastInsertRowid) as DocumentRow;
+}
+
+export function listDocuments(limit = 50): DocumentRow[] {
+  return db
+    .prepare(`SELECT ${DOCUMENT_COLUMNS} FROM documents ORDER BY id DESC LIMIT ?`)
+    .all(limit) as DocumentRow[];
+}
+
+export function searchDocuments(query: string, limit = 10): DocumentRow[] {
+  const like = `%${query}%`;
+  return db
+    .prepare(
+      `SELECT ${DOCUMENT_COLUMNS} FROM documents
+       WHERE filename LIKE ? OR caption LIKE ? OR extracted_text LIKE ?
+       ORDER BY id DESC LIMIT ?`
+    )
+    .all(like, like, like, limit) as DocumentRow[];
+}
+
+export function getDocument(id: number): DocumentRow | undefined {
+  return db.prepare(`SELECT ${DOCUMENT_COLUMNS} FROM documents WHERE id = ?`).get(id) as
+    | DocumentRow
+    | undefined;
+}
+
+export function deleteDocument(id: number): void {
+  db.prepare(`DELETE FROM documents WHERE id = ?`).run(id);
+}
+
+export interface TravelCheckinRow {
+  id: number;
+  latitude: number;
+  longitude: number;
+  country: string | null;
+  city: string | null;
+  checkedInAt: number;
+}
+
+export function saveCheckin(checkin: {
+  latitude: number;
+  longitude: number;
+  country: string | null;
+  city: string | null;
+  checkedInAt: number;
+}): TravelCheckinRow {
+  const info = db
+    .prepare(
+      `INSERT INTO travel_checkins (latitude, longitude, country, city, checked_in_at)
+       VALUES (?, ?, ?, ?, ?)`
+    )
+    .run(checkin.latitude, checkin.longitude, checkin.country, checkin.city, checkin.checkedInAt);
+  return db
+    .prepare(
+      `SELECT id, latitude, longitude, country, city, checked_in_at AS checkedInAt
+       FROM travel_checkins WHERE id = ?`
+    )
+    .get(info.lastInsertRowid) as TravelCheckinRow;
+}
+
+export function listCheckins(limit = 100): TravelCheckinRow[] {
+  return db
+    .prepare(
+      `SELECT id, latitude, longitude, country, city, checked_in_at AS checkedInAt
+       FROM travel_checkins ORDER BY checked_in_at DESC LIMIT ?`
+    )
+    .all(limit) as TravelCheckinRow[];
 }

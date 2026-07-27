@@ -110,6 +110,25 @@ export interface WhatsAppStatus {
   signatureConfigured: boolean;
 }
 
+export interface StoredDocument {
+  id: number;
+  phone: string;
+  filename: string | null;
+  mimeType: string;
+  caption: string | null;
+  extractedText: string;
+  createdAt: number;
+}
+
+export interface TravelCheckin {
+  id: number;
+  latitude: number;
+  longitude: number;
+  country: string | null;
+  city: string | null;
+  checkedInAt: number;
+}
+
 async function getJson<T>(path: string): Promise<T> {
   const res = await fetch(`${API_BASE}${path}`);
   if (!res.ok) {
@@ -214,6 +233,18 @@ export async function saveWhatsAppAllowedNumbers(numbers: string[]): Promise<voi
   });
   if (!res.ok) throw new Error("failed to save allowed numbers");
 }
+
+export const fetchDocuments = () => getJson<StoredDocument[]>("/api/documents");
+
+export function documentFileUrl(id: number): string {
+  return `${API_BASE}/api/documents/${id}/file`;
+}
+
+export async function deleteDocument(id: number): Promise<void> {
+  await fetch(`${API_BASE}/api/documents/${id}`, { method: "DELETE" });
+}
+
+export const fetchCheckins = () => getJson<TravelCheckin[]>("/api/checkins");
 
 export async function sendChatMessage(messages: ChatMessage[]): Promise<string> {
   const res = await fetch(`${API_BASE}/api/assistant/chat`, {
