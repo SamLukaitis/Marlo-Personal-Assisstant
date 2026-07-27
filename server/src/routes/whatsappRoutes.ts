@@ -8,7 +8,7 @@ import {
   extractIncomingMessages,
 } from "../providers/whatsapp.js";
 import { isWhatsAppNumberAllowed, getWhatsAppHistory, appendWhatsAppMessage } from "../db/store.js";
-import { runAssistantChat } from "../ai/assistant.js";
+import { runAssistantChat, MAX_HISTORY_MESSAGES } from "../ai/assistant.js";
 
 export const whatsappRoutes = Router();
 
@@ -45,7 +45,7 @@ async function handleIncoming(from: string, text: string): Promise<void> {
   }
 
   appendWhatsAppMessage(from, "user", text);
-  const history = getWhatsAppHistory(from, 20).map((m) => ({
+  const history = getWhatsAppHistory(from, MAX_HISTORY_MESSAGES).map((m) => ({
     role: m.role,
     content: m.content,
   }));

@@ -1,5 +1,5 @@
 import Anthropic from "@anthropic-ai/sdk";
-import { listAccounts, getSetting, listMemoryNotes, addMemoryNote } from "../db/store.js";
+import { listAccounts, getSetting, listRecentMemoryNotes, addMemoryNote } from "../db/store.js";
 import { listLocalFolders } from "../providers/local.js";
 import {
   hubListMessages,
@@ -18,7 +18,34 @@ import {
   hubFlaggedMessages,
 } from "../services/hub.js";
 
-const MODEL = process.env.ASSISTANT_MODEL ?? "claude-opus-4-8";
+// Cheap tier for lookups/summaries, richer tier for anything needing judgment or drafting.
+// No classifier call to pick between them — that would add an extra API round-trip for a
+// decision that keyword matching on the latest message handles for free.
+const MODEL_SIMPLE = process.env.ASSISTANT_MODEL_SIMPLE ?? "claude-haiku-4-5";
+const MODEL_COMPLEX = process.env.ASSISTANT_MODEL_COMPLEX ?? "claude-sonnet-5";
+
+const COMPLEX_PATTERNS = [
+  /\bdraft\b/i, /\bwrite\b/i, /\bcompose\b/i, /\breply to\b/i, /\brespond to\b/i,
+  /\bplan\b/i, /\banaly[sz]e\b/i, /\bcompare\b/i, /\bshould i\b/i, /\bwhy\b/i,
+  /\bdecide\b/i, /\bstrategy\b/i, /\bnegotiate\b/i, /\bin depth\b/i, /\bdetailed\b/i,
+  /\brecommend\b/i, /\bthink about\b/i, /\bhow many days\b/i,
+];
+const SIMPLE_PATTERNS = [
+  /\bsummari[sz]e\b/i, /\bwhat'?s (new|on|unread|upcoming)\b/i, /\bany new\b/i,
+  /\blist\b/i, /\bshow me\b/i, /\bwhat (is|are)\b/i, /\bcheck\b/i, /\bfind\b/i,
+  /\bsearch\b/i, /\bwhen is\b/i, /\bunread\b/i, /\btoday'?s\b/i, /\barchive\b/i,
+];
+
+function chooseModel(latestUserMessage: string): string {
+  if (COMPLEX_PATTERNS.some((p) => p.test(latestUserMessage))) return MODEL_COMPLEX;
+  if (SIMPLE_PATTERNS.some((p) => p.test(latestUserMessage))) return MODEL_SIMPLE;
+  return MODEL_COMPLEX; // unmatched phrasing defaults to the safer tier, not the cheapest
+}
+
+// How many prior turns get resent as raw history. Older turns are neither summarized nor kept
+// — durable facts are expected to live in memory notes (via the `remember` tool) instead, so
+// this just bounds per-call token cost rather than trying to preserve everything forever.
+export const MAX_HISTORY_MESSAGES = 12;
 
 let client: Anthropic | null = null;
 function getClient(): Anthropic {
@@ -237,6 +264,9 @@ const tools: Anthropic.Tool[] = [
     description:
       "List emails that look like they've been sitting unread for a while from real people (not newsletters/notifications). Call this when the user asks what needs attention, what they're missing, or what's falling through the cracks.",
     input_schema: { type: "object", properties: {} },
+    // Cache breakpoint: these 15 tool schemas are identical on every call (web or WhatsApp),
+    // so this is close to free — Anthropic caches everything up to and including this block.
+    cache_control: { type: "ephemeral", ttl: "1h" },
   },
 ];
 
@@ -331,7 +361,7 @@ function buildSystemPrompt(): string {
     ? folders.map((f) => `- ${f.path}`).join("\n")
     : "(none configured)";
 
-  const memories = listMemoryNotes();
+  const memories = listRecentMemoryNotes().reverse();
   const memoryList = memories.length
     ? memories.map((m) => `- ${m.content}`).join("\n")
     : "(nothing remembered yet)";
@@ -360,17 +390,25 @@ export async function runAssistantChat(history: ChatMessage[]): Promise<string> 
   const anthropic = getClient();
   const system = buildSystemPrompt();
 
-  const messages: Anthropic.MessageParam[] = history.map((m) => ({
+  // Bound history defensively here (not just at the WhatsApp DB-read site) so the web chat
+  // route — which resends whatever the client has accumulated — gets the same cap.
+  const trimmedHistory = history.slice(-MAX_HISTORY_MESSAGES);
+  const lastUserMessage =
+    [...trimmedHistory].reverse().find((m) => m.role === "user")?.content ?? "";
+  const model = chooseModel(lastUserMessage);
+  const useThinking = model !== MODEL_SIMPLE; // skip extended thinking for cheap lookup turns
+
+  const messages: Anthropic.MessageParam[] = trimmedHistory.map((m) => ({
     role: m.role,
     content: m.content,
   }));
 
   for (let turn = 0; turn < 8; turn++) {
     const response = await anthropic.messages.create({
-      model: MODEL,
+      model,
       max_tokens: 4096,
-      thinking: { type: "adaptive" },
-      system,
+      ...(useThinking ? { thinking: { type: "adaptive" as const } } : {}),
+      system: [{ type: "text", text: system, cache_control: { type: "ephemeral", ttl: "1h" } }],
       tools,
       messages,
     });

@@ -184,6 +184,17 @@ export function listMemoryNotes(): MemoryNoteRow[] {
     .all() as MemoryNoteRow[];
 }
 
+// Used when building the assistant's system prompt (unlike listMemoryNotes, which the Setup
+// page uses to show the full vault) — caps how many notes get resent as tokens on every single
+// call so the prompt doesn't grow forever as the vault accumulates facts over months of use.
+export function listRecentMemoryNotes(limit = 40): MemoryNoteRow[] {
+  return db
+    .prepare(
+      `SELECT id, content, created_at AS createdAt FROM memory_notes ORDER BY id DESC LIMIT ?`
+    )
+    .all(limit) as MemoryNoteRow[];
+}
+
 export function addMemoryNote(content: string): MemoryNoteRow {
   const info = db
     .prepare(`INSERT INTO memory_notes (content, created_at) VALUES (?, ?)`)

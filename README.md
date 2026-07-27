@@ -23,8 +23,21 @@ ask it to find emails, summarize your day, locate documents, or draft replies.
 assistant*, not a reader of your existing personal WhatsApp chats — there's no compliant API
 for that (the only way to read personal chats is an unofficial library that violates
 WhatsApp's Terms of Service and risks an account ban; see the setup section below for why we
-went this route instead). Also not yet built: Slack, iCloud sync. The provider layer is built
-so any of these can be added later without touching the UI or assistant logic.
+went this route instead). The provider layer is built so new sources can be added later
+without touching the UI or assistant logic.
+
+## Planned (not yet built)
+
+- **WhatsApp image/document ingestion** — e.g. sending a photo of a boarding pass so the
+  assistant can log the trip. Today the webhook only handles text messages; photos/documents
+  sent to the WhatsApp number are currently ignored. Would need: downloading the media from
+  Meta's Graph API, running it through Claude's vision to pull out structured fields (dates,
+  airports/countries), and a table to store it in.
+- **Travel day tracker** (e.g. "how many days have I spent in the EU this year?") — depends on
+  the above being built first, since it needs somewhere to pull entry/exit dates from. The day
+  math itself should be done in code once dates are stored, not estimated by the model from
+  raw text.
+- **Slack, iCloud sync** — no connector built yet.
 
 ## Architecture
 
@@ -47,6 +60,39 @@ so any of these can be added later without touching the UI or assistant logic.
 - **Archiving is non-destructive** — "archive" only removes the inbox label; nothing is ever deleted.
 - **The morning briefing is grounded** — it's written by Claude, but only from real data the app fetched (your actual unread mail, actual calendar, actual RSS headlines). It's explicitly instructed never to fill in a section using general knowledge — if you enable news, the briefing shows real fetched headlines, not invented ones.
 - **WhatsApp is allowlisted and signature-verified** — only phone numbers you explicitly add on the Setup page get a response; every other sender is silently ignored. Every webhook request's HMAC signature is verified against your Meta app secret before anything is processed, so a spoofed payload claiming to be from an allowed number is rejected too. Without `WHATSAPP_APP_SECRET` set, the webhook refuses to process anything at all rather than trusting unverified requests.
+
+## Cost efficiency
+
+The assistant (`server/src/ai/assistant.ts`) is built to keep API spend down without adding
+extra round-trips to do it:
+
+- **Model routing (Haiku vs. Sonnet)** — every message is routed to a cheap tier
+  (`claude-haiku-4-5`, default `ASSISTANT_MODEL_SIMPLE`) for lookups and summaries ("what's
+  unread", "summarize my emails", "any new Teams messages") or a richer tier
+  (`claude-sonnet-5`, default `ASSISTANT_MODEL_COMPLEX`) for drafting, planning, comparisons,
+  or anything needing judgment. The choice is made by matching keywords in the latest message
+  — no extra "classifier" API call, since that would itself cost tokens and add latency for a
+  decision this cheap to make locally. Unmatched phrasing defaults to the richer tier rather
+  than the cheapest one. Extended thinking is only used on the richer tier, since simple
+  lookups don't benefit from it.
+- **Prompt caching** — the tool definitions and system prompt (persona, connected accounts,
+  local folders, memory notes) are marked as cache breakpoints with a 1-hour TTL. Since these
+  are identical across most calls in a session, repeat calls read from cache instead of paying
+  full price for the same ~15 tool schemas and context every single turn. Confirmed live: on
+  `claude-sonnet-5` the first call writes the cache and later calls in the same conversation
+  read from it. On `claude-haiku-4-5` caching doesn't currently kick in — Haiku models need a
+  larger minimum prompt size before a cache breakpoint is written, and this app's tools +
+  system prompt fall under that threshold. Haiku calls still cost less overall (cheaper
+  per-token rate, no thinking tokens), just without the extra caching discount on top.
+- **Bounded memory, not one long conversation** — WhatsApp and web chat both cap how much raw
+  conversation history gets resent per call (`MAX_HISTORY_MESSAGES`, currently 12 messages)
+  instead of replaying an ever-growing transcript. Durable facts are expected to live in
+  **memory notes** (the `remember` tool) rather than in raw history — that's effectively an
+  Obsidian-style model: small, atomic, addressable notes recalled on demand, instead of a
+  vector database or embedding search (which would itself cost an API call per lookup). The
+  system prompt only injects the most recent 40 notes, so the vault can keep growing over
+  months of use without the prompt growing forever with it — the full note list is still
+  available (and manageable) on the Setup page.
 
 ## One-time setup
 
@@ -172,6 +218,13 @@ Open `http://localhost:5173`:
   of this README on why).
 - **Temporary access tokens expire in 24h** — fine for initial testing; generate a permanent
   token via a System User in Meta Business Settings for anything longer-lived.
+- **Model routing is a keyword heuristic, not a learned classifier** — occasionally a complex
+  request phrased simply (or vice versa) will land on the "wrong" tier. It's biased to default
+  to the richer tier when unsure, so the failure mode is "cost a bit more," not "answer badly."
+- **Conversation history is capped, not summarized** — once a conversation passes 12 messages,
+  older turns are dropped rather than condensed. Anything worth keeping needs to be an
+  explicit memory note (the assistant is instructed to do this proactively, but it's not
+  guaranteed for every fact).
 
 ## Adding a new source later
 
