@@ -19,6 +19,7 @@ import {
   fetchWhatsAppAllowedNumbers,
   saveWhatsAppAllowedNumbers,
   fetchCheckins,
+  fetchTravelDays,
   NEWS_TOPIC_LABELS,
   type ProviderInfo,
   type Account,
@@ -28,6 +29,7 @@ import {
   type MemoryNote,
   type WhatsAppStatus,
   type TravelCheckin,
+  type TravelDaysResult,
 } from "../api/client";
 import { IconTrash, IconPlus } from "../components/icons";
 
@@ -67,10 +69,11 @@ export function SetupPage() {
   const [newNumber, setNewNumber] = useState("");
   const [numbersSaved, setNumbersSaved] = useState(false);
   const [checkins, setCheckins] = useState<TravelCheckin[]>([]);
+  const [schengenDays, setSchengenDays] = useState<TravelDaysResult | null>(null);
   const [searchParams] = useSearchParams();
 
   async function load() {
-    const [p, a, s, f, b, m, ws, nums, ci] = await Promise.all([
+    const [p, a, s, f, b, m, ws, nums, ci, sd] = await Promise.all([
       fetchProviders(),
       fetchAccounts(),
       fetchSettings(),
@@ -80,6 +83,7 @@ export function SetupPage() {
       fetchWhatsAppStatus(),
       fetchWhatsAppAllowedNumbers(),
       fetchCheckins(),
+      fetchTravelDays("schengen", 180),
     ]);
     setProviders(p);
     setAccounts(a);
@@ -91,6 +95,7 @@ export function SetupPage() {
     setWhatsAppStatus(ws);
     setAllowedNumbers(nums);
     setCheckins(ci);
+    setSchengenDays(sd);
   }
 
   async function handleAddFolder(e: React.FormEvent) {
@@ -459,6 +464,12 @@ export function SetupPage() {
           how to set up the phone-side automation; the shared secret it needs is
           <code> CHECKIN_SECRET</code> in <code>server/.env</code>.
         </p>
+        {schengenDays && (
+          <div className="banner" style={{ marginBottom: 14 }}>
+            Schengen: <strong>{schengenDays.daysPresent} / 90</strong> days used in the last
+            180 days ({schengenDays.sinceDate} to {schengenDays.untilDate})
+          </div>
+        )}
         {checkins.length === 0 ? (
           <p className="muted" style={{ marginTop: 12 }}>
             No check-ins logged yet.

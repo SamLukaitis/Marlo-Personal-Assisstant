@@ -387,3 +387,13 @@ export function listCheckins(limit = 100): TravelCheckinRow[] {
     )
     .all(limit) as TravelCheckinRow[];
 }
+
+// Ascending, uncapped — day-counting needs the full timeline, not just the most recent page.
+export function listAllCheckinsAscending(): TravelCheckinRow[] {
+  return db
+    .prepare(
+      `SELECT id, latitude, longitude, country, city, checked_in_at AS checkedInAt
+       FROM travel_checkins ORDER BY checked_in_at ASC`
+    )
+    .all() as TravelCheckinRow[];
+}

@@ -7,9 +7,11 @@ import {
   searchDocuments,
   listDocuments,
   listCheckins,
+  listAllCheckinsAscending,
   type DocumentRow,
 } from "../db/store.js";
 import { listLocalFolders } from "../providers/local.js";
+import { countTravelDays } from "../services/travelDays.js";
 import {
   hubListMessages,
   hubGetMessage,
@@ -300,14 +302,28 @@ const tools: Anthropic.Tool[] = [
   {
     name: "list_travel_checkins",
     description:
-      "List the user's location check-ins (country/city + timestamp), newest first. These are logged automatically by a phone automation when the user lands somewhere or crosses a border — not something they send manually. Call this for travel questions like 'where have I been' or 'when did I arrive in France'. This is raw location history, not day-counting — do the arithmetic yourself from the timestamps if asked to compute durations.",
+      "List the user's location check-ins (country/city + timestamp), newest first. These are logged automatically by a phone automation when the user lands somewhere or crosses a border — not something they send manually. Call this for travel questions like 'where have I been' or 'when did I arrive in France'. This is raw location history, not day-counting — use count_travel_days for duration questions instead of doing the arithmetic yourself.",
     input_schema: {
       type: "object",
       properties: {
         limit: { type: "number", description: "Max check-ins, default 50" },
       },
     },
-    // Cache breakpoint: these 18 tool schemas are identical on every call (web or WhatsApp),
+  },
+  {
+    name: "count_travel_days",
+    description:
+      "Count how many days the user has spent in a country or region, computed deterministically from logged location check-ins (not documents/boarding passes). Use area 'schengen' or 'eu' for those groupings, or the exact country name as it appears in list_travel_checkins output (case-insensitive) — check that tool first if unsure of the exact spelling. Defaults to the last 180 days (the window relevant to the Schengen 90/180 rule) if no dates are given; pass explicit since_date/until_date (YYYY-MM-DD) for a different range, e.g. a specific year.",
+    input_schema: {
+      type: "object",
+      properties: {
+        area: { type: "string", description: "'schengen', 'eu', or an exact country name" },
+        since_date: { type: "string", description: "ISO date YYYY-MM-DD, default 180 days ago" },
+        until_date: { type: "string", description: "ISO date YYYY-MM-DD, default today" },
+      },
+      required: ["area"],
+    },
+    // Cache breakpoint: these 19 tool schemas are identical on every call (web or WhatsApp),
     // so this is close to free — Anthropic caches everything up to and including this block.
     cache_control: { type: "ephemeral", ttl: "1h" },
   },
@@ -391,6 +407,14 @@ async function runTool(name: string, input: Record<string, unknown>): Promise<un
       return listDocuments((input.limit as number | undefined) ?? 10).map(forModel);
     case "list_travel_checkins":
       return listCheckins((input.limit as number | undefined) ?? 50);
+    case "count_travel_days": {
+      const now = Date.now();
+      const untilMs = input.until_date ? new Date(input.until_date as string).getTime() : now;
+      const sinceMs = input.since_date
+        ? new Date(input.since_date as string).getTime()
+        : untilMs - 180 * 24 * 60 * 60 * 1000;
+      return countTravelDays(listAllCheckinsAscending(), input.area as string, sinceMs, untilMs);
+    }
     default:
       return { error: `unknown tool: ${name}` };
   }
@@ -435,6 +459,7 @@ function buildSystemPrompt(): string {
 - Use the remember tool proactively whenever the user shares something worth recalling later (preferences, which account is which, standing instructions) — don't wait to be asked.
 - Use search_documents/list_recent_documents when the user asks about something they photographed or sent via WhatsApp (boarding passes, licenses, tickets, receipts) — e.g. "when did I fly to X" or "what's the code on my license".
 - Use list_travel_checkins for questions about where the user has physically been or when they arrived somewhere — this is automatic location history, separate from documents.
+- Use count_travel_days for "how many days have I spent in X" style questions — never estimate day counts yourself from raw check-in timestamps or document text.
 - When several accounts are connected and the user's request is ambiguous about which one, search across all of them or ask.
 - Keep answers concise and lead with the direct answer.`,
   ]

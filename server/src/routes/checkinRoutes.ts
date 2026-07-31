@@ -1,6 +1,7 @@
 import { Router } from "express";
-import { saveCheckin, listCheckins } from "../db/store.js";
+import { saveCheckin, listCheckins, listAllCheckinsAscending } from "../db/store.js";
 import { reverseGeocode } from "../services/geocode.js";
+import { countTravelDays } from "../services/travelDays.js";
 
 export const checkinRoutes = Router();
 
@@ -38,4 +39,12 @@ checkinRoutes.post("/api/checkin", async (req, res) => {
 
 checkinRoutes.get("/api/checkins", (_req, res) => {
   res.json(listCheckins());
+});
+
+checkinRoutes.get("/api/travel-days", (req, res) => {
+  const area = typeof req.query.area === "string" ? req.query.area : "schengen";
+  const days = req.query.days ? Number(req.query.days) : 180;
+  const untilMs = Date.now();
+  const sinceMs = untilMs - days * 24 * 60 * 60 * 1000;
+  res.json(countTravelDays(listAllCheckinsAscending(), area, sinceMs, untilMs));
 });

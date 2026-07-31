@@ -129,6 +129,15 @@ export interface TravelCheckin {
   checkedInAt: number;
 }
 
+export interface TravelDaysResult {
+  area: string;
+  sinceDate: string;
+  untilDate: string;
+  daysPresent: number;
+  totalDaysInWindow: number;
+  checkinsConsidered: number;
+}
+
 async function getJson<T>(path: string): Promise<T> {
   const res = await fetch(`${API_BASE}${path}`);
   if (!res.ok) {
@@ -245,6 +254,8 @@ export async function deleteDocument(id: number): Promise<void> {
 }
 
 export const fetchCheckins = () => getJson<TravelCheckin[]>("/api/checkins");
+export const fetchTravelDays = (area = "schengen", days = 180) =>
+  getJson<TravelDaysResult>(`/api/travel-days?area=${encodeURIComponent(area)}&days=${days}`);
 
 export async function sendChatMessage(messages: ChatMessage[]): Promise<string> {
   const res = await fetch(`${API_BASE}/api/assistant/chat`, {
