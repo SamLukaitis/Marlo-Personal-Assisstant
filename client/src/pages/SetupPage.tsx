@@ -20,6 +20,8 @@ import {
   saveWhatsAppAllowedNumbers,
   fetchCheckins,
   fetchTravelDays,
+  fetchAlertSettings,
+  saveAlertSettings,
   NEWS_TOPIC_LABELS,
   type ProviderInfo,
   type Account,
@@ -30,6 +32,7 @@ import {
   type WhatsAppStatus,
   type TravelCheckin,
   type TravelDaysResult,
+  type AlertSettings,
 } from "../api/client";
 import { IconTrash, IconPlus } from "../components/icons";
 
@@ -57,6 +60,8 @@ export function SetupPage() {
     enabled: true,
     includeNews: false,
     topics: [],
+    proactive: false,
+    sendTime: "07:30",
   });
   const [briefingSaved, setBriefingSaved] = useState(false);
   const [memoryNotes, setMemoryNotes] = useState<MemoryNote[]>([]);
@@ -70,10 +75,12 @@ export function SetupPage() {
   const [numbersSaved, setNumbersSaved] = useState(false);
   const [checkins, setCheckins] = useState<TravelCheckin[]>([]);
   const [schengenDays, setSchengenDays] = useState<TravelDaysResult | null>(null);
+  const [alertSettings, setAlertSettings] = useState<AlertSettings>({ enabled: false });
+  const [alertSaved, setAlertSaved] = useState(false);
   const [searchParams] = useSearchParams();
 
   async function load() {
-    const [p, a, s, f, b, m, ws, nums, ci, sd] = await Promise.all([
+    const [p, a, s, f, b, m, ws, nums, ci, sd, al] = await Promise.all([
       fetchProviders(),
       fetchAccounts(),
       fetchSettings(),
@@ -84,6 +91,7 @@ export function SetupPage() {
       fetchWhatsAppAllowedNumbers(),
       fetchCheckins(),
       fetchTravelDays("schengen", 180),
+      fetchAlertSettings(),
     ]);
     setProviders(p);
     setAccounts(a);
@@ -93,6 +101,7 @@ export function SetupPage() {
     setBriefing(b);
     setMemoryNotes(m);
     setWhatsAppStatus(ws);
+    setAlertSettings(al);
     setAllowedNumbers(nums);
     setCheckins(ci);
     setSchengenDays(sd);
@@ -136,6 +145,14 @@ export function SetupPage() {
     await saveBriefingSettings(briefing);
     setBriefingSaved(true);
     setTimeout(() => setBriefingSaved(false), 2500);
+  }
+
+  async function handleToggleAlerts(enabled: boolean) {
+    const next = { enabled };
+    setAlertSettings(next);
+    await saveAlertSettings(next);
+    setAlertSaved(true);
+    setTimeout(() => setAlertSaved(false), 2500);
   }
 
   async function handleAddNumber(e: React.FormEvent) {
@@ -338,6 +355,38 @@ export function SetupPage() {
           News comes from free public RSS feeds — no account or API key needed. The briefing
           regenerates once per day; use Refresh on the Assistant page to update it sooner.
         </p>
+
+        <label className="row" style={{ marginTop: 14, marginBottom: 10 }}>
+          <input
+            type="checkbox"
+            style={{ width: "auto" }}
+            checked={briefing.proactive}
+            onChange={(e) => setBriefing((prev) => ({ ...prev, proactive: e.target.checked }))}
+          />
+          <span>
+            Send it to me automatically on WhatsApp each day (also includes a Schengen day-limit
+            warning if you're getting close)
+          </span>
+        </label>
+        {briefing.proactive && (
+          <div className="row" style={{ marginLeft: 24, marginBottom: 10 }}>
+            <span className="muted">at</span>
+            <input
+              type="time"
+              value={briefing.sendTime}
+              onChange={(e) => setBriefing((prev) => ({ ...prev, sendTime: e.target.value }))}
+              style={{ maxWidth: 130 }}
+            />
+          </div>
+        )}
+        {briefing.proactive && (
+          <p className="muted" style={{ fontSize: 12.5 }}>
+            Requires WhatsApp to be configured with at least one allowed number, and the server
+            to actually be running at that time — it checks every few minutes and catches up
+            later in the day if it missed the exact time.
+          </p>
+        )}
+
         <div className="row" style={{ marginTop: 8 }}>
           <button onClick={handleSaveBriefing}>Save</button>
           {briefingSaved && <span className="muted">Saved ✓</span>}
@@ -487,6 +536,29 @@ export function SetupPage() {
             </div>
           ))
         )}
+      </div>
+
+      <h2>Real-time alerts</h2>
+      <div className="card">
+        <label className="row" style={{ marginBottom: 10 }}>
+          <input
+            type="checkbox"
+            style={{ width: "auto" }}
+            checked={alertSettings.enabled}
+            onChange={(e) => handleToggleAlerts(e.target.checked)}
+          />
+          <span>
+            Ping me on WhatsApp the moment an email from a real person (not a newsletter or
+            notification) arrives — instead of waiting for the next morning's briefing
+          </span>
+        </label>
+        {alertSaved && <span className="muted">Saved ✓</span>}
+        <p className="muted" style={{ fontSize: 12.5, marginTop: 10 }}>
+          Checks every few minutes while the server is running. The first check after turning
+          this on just records a baseline — it won't alert on everything already unread in your
+          inbox, only on what arrives after that. Requires WhatsApp to be configured with at
+          least one allowed number.
+        </p>
       </div>
 
       <h2>Coming soon</h2>

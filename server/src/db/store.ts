@@ -62,6 +62,10 @@ db.exec(`
     city TEXT,
     checked_in_at INTEGER NOT NULL
   );
+  CREATE TABLE IF NOT EXISTS alerted_messages (
+    key TEXT PRIMARY KEY,
+    alerted_at INTEGER NOT NULL
+  );
 `);
 
 export const uploadsDir = path.join(dataDir, "uploads");
@@ -386,6 +390,25 @@ export function listCheckins(limit = 100): TravelCheckinRow[] {
        FROM travel_checkins ORDER BY checked_in_at DESC LIMIT ?`
     )
     .all(limit) as TravelCheckinRow[];
+}
+
+// Dedup ledger for real-time message alerts: "have we already pinged the user about this
+// message" — keyed by "accountId:messageId" since raw message IDs aren't guaranteed unique
+// across providers/accounts.
+export function hasAlerted(key: string): boolean {
+  return !!db.prepare(`SELECT 1 FROM alerted_messages WHERE key = ?`).get(key);
+}
+
+export function markAlerted(key: string): void {
+  db.prepare(
+    `INSERT OR IGNORE INTO alerted_messages (key, alerted_at) VALUES (?, ?)`
+  ).run(key, Date.now());
+  // Keep the ledger bounded — only the most recent 2000 entries are ever useful for dedup.
+  db.prepare(
+    `DELETE FROM alerted_messages WHERE key NOT IN (
+       SELECT key FROM alerted_messages ORDER BY alerted_at DESC LIMIT 2000
+     )`
+  ).run();
 }
 
 // Ascending, uncapped — day-counting needs the full timeline, not just the most recent page.

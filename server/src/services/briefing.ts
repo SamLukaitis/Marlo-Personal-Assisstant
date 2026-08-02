@@ -3,7 +3,10 @@ import { getBriefing, saveBriefing, getSetting, setSetting } from "../db/store.j
 import { hubListMessages, hubListEvents, hubFlaggedMessages } from "./hub.js";
 import { fetchHeadlines, type NewsTopic } from "../providers/news.js";
 
-const MODEL = process.env.ASSISTANT_MODEL ?? "claude-opus-4-8";
+// Briefing synthesis is a once-a-day, moderately complex writeup — the richer assistant tier
+// is the right fit, same as assistant.ts's routing, rather than the flat Opus default this
+// used to have (which predates the cost-efficiency work and was accidentally never updated).
+const MODEL = process.env.ASSISTANT_MODEL_COMPLEX ?? "claude-sonnet-5";
 
 let client: Anthropic | null = null;
 function getClient(): Anthropic {
@@ -27,9 +30,17 @@ export interface BriefingSettings {
   enabled: boolean;
   includeNews: boolean;
   topics: NewsTopic[];
+  proactive: boolean;
+  sendTime: string; // "HH:MM", 24h, server-local time
 }
 
-const DEFAULT_SETTINGS: BriefingSettings = { enabled: true, includeNews: false, topics: [] };
+const DEFAULT_SETTINGS: BriefingSettings = {
+  enabled: true,
+  includeNews: false,
+  topics: [],
+  proactive: false,
+  sendTime: "07:30",
+};
 
 export function getBriefingSettings(): BriefingSettings {
   const raw = getSetting("briefing_settings");

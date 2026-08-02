@@ -1,0 +1,14 @@
+import { Router } from "express";
+import { getSetting, setSetting } from "../db/store.js";
+
+export const alertRoutes = Router();
+
+alertRoutes.get("/api/alerts/settings", (_req, res) => {
+  res.json({ enabled: getSetting("realtime_alerts_enabled") === "true" });
+});
+
+alertRoutes.put("/api/alerts/settings", (req, res) => {
+  const { enabled } = req.body ?? {};
+  setSetting("realtime_alerts_enabled", enabled ? "true" : "false");
+  res.json({ ok: true });
+});

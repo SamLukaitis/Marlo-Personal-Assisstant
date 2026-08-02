@@ -65,6 +65,13 @@ export const IconPlus = () => (
   </svg>
 );
 
+export const IconSearch = () => (
+  <svg {...base}>
+    <circle cx="11" cy="11" r="8" />
+    <path d="m21 21-4.35-4.35" />
+  </svg>
+);
+
 export const IconTrash = () => (
   <svg {...base} width={15} height={15}>
     <path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2m3 0-1 14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2L4 6" />

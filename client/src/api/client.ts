@@ -87,6 +87,8 @@ export interface BriefingSettings {
   enabled: boolean;
   includeNews: boolean;
   topics: NewsTopic[];
+  proactive: boolean;
+  sendTime: string;
 }
 
 export interface Briefing {
@@ -211,6 +213,21 @@ export async function saveBriefingSettings(settings: BriefingSettings): Promise<
   if (!res.ok) throw new Error("failed to save briefing settings");
 }
 
+export interface AlertSettings {
+  enabled: boolean;
+}
+
+export const fetchAlertSettings = () => getJson<AlertSettings>("/api/alerts/settings");
+
+export async function saveAlertSettings(settings: AlertSettings): Promise<void> {
+  const res = await fetch(`${API_BASE}/api/alerts/settings`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(settings),
+  });
+  if (!res.ok) throw new Error("failed to save alert settings");
+}
+
 export const fetchMemoryNotes = () => getJson<MemoryNote[]>("/api/memory");
 
 export async function addMemoryNote(content: string): Promise<MemoryNote> {
@@ -252,6 +269,16 @@ export function documentFileUrl(id: number): string {
 export async function deleteDocument(id: number): Promise<void> {
   await fetch(`${API_BASE}/api/documents/${id}`, { method: "DELETE" });
 }
+
+export interface SearchResults {
+  messages: UnifiedMessage[];
+  files: FileHit[];
+  chats: ChatThread[];
+  documents: StoredDocument[];
+}
+
+export const fetchSearchAll = (q: string) =>
+  getJson<SearchResults>(`/api/search?q=${encodeURIComponent(q)}`);
 
 export const fetchCheckins = () => getJson<TravelCheckin[]>("/api/checkins");
 export const fetchTravelDays = (area = "schengen", days = 180) =>

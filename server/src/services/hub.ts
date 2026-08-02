@@ -157,7 +157,7 @@ export async function hubSearchContacts(query: string, limit = 10): Promise<Cont
 // Heuristic: unread, older than the threshold, and not from an obviously automated sender.
 // Not a true "awaiting your reply" detector (that needs thread analysis) — good enough to
 // surface things that are plausibly being missed.
-const AUTOMATED_SENDER_PATTERN =
+export const AUTOMATED_SENDER_PATTERN =
   /no-?reply|notifications?@|newsletter|updates?@|do-?not-?reply|automated|mailer-daemon/i;
 
 export async function hubFlaggedMessages(daysThreshold = 3): Promise<UnifiedMessage[]> {

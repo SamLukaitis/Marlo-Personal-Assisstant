@@ -1,11 +1,12 @@
 import { Router } from "express";
 import fs from "node:fs";
-import { listDocuments, getDocument, deleteDocument } from "../db/store.js";
+import { listDocuments, searchDocuments, getDocument, deleteDocument } from "../db/store.js";
 
 export const documentRoutes = Router();
 
-documentRoutes.get("/api/documents", (_req, res) => {
-  res.json(listDocuments(200));
+documentRoutes.get("/api/documents", (req, res) => {
+  const q = typeof req.query.q === "string" ? req.query.q : undefined;
+  res.json(q ? searchDocuments(q, 50) : listDocuments(200));
 });
 
 documentRoutes.get("/api/documents/:id/file", (req, res) => {

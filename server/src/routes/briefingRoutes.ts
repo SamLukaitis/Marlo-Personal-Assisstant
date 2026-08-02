@@ -29,11 +29,13 @@ briefingRoutes.get("/api/briefing/settings", (_req, res) => {
 });
 
 briefingRoutes.put("/api/briefing/settings", (req, res) => {
-  const { enabled, includeNews, topics } = req.body ?? {};
+  const { enabled, includeNews, topics, proactive, sendTime } = req.body ?? {};
   saveBriefingSettings({
     enabled: !!enabled,
     includeNews: !!includeNews,
     topics: Array.isArray(topics) ? topics : [],
+    proactive: !!proactive,
+    sendTime: typeof sendTime === "string" && /^\d{2}:\d{2}$/.test(sendTime) ? sendTime : "07:30",
   });
   res.json({ ok: true });
 });

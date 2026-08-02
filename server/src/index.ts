@@ -14,6 +14,9 @@ import { whatsappRoutes } from "./routes/whatsappRoutes.js";
 import { whatsappSettingsRoutes } from "./routes/whatsappSettingsRoutes.js";
 import { documentRoutes } from "./routes/documentRoutes.js";
 import { checkinRoutes } from "./routes/checkinRoutes.js";
+import { searchRoutes } from "./routes/searchRoutes.js";
+import { alertRoutes } from "./routes/alertRoutes.js";
+import { startScheduler } from "./services/scheduler.js";
 
 const app = express();
 const PORT = process.env.PORT ?? 4000;
@@ -42,9 +45,14 @@ app.use(whatsappRoutes);
 app.use(whatsappSettingsRoutes);
 app.use(documentRoutes);
 app.use(checkinRoutes);
+app.use(searchRoutes);
+app.use(alertRoutes);
 
 app.get("/health", (_req, res) => res.json({ ok: true }));
 
 app.listen(PORT, () => {
   console.log(`Server listening on http://localhost:${PORT}`);
 });
+
+// Only useful while the server keeps running — see README known limitations.
+startScheduler();

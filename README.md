@@ -20,6 +20,9 @@ ask it to find emails, summarize your day, locate documents, or draft replies.
 | **Documents (from WhatsApp)** | Send a photo or PDF (boarding pass, license, ticket, receipt) — Claude's vision analyzes it once on arrival and the extracted details are saved, so you can later ask things like "when did I fly to Berlin" or "what's the code on my license". Browse/download/delete what's been saved on the Files page |
 | **Location check-ins** | A phone automation (iOS Shortcuts / Android Tasker) posts your coordinates when you land somewhere or cross a border; the server reverse-geocodes it to a country/city and logs it — no WhatsApp round-trip, so it's genuinely automatic. Ask things like "where have I been this month" |
 | **Travel day tracker** | "How many Schengen days have I used in the last 180 days?" — computed deterministically in code from the check-in log (day-by-day reconstruction, not model guesswork). Works for "schengen", "eu", or any specific country name. The Setup page shows a running Schengen 90/180 count at a glance |
+| **Unified search** | One search bar (the **Search** page) that queries your email, Drive/OneDrive/local files, Teams chats, and saved WhatsApp documents all at once, instead of searching each separately |
+| **Proactive briefing** | Optionally have the morning briefing pushed to WhatsApp automatically at a time you choose, instead of only generating when you open the web app — with a Schengen day-limit warning appended if you're getting close. Toggle on the Setup page |
+| **Real-time alerts** | Optionally get pinged on WhatsApp the moment an email from a real person (not a newsletter/notification) arrives, rather than waiting for the next briefing. Checks every few minutes while the server is running; the first check after enabling just sets a baseline so it won't alert on your entire existing inbox |
 | **Safety** | The assistant can create email **drafts**, archive mail, and manage your **own** calendar — but can never send email or invite other people to an event. Archiving is fully reversible (mail is never deleted, just removed from the inbox) |
 
 **About the WhatsApp integration**: it's deliberately built as a *new channel to message your
@@ -49,11 +52,14 @@ without touching the UI or assistant logic.
   - `src/services/documents.ts` — downloads a WhatsApp photo/PDF, runs it through Claude's vision once to extract key facts, and stores both the file and the extracted text
   - `src/services/geocode.ts` — reverse-geocodes lat/long to a country/city via OpenStreetMap's free Nominatim API
   - `src/services/travelDays.ts` — pure date arithmetic: reconstructs a day-by-day "which country" timeline from check-ins and counts days in a country/Schengen/EU over a date range; no model involved, since day counts need to be exact
+  - `src/services/alerts.ts` — polls for unread mail from real people (not automated senders) and pushes a WhatsApp ping for anything new, with a persisted dedup ledger and a first-run baseline so enabling it doesn't alert on your whole existing inbox
+  - `src/services/scheduler.ts` — the only long-running part of the app: an in-process interval (every 5 min) that drives both the proactive briefing push and the real-time alert check. Only does anything while the server process is actually running
   - `src/ai/assistant.ts` — Claude (Anthropic SDK) with tools: messages, calendar, Teams chats, files, contacts, archive/labels, memory, saved documents, travel check-ins/day-counting
   - `src/routes/whatsappRoutes.ts` — the public webhook (`GET`/`POST /webhooks/whatsapp`) Meta calls; reuses the same assistant engine as the web chat; branches to `documents.ts` for photo/PDF messages
   - `src/routes/checkinRoutes.ts` — secret-protected `POST /api/checkin` for phone automations, plus `GET /api/checkins` and `GET /api/travel-days`
-  - SQLite (`server/data/app.db`) stores account tokens, local folder paths, briefings, memory notes, WhatsApp conversation history, saved documents' extracted text, location check-ins, and your assistant settings; the raw uploaded files themselves live under `server/data/uploads/`
-- `client/` — React + Vite. Pages: Assistant (chat + daily briefing), Inbox, Chats, Calendar, Files (also lists saved WhatsApp documents), Setup (also shows location check-ins and a Schengen day count).
+  - `src/routes/searchRoutes.ts` — `GET /api/search` fans a query out to mail/files/chats/documents in parallel and returns them together
+  - SQLite (`server/data/app.db`) stores account tokens, local folder paths, briefings, memory notes, WhatsApp conversation history, saved documents' extracted text, location check-ins, the alert dedup ledger, and your assistant settings; the raw uploaded files themselves live under `server/data/uploads/`
+- `client/` — React + Vite. Pages: Assistant (chat + daily briefing), **Search** (one bar across mail/files/chats/documents), Inbox, Chats, Calendar, Files (also lists saved WhatsApp documents), Setup (also shows location check-ins, a Schengen day count, and proactive-briefing/alert toggles).
 
 ## Safety boundaries (by design)
 
@@ -215,8 +221,11 @@ Open `http://localhost:5173`:
 
 1. **Setup** → describe your assistant (tone, priorities, context about your businesses) and save.
 2. **Setup** → Connect each Google/Microsoft account (repeat for multiple accounts), add any
-   local folders you want searchable, and optionally turn on the morning briefing / news.
-3. **Assistant** → ask things like:
+   local folders you want searchable, and optionally turn on the morning briefing / news,
+   proactive WhatsApp push, and real-time alerts.
+3. **Search** → one bar that searches mail, files, Teams chats, and saved WhatsApp documents
+   at once, instead of searching each page separately.
+4. **Assistant** → ask things like:
    - *"summarize my unread emails"* / *"archive everything from Nike"*
    - *"what's my week look like?"* / *"move my 3pm to Thursday"* / *"block out an hour tomorrow for X"*
    - *"find the latest invoice from X"* / *"anything new in Teams?"*
@@ -224,13 +233,34 @@ Open `http://localhost:5173`:
    - *"remember that the Acme account is my priority business"*
    - *"when did I fly to Berlin"* / *"what's the code on my license"* (after sending the relevant photo/document via WhatsApp)
    - *"how many Schengen days have I used in the last 180 days"* / *"how many days was I in France this year"* (needs location check-ins logged — see the setup section below)
-4. **WhatsApp** (if configured) → message your test number directly — same assistant, same tools. Send a photo or PDF (boarding pass, license, ticket, receipt) and it gets analyzed and saved automatically.
+5. **WhatsApp** (if configured) → message your test number directly — same assistant, same tools. Send a photo or PDF (boarding pass, license, ticket, receipt) and it gets analyzed and saved automatically.
 
 ## Known limitations
 
-- **The morning briefing regenerates once per day, on demand** — not a true background cron
-  job, since the server only runs when you start it. It generates (and caches) the first time
-  you open the Assistant page each day; use Refresh to force an update sooner.
+- **The morning briefing regenerates once per day** — on demand the first time you open the
+  Assistant page that day (use Refresh to force it sooner), or automatically at a set time if
+  you enable proactive push on the Setup page. Either way it only happens while the server
+  process is actually running — see "Everything proactive needs the server running" below.
+- **Everything proactive needs the server running** — the proactive briefing, Schengen alerts,
+  and real-time email alerts are all driven by an in-process interval (`scheduler.ts`), not a
+  true background cron job. If your laptop is asleep or the server isn't started, nothing
+  fires; it catches up once the server is running again, but there's no guarantee of exact
+  timing. This is the main reason to eventually move to an always-on deployment.
+- **Real-time alerts poll, they don't push** — checked every ~5 minutes, capped at 5 individual
+  alerts per check (a burst beyond that gets one summary message instead of a flood), and only
+  for unread mail whose sender doesn't look automated. It's the same heuristic as "needs
+  attention," just without the 3-day wait.
+- **Google OAuth tokens can silently expire while the app is in "Testing" status** — Google
+  invalidates refresh tokens after 7 days of the app sitting unverified/unpublished, regardless
+  of use. When this happens, Gmail/Calendar/Drive calls fail quietly (caught and treated as "no
+  results" by the hub layer) rather than erroring visibly anywhere in the UI — so a stale
+  connection can look like "nothing found" instead of "reconnect me." Moving the OAuth consent
+  screen to "In production" avoids this, though Google may require a verification step first
+  since Gmail scopes are "sensitive." Reconnecting the account on the Setup page also works as
+  a stopgap.
+- **Unified search inherits each source's own limitations** — if a Google/Microsoft connection
+  is broken (see above) or a source has no results, that section of Search just comes back
+  empty with no per-source error shown.
 - **"Needs attention" is a heuristic** — unread, older than 3 days, sender doesn't look
   automated. It's not true thread analysis, so it can miss or over-flag things.
 - **Contacts search differs by provider** — Google only searches contacts you've explicitly
