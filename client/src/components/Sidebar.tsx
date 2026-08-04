@@ -1,15 +1,7 @@
 import { NavLink } from "react-router-dom";
 import { useEffect, useState } from "react";
 import { fetchAccounts, type Account } from "../api/client";
-import {
-  IconChat,
-  IconInbox,
-  IconCalendar,
-  IconFolder,
-  IconSettings,
-  IconUsers,
-  IconSearch,
-} from "./icons";
+import { IconChat, IconCalendar, IconFolder, IconSettings, IconUsers, IconSearch } from "./icons";
 
 export function Sidebar() {
   const [accounts, setAccounts] = useState<Account[]>([]);
@@ -33,10 +25,6 @@ export function Sidebar() {
       <NavLink to="/search" className={cls}>
         <IconSearch />
         Search
-      </NavLink>
-      <NavLink to="/inbox" className={cls}>
-        <IconInbox />
-        Inbox
       </NavLink>
       <NavLink to="/chats" className={cls}>
         <IconUsers />

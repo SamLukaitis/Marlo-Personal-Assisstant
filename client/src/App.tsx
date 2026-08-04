@@ -1,8 +1,7 @@
-import { BrowserRouter, Routes, Route } from "react-router-dom";
+import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { Sidebar } from "./components/Sidebar";
 import { AssistantPage } from "./pages/AssistantPage";
 import { SearchPage } from "./pages/SearchPage";
-import { InboxPage } from "./pages/InboxPage";
 import { ChatsPage } from "./pages/ChatsPage";
 import { CalendarPage } from "./pages/CalendarPage";
 import { FilesPage } from "./pages/FilesPage";
@@ -15,7 +14,7 @@ function App() {
       <Routes>
         <Route path="/" element={<AssistantPage />} />
         <Route path="/search" element={<SearchPage />} />
-        <Route path="/inbox" element={<InboxPage />} />
+        <Route path="/inbox" element={<Navigate to="/search" replace />} />
         <Route path="/chats" element={<ChatsPage />} />
         <Route path="/calendar" element={<CalendarPage />} />
         <Route path="/files" element={<FilesPage />} />

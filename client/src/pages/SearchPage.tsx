@@ -1,5 +1,11 @@
-import { useState } from "react";
-import { fetchSearchAll, documentFileUrl, type SearchResults } from "../api/client";
+import { useEffect, useState } from "react";
+import {
+  fetchSearchAll,
+  fetchMessages,
+  documentFileUrl,
+  type SearchResults,
+  type UnifiedMessage,
+} from "../api/client";
 
 export function SearchPage() {
   const [query, setQuery] = useState("");
@@ -7,6 +13,18 @@ export function SearchPage() {
   const [searched, setSearched] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Shown by default, before any search — the old Inbox page's job, folded in here so
+  // there's one place for "browse mail" and "search everything" instead of two.
+  const [recentMessages, setRecentMessages] = useState<UnifiedMessage[]>([]);
+  const [loadingRecent, setLoadingRecent] = useState(true);
+
+  useEffect(() => {
+    fetchMessages()
+      .then(setRecentMessages)
+      .catch(() => {})
+      .finally(() => setLoadingRecent(false));
+  }, []);
 
   async function search() {
     if (!query.trim()) return;
@@ -20,6 +38,12 @@ export function SearchPage() {
     } finally {
       setLoading(false);
     }
+  }
+
+  function clearSearch() {
+    setQuery("");
+    setResults(null);
+    setSearched(false);
   }
 
   const totalResults = results
@@ -45,18 +69,41 @@ export function SearchPage() {
         <button type="submit" disabled={loading}>
           Search
         </button>
+        {searched && (
+          <button type="button" onClick={clearSearch}>
+            Clear
+          </button>
+        )}
       </form>
 
       {loading && <p className="muted">Searching everywhere…</p>}
       {error && <p className="error">{error}</p>}
-      {!loading && !error && !searched && (
-        <p className="muted">
-          Searches your connected inboxes, Drive/OneDrive/local files, Teams chats, and saved
-          WhatsApp documents in one go.
-        </p>
-      )}
       {!loading && !error && searched && totalResults === 0 && (
         <p className="muted">No results anywhere for that search.</p>
+      )}
+
+      {!searched && (
+        <>
+          <h2>Recent inbox</h2>
+          <div className="card">
+            {loadingRecent && <p className="muted">Loading…</p>}
+            {!loadingRecent && recentMessages.length === 0 && (
+              <p className="muted">No messages — connect an account on the Setup page.</p>
+            )}
+            {recentMessages.map((m) => (
+              <div key={`recent-${m.accountId}-${m.id}`} className="list-item">
+                <a href={m.link} target="_blank" rel="noreferrer">
+                  <div className={`title${m.unread ? " unread" : ""}`}>
+                    <span>{m.subject}</span>
+                    <span className="badge">{m.accountEmail}</span>
+                  </div>
+                  <div className="sub">{m.from}</div>
+                  <div className="sub">{m.snippet}</div>
+                </a>
+              </div>
+            ))}
+          </div>
+        </>
       )}
 
       {results && results.messages.length > 0 && (
