@@ -13,6 +13,8 @@ export interface Account {
   id: number;
   provider: Provider;
   email: string;
+  authBroken: boolean;
+  authBrokenAt: number | null;
 }
 
 export interface UnifiedMessage {

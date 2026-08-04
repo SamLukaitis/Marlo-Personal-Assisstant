@@ -252,21 +252,29 @@ Open `http://localhost:5173`:
   attention," just without the 3-day wait.
 - **Google OAuth tokens can silently expire while the app is in "Testing" status** — Google
   invalidates refresh tokens after 7 days of the app sitting unverified/unpublished, regardless
-  of use. When this happens, Gmail/Calendar/Drive calls fail quietly (caught and treated as "no
-  results" by the hub layer) rather than erroring visibly anywhere in the UI — so a stale
-  connection can look like "nothing found" instead of "reconnect me." Moving the OAuth consent
-  screen to "In production" avoids this, though Google may require a verification step first
-  since Gmail scopes are "sensitive." Reconnecting the account on the Setup page also works as
-  a stopgap.
+  of use. Moving the OAuth consent screen to "In production" avoids this, though Google may
+  require a verification step first since Gmail scopes are "sensitive." (The *symptom* — this
+  used to look like silent empty results everywhere — is now caught and surfaced, see below.)
+- **Broken connections are now detected** — every hub call that fails with what looks like an
+  auth error (401/403, `invalid_grant`, expired/revoked token, etc. — checked across both
+  Google's and Microsoft's very different error shapes) marks that specific account as needing
+  reconnection. The Setup page shows a "Needs reconnecting" notice with a direct Reconnect link
+  on the affected account, instead of every page just quietly showing no results. It's a
+  heuristic on error shape, not a guarantee — an unrelated transient error (e.g. a brief
+  network blip) could in theory trip it too, though a genuine auth failure is far more common
+  in practice. The flag clears automatically the moment a call succeeds again, or when you
+  reconnect.
 - **Unified search inherits each source's own limitations** — if a Google/Microsoft connection
-  is broken (see above) or a source has no results, that section of Search just comes back
-  empty with no per-source error shown.
+  is broken (now flagged, see above) or a source has no results, that section of Search just
+  comes back empty.
 - **"Needs attention" is a heuristic** — unread, older than 3 days, sender doesn't look
   automated. It's not true thread analysis, so it can miss or over-flag things.
 - **Contacts search differs by provider** — Google only searches contacts you've explicitly
   saved; Microsoft's `/me/people` also surfaces people you've simply emailed before.
-- **The reconnect banner doesn't auto-detect granted scopes** — it just shows whenever any
-  account is connected. Reconnecting again after you've already done so is harmless.
+- **The "new scopes" banner doesn't auto-detect granted scopes** — it just shows whenever any
+  account is connected and none of them are currently broken. Reconnecting again after you've
+  already done so is harmless. (Separately, a genuinely broken/expired connection *is* now
+  detected precisely — see "Broken connections are now detected" below.)
 - **WhatsApp needs a public URL** — the free ngrok URL changes every time you restart the
   tunnel, so you'll need to update the webhook URL in Meta's dashboard each time unless you
   use a paid static ngrok domain or deploy the server somewhere permanent.

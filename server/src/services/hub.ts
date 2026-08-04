@@ -1,4 +1,10 @@
-import { listAccounts, getAccount, type AccountRow } from "../db/store.js";
+import {
+  listAccounts,
+  getAccount,
+  markAccountAuthBroken,
+  markAccountAuthHealthy,
+  type AccountRow,
+} from "../db/store.js";
 import * as g from "../providers/google.js";
 import * as ms from "../providers/microsoft.js";
 import * as local from "../providers/local.js";
@@ -12,12 +18,48 @@ import type {
   EventInput,
 } from "../providers/types.js";
 
+// Both providers throw differently (Google's gaxios errors carry structured
+// response.status/data, Microsoft's are plain Errors with the status baked into the message)
+// so this checks every shape rather than assuming one. False positives just show an
+// unnecessary "reconnect" prompt; false negatives just fall back to the old silent-empty
+// behavior — neither is dangerous, so a lenient heuristic is the right tradeoff here.
+function isAuthError(err: unknown): boolean {
+  const e = err as { response?: { status?: number; data?: unknown }; code?: unknown; status?: unknown; message?: unknown };
+  const status = e?.response?.status ?? e?.code ?? e?.status;
+  if (status === 401 || status === 403) return true;
+  const text = `${JSON.stringify(e?.response?.data ?? "")} ${String(e?.message ?? "")}`;
+  return /invalid_grant|invalid_token|unauthorized|invalidauthenticationtoken|token has (been )?expired|revoked|\b40[13]\b/i.test(
+    text
+  );
+}
+
+// Generic version for calls that don't map 1:1 to a connected account (e.g. local file
+// search) — just logs and drops failures, no auth tracking.
 function settle<T>(results: PromiseSettledResult<T[]>[]): T[] {
   return results.flatMap((r) => {
     if (r.status === "rejected") {
       console.error("hub: provider call failed:", r.reason);
       return [];
     }
+    return r.value;
+  });
+}
+
+// Account-aware version — pairs each settled result with the account (or null for
+// account-less sources like local files) that produced it, so an auth failure can be
+// attributed to the specific connection that needs reconnecting instead of failing silently.
+function settleForAccounts<T>(
+  owners: (AccountRow | null)[],
+  results: PromiseSettledResult<T[]>[]
+): T[] {
+  return results.flatMap((r, i) => {
+    const owner = owners[i];
+    if (r.status === "rejected") {
+      console.error("hub: provider call failed:", r.reason);
+      if (owner && isAuthError(r.reason)) markAccountAuthBroken(owner.id);
+      return [];
+    }
+    if (owner) markAccountAuthHealthy(owner.id);
     return r.value;
   });
 }
@@ -41,7 +83,7 @@ export async function hubListMessages(opts: {
         : ms.microsoftListMessages(a, opts)
     )
   );
-  return settle(results).sort((a, b) => (a.receivedAt < b.receivedAt ? 1 : -1));
+  return settleForAccounts(accounts, results).sort((a, b) => (a.receivedAt < b.receivedAt ? 1 : -1));
 }
 
 export async function hubGetMessage(
@@ -55,35 +97,39 @@ export async function hubGetMessage(
 }
 
 export async function hubListEvents(days = 7): Promise<CalendarEvent[]> {
+  const accounts = listAccounts();
   const results = await Promise.allSettled(
-    listAccounts().map((a) =>
+    accounts.map((a) =>
       a.provider === "google" ? g.googleListEvents(a, days) : ms.microsoftListEvents(a, days)
     )
   );
-  return settle(results).sort((a, b) => (a.start > b.start ? 1 : -1));
+  return settleForAccounts(accounts, results).sort((a, b) => (a.start > b.start ? 1 : -1));
 }
 
 export async function hubSearchFiles(query: string): Promise<FileHit[]> {
+  const googleAccounts = listAccounts("google");
+  const msAccounts = listAccounts("microsoft");
   const results = await Promise.allSettled([
-    ...listAccounts("google").map((a) => g.googleSearchFiles(a, query)),
-    ...listAccounts("microsoft").map((a) => ms.microsoftSearchFiles(a, query)),
+    ...googleAccounts.map((a) => g.googleSearchFiles(a, query)),
+    ...msAccounts.map((a) => ms.microsoftSearchFiles(a, query)),
     local.localSearchFiles(query),
   ]);
-  return settle(results).sort((a, b) => (a.modifiedAt < b.modifiedAt ? 1 : -1));
+  const owners: (AccountRow | null)[] = [...googleAccounts, ...msAccounts, null];
+  return settleForAccounts(owners, results).sort((a, b) => (a.modifiedAt < b.modifiedAt ? 1 : -1));
 }
 
 export async function hubListChats(limit = 20): Promise<ChatThread[]> {
-  const results = await Promise.allSettled(
-    listAccounts("microsoft").map((a) => ms.microsoftListChats(a, limit))
-  );
-  return settle(results).sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1));
+  const accounts = listAccounts("microsoft");
+  const results = await Promise.allSettled(accounts.map((a) => ms.microsoftListChats(a, limit)));
+  return settleForAccounts(accounts, results).sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1));
 }
 
 export async function hubSearchChats(query: string, limit = 20): Promise<ChatThread[]> {
+  const accounts = listAccounts("microsoft");
   const results = await Promise.allSettled(
-    listAccounts("microsoft").map((a) => ms.microsoftSearchChats(a, query, limit))
+    accounts.map((a) => ms.microsoftSearchChats(a, query, limit))
   );
-  return settle(results).sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1));
+  return settleForAccounts(accounts, results).sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1));
 }
 
 export async function hubCreateDraft(
@@ -147,11 +193,13 @@ export async function hubAddLabel(
 }
 
 export async function hubSearchContacts(query: string, limit = 10): Promise<ContactHit[]> {
+  const googleAccounts = listAccounts("google");
+  const msAccounts = listAccounts("microsoft");
   const results = await Promise.allSettled([
-    ...listAccounts("google").map((a) => g.googleSearchContacts(a, query, limit)),
-    ...listAccounts("microsoft").map((a) => ms.microsoftSearchContacts(a, query, limit)),
+    ...googleAccounts.map((a) => g.googleSearchContacts(a, query, limit)),
+    ...msAccounts.map((a) => ms.microsoftSearchContacts(a, query, limit)),
   ]);
-  return settle(results);
+  return settleForAccounts([...googleAccounts, ...msAccounts], results);
 }
 
 // Heuristic: unread, older than the threshold, and not from an obviously automated sender.

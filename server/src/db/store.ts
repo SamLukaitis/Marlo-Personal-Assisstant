@@ -68,6 +68,18 @@ db.exec(`
   );
 `);
 
+// Lightweight migration: CREATE TABLE IF NOT EXISTS doesn't add columns to a table that
+// already existed before this field was introduced, so add it explicitly if missing.
+const accountColumns = (db.prepare(`PRAGMA table_info(accounts)`).all() as { name: string }[]).map(
+  (c) => c.name
+);
+if (!accountColumns.includes("auth_broken")) {
+  db.exec(`ALTER TABLE accounts ADD COLUMN auth_broken INTEGER NOT NULL DEFAULT 0`);
+}
+if (!accountColumns.includes("auth_broken_at")) {
+  db.exec(`ALTER TABLE accounts ADD COLUMN auth_broken_at INTEGER`);
+}
+
 export const uploadsDir = path.join(dataDir, "uploads");
 if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
 
@@ -80,10 +92,18 @@ export interface AccountRow {
   accessToken: string | null;
   refreshToken: string | null;
   expiryDate: number | null;
+  authBroken: boolean;
+  authBrokenAt: number | null;
 }
 
 const rowSelect = `id, provider, email, access_token AS accessToken,
-                   refresh_token AS refreshToken, expiry_date AS expiryDate`;
+                   refresh_token AS refreshToken, expiry_date AS expiryDate,
+                   auth_broken AS authBroken, auth_broken_at AS authBrokenAt`;
+
+function toAccountRow(raw: unknown): AccountRow {
+  const row = raw as Omit<AccountRow, "authBroken"> & { authBroken: number };
+  return { ...row, authBroken: !!row.authBroken };
+}
 
 export function upsertAccount(account: {
   provider: Provider;
@@ -92,18 +112,24 @@ export function upsertAccount(account: {
   refreshToken: string | null;
   expiryDate: number | null;
 }): AccountRow {
+  // Reconnecting (via the OAuth flow, which is what calls this) always means auth is healthy
+  // again — clear any prior broken-connection flag.
   db.prepare(
-    `INSERT INTO accounts (provider, email, access_token, refresh_token, expiry_date)
-     VALUES (@provider, @email, @accessToken, @refreshToken, @expiryDate)
+    `INSERT INTO accounts (provider, email, access_token, refresh_token, expiry_date, auth_broken, auth_broken_at)
+     VALUES (@provider, @email, @accessToken, @refreshToken, @expiryDate, 0, NULL)
      ON CONFLICT(provider, email) DO UPDATE SET
        access_token = excluded.access_token,
        refresh_token = COALESCE(excluded.refresh_token, accounts.refresh_token),
-       expiry_date = excluded.expiry_date`
+       expiry_date = excluded.expiry_date,
+       auth_broken = 0,
+       auth_broken_at = NULL`
   ).run(account);
 
-  return db
-    .prepare(`SELECT ${rowSelect} FROM accounts WHERE provider = ? AND email = ?`)
-    .get(account.provider, account.email) as AccountRow;
+  return toAccountRow(
+    db
+      .prepare(`SELECT ${rowSelect} FROM accounts WHERE provider = ? AND email = ?`)
+      .get(account.provider, account.email)
+  );
 }
 
 export function updateAccountTokens(
@@ -119,20 +145,28 @@ export function updateAccountTokens(
   ).run({ id, refreshToken: null, ...tokens });
 }
 
+export function markAccountAuthBroken(id: number): void {
+  db.prepare(
+    `UPDATE accounts SET auth_broken = 1, auth_broken_at = ? WHERE id = ? AND auth_broken = 0`
+  ).run(Date.now(), id);
+}
+
+export function markAccountAuthHealthy(id: number): void {
+  db.prepare(
+    `UPDATE accounts SET auth_broken = 0, auth_broken_at = NULL WHERE id = ? AND auth_broken = 1`
+  ).run(id);
+}
+
 export function listAccounts(provider?: Provider): AccountRow[] {
-  if (provider) {
-    return db
-      .prepare(`SELECT ${rowSelect} FROM accounts WHERE provider = ?`)
-      .all(provider) as AccountRow[];
-  }
-  return db.prepare(`SELECT ${rowSelect} FROM accounts`).all() as AccountRow[];
+  const rows = provider
+    ? db.prepare(`SELECT ${rowSelect} FROM accounts WHERE provider = ?`).all(provider)
+    : db.prepare(`SELECT ${rowSelect} FROM accounts`).all();
+  return rows.map(toAccountRow);
 }
 
 export function getAccount(id: number): AccountRow | null {
-  const row = db.prepare(`SELECT ${rowSelect} FROM accounts WHERE id = ?`).get(id) as
-    | AccountRow
-    | undefined;
-  return row ?? null;
+  const row = db.prepare(`SELECT ${rowSelect} FROM accounts WHERE id = ?`).get(id);
+  return row ? toAccountRow(row) : null;
 }
 
 export function deleteAccount(id: number): void {

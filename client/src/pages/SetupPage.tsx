@@ -216,7 +216,7 @@ export function SetupPage() {
       </div>
 
       <h2>Connected accounts</h2>
-      {accounts.length > 0 && (
+      {accounts.length > 0 && accounts.every((a) => !a.authBroken) && (
         <div className="banner">
           Calendar write, email archiving/labels, and contacts search were just added — they
           need extra permissions. Disconnect and reconnect each account below to grant them.
@@ -224,25 +224,45 @@ export function SetupPage() {
       )}
       <div className="card">
         {accounts.length === 0 && <p className="muted">No accounts connected yet.</p>}
-        {accounts.map((a) => (
-          <div key={a.id} className="list-item row" style={{ justifyContent: "space-between" }}>
-            <div>
-              <strong>{a.email}</strong>{" "}
-              <span className="badge" style={{ textTransform: "capitalize" }}>
-                {a.provider}
-              </span>
+        {accounts.map((a) => {
+          const providerInfo = providers.find((p) => p.provider === a.provider);
+          return (
+            <div key={a.id} className="list-item" style={{ display: "block" }}>
+              <div className="row" style={{ justifyContent: "space-between" }}>
+                <div>
+                  <strong>{a.email}</strong>{" "}
+                  <span className="badge" style={{ textTransform: "capitalize" }}>
+                    {a.provider}
+                  </span>
+                </div>
+                <div className="row" style={{ gap: 8 }}>
+                  {a.authBroken && providerInfo && (
+                    <a href={loginUrl(providerInfo.loginPath)}>
+                      <button>Reconnect</button>
+                    </a>
+                  )}
+                  <button
+                    className="danger"
+                    onClick={async () => {
+                      await disconnectAccount(a.id);
+                      load();
+                    }}
+                  >
+                    Disconnect
+                  </button>
+                </div>
+              </div>
+              {a.authBroken && (
+                <p className="error" style={{ marginTop: 8, marginBottom: 0, fontSize: 13 }}>
+                  Needs reconnecting — sign-in has expired or was revoked
+                  {a.authBrokenAt ? ` (since ${new Date(a.authBrokenAt).toLocaleString()})` : ""}.
+                  Mail, calendar, files, and search for this account won't work until you
+                  reconnect it.
+                </p>
+              )}
             </div>
-            <button
-              className="danger"
-              onClick={async () => {
-                await disconnectAccount(a.id);
-                load();
-              }}
-            >
-              Disconnect
-            </button>
-          </div>
-        ))}
+          );
+        })}
       </div>
 
       <h2>Add an account</h2>

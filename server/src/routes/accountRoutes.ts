@@ -24,7 +24,13 @@ accountRoutes.get("/api/providers", (_req, res) => {
 
 accountRoutes.get("/api/accounts", (_req, res) => {
   res.json(
-    listAccounts().map((a) => ({ id: a.id, provider: a.provider, email: a.email }))
+    listAccounts().map((a) => ({
+      id: a.id,
+      provider: a.provider,
+      email: a.email,
+      authBroken: a.authBroken,
+      authBrokenAt: a.authBrokenAt,
+    }))
   );
 });
 
