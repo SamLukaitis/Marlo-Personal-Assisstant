@@ -17,9 +17,9 @@ ask it to find emails, summarize your day, locate documents, or draft replies.
 | **Memory** | The assistant remembers facts and preferences you share across conversations (e.g. "the Acme account is my priority business") — view/add/remove notes on the Setup page |
 | **Assistant** | Claude with tool-calling: looks up real messages/events/chats/files/contacts before answering; personalized via your Setup-page description |
 | **WhatsApp** | Message your assistant on WhatsApp via Meta's official Cloud API — a compliant bot channel, restricted to a phone-number allowlist you control |
-| **Documents (from WhatsApp)** | Send a photo or PDF (boarding pass, license, ticket, receipt) — Claude's vision analyzes it once on arrival and the extracted details are saved, so you can later ask things like "when did I fly to Berlin" or "what's the code on my license". Browse/download/delete what's been saved on the Files page |
+| **Documents (from WhatsApp)** | Send a photo or PDF (boarding pass, license, ticket, receipt) — Claude's vision analyzes it once on arrival and the extracted details are saved, so you can later ask things like "when did I fly to Berlin" or "what's the code on my license". If it's a travel document, it also feeds the travel day tracker below automatically. Browse/download/delete what's been saved on the Files page |
 | **Location check-ins** | A phone automation (iOS Shortcuts / Android Tasker) posts your coordinates when you land somewhere or cross a border; the server reverse-geocodes it to a country/city and logs it — no WhatsApp round-trip, so it's genuinely automatic. Ask things like "where have I been this month" |
-| **Travel day tracker** | "How many Schengen days have I used in the last 180 days?" — computed deterministically in code from the check-in log (day-by-day reconstruction, not model guesswork). Works for "schengen", "eu", or any specific country name. The Setup page shows a running Schengen 90/180 count at a glance |
+| **Travel day tracker** | "How many Schengen days have I used in the last 180 days?" — computed deterministically in code from the check-in log (day-by-day reconstruction, not model guesswork), which now includes both automatic phone check-ins and dates pulled from boarding passes/tickets sent via WhatsApp. Works for "schengen", "eu", or any specific country name. The Setup page shows a running Schengen 90/180 count and labels each entry by source (phone vs. document) at a glance |
 | **Unified search** | One search bar (the **Search** page) that queries your email, Drive/OneDrive/local files, Teams chats, and saved WhatsApp documents all at once, instead of searching each separately |
 | **Proactive briefing** | Optionally have the morning briefing pushed to WhatsApp automatically at a time you choose, instead of only generating when you open the web app — with a Schengen day-limit warning appended if you're getting close. Toggle on the Setup page |
 | **Real-time alerts** | Optionally get pinged on WhatsApp the moment an email from a real person (not a newsletter/notification) arrives, rather than waiting for the next briefing. Checks every few minutes while the server is running; the first check after enabling just sets a baseline so it won't alert on your entire existing inbox |
@@ -34,10 +34,6 @@ without touching the UI or assistant logic.
 
 ## Planned (not yet built)
 
-- **Folding document dates into the travel log** — the travel day tracker only counts location
-  check-ins right now, not dates parsed out of boarding passes/documents. So a trip you only
-  have a photographed boarding pass for (no check-in logged) won't count towards Schengen days
-  yet — you'd need the phone automation running for it to be tracked.
 - **Slack, iCloud sync** — no connector built yet.
 
 ## Architecture
@@ -49,7 +45,7 @@ without touching the UI or assistant logic.
   - `src/providers/whatsapp.ts` — Meta Cloud API client (send message, verify webhook signature/handshake, download media)
   - `src/services/hub.ts` — merges results across all connected accounts (and local folders); the UI and the AI only talk to this layer
   - `src/services/briefing.ts` — builds the daily briefing (gathers real data, then has Claude write it up); cached once per day in SQLite
-  - `src/services/documents.ts` — downloads a WhatsApp photo/PDF, runs it through Claude's vision once to extract key facts, and stores both the file and the extracted text
+  - `src/services/documents.ts` — downloads a WhatsApp photo/PDF, runs it through Claude's vision once to extract key facts, and stores both the file and the extracted text. The same call offers an optional `record_travel_movement` tool the model can call if the document clearly shows travel — those get saved as check-ins (source `"document"`, linked back to the document) so they feed the travel day tracker automatically
   - `src/services/geocode.ts` — reverse-geocodes lat/long to a country/city via OpenStreetMap's free Nominatim API
   - `src/services/travelDays.ts` — pure date arithmetic: reconstructs a day-by-day "which country" timeline from check-ins and counts days in a country/Schengen/EU over a date range; no model involved, since day counts need to be exact
   - `src/services/alerts.ts` — polls for unread mail from real people (not automated senders) and pushes a WhatsApp ping for anything new, with a persisted dedup ledger and a first-run baseline so enabling it doesn't alert on your whole existing inbox
@@ -301,10 +297,17 @@ Open `http://localhost:5173`:
   entry currently means editing the SQLite database directly.
 - **Day-counting is check-in-based, not continuous tracking** — it reconstructs which country
   you were in each day from the gaps between check-ins (whichever check-in came most recently
-  before that day), so accuracy depends on actually checking in at each border crossing. Days
-  before your first-ever check-in aren't attributed to any country. The Schengen/EU country
-  lists are also a reasonable approximation, not a legally authoritative source (e.g.
-  Bulgaria/Romania's partial 2024 Schengen accession is simplified to "in").
+  before that day), so accuracy depends on actually checking in at each border crossing (or
+  sending a document that produces one). Days before your first-ever check-in aren't
+  attributed to any country. The Schengen/EU country lists are also a reasonable
+  approximation, not a legally authoritative source (e.g. Bulgaria/Romania's partial 2024
+  Schengen accession is simplified to "in").
+- **A boarding pass only gives one leg's day-math if it doesn't show separate times** — if a
+  document shows just one timestamp for both departure and arrival (common — many boarding
+  passes only print a single "Depart" time, no distinct arrival time), the two check-ins land
+  on the same calendar day and the arrival leg wins for that day, so a same-day round trip can
+  net to zero days credited to the departure country. Verified against a real boarding pass
+  during testing — this is expected given the source data, not a bug, but worth knowing.
 
 ## Adding a new source later
 

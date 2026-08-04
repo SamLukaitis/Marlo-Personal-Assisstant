@@ -126,11 +126,13 @@ export interface StoredDocument {
 
 export interface TravelCheckin {
   id: number;
-  latitude: number;
-  longitude: number;
+  latitude: number | null;
+  longitude: number | null;
   country: string | null;
   city: string | null;
   checkedInAt: number;
+  source: "phone" | "document";
+  documentId: number | null;
 }
 
 export interface TravelDaysResult {

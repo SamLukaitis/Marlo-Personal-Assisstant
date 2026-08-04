@@ -548,7 +548,13 @@ export function SetupPage() {
             <div key={c.id} className="list-item row" style={{ justifyContent: "space-between" }}>
               <span style={{ fontSize: 13.5 }}>
                 {c.city ? `${c.city}, ` : ""}
-                {c.country ?? `${c.latitude.toFixed(3)}, ${c.longitude.toFixed(3)}`}
+                {c.country ??
+                  (c.latitude != null && c.longitude != null
+                    ? `${c.latitude.toFixed(3)}, ${c.longitude.toFixed(3)}`
+                    : "Unknown location")}{" "}
+                <span className="badge" style={{ fontSize: 11 }}>
+                  {c.source === "document" ? "from document" : "phone"}
+                </span>
               </span>
               <span className="muted" style={{ fontSize: 12.5 }}>
                 {new Date(c.checkedInAt).toLocaleString()}

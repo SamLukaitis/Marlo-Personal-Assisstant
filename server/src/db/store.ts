@@ -80,6 +80,32 @@ if (!accountColumns.includes("auth_broken_at")) {
   db.exec(`ALTER TABLE accounts ADD COLUMN auth_broken_at INTEGER`);
 }
 
+// travel_checkins originally required lat/long (phone GPS check-ins only). Document-derived
+// entries (a boarding pass's arrival city) don't have exact coordinates, so lat/long need to
+// become nullable — SQLite can't ALTER a column's NOT NULL constraint directly, so rebuild the
+// table when the new "source" column (a proxy for "hasn't been migrated yet") is missing.
+const checkinColumns = (
+  db.prepare(`PRAGMA table_info(travel_checkins)`).all() as { name: string }[]
+).map((c) => c.name);
+if (!checkinColumns.includes("source")) {
+  db.exec(`
+    CREATE TABLE travel_checkins_new (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      latitude REAL,
+      longitude REAL,
+      country TEXT,
+      city TEXT,
+      checked_in_at INTEGER NOT NULL,
+      source TEXT NOT NULL DEFAULT 'phone',
+      document_id INTEGER
+    );
+    INSERT INTO travel_checkins_new (id, latitude, longitude, country, city, checked_in_at, source, document_id)
+      SELECT id, latitude, longitude, country, city, checked_in_at, 'phone', NULL FROM travel_checkins;
+    DROP TABLE travel_checkins;
+    ALTER TABLE travel_checkins_new RENAME TO travel_checkins;
+  `);
+}
+
 export const uploadsDir = path.join(dataDir, "uploads");
 if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
 
@@ -387,42 +413,53 @@ export function deleteDocument(id: number): void {
   db.prepare(`DELETE FROM documents WHERE id = ?`).run(id);
 }
 
+export type CheckinSource = "phone" | "document";
+
 export interface TravelCheckinRow {
   id: number;
-  latitude: number;
-  longitude: number;
+  latitude: number | null;
+  longitude: number | null;
   country: string | null;
   city: string | null;
   checkedInAt: number;
+  source: CheckinSource;
+  documentId: number | null;
 }
 
+const CHECKIN_SELECT = `id, latitude, longitude, country, city, checked_in_at AS checkedInAt,
+  source, document_id AS documentId`;
+
 export function saveCheckin(checkin: {
-  latitude: number;
-  longitude: number;
+  latitude?: number | null;
+  longitude?: number | null;
   country: string | null;
   city: string | null;
   checkedInAt: number;
+  source?: CheckinSource;
+  documentId?: number | null;
 }): TravelCheckinRow {
   const info = db
     .prepare(
-      `INSERT INTO travel_checkins (latitude, longitude, country, city, checked_in_at)
-       VALUES (?, ?, ?, ?, ?)`
+      `INSERT INTO travel_checkins (latitude, longitude, country, city, checked_in_at, source, document_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`
     )
-    .run(checkin.latitude, checkin.longitude, checkin.country, checkin.city, checkin.checkedInAt);
+    .run(
+      checkin.latitude ?? null,
+      checkin.longitude ?? null,
+      checkin.country,
+      checkin.city,
+      checkin.checkedInAt,
+      checkin.source ?? "phone",
+      checkin.documentId ?? null
+    );
   return db
-    .prepare(
-      `SELECT id, latitude, longitude, country, city, checked_in_at AS checkedInAt
-       FROM travel_checkins WHERE id = ?`
-    )
+    .prepare(`SELECT ${CHECKIN_SELECT} FROM travel_checkins WHERE id = ?`)
     .get(info.lastInsertRowid) as TravelCheckinRow;
 }
 
 export function listCheckins(limit = 100): TravelCheckinRow[] {
   return db
-    .prepare(
-      `SELECT id, latitude, longitude, country, city, checked_in_at AS checkedInAt
-       FROM travel_checkins ORDER BY checked_in_at DESC LIMIT ?`
-    )
+    .prepare(`SELECT ${CHECKIN_SELECT} FROM travel_checkins ORDER BY checked_in_at DESC LIMIT ?`)
     .all(limit) as TravelCheckinRow[];
 }
 
@@ -448,9 +485,6 @@ export function markAlerted(key: string): void {
 // Ascending, uncapped — day-counting needs the full timeline, not just the most recent page.
 export function listAllCheckinsAscending(): TravelCheckinRow[] {
   return db
-    .prepare(
-      `SELECT id, latitude, longitude, country, city, checked_in_at AS checkedInAt
-       FROM travel_checkins ORDER BY checked_in_at ASC`
-    )
+    .prepare(`SELECT ${CHECKIN_SELECT} FROM travel_checkins ORDER BY checked_in_at ASC`)
     .all() as TravelCheckinRow[];
 }
