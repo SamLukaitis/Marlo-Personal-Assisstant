@@ -32,6 +32,34 @@ WhatsApp's Terms of Service and risks an account ban; see the setup section belo
 went this route instead). The provider layer is built so new sources can be added later
 without touching the UI or assistant logic.
 
+## ⚠️ Data is not encrypted at rest — needed before real hosting
+
+Everything currently lives as **plaintext** in SQLite (`server/data/app.db`) and on disk
+(`server/data/uploads/`): Google/Microsoft OAuth access + refresh tokens, WhatsApp conversation
+history, extracted document text (license numbers, reference codes), location check-in
+history, and the raw uploaded photos/PDFs (boarding passes, licenses) themselves.
+
+This is an acceptable risk for local-only development, but **should be fixed before deploying
+this anywhere permanent** — a host's disk-level encryption (standard on providers like
+Railway) only protects against physical disk theft, not against anyone with access to the
+running container or a database dump. The
+OAuth tokens are the most acutely dangerous piece: a leaked refresh token is effectively a
+leaked password, giving ongoing access to the real Gmail/Calendar/Drive account until it's
+revoked.
+
+**Planned fix** (scoped, not yet built):
+1. Encrypt the OAuth token columns in the `accounts` table before writing them to SQLite
+   (AES-256-GCM via Node's built-in `crypto` — no new dependency needed).
+2. Encrypt uploaded document files at rest the same way, decrypting only when served back via
+   `/api/documents/:id/file`.
+3. The encryption key lives only as an environment variable on the host — never committed to
+   git, never stored in the database itself.
+
+**The real risk to plan around**: if that key is ever lost, the encrypted data becomes
+permanently unrecoverable. It needs to be stored somewhere durable (a password manager),
+separate from backups of the encrypted data itself, from day one — losing the key is
+equivalent to losing everything it protects.
+
 ## Planned (not yet built)
 
 - **Slack, iCloud sync** — no connector built yet.
