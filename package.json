@@ -1,0 +1,9 @@
+{
+  "name": "startupwjake",
+  "private": true,
+  "version": "1.0.0",
+  "scripts": {
+    "build": "npm install --prefix client && npm run build --prefix client && npm install --prefix server && npm run build --prefix server",
+    "start": "npm run start --prefix server"
+  }
+}
