@@ -1,4 +1,9 @@
-const API_BASE = import.meta.env.VITE_API_BASE ?? "http://localhost:4000";
+// In local dev the client (Vite, port 5173) and server (port 4000) run as separate
+// processes, so client/.env sets VITE_API_BASE to reach the server explicitly. In
+// production the server serves this built client itself (see server/src/index.ts),
+// so with no VITE_API_BASE set at build time we default to "" — same-origin, relative
+// requests — rather than hardcoding a localhost URL that would never work when deployed.
+const API_BASE = import.meta.env.VITE_API_BASE ?? "";
 
 export type Provider = "google" | "microsoft" | "local";
 
