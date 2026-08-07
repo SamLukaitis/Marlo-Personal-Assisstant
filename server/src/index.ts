@@ -1,4 +1,6 @@
 import "dotenv/config";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import express from "express";
 import cors from "cors";
 import { authRoutes } from "./routes/authRoutes.js";
@@ -49,6 +51,16 @@ app.use(searchRoutes);
 app.use(alertRoutes);
 
 app.get("/health", (_req, res) => res.json({ ok: true }));
+
+// Serve the built React client from the same process/port in production, so
+// Railway (or any single-service host) only needs to run this one app — no
+// separate static host, no cross-origin config. Falls back to index.html for
+// any non-API route so client-side routing (react-router) still works.
+const clientDist = path.join(path.dirname(fileURLToPath(import.meta.url)), "../../client/dist");
+app.use(express.static(clientDist));
+app.get(/^(?!\/api|\/auth|\/health|\/webhooks).*/, (_req, res) => {
+  res.sendFile(path.join(clientDist, "index.html"));
+});
 
 app.listen(PORT, () => {
   console.log(`Server listening on http://localhost:${PORT}`);
