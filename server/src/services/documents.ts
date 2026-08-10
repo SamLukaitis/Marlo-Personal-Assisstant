@@ -99,7 +99,11 @@ async function extractDocument(
 
   const response = await getClient().messages.create({
     model: EXTRACTION_MODEL,
-    max_tokens: 1024,
+    // 1024 was too tight for busier documents (e.g. a hotel booking confirmation with a full
+    // pricing breakdown) — the model would hit the cap mid-sentence and silently drop whatever
+    // it hadn't gotten to yet, which is exactly how dates/times went missing even though they
+    // were legible in the image. 4096 gives real headroom; this is a one-time cost per upload.
+    max_tokens: 4096,
     tools: [TRAVEL_MOVEMENT_TOOL],
     messages: [{ role: "user", content }],
   });
@@ -109,8 +113,17 @@ async function extractDocument(
     (b): b is Anthropic.ToolUseBlock => b.type === "tool_use" && b.name === "record_travel_movement"
   );
 
+  let text = textBlock?.text ?? "(couldn't extract any text from this file)";
+  if (response.stop_reason === "max_tokens") {
+    // Surface truncation instead of silently returning a partial extraction — the model itself
+    // (and the user, if they ask to see the details) should know some facts may be missing
+    // rather than assuming the extraction was complete.
+    console.warn("documents: extraction hit max_tokens — output may be truncated");
+    text += "\n\n(Note: this extraction was cut off before finishing — some details, possibly including dates, may be missing.)";
+  }
+
   return {
-    text: textBlock?.text ?? "(couldn't extract any text from this file)",
+    text,
     movement: toolUse ? (toolUse.input as TravelMovement) : null,
   };
 }
