@@ -32,33 +32,28 @@ WhatsApp's Terms of Service and risks an account ban; see the setup section belo
 went this route instead). The provider layer is built so new sources can be added later
 without touching the UI or assistant logic.
 
-## ⚠️ Data is not encrypted at rest — needed before real hosting
+## Encryption at rest
 
-Everything currently lives as **plaintext** in SQLite (`server/data/app.db`) and on disk
-(`server/data/uploads/`): Google/Microsoft OAuth access + refresh tokens, WhatsApp conversation
-history, extracted document text (license numbers, reference codes), location check-in
-history, and the raw uploaded photos/PDFs (boarding passes, licenses) themselves.
+OAuth access/refresh tokens (`accounts` table) and uploaded document files
+(`server/data/uploads/`) are encrypted with AES-256-GCM (Node's built-in `crypto`, no extra
+dependency) before ever touching disk — see `server/src/services/crypto.ts`. The key lives only
+in the `ENCRYPTION_KEY` env var (64 hex chars / 32 bytes, `node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"`
+to generate one) — never committed to git, never stored in the database itself.
 
-This is an acceptable risk for local-only development, but **should be fixed before deploying
-this anywhere permanent** — a host's disk-level encryption (standard on providers like
-Railway) only protects against physical disk theft, not against anyone with access to the
-running container or a database dump. The
-OAuth tokens are the most acutely dangerous piece: a leaked refresh token is effectively a
-leaked password, giving ongoing access to the real Gmail/Calendar/Drive account until it's
-revoked.
+**Still plaintext, deliberately out of scope for now**: WhatsApp conversation history, extracted
+document text, and location check-in history. Lower-sensitivity than live account access or the
+raw source images, and encrypting every column would make ordinary reads/writes and search much
+more invasive to touch — worth revisiting if this grows beyond a handful of trusted users.
 
-**Planned fix** (scoped, not yet built):
-1. Encrypt the OAuth token columns in the `accounts` table before writing them to SQLite
-   (AES-256-GCM via Node's built-in `crypto` — no new dependency needed).
-2. Encrypt uploaded document files at rest the same way, decrypting only when served back via
-   `/api/documents/:id/file`.
-3. The encryption key lives only as an environment variable on the host — never committed to
-   git, never stored in the database itself.
+**Migration note**: accounts/documents saved *before* this was added are still plaintext on disk
+— the read path falls back to the raw value if it isn't valid ciphertext, so nothing breaks, but
+those rows only become encrypted once the token next refreshes (automatic) or you reconnect the
+account / re-upload the document.
 
-**The real risk to plan around**: if that key is ever lost, the encrypted data becomes
-permanently unrecoverable. It needs to be stored somewhere durable (a password manager),
-separate from backups of the encrypted data itself, from day one — losing the key is
-equivalent to losing everything it protects.
+**The real risk to plan around**: if `ENCRYPTION_KEY` is ever lost, the encrypted data becomes
+permanently unrecoverable. Store it somewhere durable (a password manager), separate from
+backups of the encrypted data itself, from day one — losing the key is equivalent to losing
+everything it protects.
 
 ## Planned (not yet built)
 

@@ -1,6 +1,7 @@
 import { Router } from "express";
 import fs from "node:fs";
 import { listDocuments, searchDocuments, getDocument, deleteDocument } from "../db/store.js";
+import { decryptBuffer } from "../services/crypto.js";
 
 export const documentRoutes = Router();
 
@@ -15,8 +16,17 @@ documentRoutes.get("/api/documents/:id/file", (req, res) => {
     res.sendStatus(404);
     return;
   }
+  const onDisk = fs.readFileSync(doc.storedPath);
+  // Files saved before encryption was added are still plaintext on disk — same lazy-fallback
+  // approach as tokens in store.ts. They'd need re-uploading to actually become encrypted.
+  let plaintext: Buffer;
+  try {
+    plaintext = decryptBuffer(onDisk);
+  } catch {
+    plaintext = onDisk;
+  }
   res.setHeader("Content-Type", doc.mimeType);
-  res.sendFile(doc.storedPath);
+  res.send(plaintext);
 });
 
 documentRoutes.delete("/api/documents/:id", (req, res) => {

@@ -1,6 +1,7 @@
 import Database from "better-sqlite3";
 import path from "node:path";
 import fs from "node:fs";
+import { encryptField, decryptField } from "../services/crypto.js";
 
 const dataDir = path.join(process.cwd(), "data");
 if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
@@ -126,9 +127,28 @@ const rowSelect = `id, provider, email, access_token AS accessToken,
                    refresh_token AS refreshToken, expiry_date AS expiryDate,
                    auth_broken AS authBroken, auth_broken_at AS authBrokenAt`;
 
+// Tokens written before encryption was added are still plaintext in the DB. Rather than a
+// one-shot migration script (easy to miss on a host you don't shell into), decrypt lazily and
+// fall back to the raw value if it isn't in our "iv:authTag:ciphertext" format — those accounts
+// self-heal to encrypted the next time their token is refreshed or they're reconnected, which
+// happens naturally (access tokens refresh often; a manual reconnect fixes refresh_token too).
+function tryDecrypt(value: string | null): string | null {
+  if (value === null) return null;
+  try {
+    return decryptField(value);
+  } catch {
+    return value;
+  }
+}
+
 function toAccountRow(raw: unknown): AccountRow {
   const row = raw as Omit<AccountRow, "authBroken"> & { authBroken: number };
-  return { ...row, authBroken: !!row.authBroken };
+  return {
+    ...row,
+    authBroken: !!row.authBroken,
+    accessToken: tryDecrypt(row.accessToken),
+    refreshToken: tryDecrypt(row.refreshToken),
+  };
 }
 
 export function upsertAccount(account: {
@@ -149,7 +169,11 @@ export function upsertAccount(account: {
        expiry_date = excluded.expiry_date,
        auth_broken = 0,
        auth_broken_at = NULL`
-  ).run(account);
+  ).run({
+    ...account,
+    accessToken: encryptField(account.accessToken),
+    refreshToken: encryptField(account.refreshToken),
+  });
 
   return toAccountRow(
     db
@@ -168,7 +192,12 @@ export function updateAccountTokens(
        refresh_token = COALESCE(@refreshToken, refresh_token),
        expiry_date = @expiryDate
      WHERE id = @id`
-  ).run({ id, refreshToken: null, ...tokens });
+  ).run({
+    id,
+    expiryDate: tokens.expiryDate,
+    accessToken: encryptField(tokens.accessToken),
+    refreshToken: tokens.refreshToken != null ? encryptField(tokens.refreshToken) : null,
+  });
 }
 
 export function markAccountAuthBroken(id: number): void {

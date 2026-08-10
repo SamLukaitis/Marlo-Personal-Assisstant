@@ -4,6 +4,7 @@ import crypto from "node:crypto";
 import Anthropic from "@anthropic-ai/sdk";
 import { downloadWhatsAppMedia } from "../providers/whatsapp.js";
 import { saveDocument, saveCheckin, uploadsDir, type DocumentRow } from "../db/store.js";
+import { encryptBuffer } from "./crypto.js";
 
 // Extraction is a one-time cost per uploaded file — worth the richer tier since a wrong digit
 // in a transcribed code/number is worse than the marginal savings of a cheaper model.
@@ -154,7 +155,7 @@ export async function ingestWhatsAppMedia(params: {
   const ext = EXTENSIONS[mimeType] ?? "bin";
   const storedName = `${Date.now()}-${crypto.randomUUID()}.${ext}`;
   const storedPath = path.join(uploadsDir, storedName);
-  fs.writeFileSync(storedPath, buffer);
+  fs.writeFileSync(storedPath, encryptBuffer(buffer));
 
   const canAnalyze = SUPPORTED_IMAGE_TYPES.has(mimeType) || mimeType === "application/pdf";
   const { text: extractedText, movement } = canAnalyze
