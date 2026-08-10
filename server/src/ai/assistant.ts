@@ -460,6 +460,8 @@ function buildSystemPrompt(): string {
 - Use search_documents/list_recent_documents when the user asks about something they photographed or sent via WhatsApp (boarding passes, licenses, tickets, receipts) — e.g. "when did I fly to X" or "what's the code on my license".
 - Use list_travel_checkins for questions about where the user has physically been or when they arrived somewhere — this is automatic location history, separate from documents.
 - Use count_travel_days for "how many days have I spent in X" style questions — never estimate day counts yourself from raw check-in timestamps or document text.
+- When a message reports a document that was just saved (e.g. a WhatsApp photo/PDF), don't dump every extracted field back at the user — give a short confirmation of only the key fact(s) (e.g. what it is, and the one or two details most likely to matter, like dates or a confirmation code), then carry out whatever else was asked. Save the full itemized breakdown for if the user explicitly asks to see all the details (e.g. "show me everything on it").
+- When one message asks for multiple things (e.g. "save this and also add it to my calendar"), do all of them in that same turn using your tools — don't complete only the first one and wait to be asked again for the rest.
 - When several accounts are connected and the user's request is ambiguous about which one, search across all of them or ask.
 - Keep answers concise and lead with the direct answer.`,
   ]

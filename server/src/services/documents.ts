@@ -67,10 +67,14 @@ async function extractDocument(
   const uploadedAt = new Date().toISOString();
   const prompt =
     "This is a photo or document the user saved for later reference (e.g. a boarding pass, " +
-    "license, ticket, receipt, or ID). Extract: (1) what kind of document this is, (2) every " +
-    "important fact visible — dates, names, reference/confirmation/license codes, numbers, " +
-    "locations — transcribed exactly as shown, (3) a one-sentence plain-English summary. Be " +
-    "thorough and factual; never guess at anything not actually visible.\n\n" +
+    "license, ticket, receipt, booking confirmation, or ID). Extract: (1) what kind of " +
+    "document this is, (2) every important fact actually part of the document — dates, names, " +
+    "reference/confirmation/license codes, numbers, locations — transcribed exactly as shown, " +
+    "(3) a one-sentence plain-English summary. Be thorough and factual about the document " +
+    "itself; never guess at anything not actually visible. Ignore incidental phone/screenshot " +
+    "chrome that isn't part of the document — status bar clock, battery/signal icons, " +
+    "notification banners, browser or app UI — none of that is a document fact and none of it " +
+    "should appear in the extraction.\n\n" +
     `This file was uploaded around ${uploadedAt}. If the document shows travel (e.g. a ` +
     "boarding pass) but a date has no year printed on it, infer the year from that upload " +
     "time — boarding passes are almost always saved on or near the day of travel — and call " +

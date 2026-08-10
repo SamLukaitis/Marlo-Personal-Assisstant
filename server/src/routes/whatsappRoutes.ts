@@ -64,11 +64,30 @@ async function handleMedia(
 
   const doc = await ingestWhatsAppMedia({ phone: from, mediaId, mimeType, filename, caption });
 
-  const summary =
-    doc.extractedText.length > 1500
-      ? doc.extractedText.slice(0, 1500) + "..."
-      : doc.extractedText;
-  const reply = `Saved. Here's what I found:\n\n${summary}`;
+  // Route this through the normal assistant/tool loop instead of just echoing the raw
+  // extraction back. This is what makes a caption like "add this to calendar" actually get
+  // acted on in the same turn — previously handleMedia never called the assistant at all, so
+  // any request sent alongside the file was silently ignored until the user asked again.
+  const history = getWhatsAppHistory(from, MAX_HISTORY_MESSAGES).map((m) => ({
+    role: m.role,
+    content: m.content,
+  }));
+  // The persisted history line is just "[Sent <caption>]" (kept short so it doesn't bloat every
+  // future call's history) — for this one call, swap in the full extracted text plus the
+  // caption so the model has the actual document content to act on and confirm.
+  const docContext =
+    `[A document was just sent via WhatsApp and has already been downloaded and saved — no ` +
+    `need to save it again, just confirm and/or act on it. Extracted content:\n${doc.extractedText}` +
+    (caption
+      ? `\n\nThe user's message alongside it was: "${caption}"`
+      : "\n\nThe user didn't add any message alongside it — just give a short confirmation of what was saved.");
+  if (history.length > 0) {
+    history[history.length - 1] = { role: "user", content: docContext };
+  } else {
+    history.push({ role: "user", content: docContext });
+  }
+
+  const reply = await runAssistantChat(history);
   appendWhatsAppMessage(from, "assistant", reply);
   await sendWhatsAppMessage(from, reply);
 }
