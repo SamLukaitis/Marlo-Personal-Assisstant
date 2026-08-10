@@ -20,6 +20,20 @@ import { searchRoutes } from "./routes/searchRoutes.js";
 import { alertRoutes } from "./routes/alertRoutes.js";
 import { startScheduler } from "./services/scheduler.js";
 
+// Safety net: an uncaught async error anywhere (a route handler, the scheduler, a webhook
+// handler) would otherwise crash the whole process — Node's default since v15 is to terminate
+// on an unhandled promise rejection. Railway auto-restarts a crashed process within seconds, so
+// it can look "Active" again by the time you check the dashboard, but you still lose in-flight
+// work and get a crash notification. Logging and staying up is the right behavior for a server
+// that should just keep running; individual routes should still have their own try/catch so
+// callers get a proper error response instead of a hung request, but this is the backstop.
+process.on("unhandledRejection", (reason) => {
+  console.error("Unhandled promise rejection:", reason);
+});
+process.on("uncaughtException", (err) => {
+  console.error("Uncaught exception:", err);
+});
+
 const app = express();
 const PORT = process.env.PORT ?? 4000;
 

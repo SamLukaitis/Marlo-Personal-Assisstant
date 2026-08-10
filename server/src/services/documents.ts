@@ -2,6 +2,7 @@ import path from "node:path";
 import fs from "node:fs";
 import crypto from "node:crypto";
 import Anthropic from "@anthropic-ai/sdk";
+import { PDFParse } from "pdf-parse";
 import { downloadWhatsAppMedia } from "../providers/whatsapp.js";
 import { saveDocument, saveCheckin, uploadsDir, type DocumentRow } from "../db/store.js";
 import { encryptBuffer } from "./crypto.js";
@@ -60,6 +61,26 @@ interface TravelMovement {
   arrivalDateTime: string;
 }
 
+// A real digital PDF (not a scan/photo saved as PDF) has an embedded text layer pdf-parse can
+// read exactly, for free, with zero risk of a misread digit — strictly better than vision for
+// that case: cheaper (no image tokens) and more accurate (guaranteed-correct source text).
+// Below this length, treat it as having no usable text layer (e.g. a scanned/photographed PDF)
+// and fall back to vision, same as before.
+const MIN_PDF_TEXT_LENGTH = 40;
+
+async function extractPdfTextLayer(buffer: Buffer): Promise<string | null> {
+  try {
+    const parser = new PDFParse({ data: buffer });
+    const result = await parser.getText();
+    await parser.destroy();
+    const trimmed = result.text.trim();
+    return trimmed.length >= MIN_PDF_TEXT_LENGTH ? trimmed : null;
+  } catch (err) {
+    console.warn("documents: pdf-parse failed, falling back to vision", err);
+    return null;
+  }
+}
+
 async function extractDocument(
   buffer: Buffer,
   mimeType: string
@@ -80,8 +101,17 @@ async function extractDocument(
     "time — boarding passes are almost always saved on or near the day of travel — and call " +
     "record_travel_movement with the departure/arrival details.";
 
+  const pdfText = mimeType === "application/pdf" ? await extractPdfTextLayer(buffer) : null;
+
   const base64 = buffer.toString("base64");
-  const content: Anthropic.ContentBlockParam[] = SUPPORTED_IMAGE_TYPES.has(mimeType)
+  const content: Anthropic.ContentBlockParam[] = pdfText
+    ? [
+        {
+          type: "text",
+          text: `Document text (extracted directly from the PDF's text layer — exact, not a transcription):\n\n${pdfText}\n\n${prompt}`,
+        },
+      ]
+    : SUPPORTED_IMAGE_TYPES.has(mimeType)
     ? [
         {
           type: "image",
