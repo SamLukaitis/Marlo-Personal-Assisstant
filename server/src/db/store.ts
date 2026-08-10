@@ -5,6 +5,10 @@ import { encryptField, decryptField } from "../services/crypto.js";
 
 const dataDir = path.join(process.cwd(), "data");
 if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
+// Printed once at startup so a Railway Volume (or any host's persistent-disk mount) can be
+// pointed at the exact right path — guessing wrong here silently loses the DB + uploads on
+// every redeploy, since the container filesystem is otherwise ephemeral.
+console.log(`store: using data directory ${dataDir}`);
 
 const db = new Database(path.join(dataDir, "app.db"));
 
