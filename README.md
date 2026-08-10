@@ -338,3 +338,4 @@ Add a provider module in `server/src/providers/` (OAuth + list/search functions)
 in `server/src/services/hub.ts`, and register its card in `/api/providers` (skip this last
 step for non-account sources like local files). The inbox, chats, calendar, files, and
 assistant tools pick it up automatically.
+
