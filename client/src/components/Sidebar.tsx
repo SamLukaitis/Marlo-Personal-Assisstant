@@ -1,10 +1,13 @@
-import { NavLink } from "react-router-dom";
+import { NavLink, useNavigate } from "react-router-dom";
 import { useEffect, useState } from "react";
-import { fetchAccounts, type Account } from "../api/client";
+import { fetchAccounts, logout, type Account } from "../api/client";
+import { useAuth } from "../context/AuthContext";
 import { IconChat, IconCalendar, IconFolder, IconSettings, IconUsers, IconSearch } from "./icons";
 
 export function Sidebar() {
   const [accounts, setAccounts] = useState<Account[]>([]);
+  const { refresh } = useAuth();
+  const navigate = useNavigate();
 
   useEffect(() => {
     fetchAccounts().then(setAccounts).catch(() => {});
@@ -12,13 +15,19 @@ export function Sidebar() {
 
   const cls = ({ isActive }: { isActive: boolean }) => (isActive ? "active" : "");
 
+  async function handleLogout() {
+    await logout();
+    await refresh();
+    navigate("/");
+  }
+
   return (
     <nav className="sidebar">
-      <div className="brand">
+      <NavLink to="/assistant" className="brand" style={{ textDecoration: "none" }}>
         <span className="brand-mark">H</span>
         Hub
-      </div>
-      <NavLink to="/" end className={cls}>
+      </NavLink>
+      <NavLink to="/assistant" className={cls}>
         <IconChat />
         Assistant
       </NavLink>
@@ -48,6 +57,9 @@ export function Sidebar() {
           ? `${accounts.length} account${accounts.length > 1 ? "s" : ""} connected`
           : "No accounts connected"}
       </div>
+      <button className="secondary" style={{ marginTop: 8 }} onClick={handleLogout}>
+        Log out
+      </button>
     </nav>
   );
 }

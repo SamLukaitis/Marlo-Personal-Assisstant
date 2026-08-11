@@ -20,25 +20,25 @@ const SKIP_DIRS = new Set([
 const MAX_FILES_SCANNED = 20000;
 const MAX_DEPTH = 12;
 
-export function listLocalFolders(): LocalRootRow[] {
-  return listLocalRoots();
+export function listLocalFolders(ownerId: number): LocalRootRow[] {
+  return listLocalRoots(ownerId);
 }
 
-export async function addLocalFolder(rootPath: string): Promise<LocalRootRow> {
+export async function addLocalFolder(ownerId: number, rootPath: string): Promise<LocalRootRow> {
   const resolved = path.resolve(rootPath);
   const stat = await fs.stat(resolved);
   if (!stat.isDirectory()) {
     throw new Error(`${resolved} is not a directory`);
   }
-  return dbAddLocalRoot(resolved, path.basename(resolved));
+  return dbAddLocalRoot(ownerId, resolved, path.basename(resolved));
 }
 
-export function removeLocalFolder(id: number): void {
-  dbRemoveLocalRoot(id);
+export function removeLocalFolder(ownerId: number, id: number): void {
+  dbRemoveLocalRoot(ownerId, id);
 }
 
-export async function localSearchFiles(query: string, limit = 15): Promise<FileHit[]> {
-  const roots = listLocalRoots();
+export async function localSearchFiles(ownerId: number, query: string, limit = 15): Promise<FileHit[]> {
+  const roots = listLocalRoots(ownerId);
   const trimmed = query.trim().toLowerCase();
   if (!roots.length || !trimmed) return [];
 

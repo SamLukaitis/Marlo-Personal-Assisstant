@@ -5,6 +5,14 @@
 // requests — rather than hardcoding a localhost URL that would never work when deployed.
 const API_BASE = import.meta.env.VITE_API_BASE ?? "";
 
+// credentials: "include" on every request is required for the session cookie to actually be
+// sent — the browser won't attach cookies cross-origin by default (local dev genuinely is
+// cross-origin: client :5173, server :4000), and relying on same-origin-only default behavior
+// would silently break local dev even though production happens to be same-origin.
+function withCredentials(init?: RequestInit): RequestInit {
+  return { ...init, credentials: "include" };
+}
+
 export type Provider = "google" | "microsoft" | "local";
 
 export interface ProviderInfo {
@@ -20,6 +28,11 @@ export interface Account {
   email: string;
   authBroken: boolean;
   authBrokenAt: number | null;
+}
+
+export interface Me {
+  id: number;
+  email: string;
 }
 
 export interface UnifiedMessage {
@@ -150,12 +163,32 @@ export interface TravelDaysResult {
 }
 
 async function getJson<T>(path: string): Promise<T> {
-  const res = await fetch(`${API_BASE}${path}`);
+  const res = await fetch(`${API_BASE}${path}`, withCredentials());
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
     throw new Error(body.error ?? `request failed (${res.status})`);
   }
   return res.json();
+}
+
+// Thrown specifically so callers (AuthContext) can tell "not logged in" apart from a real
+// server error — a plain 401 from getJson would otherwise look identical to any other failure.
+export class UnauthorizedError extends Error {
+  constructor() {
+    super("not logged in");
+    this.name = "UnauthorizedError";
+  }
+}
+
+export async function fetchMe(): Promise<Me> {
+  const res = await fetch(`${API_BASE}/api/me`, withCredentials());
+  if (res.status === 401) throw new UnauthorizedError();
+  if (!res.ok) throw new Error(`request failed (${res.status})`);
+  return res.json();
+}
+
+export async function logout(): Promise<void> {
+  await fetch(`${API_BASE}/auth/logout`, withCredentials({ method: "POST" }));
 }
 
 export const fetchProviders = () => getJson<ProviderInfo[]>("/api/providers");
@@ -171,11 +204,14 @@ export const fetchChats = (q?: string) =>
 export const fetchLocalFolders = () => getJson<LocalFolder[]>("/api/local-folders");
 
 export async function addLocalFolder(path: string): Promise<LocalFolder> {
-  const res = await fetch(`${API_BASE}/api/local-folders`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ path }),
-  });
+  const res = await fetch(
+    `${API_BASE}/api/local-folders`,
+    withCredentials({
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path }),
+    })
+  );
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
     throw new Error(body.error ?? "failed to add folder");
@@ -184,7 +220,7 @@ export async function addLocalFolder(path: string): Promise<LocalFolder> {
 }
 
 export async function removeLocalFolder(id: number): Promise<void> {
-  await fetch(`${API_BASE}/api/local-folders/${id}`, { method: "DELETE" });
+  await fetch(`${API_BASE}/api/local-folders/${id}`, withCredentials({ method: "DELETE" }));
 }
 
 export function loginUrl(loginPath: string): string {
@@ -192,15 +228,18 @@ export function loginUrl(loginPath: string): string {
 }
 
 export async function disconnectAccount(id: number): Promise<void> {
-  await fetch(`${API_BASE}/api/accounts/${id}`, { method: "DELETE" });
+  await fetch(`${API_BASE}/api/accounts/${id}`, withCredentials({ method: "DELETE" }));
 }
 
 export async function saveSettings(settings: Settings): Promise<void> {
-  const res = await fetch(`${API_BASE}/api/settings`, {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(settings),
-  });
+  const res = await fetch(
+    `${API_BASE}/api/settings`,
+    withCredentials({
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(settings),
+    })
+  );
   if (!res.ok) throw new Error("failed to save settings");
 }
 
@@ -208,17 +247,20 @@ export const fetchBriefing = () => getJson<Briefing>("/api/briefing");
 export const fetchBriefingSettings = () => getJson<BriefingSettings>("/api/briefing/settings");
 
 export async function refreshBriefing(): Promise<Briefing> {
-  const res = await fetch(`${API_BASE}/api/briefing/refresh`, { method: "POST" });
+  const res = await fetch(`${API_BASE}/api/briefing/refresh`, withCredentials({ method: "POST" }));
   if (!res.ok) throw new Error("failed to refresh briefing");
   return res.json();
 }
 
 export async function saveBriefingSettings(settings: BriefingSettings): Promise<void> {
-  const res = await fetch(`${API_BASE}/api/briefing/settings`, {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(settings),
-  });
+  const res = await fetch(
+    `${API_BASE}/api/briefing/settings`,
+    withCredentials({
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(settings),
+    })
+  );
   if (!res.ok) throw new Error("failed to save briefing settings");
 }
 
@@ -229,22 +271,28 @@ export interface AlertSettings {
 export const fetchAlertSettings = () => getJson<AlertSettings>("/api/alerts/settings");
 
 export async function saveAlertSettings(settings: AlertSettings): Promise<void> {
-  const res = await fetch(`${API_BASE}/api/alerts/settings`, {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(settings),
-  });
+  const res = await fetch(
+    `${API_BASE}/api/alerts/settings`,
+    withCredentials({
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(settings),
+    })
+  );
   if (!res.ok) throw new Error("failed to save alert settings");
 }
 
 export const fetchMemoryNotes = () => getJson<MemoryNote[]>("/api/memory");
 
 export async function addMemoryNote(content: string): Promise<MemoryNote> {
-  const res = await fetch(`${API_BASE}/api/memory`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ content }),
-  });
+  const res = await fetch(
+    `${API_BASE}/api/memory`,
+    withCredentials({
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ content }),
+    })
+  );
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
     throw new Error(body.error ?? "failed to add memory note");
@@ -253,7 +301,7 @@ export async function addMemoryNote(content: string): Promise<MemoryNote> {
 }
 
 export async function removeMemoryNote(id: number): Promise<void> {
-  await fetch(`${API_BASE}/api/memory/${id}`, { method: "DELETE" });
+  await fetch(`${API_BASE}/api/memory/${id}`, withCredentials({ method: "DELETE" }));
 }
 
 export const fetchWhatsAppStatus = () => getJson<WhatsAppStatus>("/api/whatsapp/status");
@@ -261,12 +309,18 @@ export const fetchWhatsAppAllowedNumbers = () =>
   getJson<string[]>("/api/whatsapp/allowed-numbers");
 
 export async function saveWhatsAppAllowedNumbers(numbers: string[]): Promise<void> {
-  const res = await fetch(`${API_BASE}/api/whatsapp/allowed-numbers`, {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ numbers }),
-  });
-  if (!res.ok) throw new Error("failed to save allowed numbers");
+  const res = await fetch(
+    `${API_BASE}/api/whatsapp/allowed-numbers`,
+    withCredentials({
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ numbers }),
+    })
+  );
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.error ?? "failed to save allowed numbers");
+  }
 }
 
 export const fetchDocuments = () => getJson<StoredDocument[]>("/api/documents");
@@ -276,7 +330,7 @@ export function documentFileUrl(id: number): string {
 }
 
 export async function deleteDocument(id: number): Promise<void> {
-  await fetch(`${API_BASE}/api/documents/${id}`, { method: "DELETE" });
+  await fetch(`${API_BASE}/api/documents/${id}`, withCredentials({ method: "DELETE" }));
 }
 
 export interface SearchResults {
@@ -294,11 +348,14 @@ export const fetchTravelDays = (area = "schengen", days = 180) =>
   getJson<TravelDaysResult>(`/api/travel-days?area=${encodeURIComponent(area)}&days=${days}`);
 
 export async function sendChatMessage(messages: ChatMessage[]): Promise<string> {
-  const res = await fetch(`${API_BASE}/api/assistant/chat`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ messages }),
-  });
+  const res = await fetch(
+    `${API_BASE}/api/assistant/chat`,
+    withCredentials({
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ messages }),
+    })
+  );
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
     throw new Error(body.error ?? "assistant request failed");

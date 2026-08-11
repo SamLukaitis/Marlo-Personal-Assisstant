@@ -3,7 +3,9 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import express from "express";
 import cors from "cors";
+import cookieParser from "cookie-parser";
 import { authRoutes } from "./routes/authRoutes.js";
+import { meRoutes } from "./routes/meRoutes.js";
 import { accountRoutes } from "./routes/accountRoutes.js";
 import { dataRoutes } from "./routes/dataRoutes.js";
 import { settingsRoutes } from "./routes/settingsRoutes.js";
@@ -15,9 +17,10 @@ import { memoryRoutes } from "./routes/memoryRoutes.js";
 import { whatsappRoutes } from "./routes/whatsappRoutes.js";
 import { whatsappSettingsRoutes } from "./routes/whatsappSettingsRoutes.js";
 import { documentRoutes } from "./routes/documentRoutes.js";
-import { checkinRoutes } from "./routes/checkinRoutes.js";
+import { checkinRoutes, checkinReadRoutes } from "./routes/checkinRoutes.js";
 import { searchRoutes } from "./routes/searchRoutes.js";
 import { alertRoutes } from "./routes/alertRoutes.js";
+import { requireAuth } from "./middleware/auth.js";
 import { startScheduler } from "./services/scheduler.js";
 
 // Safety net: an uncaught async error anywhere (a route handler, the scheduler, a webhook
@@ -37,7 +40,10 @@ process.on("uncaughtException", (err) => {
 const app = express();
 const PORT = process.env.PORT ?? 4000;
 
-app.use(cors({ origin: process.env.CLIENT_URL ?? "http://localhost:5173" }));
+// credentials: true is required for the browser to actually send the session cookie — without
+// it, a cross-origin request (local dev: client on :5173, server on :4000) silently drops
+// cookies regardless of what the client sets on fetch().
+app.use(cors({ origin: process.env.CLIENT_URL ?? "http://localhost:5173", credentials: true }));
 app.use(
   express.json({
     // WhatsApp webhook signature verification needs the exact raw bytes, not the
@@ -47,8 +53,24 @@ app.use(
     },
   })
 );
+app.use(cookieParser());
 
+// Public: the OAuth login/connect/callback routes gate themselves internally (login-signin is
+// open, the "connect" pair requires a session via its own requireAuth on those specific routes —
+// see authRoutes.ts).
 app.use(authRoutes);
+
+// Public: Meta calls these directly (webhook verify handshake + signed POST), not a logged-in
+// browser — gated by its own verify-token/HMAC checks, not a session.
+app.use(whatsappRoutes);
+
+// Public: the one route a phone automation (iOS Shortcuts / Android Tasker) hits without any
+// interactive login — gated by its own shared-secret header, resolved to an owner internally.
+app.use(checkinRoutes);
+
+// Everything else under /api/* requires a logged-in session.
+app.use("/api", requireAuth);
+app.use(meRoutes);
 app.use(accountRoutes);
 app.use(dataRoutes);
 app.use(settingsRoutes);
@@ -57,10 +79,9 @@ app.use(localRoutes);
 app.use(chatRoutes);
 app.use(briefingRoutes);
 app.use(memoryRoutes);
-app.use(whatsappRoutes);
 app.use(whatsappSettingsRoutes);
 app.use(documentRoutes);
-app.use(checkinRoutes);
+app.use(checkinReadRoutes);
 app.use(searchRoutes);
 app.use(alertRoutes);
 

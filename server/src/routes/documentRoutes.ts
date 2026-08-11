@@ -2,16 +2,18 @@ import { Router } from "express";
 import fs from "node:fs";
 import { listDocuments, searchDocuments, getDocument, deleteDocument } from "../db/store.js";
 import { decryptBuffer } from "../services/crypto.js";
+import type { AuthedRequest } from "../middleware/auth.js";
 
 export const documentRoutes = Router();
 
 documentRoutes.get("/api/documents", (req, res) => {
+  const ownerId = (req as unknown as AuthedRequest).userId;
   const q = typeof req.query.q === "string" ? req.query.q : undefined;
-  res.json(q ? searchDocuments(q, 50) : listDocuments(200));
+  res.json(q ? searchDocuments(ownerId, q, 50) : listDocuments(ownerId, 200));
 });
 
 documentRoutes.get("/api/documents/:id/file", (req, res) => {
-  const doc = getDocument(Number(req.params.id));
+  const doc = getDocument((req as unknown as AuthedRequest).userId, Number(req.params.id));
   if (!doc || !fs.existsSync(doc.storedPath)) {
     res.sendStatus(404);
     return;
@@ -30,11 +32,12 @@ documentRoutes.get("/api/documents/:id/file", (req, res) => {
 });
 
 documentRoutes.delete("/api/documents/:id", (req, res) => {
+  const ownerId = (req as unknown as AuthedRequest).userId;
   const id = Number(req.params.id);
-  const doc = getDocument(id);
+  const doc = getDocument(ownerId, id);
   if (doc && fs.existsSync(doc.storedPath)) {
     fs.unlinkSync(doc.storedPath);
   }
-  deleteDocument(id);
+  deleteDocument(ownerId, id);
   res.json({ ok: true });
 });

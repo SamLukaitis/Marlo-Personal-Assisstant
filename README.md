@@ -5,6 +5,36 @@ assistant in front of all of them. You describe what you want your assistant to 
 the **Setup** page, connect your accounts, and from then on the assistant is your interface:
 ask it to find emails, summarize your day, locate documents, or draft replies.
 
+## Accounts, login, and multi-tenancy
+
+This is a real multi-tenant app: each person gets their own isolated hub (own connected
+accounts, own documents, own WhatsApp number(s), own memory/settings) — nobody else's hub can
+see your data, and every `/api/*` route is scoped to whoever is logged in.
+
+- **Login = Google or Microsoft sign-in**, not a separate password system. Reuses the same OAuth
+  flow already used for connecting a mailbox, but as two distinct intents carried in the OAuth
+  `state` param: `login` (identity — creates/looks up your `users` row, issues a session) vs.
+  `connect` (attaches an additional Gmail/Outlook account to your hub, requires an existing
+  session). Both share one callback route per provider, so nothing extra needed registering with
+  Google/Microsoft.
+- **Sessions**: an httpOnly cookie holding an opaque random token; only its SHA-256 hash is ever
+  stored (`server/src/db/store.ts`'s `sessions` table). 30-day sliding expiration. No
+  `express-session` dependency — see the code comment in `store.ts` for why a ~30-line custom
+  implementation was chosen over it.
+- **Invite-only, no self-serve signup**: a `users` row is only created for an email present in
+  the `invited_emails` table. Granting access: `npm run invite -- someone@example.com` from
+  `server/` (a tiny CLI script, `server/src/scripts/invite.ts` — no admin UI exists for this
+  yet). Someone who isn't invited sees a "not invited yet" state on the homepage.
+- **WhatsApp routing**: one shared WhatsApp Business number serves every tenant — each phone
+  number registered on the Setup page maps to exactly one user (`user_phone_numbers` table), and
+  an incoming message is routed to that user's hub (their accounts, memory, settings) by looking
+  up the sender's number, not by a single global allowlist.
+- **First deploy / existing single-tenant data**: the multi-tenant migration (in `store.ts`,
+  guarded the same way earlier migrations are — checks for a missing `owner_id` column) backfills
+  every pre-existing row to one "app owner" account, resolved from the `APP_OWNER_EMAIL` env var
+  (defaults to the address that was already connected). That owner is auto-invited as part of the
+  same migration so you're never locked out of your own data.
+
 ## What it can do today
 
 | Area | Capability |
@@ -74,11 +104,14 @@ everything it protects.
   - `src/services/alerts.ts` — polls for unread mail from real people (not automated senders) and pushes a WhatsApp ping for anything new, with a persisted dedup ledger and a first-run baseline so enabling it doesn't alert on your whole existing inbox
   - `src/services/scheduler.ts` — the only long-running part of the app: an in-process interval (every 5 min) that drives both the proactive briefing push and the real-time alert check. Only does anything while the server process is actually running
   - `src/ai/assistant.ts` — Claude (Anthropic SDK) with tools: messages, calendar, Teams chats, files, contacts, archive/labels, memory, saved documents, travel check-ins/day-counting
-  - `src/routes/whatsappRoutes.ts` — the public webhook (`GET`/`POST /webhooks/whatsapp`) Meta calls; reuses the same assistant engine as the web chat; branches to `documents.ts` for photo/PDF messages
-  - `src/routes/checkinRoutes.ts` — secret-protected `POST /api/checkin` for phone automations, plus `GET /api/checkins` and `GET /api/travel-days`
+  - `src/routes/whatsappRoutes.ts` — the public webhook (`GET`/`POST /webhooks/whatsapp`) Meta calls; resolves the sender's phone to a tenant (`resolveOwnerByPhone`), then reuses the same assistant engine as the web chat; branches to `documents.ts` for photo/PDF messages
+  - `src/routes/checkinRoutes.ts` — secret-protected `POST /api/checkin` for phone automations (resolves to the app owner — see "Accounts, login, and multi-tenancy"); `checkinReadRoutes` (mounted separately, session-gated) has `GET /api/checkins` and `GET /api/travel-days`
   - `src/routes/searchRoutes.ts` — `GET /api/search` fans a query out to mail/files/chats/documents in parallel and returns them together
-  - SQLite (`server/data/app.db`) stores account tokens, local folder paths, briefings, memory notes, WhatsApp conversation history, saved documents' extracted text, location check-ins, the alert dedup ledger, and your assistant settings; the raw uploaded files themselves live under `server/data/uploads/`
-- `client/` — React + Vite. Pages: Assistant (chat + daily briefing), **Search** (one bar across mail/files/chats/documents), Inbox, Chats, Calendar, Files (also lists saved WhatsApp documents), Setup (also shows location check-ins, a Schengen day count, and proactive-briefing/alert toggles).
+  - `src/routes/authRoutes.ts` — both the "log into the app" and "connect a data source" OAuth flows (see "Accounts, login, and multi-tenancy"); `src/routes/meRoutes.ts` — `GET /api/me`, how the client knows who's logged in
+  - `src/middleware/auth.ts` — `requireAuth`, gates every `/api/*` route (wired in `index.ts`)
+  - `src/scripts/invite.ts` — CLI: `npm run invite -- someone@example.com`
+  - SQLite (`server/data/app.db`) stores account tokens, local folder paths, briefings, memory notes, WhatsApp conversation history, saved documents' extracted text, location check-ins, the alert dedup ledger, assistant settings, and the multi-tenant identity tables (`users`, `invited_emails`, `sessions`, `user_phone_numbers`) — every tenant-scoped table carries an `owner_id`; the raw uploaded files themselves live under `server/data/uploads/`
+- `client/` — React + Vite. Public `/` is the marketing homepage + sign-in; everything else requires a session (`RequireAuth` + `AuthContext`) and gets the normal sidebar (`AuthedLayout`): `/onboarding` (first-run, connect an account + add a WhatsApp number), `/assistant` (chat + daily briefing), `/search` (one bar across mail/files/chats/documents), `/chats`, `/calendar`, `/files` (also lists saved WhatsApp documents), `/setup` (also shows location check-ins, a Schengen day count, and proactive-briefing/alert toggles).
 
 ## Safety boundaries (by design)
 

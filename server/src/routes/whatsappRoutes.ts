@@ -8,7 +8,7 @@ import {
   extractIncomingMessages,
   type IncomingWhatsAppMessage,
 } from "../providers/whatsapp.js";
-import { isWhatsAppNumberAllowed, getWhatsAppHistory, appendWhatsAppMessage } from "../db/store.js";
+import { resolveOwnerByPhone, getWhatsAppHistory, appendWhatsAppMessage } from "../db/store.js";
 import { runAssistantChat, MAX_HISTORY_MESSAGES } from "../ai/assistant.js";
 import { ingestWhatsAppMedia } from "../services/documents.js";
 
@@ -40,19 +40,20 @@ function alreadyProcessed(id: string): boolean {
   return false;
 }
 
-async function handleText(from: string, text: string): Promise<void> {
-  appendWhatsAppMessage(from, "user", text);
+async function handleText(ownerId: number, from: string, text: string): Promise<void> {
+  appendWhatsAppMessage(ownerId, from, "user", text);
   const history = getWhatsAppHistory(from, MAX_HISTORY_MESSAGES).map((m) => ({
     role: m.role,
     content: m.content,
   }));
 
-  const reply = await runAssistantChat(history);
-  appendWhatsAppMessage(from, "assistant", reply);
+  const reply = await runAssistantChat(ownerId, history);
+  appendWhatsAppMessage(ownerId, from, "assistant", reply);
   await sendWhatsAppMessage(from, reply);
 }
 
 async function handleMedia(
+  ownerId: number,
   from: string,
   mediaId: string,
   mimeType: string,
@@ -60,9 +61,9 @@ async function handleMedia(
   caption?: string
 ): Promise<void> {
   const label = filename ?? caption ?? "a file";
-  appendWhatsAppMessage(from, "user", `[Sent ${label}]`);
+  appendWhatsAppMessage(ownerId, from, "user", `[Sent ${label}]`);
 
-  const doc = await ingestWhatsAppMedia({ phone: from, mediaId, mimeType, filename, caption });
+  const doc = await ingestWhatsAppMedia({ ownerId, phone: from, mediaId, mimeType, filename, caption });
 
   // Route this through the normal assistant/tool loop instead of just echoing the raw
   // extraction back. This is what makes a caption like "add this to calendar" actually get
@@ -87,22 +88,27 @@ async function handleMedia(
     history.push({ role: "user", content: docContext });
   }
 
-  const reply = await runAssistantChat(history);
-  appendWhatsAppMessage(from, "assistant", reply);
+  const reply = await runAssistantChat(ownerId, history);
+  appendWhatsAppMessage(ownerId, from, "assistant", reply);
   await sendWhatsAppMessage(from, reply);
 }
 
 async function handleIncoming(message: IncomingWhatsAppMessage): Promise<void> {
-  if (!isWhatsAppNumberAllowed(message.from)) {
-    console.warn(`whatsapp: ignoring message from non-allowed number ${message.from}`);
+  // The core of multi-tenant WhatsApp routing: which hub does this phone number belong to?
+  // Replaces the old single global allow-list boolean — a number not registered to any user is
+  // treated the same way an unlisted number was before (silently ignored), it's just resolved
+  // per-tenant now instead of against one shared list.
+  const ownerId = resolveOwnerByPhone(message.from);
+  if (ownerId === null) {
+    console.warn(`whatsapp: ignoring message from unregistered number ${message.from}`);
     return;
   }
 
   try {
     if (message.kind === "text") {
-      await handleText(message.from, message.text);
+      await handleText(ownerId, message.from, message.text);
     } else {
-      await handleMedia(message.from, message.mediaId, message.mimeType, message.filename, message.caption);
+      await handleMedia(ownerId, message.from, message.mediaId, message.mimeType, message.filename, message.caption);
     }
   } catch (err) {
     console.error("whatsapp: failed to handle message", err);

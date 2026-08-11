@@ -334,40 +334,41 @@ function forModel(doc: DocumentRow) {
   return rest;
 }
 
-async function runTool(name: string, input: Record<string, unknown>): Promise<unknown> {
+async function runTool(ownerId: number, name: string, input: Record<string, unknown>): Promise<unknown> {
   switch (name) {
     case "list_recent_messages":
-      return hubListMessages({
+      return hubListMessages(ownerId, {
         accountId: input.account_id as number | undefined,
         limit: (input.limit as number | undefined) ?? 10,
       });
     case "search_messages":
-      return hubListMessages({
+      return hubListMessages(ownerId, {
         query: input.query as string,
         accountId: input.account_id as number | undefined,
         limit: (input.limit as number | undefined) ?? 10,
       });
     case "get_message":
-      return hubGetMessage(input.account_id as number, input.message_id as string);
+      return hubGetMessage(ownerId, input.account_id as number, input.message_id as string);
     case "list_upcoming_events":
-      return hubListEvents((input.days as number | undefined) ?? 7);
+      return hubListEvents(ownerId, (input.days as number | undefined) ?? 7);
     case "search_files":
-      return hubSearchFiles(input.query as string);
+      return hubSearchFiles(ownerId, input.query as string);
     case "list_recent_chats":
-      return hubListChats((input.limit as number | undefined) ?? 20);
+      return hubListChats(ownerId, (input.limit as number | undefined) ?? 20);
     case "search_chats":
-      return hubSearchChats(input.query as string);
+      return hubSearchChats(ownerId, input.query as string);
     case "create_email_draft":
       return hubCreateDraft(
+        ownerId,
         input.account_id as number,
         input.to as string,
         input.subject as string,
         input.body as string
       );
     case "search_contacts":
-      return hubSearchContacts(input.query as string);
+      return hubSearchContacts(ownerId, input.query as string);
     case "create_calendar_event":
-      return hubCreateEvent(input.account_id as number, {
+      return hubCreateEvent(ownerId, input.account_id as number, {
         title: input.title as string,
         start: input.start as string,
         end: input.end as string,
@@ -375,7 +376,7 @@ async function runTool(name: string, input: Record<string, unknown>): Promise<un
         description: input.description as string | undefined,
       });
     case "update_calendar_event":
-      return hubUpdateEvent(input.account_id as number, input.event_id as string, {
+      return hubUpdateEvent(ownerId, input.account_id as number, input.event_id as string, {
         title: input.title as string | undefined,
         start: input.start as string | undefined,
         end: input.end as string | undefined,
@@ -383,37 +384,38 @@ async function runTool(name: string, input: Record<string, unknown>): Promise<un
         description: input.description as string | undefined,
       });
     case "delete_calendar_event":
-      await hubDeleteEvent(input.account_id as number, input.event_id as string);
+      await hubDeleteEvent(ownerId, input.account_id as number, input.event_id as string);
       return { ok: true };
     case "archive_messages":
       return {
         archived: await hubArchiveMessages(
+          ownerId,
           input.account_id as number,
           input.query as string,
           (input.limit as number | undefined) ?? 50
         ),
       };
     case "label_message":
-      await hubAddLabel(input.account_id as number, input.message_id as string, input.label as string);
+      await hubAddLabel(ownerId, input.account_id as number, input.message_id as string, input.label as string);
       return { ok: true };
     case "remember":
-      addMemoryNote(input.note as string);
+      addMemoryNote(ownerId, input.note as string);
       return { ok: true };
     case "list_needs_attention":
-      return hubFlaggedMessages();
+      return hubFlaggedMessages(ownerId);
     case "search_documents":
-      return searchDocuments(input.query as string).map(forModel);
+      return searchDocuments(ownerId, input.query as string).map(forModel);
     case "list_recent_documents":
-      return listDocuments((input.limit as number | undefined) ?? 10).map(forModel);
+      return listDocuments(ownerId, (input.limit as number | undefined) ?? 10).map(forModel);
     case "list_travel_checkins":
-      return listCheckins((input.limit as number | undefined) ?? 50);
+      return listCheckins(ownerId, (input.limit as number | undefined) ?? 50);
     case "count_travel_days": {
       const now = Date.now();
       const untilMs = input.until_date ? new Date(input.until_date as string).getTime() : now;
       const sinceMs = input.since_date
         ? new Date(input.since_date as string).getTime()
         : untilMs - 180 * 24 * 60 * 60 * 1000;
-      return countTravelDays(listAllCheckinsAscending(), input.area as string, sinceMs, untilMs);
+      return countTravelDays(listAllCheckinsAscending(ownerId), input.area as string, sinceMs, untilMs);
     }
     default:
       return { error: `unknown tool: ${name}` };
@@ -425,21 +427,21 @@ export interface ChatMessage {
   content: string;
 }
 
-function buildSystemPrompt(): string {
-  const accounts = listAccounts();
-  const persona = getSetting("persona");
-  const name = getSetting("assistant_name") ?? "Assistant";
+function buildSystemPrompt(ownerId: number): string {
+  const accounts = listAccounts(ownerId);
+  const persona = getSetting(ownerId, "persona");
+  const name = getSetting(ownerId, "assistant_name") ?? "Assistant";
 
   const accountList = accounts.length
     ? accounts.map((a) => `- id ${a.id}: ${a.email} (${a.provider})`).join("\n")
     : "(none connected — tell the user to connect an account on the Setup page first)";
 
-  const folders = listLocalFolders();
+  const folders = listLocalFolders(ownerId);
   const folderList = folders.length
     ? folders.map((f) => `- ${f.path}`).join("\n")
     : "(none configured)";
 
-  const memories = listRecentMemoryNotes().reverse();
+  const memories = listRecentMemoryNotes(ownerId).reverse();
   const memoryList = memories.length
     ? memories.map((m) => `- ${m.content}`).join("\n")
     : "(nothing remembered yet)";
@@ -469,9 +471,9 @@ function buildSystemPrompt(): string {
     .join("\n\n");
 }
 
-export async function runAssistantChat(history: ChatMessage[]): Promise<string> {
+export async function runAssistantChat(ownerId: number, history: ChatMessage[]): Promise<string> {
   const anthropic = getClient();
-  const system = buildSystemPrompt();
+  const system = buildSystemPrompt(ownerId);
 
   // Bound history defensively here (not just at the WhatsApp DB-read site) so the web chat
   // route — which resends whatever the client has accumulated — gets the same cap.
@@ -512,7 +514,7 @@ export async function runAssistantChat(history: ChatMessage[]): Promise<string> 
     const toolResults: Anthropic.ToolResultBlockParam[] = await Promise.all(
       toolUses.map(async (toolUse) => {
         try {
-          const result = await runTool(toolUse.name, toolUse.input as Record<string, unknown>);
+          const result = await runTool(ownerId, toolUse.name, toolUse.input as Record<string, unknown>);
           return {
             type: "tool_result" as const,
             tool_use_id: toolUse.id,

@@ -2,6 +2,7 @@ import { Router } from "express";
 import { listAccounts, deleteAccount } from "../db/store.js";
 import { isGoogleConfigured } from "../providers/google.js";
 import { isMicrosoftConfigured } from "../providers/microsoft.js";
+import type { AuthedRequest } from "../middleware/auth.js";
 
 export const accountRoutes = Router();
 
@@ -22,9 +23,9 @@ accountRoutes.get("/api/providers", (_req, res) => {
   ]);
 });
 
-accountRoutes.get("/api/accounts", (_req, res) => {
+accountRoutes.get("/api/accounts", (req, res) => {
   res.json(
-    listAccounts().map((a) => ({
+    listAccounts((req as unknown as AuthedRequest).userId).map((a) => ({
       id: a.id,
       provider: a.provider,
       email: a.email,
@@ -35,6 +36,6 @@ accountRoutes.get("/api/accounts", (_req, res) => {
 });
 
 accountRoutes.delete("/api/accounts/:id", (req, res) => {
-  deleteAccount(Number(req.params.id));
+  deleteAccount((req as unknown as AuthedRequest).userId, Number(req.params.id));
   res.json({ ok: true });
 });

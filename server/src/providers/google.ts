@@ -38,15 +38,26 @@ function createOAuthClient() {
   );
 }
 
-export function getGoogleAuthUrl(): string {
+export function getGoogleAuthUrl(state: string): string {
   return createOAuthClient().generateAuthUrl({
     access_type: "offline",
     prompt: "consent select_account",
     scope: SCOPES,
+    state,
   });
 }
 
-export async function handleGoogleCallback(code: string): Promise<AccountRow> {
+export interface ExchangedGoogleAuth {
+  email: string;
+  accessToken: string | null;
+  refreshToken: string | null;
+  expiryDate: number | null;
+}
+
+// Exchanges an OAuth code for tokens + the account's email, with no DB write — shared by both
+// the "log into the app" flow (identity only, no data-source row created) and the "connect a
+// data source" flow below (which does write a row).
+export async function exchangeGoogleCode(code: string): Promise<ExchangedGoogleAuth> {
   const client = createOAuthClient();
   const { tokens } = await client.getToken(code);
   client.setCredentials(tokens);
@@ -55,12 +66,22 @@ export async function handleGoogleCallback(code: string): Promise<AccountRow> {
   const { data } = await oauth2.userinfo.get();
   if (!data.email) throw new Error("Google did not return an email for this account");
 
-  return upsertAccount({
-    provider: "google",
+  return {
     email: data.email,
     accessToken: tokens.access_token ?? null,
     refreshToken: tokens.refresh_token ?? null,
     expiryDate: tokens.expiry_date ?? null,
+  };
+}
+
+export async function handleGoogleCallback(code: string, ownerId: number): Promise<AccountRow> {
+  const auth = await exchangeGoogleCode(code);
+  return upsertAccount(ownerId, {
+    provider: "google",
+    email: auth.email,
+    accessToken: auth.accessToken,
+    refreshToken: auth.refreshToken,
+    expiryDate: auth.expiryDate,
   });
 }
 
@@ -73,7 +94,7 @@ function authFor(account: AccountRow) {
     expiry_date: account.expiryDate ?? undefined,
   });
   client.on("tokens", (tokens) => {
-    updateAccountTokens(account.id, {
+    updateAccountTokens(account.ownerId, account.id, {
       accessToken: tokens.access_token ?? account.accessToken,
       refreshToken: tokens.refresh_token ?? undefined,
       expiryDate: tokens.expiry_date ?? account.expiryDate,

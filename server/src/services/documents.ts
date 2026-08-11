@@ -190,6 +190,7 @@ function movementToCheckins(
 }
 
 export async function ingestWhatsAppMedia(params: {
+  ownerId: number;
   phone: string;
   mediaId: string;
   mimeType: string;
@@ -212,7 +213,7 @@ export async function ingestWhatsAppMedia(params: {
         movement: null,
       };
 
-  const doc = saveDocument({
+  const doc = saveDocument(params.ownerId, {
     phone: params.phone,
     filename: params.filename ?? null,
     mimeType,
@@ -223,7 +224,7 @@ export async function ingestWhatsAppMedia(params: {
 
   if (movement) {
     for (const c of movementToCheckins(movement, doc.id)) {
-      saveCheckin({
+      saveCheckin(params.ownerId, {
         country: c.country,
         city: c.city,
         checkedInAt: c.checkedInAt,

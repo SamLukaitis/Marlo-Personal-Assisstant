@@ -1,10 +1,11 @@
 import { Router } from "express";
 import { listMemoryNotes, addMemoryNote, removeMemoryNote } from "../db/store.js";
+import type { AuthedRequest } from "../middleware/auth.js";
 
 export const memoryRoutes = Router();
 
-memoryRoutes.get("/api/memory", (_req, res) => {
-  res.json(listMemoryNotes());
+memoryRoutes.get("/api/memory", (req, res) => {
+  res.json(listMemoryNotes((req as unknown as AuthedRequest).userId));
 });
 
 memoryRoutes.post("/api/memory", (req, res) => {
@@ -13,10 +14,10 @@ memoryRoutes.post("/api/memory", (req, res) => {
     res.status(400).json({ error: "content is required" });
     return;
   }
-  res.json(addMemoryNote(content.trim()));
+  res.json(addMemoryNote((req as unknown as AuthedRequest).userId, content.trim()));
 });
 
 memoryRoutes.delete("/api/memory/:id", (req, res) => {
-  removeMemoryNote(Number(req.params.id));
+  removeMemoryNote((req as unknown as AuthedRequest).userId, Number(req.params.id));
   res.json({ ok: true });
 });

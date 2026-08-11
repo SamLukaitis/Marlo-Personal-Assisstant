@@ -1,5 +1,6 @@
 import { Router } from "express";
 import { runAssistantChat, type ChatMessage } from "../ai/assistant.js";
+import type { AuthedRequest } from "../middleware/auth.js";
 
 export const assistantRoutes = Router();
 
@@ -10,7 +11,7 @@ assistantRoutes.post("/api/assistant/chat", async (req, res) => {
     return;
   }
   try {
-    const reply = await runAssistantChat(history);
+    const reply = await runAssistantChat((req as unknown as AuthedRequest).userId, history);
     res.json({ reply });
   } catch (err) {
     console.error("assistant chat failed", err);

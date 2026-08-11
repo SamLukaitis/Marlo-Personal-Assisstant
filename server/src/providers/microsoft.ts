@@ -26,7 +26,7 @@ function redirectUri(): string {
   return process.env.MS_REDIRECT_URI ?? "http://localhost:4000/auth/microsoft/callback";
 }
 
-export function getMicrosoftAuthUrl(): string {
+export function getMicrosoftAuthUrl(state: string): string {
   if (!isMicrosoftConfigured()) {
     throw new Error("MS_CLIENT_ID / MS_CLIENT_SECRET are not set in the environment");
   }
@@ -37,6 +37,7 @@ export function getMicrosoftAuthUrl(): string {
     response_mode: "query",
     scope: SCOPES,
     prompt: "select_account",
+    state,
   });
   return `${AUTH_BASE}/authorize?${params}`;
 }
@@ -63,7 +64,16 @@ async function exchangeToken(body: Record<string, string>): Promise<TokenRespons
   return (await res.json()) as TokenResponse;
 }
 
-export async function handleMicrosoftCallback(code: string): Promise<AccountRow> {
+export interface ExchangedMicrosoftAuth {
+  email: string;
+  accessToken: string;
+  refreshToken: string | null;
+  expiryDate: number;
+}
+
+// Exchanges an OAuth code for tokens + the account's email, with no DB write — shared by both
+// the "log into the app" flow (identity only) and the "connect a data source" flow below.
+export async function exchangeMicrosoftCode(code: string): Promise<ExchangedMicrosoftAuth> {
   const tokens = await exchangeToken({
     grant_type: "authorization_code",
     code,
@@ -78,12 +88,22 @@ export async function handleMicrosoftCallback(code: string): Promise<AccountRow>
   const email = profile.mail ?? profile.userPrincipalName;
   if (!email) throw new Error("Microsoft did not return an email for this account");
 
-  return upsertAccount({
-    provider: "microsoft",
+  return {
     email,
     accessToken: tokens.access_token,
     refreshToken: tokens.refresh_token ?? null,
     expiryDate: Date.now() + tokens.expires_in * 1000,
+  };
+}
+
+export async function handleMicrosoftCallback(code: string, ownerId: number): Promise<AccountRow> {
+  const auth = await exchangeMicrosoftCode(code);
+  return upsertAccount(ownerId, {
+    provider: "microsoft",
+    email: auth.email,
+    accessToken: auth.accessToken,
+    refreshToken: auth.refreshToken,
+    expiryDate: auth.expiryDate,
   });
 }
 
@@ -98,7 +118,7 @@ async function accessTokenFor(account: AccountRow): Promise<string> {
     grant_type: "refresh_token",
     refresh_token: account.refreshToken,
   });
-  updateAccountTokens(account.id, {
+  updateAccountTokens(account.ownerId, account.id, {
     accessToken: tokens.access_token,
     refreshToken: tokens.refresh_token ?? undefined,
     expiryDate: Date.now() + tokens.expires_in * 1000,

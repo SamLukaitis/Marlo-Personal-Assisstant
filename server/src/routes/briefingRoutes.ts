@@ -5,32 +5,33 @@ import {
   getBriefingSettings,
   saveBriefingSettings,
 } from "../services/briefing.js";
+import type { AuthedRequest } from "../middleware/auth.js";
 
 export const briefingRoutes = Router();
 
-briefingRoutes.get("/api/briefing", async (_req, res) => {
+briefingRoutes.get("/api/briefing", async (req, res) => {
   try {
-    res.json(await getTodaysBriefing());
+    res.json(await getTodaysBriefing((req as unknown as AuthedRequest).userId));
   } catch (err) {
     res.status(500).json({ error: (err as Error).message });
   }
 });
 
-briefingRoutes.post("/api/briefing/refresh", async (_req, res) => {
+briefingRoutes.post("/api/briefing/refresh", async (req, res) => {
   try {
-    res.json(await refreshBriefing());
+    res.json(await refreshBriefing((req as unknown as AuthedRequest).userId));
   } catch (err) {
     res.status(500).json({ error: (err as Error).message });
   }
 });
 
-briefingRoutes.get("/api/briefing/settings", (_req, res) => {
-  res.json(getBriefingSettings());
+briefingRoutes.get("/api/briefing/settings", (req, res) => {
+  res.json(getBriefingSettings((req as unknown as AuthedRequest).userId));
 });
 
 briefingRoutes.put("/api/briefing/settings", (req, res) => {
   const { enabled, includeNews, topics, proactive, sendTime } = req.body ?? {};
-  saveBriefingSettings({
+  saveBriefingSettings((req as unknown as AuthedRequest).userId, {
     enabled: !!enabled,
     includeNews: !!includeNews,
     topics: Array.isArray(topics) ? topics : [],

@@ -1,10 +1,5 @@
 import { getBriefingSettings, getTodaysBriefing } from "./briefing.js";
-import {
-  getSetting,
-  setSetting,
-  getWhatsAppAllowedNumbers,
-  listAllCheckinsAscending,
-} from "../db/store.js";
+import { getSetting, setSetting, listPhoneNumbersForUser, listAllCheckinsAscending, listAllUserIds } from "../db/store.js";
 import { sendWhatsAppMessage, isWhatsAppConfigured } from "../providers/whatsapp.js";
 import { countTravelDays } from "./travelDays.js";
 import { checkForNewImportantMessages } from "./alerts.js";
@@ -25,10 +20,10 @@ function currentHHMM(): string {
   return `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
 }
 
-function schengenAlertLine(): string | null {
+function schengenAlertLine(ownerId: number): string | null {
   const now = Date.now();
   const sinceMs = now - 180 * 24 * 60 * 60 * 1000;
-  const result = countTravelDays(listAllCheckinsAscending(), "schengen", sinceMs, now);
+  const result = countTravelDays(listAllCheckinsAscending(ownerId), "schengen", sinceMs, now);
   if (result.daysPresent >= SCHENGEN_LIMIT) {
     return `🚨 Schengen alert: you've used ${result.daysPresent}/90 days in the last 180 days — you're at or over the limit.`;
   }
@@ -41,54 +36,63 @@ function schengenAlertLine(): string | null {
 // Runs every few minutes and fires at most once per calendar day, once local time has passed
 // the configured send time — not a precise cron, but good enough for a personal daily nudge,
 // and it still catches up later in the day if the server was off right at the target time.
-async function runDailyCheck(): Promise<void> {
-  const settings = getBriefingSettings();
+async function runDailyCheckForUser(ownerId: number): Promise<void> {
+  const settings = getBriefingSettings(ownerId);
   if (!settings.proactive) return;
-  if (getSetting("last_proactive_send_date") === todayKey()) return;
+  if (getSetting(ownerId, "last_proactive_send_date") === todayKey()) return;
   if (currentHHMM() < settings.sendTime) return;
 
   if (!isWhatsAppConfigured()) {
     console.warn(
       "scheduler: proactive briefing is enabled but WhatsApp isn't configured — skipping"
     );
-    setSetting("last_proactive_send_date", todayKey());
+    setSetting(ownerId, "last_proactive_send_date", todayKey());
     return;
   }
 
-  const numbers = getWhatsAppAllowedNumbers();
+  const numbers = listPhoneNumbersForUser(ownerId).map((r) => r.phone);
   if (numbers.length === 0) {
     console.warn(
-      "scheduler: proactive briefing is enabled but no WhatsApp numbers are allowed — skipping"
+      `scheduler: proactive briefing is enabled for user ${ownerId} but they have no WhatsApp numbers registered — skipping`
     );
-    setSetting("last_proactive_send_date", todayKey());
+    setSetting(ownerId, "last_proactive_send_date", todayKey());
     return;
   }
 
   try {
-    const briefing = await getTodaysBriefing();
-    const alert = schengenAlertLine();
+    const briefing = await getTodaysBriefing(ownerId);
+    const alert = schengenAlertLine(ownerId);
     const message = alert ? `${briefing.content}\n\n${alert}` : briefing.content;
     for (const number of numbers) {
       await sendWhatsAppMessage(number, message);
     }
-    setSetting("last_proactive_send_date", todayKey());
+    setSetting(ownerId, "last_proactive_send_date", todayKey());
   } catch (err) {
-    console.error("scheduler: failed to send proactive briefing", err);
+    console.error(`scheduler: failed to send proactive briefing for user ${ownerId}`, err);
   }
 }
 
-async function runAlertsCheck(): Promise<void> {
-  if (getSetting("realtime_alerts_enabled") !== "true") return;
+async function runAlertsCheckForUser(ownerId: number): Promise<void> {
+  if (getSetting(ownerId, "realtime_alerts_enabled") !== "true") return;
   try {
-    await checkForNewImportantMessages();
+    await checkForNewImportantMessages(ownerId);
   } catch (err) {
-    console.error("scheduler: alerts check failed", err);
+    console.error(`scheduler: alerts check failed for user ${ownerId}`, err);
   }
 }
 
+// Loops over every tenant rather than assuming a single global run — each user's iteration is
+// caught independently so one tenant's failure (a broken account, a transient API error) can't
+// block or crash another tenant's briefing/alerts.
 async function tick(): Promise<void> {
-  await runDailyCheck().catch((err) => console.error("scheduler: daily check failed", err));
-  await runAlertsCheck();
+  for (const ownerId of listAllUserIds()) {
+    await runDailyCheckForUser(ownerId).catch((err) =>
+      console.error(`scheduler: daily check failed for user ${ownerId}`, err)
+    );
+    await runAlertsCheckForUser(ownerId).catch((err) =>
+      console.error(`scheduler: alerts check failed for user ${ownerId}`, err)
+    );
+  }
 }
 
 export function startScheduler(): void {

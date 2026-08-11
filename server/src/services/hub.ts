@@ -48,6 +48,8 @@ function settle<T>(results: PromiseSettledResult<T[]>[]): T[] {
 // Account-aware version — pairs each settled result with the account (or null for
 // account-less sources like local files) that produced it, so an auth failure can be
 // attributed to the specific connection that needs reconnecting instead of failing silently.
+// ownerId travels on the account row itself now (AccountRow.ownerId), so this needs no
+// separate owner parameter beyond what's already in `owners`.
 function settleForAccounts<T>(
   owners: (AccountRow | null)[],
   results: PromiseSettledResult<T[]>[]
@@ -56,26 +58,28 @@ function settleForAccounts<T>(
     const owner = owners[i];
     if (r.status === "rejected") {
       console.error("hub: provider call failed:", r.reason);
-      if (owner && isAuthError(r.reason)) markAccountAuthBroken(owner.id);
+      if (owner && isAuthError(r.reason)) markAccountAuthBroken(owner.ownerId, owner.id);
       return [];
     }
-    if (owner) markAccountAuthHealthy(owner.id);
+    if (owner) markAccountAuthHealthy(owner.ownerId, owner.id);
     return r.value;
   });
 }
 
-function requireAccount(accountId: number): AccountRow {
-  const account = getAccount(accountId);
+// Scoped by owner — this used to accept any account id with no ownership check (the same class
+// of IDOR as the old getDocument/getAccount: /api/messages/:accountId/... could be pointed at
+// any account in the DB, not just one belonging to the caller).
+function requireAccount(ownerId: number, accountId: number): AccountRow {
+  const account = getAccount(ownerId, accountId);
   if (!account) throw new Error(`No connected account with id ${accountId}`);
   return account;
 }
 
-export async function hubListMessages(opts: {
-  query?: string;
-  limit?: number;
-  accountId?: number;
-}): Promise<UnifiedMessage[]> {
-  const accounts = opts.accountId ? [requireAccount(opts.accountId)] : listAccounts();
+export async function hubListMessages(
+  ownerId: number,
+  opts: { query?: string; limit?: number; accountId?: number }
+): Promise<UnifiedMessage[]> {
+  const accounts = opts.accountId ? [requireAccount(ownerId, opts.accountId)] : listAccounts(ownerId);
   const results = await Promise.allSettled(
     accounts.map((a) =>
       a.provider === "google"
@@ -87,17 +91,18 @@ export async function hubListMessages(opts: {
 }
 
 export async function hubGetMessage(
+  ownerId: number,
   accountId: number,
   messageId: string
 ): Promise<UnifiedMessage | null> {
-  const account = requireAccount(accountId);
+  const account = requireAccount(ownerId, accountId);
   return account.provider === "google"
     ? g.googleGetMessage(account, messageId)
     : ms.microsoftGetMessage(account, messageId);
 }
 
-export async function hubListEvents(days = 7): Promise<CalendarEvent[]> {
-  const accounts = listAccounts();
+export async function hubListEvents(ownerId: number, days = 7): Promise<CalendarEvent[]> {
+  const accounts = listAccounts(ownerId);
   const results = await Promise.allSettled(
     accounts.map((a) =>
       a.provider === "google" ? g.googleListEvents(a, days) : ms.microsoftListEvents(a, days)
@@ -106,26 +111,26 @@ export async function hubListEvents(days = 7): Promise<CalendarEvent[]> {
   return settleForAccounts(accounts, results).sort((a, b) => (a.start > b.start ? 1 : -1));
 }
 
-export async function hubSearchFiles(query: string): Promise<FileHit[]> {
-  const googleAccounts = listAccounts("google");
-  const msAccounts = listAccounts("microsoft");
+export async function hubSearchFiles(ownerId: number, query: string): Promise<FileHit[]> {
+  const googleAccounts = listAccounts(ownerId, "google");
+  const msAccounts = listAccounts(ownerId, "microsoft");
   const results = await Promise.allSettled([
     ...googleAccounts.map((a) => g.googleSearchFiles(a, query)),
     ...msAccounts.map((a) => ms.microsoftSearchFiles(a, query)),
-    local.localSearchFiles(query),
+    local.localSearchFiles(ownerId, query),
   ]);
   const owners: (AccountRow | null)[] = [...googleAccounts, ...msAccounts, null];
   return settleForAccounts(owners, results).sort((a, b) => (a.modifiedAt < b.modifiedAt ? 1 : -1));
 }
 
-export async function hubListChats(limit = 20): Promise<ChatThread[]> {
-  const accounts = listAccounts("microsoft");
+export async function hubListChats(ownerId: number, limit = 20): Promise<ChatThread[]> {
+  const accounts = listAccounts(ownerId, "microsoft");
   const results = await Promise.allSettled(accounts.map((a) => ms.microsoftListChats(a, limit)));
   return settleForAccounts(accounts, results).sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1));
 }
 
-export async function hubSearchChats(query: string, limit = 20): Promise<ChatThread[]> {
-  const accounts = listAccounts("microsoft");
+export async function hubSearchChats(ownerId: number, query: string, limit = 20): Promise<ChatThread[]> {
+  const accounts = listAccounts(ownerId, "microsoft");
   const results = await Promise.allSettled(
     accounts.map((a) => ms.microsoftSearchChats(a, query, limit))
   );
@@ -133,68 +138,73 @@ export async function hubSearchChats(query: string, limit = 20): Promise<ChatThr
 }
 
 export async function hubCreateDraft(
+  ownerId: number,
   accountId: number,
   to: string,
   subject: string,
   body: string
 ): Promise<DraftResult> {
-  const account = requireAccount(accountId);
+  const account = requireAccount(ownerId, accountId);
   return account.provider === "google"
     ? g.googleCreateDraft(account, to, subject, body)
     : ms.microsoftCreateDraft(account, to, subject, body);
 }
 
 export async function hubCreateEvent(
+  ownerId: number,
   accountId: number,
   input: EventInput
 ): Promise<CalendarEvent> {
-  const account = requireAccount(accountId);
+  const account = requireAccount(ownerId, accountId);
   return account.provider === "google"
     ? g.googleCreateEvent(account, input)
     : ms.microsoftCreateEvent(account, input);
 }
 
 export async function hubUpdateEvent(
+  ownerId: number,
   accountId: number,
   eventId: string,
   input: Partial<EventInput>
 ): Promise<CalendarEvent> {
-  const account = requireAccount(accountId);
+  const account = requireAccount(ownerId, accountId);
   return account.provider === "google"
     ? g.googleUpdateEvent(account, eventId, input)
     : ms.microsoftUpdateEvent(account, eventId, input);
 }
 
-export async function hubDeleteEvent(accountId: number, eventId: string): Promise<void> {
-  const account = requireAccount(accountId);
+export async function hubDeleteEvent(ownerId: number, accountId: number, eventId: string): Promise<void> {
+  const account = requireAccount(ownerId, accountId);
   if (account.provider === "google") await g.googleDeleteEvent(account, eventId);
   else await ms.microsoftDeleteEvent(account, eventId);
 }
 
 export async function hubArchiveMessages(
+  ownerId: number,
   accountId: number,
   query: string,
   limit = 50
 ): Promise<number> {
-  const account = requireAccount(accountId);
+  const account = requireAccount(ownerId, accountId);
   return account.provider === "google"
     ? g.googleArchiveMessages(account, query, limit)
     : ms.microsoftArchiveMessages(account, query, limit);
 }
 
 export async function hubAddLabel(
+  ownerId: number,
   accountId: number,
   messageId: string,
   label: string
 ): Promise<void> {
-  const account = requireAccount(accountId);
+  const account = requireAccount(ownerId, accountId);
   if (account.provider === "google") await g.googleAddLabel(account, messageId, label);
   else await ms.microsoftAddCategory(account, messageId, label);
 }
 
-export async function hubSearchContacts(query: string, limit = 10): Promise<ContactHit[]> {
-  const googleAccounts = listAccounts("google");
-  const msAccounts = listAccounts("microsoft");
+export async function hubSearchContacts(ownerId: number, query: string, limit = 10): Promise<ContactHit[]> {
+  const googleAccounts = listAccounts(ownerId, "google");
+  const msAccounts = listAccounts(ownerId, "microsoft");
   const results = await Promise.allSettled([
     ...googleAccounts.map((a) => g.googleSearchContacts(a, query, limit)),
     ...msAccounts.map((a) => ms.microsoftSearchContacts(a, query, limit)),
@@ -208,8 +218,8 @@ export async function hubSearchContacts(query: string, limit = 10): Promise<Cont
 export const AUTOMATED_SENDER_PATTERN =
   /no-?reply|notifications?@|newsletter|updates?@|do-?not-?reply|automated|mailer-daemon/i;
 
-export async function hubFlaggedMessages(daysThreshold = 3): Promise<UnifiedMessage[]> {
-  const all = await hubListMessages({ limit: 100 });
+export async function hubFlaggedMessages(ownerId: number, daysThreshold = 3): Promise<UnifiedMessage[]> {
+  const all = await hubListMessages(ownerId, { limit: 100 });
   const cutoff = Date.now() - daysThreshold * 24 * 60 * 60 * 1000;
   return all.filter((m) => {
     if (!m.unread || !m.receivedAt) return false;

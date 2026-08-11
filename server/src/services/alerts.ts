@@ -1,11 +1,5 @@
 import { hubListMessages, AUTOMATED_SENDER_PATTERN } from "./hub.js";
-import {
-  hasAlerted,
-  markAlerted,
-  getSetting,
-  setSetting,
-  getWhatsAppAllowedNumbers,
-} from "../db/store.js";
+import { hasAlerted, markAlerted, getSetting, setSetting, listPhoneNumbersForUser } from "../db/store.js";
 import { sendWhatsAppMessage, isWhatsAppConfigured } from "../providers/whatsapp.js";
 import type { UnifiedMessage } from "../providers/types.js";
 
@@ -28,26 +22,27 @@ async function notify(numbers: string[], text: string): Promise<void> {
 
 // Polls for unread mail from real people (not newsletters/notifications) and pings WhatsApp
 // the moment one shows up, instead of waiting for the next day's briefing. Dedupes via a
-// persisted ledger so the same message never triggers twice across restarts.
-export async function checkForNewImportantMessages(): Promise<void> {
-  const messages = await hubListMessages({ limit: 50 });
+// persisted ledger so the same message never triggers twice across restarts. Runs per-tenant —
+// scheduler.ts loops over every user and calls this once per owner.
+export async function checkForNewImportantMessages(ownerId: number): Promise<void> {
+  const messages = await hubListMessages(ownerId, { limit: 50 });
   const candidates = messages.filter(
     (m) => m.unread && m.from && !AUTOMATED_SENDER_PATTERN.test(m.from)
   );
 
   // First-ever run: record the current inbox as a baseline instead of alerting on everything
   // that was already sitting there unread before this feature existed.
-  if (getSetting(BASELINE_KEY) !== "true") {
-    for (const m of candidates) markAlerted(messageKey(m));
-    setSetting(BASELINE_KEY, "true");
+  if (getSetting(ownerId, BASELINE_KEY) !== "true") {
+    for (const m of candidates) markAlerted(ownerId, messageKey(m));
+    setSetting(ownerId, BASELINE_KEY, "true");
     return;
   }
 
-  const unseen = candidates.filter((m) => !hasAlerted(messageKey(m)));
+  const unseen = candidates.filter((m) => !hasAlerted(ownerId, messageKey(m)));
   if (unseen.length === 0) return;
   if (!isWhatsAppConfigured()) return;
 
-  const numbers = getWhatsAppAllowedNumbers();
+  const numbers = listPhoneNumbersForUser(ownerId).map((r) => r.phone);
   if (numbers.length === 0) return;
 
   const toSend = unseen.slice(0, MAX_ALERTS_PER_CHECK);
@@ -56,13 +51,13 @@ export async function checkForNewImportantMessages(): Promise<void> {
       numbers,
       `📬 New message that might need attention:\n"${m.subject}" from ${m.from}\n${m.snippet}`
     );
-    markAlerted(messageKey(m));
+    markAlerted(ownerId, messageKey(m));
   }
 
   // A burst beyond the per-check cap gets one summary line instead of individually spamming.
   const rest = unseen.slice(MAX_ALERTS_PER_CHECK);
   if (rest.length > 0) {
-    for (const m of rest) markAlerted(messageKey(m));
+    for (const m of rest) markAlerted(ownerId, messageKey(m));
     await notify(
       numbers,
       `...and ${rest.length} more new message${rest.length === 1 ? "" : "s"} that might need attention — check your inbox.`

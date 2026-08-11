@@ -42,8 +42,8 @@ const DEFAULT_SETTINGS: BriefingSettings = {
   sendTime: "07:30",
 };
 
-export function getBriefingSettings(): BriefingSettings {
-  const raw = getSetting("briefing_settings");
+export function getBriefingSettings(ownerId: number): BriefingSettings {
+  const raw = getSetting(ownerId, "briefing_settings");
   if (!raw) return DEFAULT_SETTINGS;
   try {
     return { ...DEFAULT_SETTINGS, ...JSON.parse(raw) };
@@ -52,19 +52,19 @@ export function getBriefingSettings(): BriefingSettings {
   }
 }
 
-export function saveBriefingSettings(settings: BriefingSettings): void {
-  setSetting("briefing_settings", JSON.stringify(settings));
+export function saveBriefingSettings(ownerId: number, settings: BriefingSettings): void {
+  setSetting(ownerId, "briefing_settings", JSON.stringify(settings));
 }
 
-async function buildBriefingText(): Promise<string> {
-  const settings = getBriefingSettings();
-  const assistantName = getSetting("assistant_name") ?? "Assistant";
-  const persona = getSetting("persona") ?? "";
+async function buildBriefingText(ownerId: number): Promise<string> {
+  const settings = getBriefingSettings(ownerId);
+  const assistantName = getSetting(ownerId, "assistant_name") ?? "Assistant";
+  const persona = getSetting(ownerId, "persona") ?? "";
 
   const [messages, events, flagged] = await Promise.all([
-    hubListMessages({ limit: 50 }),
-    hubListEvents(1),
-    hubFlaggedMessages(),
+    hubListMessages(ownerId, { limit: 50 }),
+    hubListEvents(ownerId, 1),
+    hubFlaggedMessages(ownerId),
   ]);
 
   const unread = messages.filter((m) => m.unread);
@@ -115,16 +115,16 @@ For Inbox/Calendar/Needs attention, if the fact says "none" or "nothing schedule
   return text?.text ?? "Nothing to report today.";
 }
 
-export async function getTodaysBriefing(): Promise<{ date: string; content: string }> {
+export async function getTodaysBriefing(ownerId: number): Promise<{ date: string; content: string }> {
   const date = todayKey();
-  const existing = getBriefing(date);
+  const existing = getBriefing(ownerId, date);
   if (existing) return existing;
-  const content = await buildBriefingText();
-  return saveBriefing(date, content);
+  const content = await buildBriefingText(ownerId);
+  return saveBriefing(ownerId, date, content);
 }
 
-export async function refreshBriefing(): Promise<{ date: string; content: string }> {
+export async function refreshBriefing(ownerId: number): Promise<{ date: string; content: string }> {
   const date = todayKey();
-  const content = await buildBriefingText();
-  return saveBriefing(date, content);
+  const content = await buildBriefingText(ownerId);
+  return saveBriefing(ownerId, date, content);
 }
