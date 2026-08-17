@@ -52,6 +52,38 @@ describe("buildToolsForOwner", () => {
       ttl: "1h",
     });
   });
+
+  it("includes all 4 conditional tools with no duplicates when both teams and travel are enabled", () => {
+    const userNeitherEnabled = findOrCreateUserByEmail(uniqueEmail("both-baseline"));
+    const alwaysOnCount = buildToolsForOwner(userNeitherEnabled.id).length;
+
+    const user = findOrCreateUserByEmail(uniqueEmail("both-on"));
+    setToolEnabled(user.id, "teams", true);
+    setToolEnabled(user.id, "travel", true);
+    const result = buildToolsForOwner(user.id);
+    const names = result.map((t) => t.name);
+
+    expect(names).toContain("list_recent_chats");
+    expect(names).toContain("search_chats");
+    expect(names).toContain("list_travel_checkins");
+    expect(names).toContain("count_travel_days");
+
+    // No duplicates anywhere in the assembled array.
+    expect(new Set(names).size).toBe(names.length);
+    // Exactly the always-on tools plus the 4 conditional ones — nothing dropped, nothing doubled.
+    expect(result.length).toBe(alwaysOnCount + 4);
+
+    // Cache breakpoint lands on whichever tool is actually last — read it from the array rather
+    // than assuming which tool that is.
+    expect(result[result.length - 1].cache_control).toEqual({
+      type: "ephemeral",
+      ttl: "1h",
+    });
+    // And it must be the ONLY tool carrying cache_control.
+    const withCache = result.filter((t) => t.cache_control !== undefined);
+    expect(withCache.length).toBe(1);
+    expect(withCache[0].name).toBe(result[result.length - 1].name);
+  });
 });
 
 describe("buildSystemPrompt", () => {
