@@ -8,6 +8,9 @@ import {
   listDocuments,
   listCheckins,
   listAllCheckinsAscending,
+  getEnabledTools,
+  TOOL_KEYS,
+  type ToolKey,
   type DocumentRow,
 } from "../db/store.js";
 import { listLocalFolders } from "../providers/local.js";
@@ -69,7 +72,7 @@ function getClient(): Anthropic {
   return client;
 }
 
-const tools: Anthropic.Tool[] = [
+const ALWAYS_ON_TOOLS: Anthropic.Tool[] = [
   {
     name: "list_recent_messages",
     description:
@@ -124,29 +127,6 @@ const tools: Anthropic.Tool[] = [
     name: "search_files",
     description:
       "Search files by name across the user's connected Google Drive, OneDrive, and configured local computer folders. Call this when the user asks to find a document, invoice, spreadsheet, photo, or other file.",
-    input_schema: {
-      type: "object",
-      properties: {
-        query: { type: "string" },
-      },
-      required: ["query"],
-    },
-  },
-  {
-    name: "list_recent_chats",
-    description:
-      "List the user's most recent Microsoft Teams conversations (direct messages and group chats). Call this when the user asks what's new in Teams or about recent chat messages.",
-    input_schema: {
-      type: "object",
-      properties: {
-        limit: { type: "number", description: "Max chats, default 20" },
-      },
-    },
-  },
-  {
-    name: "search_chats",
-    description:
-      "Search the user's Microsoft Teams chat messages by keyword. Call this when the user asks to find something someone said in Teams.",
     input_schema: {
       type: "object",
       properties: {
@@ -299,42 +279,98 @@ const tools: Anthropic.Tool[] = [
       },
     },
   },
-  {
-    name: "list_travel_checkins",
-    description:
-      "List the user's location check-ins (country/city + timestamp), newest first. These are logged automatically by a phone automation when the user lands somewhere or crosses a border — not something they send manually. Call this for travel questions like 'where have I been' or 'when did I arrive in France'. This is raw location history, not day-counting — use count_travel_days for duration questions instead of doing the arithmetic yourself.",
-    input_schema: {
-      type: "object",
-      properties: {
-        limit: { type: "number", description: "Max check-ins, default 50" },
-      },
-    },
-  },
-  {
-    name: "count_travel_days",
-    description:
-      "Count how many days the user has spent in a country or region, computed deterministically from logged location check-ins (not documents/boarding passes). Use area 'schengen' or 'eu' for those groupings, or the exact country name as it appears in list_travel_checkins output (case-insensitive) — check that tool first if unsure of the exact spelling. Defaults to the last 180 days (the window relevant to the Schengen 90/180 rule) if no dates are given; pass explicit since_date/until_date (YYYY-MM-DD) for a different range, e.g. a specific year.",
-    input_schema: {
-      type: "object",
-      properties: {
-        area: { type: "string", description: "'schengen', 'eu', or an exact country name" },
-        since_date: { type: "string", description: "ISO date YYYY-MM-DD, default 180 days ago" },
-        until_date: { type: "string", description: "ISO date YYYY-MM-DD, default today" },
-      },
-      required: ["area"],
-    },
-    // Cache breakpoint: these 19 tool schemas are identical on every call (web or WhatsApp),
-    // so this is close to free — Anthropic caches everything up to and including this block.
-    cache_control: { type: "ephemeral", ttl: "1h" },
-  },
 ];
+
+const CONDITIONAL_TOOLS: Record<ToolKey, Anthropic.Tool[]> = {
+  teams: [
+    {
+      name: "list_recent_chats",
+      description:
+        "List the user's most recent Microsoft Teams conversations (direct messages and group chats). Call this when the user asks what's new in Teams or about recent chat messages.",
+      input_schema: {
+        type: "object",
+        properties: {
+          limit: { type: "number", description: "Max chats, default 20" },
+        },
+      },
+    },
+    {
+      name: "search_chats",
+      description:
+        "Search the user's Microsoft Teams chat messages by keyword. Call this when the user asks to find something someone said in Teams.",
+      input_schema: {
+        type: "object",
+        properties: {
+          query: { type: "string" },
+        },
+        required: ["query"],
+      },
+    },
+  ],
+  travel: [
+    {
+      name: "list_travel_checkins",
+      description:
+        "List the user's location check-ins (country/city + timestamp), newest first. These are logged automatically by a phone automation when the user lands somewhere or crosses a border — not something they send manually. Call this for travel questions like 'where have I been' or 'when did I arrive in France'. This is raw location history, not day-counting — use count_travel_days for duration questions instead of doing the arithmetic yourself.",
+      input_schema: {
+        type: "object",
+        properties: {
+          limit: { type: "number", description: "Max check-ins, default 50" },
+        },
+      },
+    },
+    {
+      name: "count_travel_days",
+      description:
+        "Count how many days the user has spent in a country or region, computed deterministically from logged location check-ins (not documents/boarding passes). Use area 'schengen' or 'eu' for those groupings, or the exact country name as it appears in list_travel_checkins output (case-insensitive) — check that tool first if unsure of the exact spelling. Defaults to the last 180 days (the window relevant to the Schengen 90/180 rule) if no dates are given; pass explicit since_date/until_date (YYYY-MM-DD) for a different range, e.g. a specific year.",
+      input_schema: {
+        type: "object",
+        properties: {
+          area: { type: "string", description: "'schengen', 'eu', or an exact country name" },
+          since_date: { type: "string", description: "ISO date YYYY-MM-DD, default 180 days ago" },
+          until_date: { type: "string", description: "ISO date YYYY-MM-DD, default today" },
+        },
+        required: ["area"],
+      },
+    },
+  ],
+};
+
+export function buildToolsForOwner(ownerId: number): Anthropic.Tool[] {
+  const enabled = getEnabledTools(ownerId);
+  const result = [...ALWAYS_ON_TOOLS];
+  for (const key of TOOL_KEYS) {
+    if (enabled.has(key)) result.push(...CONDITIONAL_TOOLS[key]);
+  }
+  // Cache breakpoint must be on the LAST tool schema in the array — which tool that is now
+  // depends on which conditional tools are enabled, so it's set dynamically here rather than
+  // hardcoded on one specific tool definition like before.
+  if (result.length > 0) {
+    result[result.length - 1] = {
+      ...result[result.length - 1],
+      cache_control: { type: "ephemeral", ttl: "1h" },
+    };
+  }
+  return result;
+}
 
 function forModel(doc: DocumentRow) {
   const { storedPath: _storedPath, ...rest } = doc;
   return rest;
 }
 
-async function runTool(ownerId: number, name: string, input: Record<string, unknown>): Promise<unknown> {
+const TOOL_NAME_TO_KEY: Record<string, ToolKey> = {
+  list_recent_chats: "teams",
+  search_chats: "teams",
+  list_travel_checkins: "travel",
+  count_travel_days: "travel",
+};
+
+export async function runTool(ownerId: number, name: string, input: Record<string, unknown>): Promise<unknown> {
+  const requiredKey = TOOL_NAME_TO_KEY[name];
+  if (requiredKey && !getEnabledTools(ownerId).has(requiredKey)) {
+    return { error: `tool not enabled: ${name}` };
+  }
   switch (name) {
     case "list_recent_messages":
       return hubListMessages(ownerId, {
@@ -427,7 +463,30 @@ export interface ChatMessage {
   content: string;
 }
 
-function buildSystemPrompt(ownerId: number): string {
+function buildRules(enabled: Set<ToolKey>): string {
+  const base = [
+    "- Always look up real data with your tools before answering questions about email, calendar, or files — never invent contents.",
+    "- You can create email drafts but can never send email. After creating a draft, tell the user to review and send it from their mailbox.",
+    "- You can create, edit, and delete calendar events directly on the user's own calendar — these are low-risk and reversible. You can never invite other people to an event; calendar events you create are personal-only.",
+    '- You can archive emails and apply labels/categories directly — archiving is fully reversible (the email is just removed from the inbox, never deleted) so you don\'t need to ask permission first, but do confirm if the query is broad or ambiguous (e.g. "archive everything" with no filter).',
+    "- Use search_contacts to resolve a name to an email address before drafting to someone when you don't already have their address.",
+    "- Use the remember tool proactively whenever the user shares something worth recalling later (preferences, which account is which, standing instructions) — don't wait to be asked.",
+    '- Use search_documents/list_recent_documents when the user asks about something they photographed or sent via WhatsApp (boarding passes, licenses, tickets, receipts) — e.g. "when did I fly to X" or "what\'s the code on my license".',
+  ];
+  const travel = [
+    "- Use list_travel_checkins for questions about where the user has physically been or when they arrived somewhere — this is automatic location history, separate from documents.",
+    '- Use count_travel_days for "how many days have I spent in X" style questions — never estimate day counts yourself from raw check-in timestamps or document text.',
+  ];
+  const tail = [
+    '- When a message reports a document that was just saved (e.g. a WhatsApp photo/PDF), don\'t dump every extracted field back at the user — give a short confirmation of only the key fact(s) (e.g. what it is, and the one or two details most likely to matter, like dates or a confirmation code), then carry out whatever else was asked. Save the full itemized breakdown for if the user explicitly asks to see all the details (e.g. "show me everything on it").',
+    '- When one message asks for multiple things (e.g. "save this and also add it to my calendar"), do all of them in that same turn using your tools — don\'t complete only the first one and wait to be asked again for the rest.',
+    "- When several accounts are connected and the user's request is ambiguous about which one, search across all of them or ask.",
+    "- Keep answers concise and lead with the direct answer.",
+  ];
+  return ["Rules:", ...base, ...(enabled.has("travel") ? travel : []), ...tail].join("\n");
+}
+
+export function buildSystemPrompt(ownerId: number): string {
   const accounts = listAccounts(ownerId);
   const persona = getSetting(ownerId, "persona");
   const name = getSetting(ownerId, "assistant_name") ?? "Assistant";
@@ -452,20 +511,7 @@ function buildSystemPrompt(ownerId: number): string {
     `Connected accounts:\n${accountList}`,
     `Local computer folders searchable by file name:\n${folderList}`,
     `Things you've learned about the user over past conversations:\n${memoryList}`,
-    `Rules:
-- Always look up real data with your tools before answering questions about email, calendar, or files — never invent contents.
-- You can create email drafts but can never send email. After creating a draft, tell the user to review and send it from their mailbox.
-- You can create, edit, and delete calendar events directly on the user's own calendar — these are low-risk and reversible. You can never invite other people to an event; calendar events you create are personal-only.
-- You can archive emails and apply labels/categories directly — archiving is fully reversible (the email is just removed from the inbox, never deleted) so you don't need to ask permission first, but do confirm if the query is broad or ambiguous (e.g. "archive everything" with no filter).
-- Use search_contacts to resolve a name to an email address before drafting to someone when you don't already have their address.
-- Use the remember tool proactively whenever the user shares something worth recalling later (preferences, which account is which, standing instructions) — don't wait to be asked.
-- Use search_documents/list_recent_documents when the user asks about something they photographed or sent via WhatsApp (boarding passes, licenses, tickets, receipts) — e.g. "when did I fly to X" or "what's the code on my license".
-- Use list_travel_checkins for questions about where the user has physically been or when they arrived somewhere — this is automatic location history, separate from documents.
-- Use count_travel_days for "how many days have I spent in X" style questions — never estimate day counts yourself from raw check-in timestamps or document text.
-- When a message reports a document that was just saved (e.g. a WhatsApp photo/PDF), don't dump every extracted field back at the user — give a short confirmation of only the key fact(s) (e.g. what it is, and the one or two details most likely to matter, like dates or a confirmation code), then carry out whatever else was asked. Save the full itemized breakdown for if the user explicitly asks to see all the details (e.g. "show me everything on it").
-- When one message asks for multiple things (e.g. "save this and also add it to my calendar"), do all of them in that same turn using your tools — don't complete only the first one and wait to be asked again for the rest.
-- When several accounts are connected and the user's request is ambiguous about which one, search across all of them or ask.
-- Keep answers concise and lead with the direct answer.`,
+    buildRules(getEnabledTools(ownerId)),
   ]
     .filter(Boolean)
     .join("\n\n");
@@ -494,7 +540,7 @@ export async function runAssistantChat(ownerId: number, history: ChatMessage[]):
       max_tokens: 4096,
       ...(useThinking ? { thinking: { type: "adaptive" as const } } : {}),
       system: [{ type: "text", text: system, cache_control: { type: "ephemeral", ttl: "1h" } }],
-      tools,
+      tools: buildToolsForOwner(ownerId),
       messages,
     });
 
