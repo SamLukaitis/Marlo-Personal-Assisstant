@@ -30,39 +30,45 @@ export function CalendarPage() {
 
   return (
     <div className="main">
-      <h1>Calendar</h1>
-      <div className="row" style={{ marginBottom: 16 }}>
-        {[7, 14, 30].map((d) => (
-          <button
-            key={d}
-            className={d === days ? "" : "secondary"}
-            onClick={() => setDays(d)}
-          >
-            Next {d} days
-          </button>
-        ))}
-      </div>
-
-      <div className="card">
-        {loading && <p className="muted">Loading…</p>}
-        {error && <p className="error">{error}</p>}
-        {!loading && !error && events.length === 0 && (
-          <p className="muted">No upcoming events — connect an account on the Setup page.</p>
-        )}
-        {events.map((e) => (
-          <div key={`${e.accountId}-${e.id}`} className="list-item">
-            <a href={e.link} target="_blank" rel="noreferrer">
-              <div className="title">
-                <span>{e.title}</span>
-                <span className="badge">{e.accountEmail}</span>
-              </div>
-              <div className="sub">
-                {fmt(e.start)} → {fmt(e.end)}
-                {e.location ? ` · ${e.location}` : ""}
-              </div>
-            </a>
+      <div className="main-inner">
+        <div className="page-header">
+          <h1 className="heading-font">Calendar</h1>
+          <div className="segmented-control">
+            {[7, 14, 30].map((d) => (
+              <button
+                key={d}
+                className={`segmented-btn${d === days ? " active" : ""}`}
+                onClick={() => setDays(d)}
+              >
+                {d}d
+              </button>
+            ))}
           </div>
-        ))}
+        </div>
+
+        <div className="card" style={{ flex: 1, minHeight: 0, overflowY: "auto" }}>
+          {loading && <p className="muted" style={{ padding: 16 }}>Loading…</p>}
+          {error && <p className="error" style={{ padding: 16 }}>{error}</p>}
+          {!loading && !error && events.length === 0 && (
+            <p className="muted" style={{ padding: 16 }}>
+              No upcoming events — connect an account on the Setup page.
+            </p>
+          )}
+          {events.map((e) => (
+            <div key={`${e.accountId}-${e.id}`} className="list-item list-item-hover">
+              <a href={e.link} target="_blank" rel="noreferrer" style={{ padding: "0 16px" }}>
+                <div className="list-title">
+                  <span>{e.title}</span>
+                  <span className="badge-pill">{e.accountEmail}</span>
+                </div>
+                <div className="list-sub">
+                  {fmt(e.start)} → {fmt(e.end)}
+                  {e.location ? ` · ${e.location}` : ""}
+                </div>
+              </a>
+            </div>
+          ))}
+        </div>
       </div>
     </div>
   );

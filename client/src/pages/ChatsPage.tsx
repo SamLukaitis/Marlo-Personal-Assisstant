@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { fetchChats, fetchTools, type ChatThread } from "../api/client";
+import { IconSearch } from "../components/icons";
 
 export function ChatsPage() {
   const [chats, setChats] = useState<ChatThread[]>([]);
@@ -36,14 +37,18 @@ export function ChatsPage() {
   if (!teamsEnabled) {
     return (
       <div className="main">
-        <h1>Chats</h1>
-        <div className="card">
-          <p className="muted" style={{ marginTop: 0 }}>
-            Teams chat isn't enabled for your account.
-          </p>
-          <Link to="/setup">
-            <button>Turn it on in Setup</button>
-          </Link>
+        <div className="main-inner">
+          <div className="page-header">
+            <h1 className="heading-font">Chats</h1>
+          </div>
+          <div className="card card-padded">
+            <p className="muted" style={{ marginTop: 0 }}>
+              Teams chat isn't enabled for your account.
+            </p>
+            <Link to="/setup">
+              <button className="btn-primary">Turn it on in Setup</button>
+            </Link>
+          </div>
         </div>
       </div>
     );
@@ -51,43 +56,57 @@ export function ChatsPage() {
 
   return (
     <div className="main">
-      <h1>Chats</h1>
-      <form
-        className="row"
-        style={{ marginBottom: 16 }}
-        onSubmit={(e) => {
-          e.preventDefault();
-          load(query || undefined);
-        }}
-      >
-        <input
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          placeholder="Search Microsoft Teams messages…"
-        />
-        <button type="submit">Search</button>
-      </form>
+      <div className="main-inner">
+        <div className="page-header">
+          <h1 className="heading-font">Chats</h1>
+        </div>
 
-      <div className="card">
-        {loading && <p className="muted">Loading…</p>}
-        {error && <p className="error">{error}</p>}
-        {!loading && !error && chats.length === 0 && (
-          <p className="muted">
-            No Teams chats — connect a Microsoft account on the Setup page.
-          </p>
-        )}
-        {chats.map((c) => (
-          <div key={`${c.accountId}-${c.id}`} className="list-item">
-            <a href={c.link} target="_blank" rel="noreferrer">
-              <div className="title">
-                <span>{c.topic}</span>
-                <span className="badge">{c.accountEmail}</span>
-              </div>
-              <div className="sub">{c.lastSender}</div>
-              <div className="sub">{c.preview}</div>
-            </a>
+        <form
+          className="row"
+          style={{ marginBottom: 16 }}
+          onSubmit={(e) => {
+            e.preventDefault();
+            load(query || undefined);
+          }}
+        >
+          <div style={{ position: "relative", flex: 1 }}>
+            <span style={{ position: "absolute", left: 14, top: "50%", transform: "translateY(-50%)", color: "var(--text-faint)" }}>
+              <IconSearch />
+            </span>
+            <input
+              className="input-clean"
+              style={{ paddingLeft: 40 }}
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="Search Microsoft Teams messages…"
+            />
           </div>
-        ))}
+          <button className="btn-primary" type="submit">
+            Search
+          </button>
+        </form>
+
+        <div className="card" style={{ flex: 1, minHeight: 0, overflowY: "auto" }}>
+          {loading && <p className="muted" style={{ padding: 16 }}>Loading…</p>}
+          {error && <p className="error" style={{ padding: 16 }}>{error}</p>}
+          {!loading && !error && chats.length === 0 && (
+            <p className="muted" style={{ padding: 16 }}>
+              No Teams chats — connect a Microsoft account on the Setup page.
+            </p>
+          )}
+          {chats.map((c) => (
+            <div key={`${c.accountId}-${c.id}`} className="list-item list-item-hover">
+              <a href={c.link} target="_blank" rel="noreferrer" style={{ padding: "0 16px" }}>
+                <div className="list-title">
+                  <span>{c.topic}</span>
+                  <span className="badge-pill">{c.accountEmail}</span>
+                </div>
+                <div className="list-sub">{c.lastSender}</div>
+                <div className="list-sub">{c.preview}</div>
+              </a>
+            </div>
+          ))}
+        </div>
       </div>
     </div>
   );

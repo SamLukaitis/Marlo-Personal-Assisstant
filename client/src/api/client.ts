@@ -116,6 +116,15 @@ export interface Briefing {
   content: string;
 }
 
+export interface Headline {
+  topic: NewsTopic;
+  title: string;
+  link?: string;
+}
+
+export const fetchNews = (topics?: NewsTopic[]) =>
+  getJson<Headline[]>(`/api/news${topics?.length ? `?topics=${topics.join(",")}` : ""}`);
+
 export interface MemoryNote {
   id: number;
   content: string;

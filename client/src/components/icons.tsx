@@ -1,8 +1,8 @@
 import type { SVGProps } from "react";
 
 const base: SVGProps<SVGSVGElement> = {
-  width: 17,
-  height: 17,
+  width: 18,
+  height: 18,
   viewBox: "0 0 24 24",
   fill: "none",
   stroke: "currentColor",
@@ -11,16 +11,21 @@ const base: SVGProps<SVGSVGElement> = {
   strokeLinejoin: "round",
 };
 
-export const IconChat = () => (
+// Restrained line-icon set — deliberately not a decorative/filled library icon set. Kept as
+// inline SVG (no icon font/CDN dependency) so the app has no runtime asset fetch for icons.
+
+export const IconAssistant = () => (
   <svg {...base}>
-    <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+    <rect x="9" y="3" width="6" height="6" rx="1" />
+    <path d="M12 9v3M5 20a7 7 0 0 1 14 0" />
+    <circle cx="9" cy="15" r="1" />
+    <circle cx="15" cy="15" r="1" />
   </svg>
 );
 
-export const IconInbox = () => (
+export const IconChat = () => (
   <svg {...base}>
-    <path d="M22 12h-6l-2 3h-4l-2-3H2" />
-    <path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z" />
+    <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
   </svg>
 );
 
@@ -46,16 +51,13 @@ export const IconSettings = () => (
 
 export const IconSend = () => (
   <svg {...base} width={16} height={16}>
-    <path d="m22 2-7 20-4-9-9-4Z" />
-    <path d="M22 2 11 13" />
+    <path d="M5 12h14M13 6l6 6-6 6" />
   </svg>
 );
 
-export const IconUsers = () => (
+export const IconLogOut = () => (
   <svg {...base}>
-    <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" />
-    <circle cx="9" cy="7" r="4" />
-    <path d="M23 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75" />
+    <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9" />
   </svg>
 );
 
@@ -75,5 +77,17 @@ export const IconSearch = () => (
 export const IconTrash = () => (
   <svg {...base} width={15} height={15}>
     <path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2m3 0-1 14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2L4 6" />
+  </svg>
+);
+
+export const IconChevronDown = () => (
+  <svg {...base} width={15} height={15}>
+    <path d="m6 9 6 6 6-6" />
+  </svg>
+);
+
+export const IconRefresh = () => (
+  <svg {...base} width={13} height={13}>
+    <path d="M21 2v6h-6M3 22v-6h6M3.51 9a9 9 0 0 1 14.85-3.36L21 8M3 16l2.64 2.36A9 9 0 0 0 20.49 15" />
   </svg>
 );

@@ -14,6 +14,7 @@ import {
   type DocumentRow,
 } from "../db/store.js";
 import { listLocalFolders } from "../providers/local.js";
+import { fetchHeadlines, NEWS_TOPICS, type NewsTopic } from "../providers/news.js";
 import { countTravelDays } from "../services/travelDays.js";
 import {
   hubListMessages,
@@ -279,6 +280,22 @@ const ALWAYS_ON_TOOLS: Anthropic.Tool[] = [
       },
     },
   },
+  {
+    name: "get_news",
+    description:
+      "Fetch current news headlines from free public RSS feeds. Call this when the user asks what's happening in the news, for a news summary, or about current events in a specific area (e.g. 'any tech news today'). This is a direct, on-demand fetch — it works regardless of whether the user has news turned on for their morning briefing, since asking here is an explicit request.",
+    input_schema: {
+      type: "object",
+      properties: {
+        topics: {
+          type: "array",
+          items: { type: "string", enum: Object.keys(NEWS_TOPICS) },
+          description:
+            "One or more of: world, technology, business, sports. Omit to fetch all topics.",
+        },
+      },
+    },
+  },
 ];
 
 const CONDITIONAL_TOOLS: Record<ToolKey, Anthropic.Tool[]> = {
@@ -443,6 +460,13 @@ export async function runTool(ownerId: number, name: string, input: Record<strin
       return searchDocuments(ownerId, input.query as string).map(forModel);
     case "list_recent_documents":
       return listDocuments(ownerId, (input.limit as number | undefined) ?? 10).map(forModel);
+    case "get_news": {
+      const requested = (input.topics as string[] | undefined)?.filter((t): t is NewsTopic =>
+        Object.prototype.hasOwnProperty.call(NEWS_TOPICS, t)
+      );
+      const topics = requested?.length ? requested : (Object.keys(NEWS_TOPICS) as NewsTopic[]);
+      return fetchHeadlines(topics, 6);
+    }
     case "list_travel_checkins":
       return listCheckins(ownerId, (input.limit as number | undefined) ?? 50);
     case "count_travel_days": {
@@ -472,6 +496,7 @@ function buildRules(enabled: Set<ToolKey>): string {
     "- Use search_contacts to resolve a name to an email address before drafting to someone when you don't already have their address.",
     "- Use the remember tool proactively whenever the user shares something worth recalling later (preferences, which account is which, standing instructions) — don't wait to be asked.",
     '- Use search_documents/list_recent_documents when the user asks about something they photographed or sent via WhatsApp (boarding passes, licenses, tickets, receipts) — e.g. "when did I fly to X" or "what\'s the code on my license".',
+    "- Use get_news for news/current-events questions. Only report headlines the tool actually returned — never supplement with your own general knowledge or training data, even for well-known ongoing events. Fabricating a headline is a serious error, same as with any other tool's data.",
   ];
   const travel = [
     "- Use list_travel_checkins for questions about where the user has physically been or when they arrived somewhere — this is automatic location history, separate from documents.",
