@@ -59,7 +59,14 @@ export function OnboardingPage() {
 
   async function handleToggleTool(key: Tool["key"], enabled: boolean) {
     setTools((prev) => prev.map((t) => (t.key === key ? { ...t, enabled } : t)));
-    await apiSetToolEnabled(key, enabled);
+    try {
+      await apiSetToolEnabled(key, enabled);
+    } catch (err) {
+      // Revert the optimistic change — otherwise the checkbox stays checked/unchecked with
+      // nothing actually persisted, and the user only discovers it on reload.
+      setTools((prev) => prev.map((t) => (t.key === key ? { ...t, enabled: !enabled } : t)));
+      alert((err as Error).message);
+    }
   }
 
   return (

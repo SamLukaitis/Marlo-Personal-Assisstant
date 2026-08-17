@@ -357,6 +357,38 @@ if (!hasOwnerId) {
   console.log("store: migrated to multi-tenant schema (owner_id added to every table)");
 }
 
+// One-time backfill: user_enabled_tools started empty for every user, including users who
+// already existed before this feature shipped — on deploy that would silently flip their prior
+// always-on Teams chat / travel tracker to off with no notice. If the table is still empty AND
+// there's at least one pre-existing user, seed both tools as enabled for every one of them so
+// upgrading preserves prior behavior. Guarded the same way as hasOwnerId above: once this has
+// run once (or a real user has toggled anything), the table is non-empty and this never fires
+// again — a new signup after that point still correctly starts with both tools off, since the
+// guard's emptiness check is what's being read, not "does this specific user have rows yet".
+const hasEnabledToolsRows = !!db.prepare(`SELECT 1 FROM user_enabled_tools LIMIT 1`).get();
+if (!hasEnabledToolsRows) {
+  const preExistingUserIds = (db.prepare(`SELECT id FROM users`).all() as { id: number }[]).map(
+    (r) => r.id
+  );
+  if (preExistingUserIds.length > 0) {
+    const backfillEnabledTools = db.transaction(() => {
+      const now = Date.now();
+      const insert = db.prepare(
+        `INSERT INTO user_enabled_tools (owner_id, tool_key, enabled_at) VALUES (?, ?, ?)
+         ON CONFLICT(owner_id, tool_key) DO NOTHING`
+      );
+      for (const userId of preExistingUserIds) {
+        insert.run(userId, "teams", now);
+        insert.run(userId, "travel", now);
+      }
+    });
+    backfillEnabledTools();
+    console.log(
+      `store: backfilled user_enabled_tools (teams+travel enabled) for ${preExistingUserIds.length} pre-existing user(s)`
+    );
+  }
+}
+
 export const uploadsDir = path.join(dataDir, "uploads");
 if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
 

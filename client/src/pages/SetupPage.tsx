@@ -81,6 +81,11 @@ export function SetupPage() {
   const [alertSettings, setAlertSettings] = useState<AlertSettings>({ enabled: false });
   const [alertSaved, setAlertSaved] = useState(false);
   const [tools, setTools] = useState<Tool[]>([]);
+  // Starts false so the "Travel tracking isn't enabled" gate below doesn't flash for a user who
+  // actually has it on — tools starts as [] until load() resolves, which would otherwise make
+  // that gate's `!tools.find(...)?.enabled` check true for the whole initial load. Same tri-state
+  // idea as ChatsPage.tsx's teamsEnabled, adapted to fit this page's single combined load().
+  const [loaded, setLoaded] = useState(false);
   const [searchParams] = useSearchParams();
 
   async function load() {
@@ -111,6 +116,7 @@ export function SetupPage() {
     setCheckins(ci);
     setSchengenDays(sd);
     setTools(tl);
+    setLoaded(true);
   }
 
   async function handleAddFolder(e: React.FormEvent) {
@@ -163,7 +169,14 @@ export function SetupPage() {
 
   async function handleToggleTool(key: Tool["key"], enabled: boolean) {
     setTools((prev) => prev.map((t) => (t.key === key ? { ...t, enabled } : t)));
-    await apiSetToolEnabled(key, enabled);
+    try {
+      await apiSetToolEnabled(key, enabled);
+    } catch (err) {
+      // Revert the optimistic change — otherwise the checkbox stays checked/unchecked with
+      // nothing actually persisted, and the user only discovers it on reload.
+      setTools((prev) => prev.map((t) => (t.key === key ? { ...t, enabled: !enabled } : t)));
+      alert((err as Error).message);
+    }
   }
 
   async function handleAddNumber(e: React.FormEvent) {
@@ -556,11 +569,11 @@ export function SetupPage() {
       </div>
 
       <h2>Location check-ins</h2>
-      {!tools.find((t) => t.key === "travel")?.enabled ? (
+      {loaded && !tools.find((t) => t.key === "travel")?.enabled ? (
         <div className="card muted">
           Travel tracking isn't enabled — turn it on in the Tools section above.
         </div>
-      ) : (
+      ) : loaded ? (
       <div className="card">
         <p className="muted" style={{ marginTop: 0 }}>
           Logged automatically by a phone automation (iOS Shortcuts / Android Tasker) that
@@ -599,7 +612,7 @@ export function SetupPage() {
           ))
         )}
       </div>
-      )}
+      ) : null}
 
       <h2>Real-time alerts</h2>
       <div className="card">

@@ -1,7 +1,9 @@
 import { describe, it, expect } from "vitest";
 import express from "express";
+import cookieParser from "cookie-parser";
 import request from "supertest";
 import { toolsRoutes } from "./toolsRoutes.js";
+import { requireAuth } from "../middleware/auth.js";
 import { findOrCreateUserByEmail, getEnabledTools } from "../db/store.js";
 import type { AuthedRequest } from "../middleware/auth.js";
 
@@ -71,5 +73,32 @@ describe("PUT /api/tools/:key", () => {
     const app = buildTestApp(user.id);
     const res = await request(app).put("/api/tools/finance").send({ enabled: true });
     expect(res.status).toBe(400);
+  });
+});
+
+describe("auth gating", () => {
+  // Builds an app with the REAL requireAuth middleware in front of toolsRoutes (unlike
+  // buildTestApp above, which stubs auth away) — regression coverage that these routes are
+  // actually protected when mounted for real, same as every other /api/* route (see index.ts:
+  // app.use("/api", requireAuth) ahead of every route module).
+  function buildRealAuthApp() {
+    const app = express();
+    app.use(express.json());
+    app.use(cookieParser());
+    app.use("/api", requireAuth);
+    app.use(toolsRoutes);
+    return app;
+  }
+
+  it("rejects GET /api/tools with no session cookie", async () => {
+    const app = buildRealAuthApp();
+    const res = await request(app).get("/api/tools");
+    expect(res.status).toBe(401);
+  });
+
+  it("rejects PUT /api/tools/:key with no session cookie", async () => {
+    const app = buildRealAuthApp();
+    const res = await request(app).put("/api/tools/teams").send({ enabled: true });
+    expect(res.status).toBe(401);
   });
 });
