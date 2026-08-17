@@ -4,7 +4,10 @@ import fs from "node:fs";
 import crypto from "node:crypto";
 import { encryptField, decryptField } from "../services/crypto.js";
 
-const dataDir = path.join(process.cwd(), "data");
+// DATA_DIR lets tests (see server/src/test/setup.ts) point this at an isolated temp directory
+// instead of the real server/data — unset in normal dev/production, where this falls back to
+// the existing behavior unchanged.
+const dataDir = process.env.DATA_DIR ?? path.join(process.cwd(), "data");
 if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
 // Printed once at startup so a Railway Volume (or any host's persistent-disk mount) can be
 // pointed at the exact right path — guessing wrong here silently loses the DB + uploads on
