@@ -282,6 +282,27 @@ export async function saveAlertSettings(settings: AlertSettings): Promise<void> 
   if (!res.ok) throw new Error("failed to save alert settings");
 }
 
+export interface Tool {
+  key: "teams" | "travel";
+  label: string;
+  description: string;
+  enabled: boolean;
+}
+
+export const fetchTools = () => getJson<Tool[]>("/api/tools");
+
+export async function setToolEnabled(key: Tool["key"], enabled: boolean): Promise<void> {
+  const res = await fetch(
+    `${API_BASE}/api/tools/${key}`,
+    withCredentials({
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ enabled }),
+    })
+  );
+  if (!res.ok) throw new Error("failed to update tool");
+}
+
 export const fetchMemoryNotes = () => getJson<MemoryNote[]>("/api/memory");
 
 export async function addMemoryNote(content: string): Promise<MemoryNote> {

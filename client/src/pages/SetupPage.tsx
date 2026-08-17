@@ -22,6 +22,8 @@ import {
   fetchTravelDays,
   fetchAlertSettings,
   saveAlertSettings,
+  fetchTools,
+  setToolEnabled as apiSetToolEnabled,
   NEWS_TOPIC_LABELS,
   type ProviderInfo,
   type Account,
@@ -33,6 +35,7 @@ import {
   type TravelCheckin,
   type TravelDaysResult,
   type AlertSettings,
+  type Tool,
 } from "../api/client";
 import { IconTrash, IconPlus } from "../components/icons";
 
@@ -77,10 +80,11 @@ export function SetupPage() {
   const [schengenDays, setSchengenDays] = useState<TravelDaysResult | null>(null);
   const [alertSettings, setAlertSettings] = useState<AlertSettings>({ enabled: false });
   const [alertSaved, setAlertSaved] = useState(false);
+  const [tools, setTools] = useState<Tool[]>([]);
   const [searchParams] = useSearchParams();
 
   async function load() {
-    const [p, a, s, f, b, m, ws, nums, ci, sd, al] = await Promise.all([
+    const [p, a, s, f, b, m, ws, nums, ci, sd, al, tl] = await Promise.all([
       fetchProviders(),
       fetchAccounts(),
       fetchSettings(),
@@ -92,6 +96,7 @@ export function SetupPage() {
       fetchCheckins(),
       fetchTravelDays("schengen", 180),
       fetchAlertSettings(),
+      fetchTools(),
     ]);
     setProviders(p);
     setAccounts(a);
@@ -105,6 +110,7 @@ export function SetupPage() {
     setAllowedNumbers(nums);
     setCheckins(ci);
     setSchengenDays(sd);
+    setTools(tl);
   }
 
   async function handleAddFolder(e: React.FormEvent) {
@@ -153,6 +159,11 @@ export function SetupPage() {
     await saveAlertSettings(next);
     setAlertSaved(true);
     setTimeout(() => setAlertSaved(false), 2500);
+  }
+
+  async function handleToggleTool(key: Tool["key"], enabled: boolean) {
+    setTools((prev) => prev.map((t) => (t.key === key ? { ...t, enabled } : t)));
+    await apiSetToolEnabled(key, enabled);
   }
 
   async function handleAddNumber(e: React.FormEvent) {
@@ -524,7 +535,32 @@ export function SetupPage() {
         )}
       </div>
 
+      <h2>Tools</h2>
+      <div className="card">
+        <p className="muted" style={{ marginTop: 0 }}>
+          Turn optional capabilities on or off — everything else stays as-is either way.
+        </p>
+        {tools.map((t) => (
+          <label key={t.key} className="row" style={{ marginBottom: 10 }}>
+            <input
+              type="checkbox"
+              style={{ width: "auto" }}
+              checked={t.enabled}
+              onChange={(e) => handleToggleTool(t.key, e.target.checked)}
+            />
+            <span>
+              <strong>{t.label}</strong> — <span className="muted">{t.description}</span>
+            </span>
+          </label>
+        ))}
+      </div>
+
       <h2>Location check-ins</h2>
+      {!tools.find((t) => t.key === "travel")?.enabled ? (
+        <div className="card muted">
+          Travel tracking isn't enabled — turn it on in the Tools section above.
+        </div>
+      ) : (
       <div className="card">
         <p className="muted" style={{ marginTop: 0 }}>
           Logged automatically by a phone automation (iOS Shortcuts / Android Tasker) that
@@ -563,6 +599,7 @@ export function SetupPage() {
           ))
         )}
       </div>
+      )}
 
       <h2>Real-time alerts</h2>
       <div className="card">
