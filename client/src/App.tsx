@@ -4,7 +4,6 @@ import { RequireAuth } from "./components/RequireAuth";
 import { HomePage } from "./pages/HomePage";
 import { OnboardingPage } from "./pages/OnboardingPage";
 import { AssistantPage } from "./pages/AssistantPage";
-import { SearchPage } from "./pages/SearchPage";
 import { ChatsPage } from "./pages/ChatsPage";
 import { CalendarPage } from "./pages/CalendarPage";
 import { FilesPage } from "./pages/FilesPage";
@@ -35,8 +34,11 @@ function App() {
           }
         >
           <Route path="/assistant" element={<AssistantPage />} />
-          <Route path="/search" element={<SearchPage />} />
-          <Route path="/inbox" element={<Navigate to="/search" replace />} />
+          {/* Search folded into Files (file/document search) + the Assistant chat (mail/Teams
+              lookups via natural language) — see docs/superpowers/specs/2026-08-17-modular-tool-toggles-design.md
+              sibling brainstorm for the IA reasoning. Old links keep working. */}
+          <Route path="/search" element={<Navigate to="/files" replace />} />
+          <Route path="/inbox" element={<Navigate to="/files" replace />} />
           <Route path="/chats" element={<ChatsPage />} />
           <Route path="/calendar" element={<CalendarPage />} />
           <Route path="/files" element={<FilesPage />} />
