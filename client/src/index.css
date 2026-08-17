@@ -1,4 +1,4 @@
-@import url('https://api.fontshare.com/v2/css?f[]=general-sans@400,500,600,700&f[]=zodiak@700&display=swap');
+@import url('https://api.fontshare.com/v2/css?f[]=general-sans@400,500,600,700&f[]=zodiak@400,700&display=swap');
 
 :root {
   --bg: #fafafa;
@@ -642,6 +642,19 @@ button {
   margin-top: 2px;
 }
 
+/* The message someone typed when sending a file can be a paragraph. The document's own title
+   carries the meaning now, so the original message is kept but held to one line. */
+.doc-caption {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-top: 3px;
+  font-style: italic;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 48ch;
+}
+
 /* ---------- Chat ---------- */
 .chat-panel {
   flex: 1;
@@ -709,7 +722,7 @@ button {
   margin-bottom: 16px;
   display: flex;
   flex-direction: column;
-  max-height: 52px;
+  max-height: 72px;
   transition: max-height 0.4s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
@@ -717,42 +730,47 @@ button {
   max-height: 60vh;
 }
 
+/* Padding rather than a fixed height: the label and value then sit on their own optical centre
+   instead of being crammed against the top edge of a 52px box. */
 .briefing-strip {
   flex-shrink: 0;
-  height: 52px;
+  min-height: 72px;
   display: flex;
   align-items: center;
-  padding: 0 12px;
-  gap: 12px;
+  padding: 14px 14px;
+  gap: 14px;
 }
 
 @media (min-width: 768px) {
-  .briefing-strip { padding: 0 16px; gap: 16px; }
+  .briefing-strip { padding: 16px 18px; gap: 20px; }
 }
 
 .briefing-segment {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 5px;
   min-width: 0;
   flex: 1;
 }
 
 .briefing-segment-label {
-  font-size: 8px;
-  font-weight: 700;
+  font-size: 9.5px;
+  font-weight: 600;
   color: var(--text-faint);
   text-transform: uppercase;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.07em;
+  line-height: 1;
 }
 
 @media (min-width: 768px) {
-  .briefing-segment-label { font-size: 9px; }
+  .briefing-segment-label { font-size: 10px; }
 }
 
 .briefing-segment-value {
-  font-size: 10px;
-  color: #27272a;
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.35;
+  color: var(--text);
   font-weight: 500;
   white-space: nowrap;
   overflow: hidden;
@@ -760,12 +778,19 @@ button {
 }
 
 @media (min-width: 768px) {
-  .briefing-segment-value { font-size: 11px; }
+  .briefing-segment-value { font-size: 13.5px; }
+}
+
+.briefing-inline-link {
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  font-weight: 500;
 }
 
 .briefing-divider {
   width: 1px;
-  height: 24px;
+  align-self: stretch;
   background: var(--border-soft);
   flex-shrink: 0;
   display: none;
@@ -773,6 +798,15 @@ button {
 
 @media (min-width: 640px) {
   .briefing-divider { display: block; }
+}
+
+/* Reserved width so the three segments truncate under pressure instead of squeezing the
+   control off the end of the strip. */
+.briefing-toggle-slot {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  padding-left: 4px;
 }
 
 .briefing-toggle {
@@ -841,13 +875,95 @@ button {
   .briefing-details-grid { grid-template-columns: repeat(3, 1fr); padding: 24px; gap: 32px; }
 }
 
-.briefing-details-grid h3 {
+.briefing-details h3 {
   font-size: 10px;
-  font-weight: 700;
+  font-weight: 600;
   color: var(--text-faint);
   text-transform: uppercase;
-  letter-spacing: 0.04em;
-  margin: 0 0 16px;
+  letter-spacing: 0.07em;
+  margin: 0 0 14px;
+}
+
+/* The expanded panel used to set its type through inline styles, which is why it read as a
+   different font to the rest of the app. It inherits the body face and scale now. */
+.briefing-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.briefing-list li {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: 13px;
+  line-height: 1.4;
+  min-width: 0;
+}
+
+.briefing-list li.briefing-list-row {
+  flex-direction: row;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.briefing-list-title {
+  font-weight: 600;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.briefing-list-sub {
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.briefing-list-time {
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  flex-shrink: 0;
+}
+
+.briefing-delta {
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  flex-shrink: 0;
+}
+
+.briefing-delta.up { color: var(--success); }
+.briefing-delta.down { color: var(--danger); }
+
+.briefing-prose {
+  padding: 0 16px 16px;
+  border-top: 1px solid var(--border-soft);
+  padding-top: 20px;
+}
+
+@media (min-width: 768px) {
+  .briefing-prose { padding: 20px 24px 24px; }
+}
+
+.briefing-prose p {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--text-muted);
+  white-space: pre-wrap;
+}
+
+.briefing-details-footer {
+  padding: 12px 16px;
+  border-top: 1px solid var(--border-soft);
+  display: flex;
+  justify-content: flex-end;
 }
 
 /* ---------- Suggestion chips row ---------- */
@@ -873,4 +989,376 @@ button {
 
 @media (min-width: 768px) {
   .page-footer { display: flex; }
+}
+
+/* ---------- Stat cards (Travel) ---------- */
+.stat-row {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 12px;
+  margin-bottom: 24px;
+  flex-shrink: 0;
+}
+
+@media (min-width: 640px) {
+  .stat-row { grid-template-columns: repeat(3, 1fr); }
+}
+
+.stat-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.stat-label {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--text-faint);
+}
+
+.stat-value {
+  font-family: 'Zodiak', serif;
+  font-size: 30px;
+  line-height: 1;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+
+.stat-unit {
+  font-family: 'General Sans', sans-serif;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text-faint);
+  margin-left: 6px;
+}
+
+.stat-note {
+  font-size: 12px;
+  color: var(--text-muted);
+  line-height: 1.4;
+}
+
+/* ---------- Settings: sub-nav + panel ---------- */
+.settings-layout {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 20px;
+  align-items: start;
+  flex: 1;
+  min-height: 0;
+}
+
+@media (min-width: 900px) {
+  .settings-layout { grid-template-columns: 190px 1fr; gap: 32px; }
+}
+
+/* Horizontal scroller on narrow screens, vertical list once there's room for one. */
+.settings-nav {
+  display: flex;
+  flex-direction: row;
+  gap: 4px;
+  overflow-x: auto;
+  padding-bottom: 4px;
+  scrollbar-width: none;
+}
+
+.settings-nav::-webkit-scrollbar { display: none; }
+
+@media (min-width: 900px) {
+  .settings-nav {
+    flex-direction: column;
+    overflow-x: visible;
+    position: sticky;
+    top: 0;
+  }
+}
+
+.settings-nav-item {
+  flex-shrink: 0;
+  text-align: left;
+  padding: 9px 12px;
+  border: none;
+  border-radius: var(--radius-md);
+  background: transparent;
+  font-family: inherit;
+  font-size: 13.5px;
+  font-weight: 500;
+  color: var(--text-muted);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.15s, color 0.15s;
+}
+
+.settings-nav-item:hover {
+  background: var(--border-soft);
+  color: var(--text);
+}
+
+.settings-nav-item.active {
+  background: var(--accent);
+  color: var(--accent-foreground);
+}
+
+.settings-panel {
+  min-width: 0;
+}
+
+.settings-panel > h2:first-child {
+  margin-top: 0;
+}
+
+.settings-section-intro {
+  margin: -4px 0 18px;
+  font-size: 13px;
+  color: var(--text-muted);
+  line-height: 1.55;
+  max-width: 62ch;
+}
+
+.settings-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 16px;
+}
+
+/* Same reason as .check-row: these are questions, not shouted field captions. */
+.settings-field-label {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text);
+  text-transform: none;
+  letter-spacing: normal;
+}
+
+.settings-field-hint {
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--text-muted);
+  line-height: 1.45;
+  text-transform: none;
+  letter-spacing: normal;
+}
+
+/* Checkbox rows read as one tappable line rather than a label floating beside a box.
+   These are <label> elements, and the bare `label` rule above styles them as tiny uppercase
+   field captions — right for a form caption, wrong for a sentence the user reads. */
+.check-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 9px 0;
+  font-size: 13.5px;
+  font-weight: 400;
+  line-height: 1.5;
+  text-transform: none;
+  letter-spacing: normal;
+  cursor: pointer;
+}
+
+.check-row input[type="checkbox"] {
+  width: auto;
+  margin: 2px 0 0;
+  flex-shrink: 0;
+  accent-color: var(--accent);
+}
+
+.check-row-title {
+  font-weight: 600;
+}
+
+.check-row-desc {
+  display: block;
+  color: var(--text-muted);
+  font-size: 12.5px;
+  margin-top: 2px;
+}
+
+.check-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0 16px;
+}
+
+@media (min-width: 640px) {
+  .check-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+}
+
+.saved-note {
+  font-size: 12px;
+  color: var(--success);
+  font-weight: 600;
+}
+
+/* ---------- Onboarding stepper ---------- */
+.stepper {
+  list-style: none;
+  display: flex;
+  gap: 6px;
+  margin: 0 0 28px;
+  padding: 0;
+  flex-wrap: wrap;
+}
+
+.stepper-item {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 12px 5px 6px;
+  border-radius: var(--radius-pill);
+  background: var(--border-soft);
+  color: var(--text-faint);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.stepper-item.active {
+  background: var(--accent);
+  color: var(--accent-foreground);
+}
+
+.stepper-item.done {
+  background: var(--success-soft);
+  color: var(--accent);
+}
+
+.stepper-dot {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.6);
+  color: inherit;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  font-weight: 700;
+  flex-shrink: 0;
+}
+
+.stepper-item.active .stepper-dot {
+  background: rgba(255, 255, 255, 0.18);
+}
+
+.link-button {
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  font-family: inherit;
+  font-size: 13px;
+  cursor: pointer;
+  padding: 8px 4px;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.link-button:hover {
+  color: var(--text);
+}
+
+/* ---------- Modal (assistant configure) ---------- */
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(13, 17, 23, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  z-index: 100;
+  animation: modal-fade 0.15s ease;
+}
+
+@keyframes modal-fade {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.modal {
+  background: var(--surface);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-md);
+  width: 100%;
+  max-width: 520px;
+  max-height: 85vh;
+  overflow-y: auto;
+  padding: 24px;
+}
+
+.modal-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 18px;
+}
+
+.modal-header h2 {
+  margin: 0;
+  font-family: 'Zodiak', serif;
+  font-size: 19px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  text-transform: none;
+  color: var(--text);
+}
+
+.modal-close {
+  flex-shrink: 0;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 4px;
+  border-radius: var(--radius-sm);
+  display: flex;
+}
+
+.modal-close:hover {
+  background: var(--border-soft);
+  color: var(--text);
+}
+
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 20px;
+}
+
+/* Small ghost button used beside a page title (Assistant → configure). */
+.title-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text-muted);
+  border-radius: var(--radius-pill);
+  padding: 5px 12px;
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s;
+}
+
+.title-action:hover {
+  color: var(--text);
+  border-color: var(--text-faint);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }

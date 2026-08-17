@@ -1,15 +1,16 @@
 import { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 import {
   fetchBriefing,
   fetchBriefingSettings,
   refreshBriefing,
   fetchMessages,
   fetchEvents,
-  fetchNews,
+  fetchBriefingFeed,
   type Briefing,
+  type BriefingFeed,
   type UnifiedMessage,
   type CalendarEvent,
-  type Headline,
 } from "../api/client";
 import { IconChevronDown, IconRefresh } from "./icons";
 
@@ -23,18 +24,21 @@ function isToday(iso: string): boolean {
   return d.toDateString() === now.toDateString();
 }
 
+function signed(n: number): string {
+  return `${n >= 0 ? "+" : ""}${n.toFixed(2)}%`;
+}
+
+const EMPTY_FEED: BriefingFeed = { headlines: [], quotes: [], weather: null };
+
 interface BriefingBarProps {
   expanded: boolean;
   onToggle: () => void;
 }
 
-// The confirmed design calls for three structured segments (Unread / Calendar / Updates) plus
-// an expanded detail view listing individual emails/events/headlines. Unread and Calendar are
-// backed by real endpoints (fetchMessages/fetchEvents). Updates uses the real /api/news
-// endpoint (respects the user's opted-in briefing topics, same as the morning briefing) when
-// they've turned news on for their briefing; otherwise it falls back to showing the existing
-// AI-written prose briefing's first line, since there's nothing else to show without that
-// opt-in.
+// Three segments: Unread, Calendar, and Today. The first two are the user's own data; the third
+// is the outside world — weather, markets, headlines, whichever they opted into. It deliberately
+// never falls back to restating the inbox: a segment that repeats the segment next to it is
+// wasted space, so with nothing opted in it says so and links to where you choose.
 export function BriefingBar({ expanded, onToggle }: BriefingBarProps) {
   const [enabled, setEnabled] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -43,51 +47,54 @@ export function BriefingBar({ expanded, onToggle }: BriefingBarProps) {
   const [briefing, setBriefing] = useState<Briefing | null>(null);
   const [messages, setMessages] = useState<UnifiedMessage[]>([]);
   const [events, setEvents] = useState<CalendarEvent[]>([]);
-  const [headlines, setHeadlines] = useState<Headline[]>([]);
-  const [newsEnabled, setNewsEnabled] = useState(false);
+  const [feed, setFeed] = useState<BriefingFeed>(EMPTY_FEED);
 
   useEffect(() => {
+    let cancelled = false;
     fetchBriefingSettings()
-      .then((s) => {
+      .then(async (s) => {
+        if (cancelled) return;
         setEnabled(s.enabled);
-        if (!s.enabled) {
-          setLoading(false);
-          return;
-        }
-        setNewsEnabled(s.includeNews && s.topics.length > 0);
-        return Promise.all([
+        if (!s.enabled) return;
+
+        const [b, m, e, f] = await Promise.all([
           fetchBriefing().catch((err) => {
             setError((err as Error).message);
             return null;
           }),
           fetchMessages().catch(() => []),
           fetchEvents(7).catch(() => []),
-          s.includeNews && s.topics.length ? fetchNews(s.topics).catch(() => []) : Promise.resolve([]),
-        ]).then(([b, m, e, h]) => {
-          setBriefing(b);
-          setMessages(m);
-          setEvents(e);
-          setHeadlines(h);
-        });
+          fetchBriefingFeed().catch(() => EMPTY_FEED),
+        ]);
+        if (cancelled) return;
+        setBriefing(b);
+        setMessages(m);
+        setEvents(e);
+        setFeed(f);
       })
       .catch(() => {})
-      .finally(() => setLoading(false));
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   async function handleRefresh() {
     setRefreshing(true);
     setError(null);
     try {
-      const [b, m, e, h] = await Promise.all([
+      const [b, m, e, f] = await Promise.all([
         refreshBriefing(),
         fetchMessages(),
         fetchEvents(7),
-        newsEnabled ? fetchNews() : Promise.resolve([]),
+        fetchBriefingFeed().catch(() => EMPTY_FEED),
       ]);
       setBriefing(b);
       setMessages(m);
       setEvents(e);
-      setHeadlines(h);
+      setFeed(f);
     } catch (err) {
       setError((err as Error).message);
     } finally {
@@ -101,6 +108,20 @@ export function BriefingBar({ expanded, onToggle }: BriefingBarProps) {
   const topUnread = unread[0];
   const todayEvents = events.filter((e) => isToday(e.start));
   const nextEvent = todayEvents[0] ?? events[0];
+
+  const { weather, quotes, headlines } = feed;
+  const hasFeed = !!weather || quotes.length > 0 || headlines.length > 0;
+
+  // Weather leads when present — it's the thing people actually check first — then markets, then
+  // the top headline.
+  const todayLabel = weather ? "Weather" : quotes.length ? "Markets" : headlines.length ? "Headlines" : "Today";
+  const todayValue = weather
+    ? `${weather.tempC}°C ${weather.condition}, high ${weather.highC}°`
+    : quotes.length
+    ? quotes.map((q) => `${q.name} ${signed(q.changePercent)}`).join(" · ")
+    : headlines.length
+    ? headlines[0].title
+    : null;
 
   return (
     <div className={`briefing-panel${expanded ? " is-expanded" : ""}`}>
@@ -118,7 +139,7 @@ export function BriefingBar({ expanded, onToggle }: BriefingBarProps) {
           <p className="briefing-segment-value">
             {nextEvent ? (
               <>
-                <strong>{fmtTime(nextEvent.start)}</strong> ({todayEvents.length} today)
+                <strong>{fmtTime(nextEvent.start)}</strong> · {nextEvent.title}
               </>
             ) : (
               "Nothing upcoming"
@@ -127,25 +148,22 @@ export function BriefingBar({ expanded, onToggle }: BriefingBarProps) {
         </div>
         <div className="briefing-divider" />
         <div className="briefing-segment">
-          <span className="briefing-segment-label">{newsEnabled ? "Updates" : "Briefing"}</span>
+          <span className="briefing-segment-label">{todayLabel}</span>
           <p className="briefing-segment-value">
-            {newsEnabled ? (
-              headlines.length ? (
-                `• ${headlines[0].title}`
-              ) : (
-                "No headlines yet"
-              )
-            ) : error ? (
-              "Unavailable"
-            ) : briefing ? (
-              briefing.content.split("\n")[0]
-            ) : (
-              "Not generated yet"
+            {todayValue ?? (
+              <Link to="/settings?section=briefing" className="briefing-inline-link">
+                Choose what to show here
+              </Link>
             )}
           </p>
         </div>
-        <div style={{ flexShrink: 0, display: "flex", alignItems: "center", paddingLeft: 4 }}>
-          <button className="briefing-toggle" onClick={onToggle}>
+        <div className="briefing-toggle-slot">
+          <button
+            className="briefing-toggle"
+            onClick={onToggle}
+            aria-expanded={expanded}
+            aria-label={expanded ? "Collapse briefing" : "Expand briefing"}
+          >
             <span className="briefing-toggle-label">Detail</span>
             <IconChevronDown />
           </button>
@@ -159,62 +177,82 @@ export function BriefingBar({ expanded, onToggle }: BriefingBarProps) {
             {unread.length === 0 ? (
               <p className="muted">Nothing unread.</p>
             ) : (
-              <ul style={{ listStyle: "none", margin: 0, padding: 0, display: "flex", flexDirection: "column", gap: 12 }}>
+              <ul className="briefing-list">
                 {unread.slice(0, 5).map((m) => (
-                  <li key={`${m.accountId}-${m.id}`} style={{ fontSize: 12 }}>
-                    <div style={{ fontWeight: 700 }}>{m.from}</div>
-                    <div className="muted" style={{ fontSize: 11 }}>{m.subject}</div>
+                  <li key={`${m.accountId}-${m.id}`}>
+                    <span className="briefing-list-title">{m.from}</span>
+                    <span className="briefing-list-sub">{m.subject}</span>
                   </li>
                 ))}
               </ul>
             )}
           </section>
+
           <section>
             <h3>Today's events</h3>
             {todayEvents.length === 0 ? (
               <p className="muted">Nothing scheduled today.</p>
             ) : (
-              <ul style={{ listStyle: "none", margin: 0, padding: 0, display: "flex", flexDirection: "column", gap: 12 }}>
+              <ul className="briefing-list">
                 {todayEvents.slice(0, 5).map((e) => (
-                  <li key={`${e.accountId}-${e.id}`} style={{ display: "flex", gap: 8, fontSize: 12 }}>
-                    <span style={{ fontWeight: 700, flexShrink: 0 }}>{fmtTime(e.start)}</span>
-                    <span className="muted">{e.title}</span>
+                  <li key={`${e.accountId}-${e.id}`} className="briefing-list-row">
+                    <span className="briefing-list-time">{fmtTime(e.start)}</span>
+                    <span className="briefing-list-sub">{e.title}</span>
                   </li>
                 ))}
               </ul>
             )}
           </section>
+
           <section>
-            <h3>{newsEnabled ? "Feed updates" : "Briefing"}</h3>
-            {newsEnabled ? (
-              headlines.length === 0 ? (
-                <p className="muted">No headlines yet.</p>
-              ) : (
-                <ul style={{ listStyle: "none", margin: 0, padding: 0, display: "flex", flexDirection: "column", gap: 10 }}>
-                  {headlines.slice(0, 5).map((h, i) => (
-                    <li key={i} style={{ display: "flex", flexDirection: "column", gap: 3, fontSize: 12 }}>
-                      <span className="badge-pill" style={{ width: "fit-content" }}>{h.topic}</span>
-                      <span style={{ fontWeight: 500, lineHeight: 1.4 }}>{h.title}</span>
-                    </li>
-                  ))}
-                </ul>
-              )
-            ) : error ? (
-              <p className="error">{error}</p>
-            ) : briefing ? (
-              <p style={{ whiteSpace: "pre-wrap", fontSize: 12, margin: 0 }}>{briefing.content}</p>
+            <h3>{hasFeed ? "Around you" : "Your feed"}</h3>
+            {!hasFeed ? (
+              <p className="muted">
+                Nothing switched on yet.{" "}
+                <Link to="/settings?section=briefing" className="briefing-inline-link">
+                  Pick your sources
+                </Link>
+                .
+              </p>
             ) : (
-              <p className="muted">Not generated yet — hit Refresh.</p>
+              <ul className="briefing-list">
+                {weather && (
+                  <li>
+                    <span className="briefing-list-title">{weather.place}</span>
+                    <span className="briefing-list-sub">
+                      {weather.condition}, {weather.tempC}°C · high {weather.highC}° / low{" "}
+                      {weather.lowC}°
+                    </span>
+                  </li>
+                )}
+                {quotes.map((q) => (
+                  <li key={q.symbol} className="briefing-list-row">
+                    <span className="briefing-list-title">{q.name}</span>
+                    <span className={`briefing-delta${q.changePercent >= 0 ? " up" : " down"}`}>
+                      {signed(q.changePercent)}
+                    </span>
+                  </li>
+                ))}
+                {headlines.slice(0, 4).map((h, i) => (
+                  <li key={`${h.topic}-${i}`}>
+                    <span className="badge-pill">{h.topic}</span>
+                    <span className="briefing-list-sub">{h.title}</span>
+                  </li>
+                ))}
+              </ul>
             )}
           </section>
         </div>
-        <div style={{ padding: 16, borderTop: "1px solid var(--border-soft)", display: "flex", justifyContent: "flex-end" }}>
-          <button
-            className="briefing-toggle"
-            disabled={refreshing}
-            onClick={handleRefresh}
-            style={{ background: "transparent" }}
-          >
+
+        {(briefing || error) && (
+          <div className="briefing-prose">
+            <h3>This morning</h3>
+            {error ? <p className="error">{error}</p> : <p>{briefing?.content}</p>}
+          </div>
+        )}
+
+        <div className="briefing-details-footer">
+          <button className="briefing-toggle" disabled={refreshing} onClick={handleRefresh}>
             <IconRefresh />
             <span className="briefing-toggle-label">{refreshing ? "Refreshing…" : "Refresh"}</span>
           </button>

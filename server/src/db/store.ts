@@ -65,6 +65,7 @@ db.exec(`
     mime_type TEXT NOT NULL,
     stored_path TEXT NOT NULL,
     caption TEXT,
+    title TEXT,
     extracted_text TEXT NOT NULL,
     created_at INTEGER NOT NULL
   );
@@ -387,6 +388,18 @@ if (!hasEnabledToolsRows) {
       `store: backfilled user_enabled_tools (teams+travel enabled) for ${preExistingUserIds.length} pre-existing user(s)`
     );
   }
+}
+
+// Documents used to be listed by their raw WhatsApp caption, which is whatever the user happened
+// to type when sending the file — often a whole sentence, sometimes nothing at all. The
+// extraction pass now also names the document, and that name lives here. Nullable on purpose:
+// rows saved before this shipped have no title and fall back to filename/caption in the UI.
+// Runs after the multi-tenant rebuild above, which recreates `documents` without this column.
+const documentColumns = (
+  db.prepare(`PRAGMA table_info(documents)`).all() as { name: string }[]
+).map((c) => c.name);
+if (!documentColumns.includes("title")) {
+  db.exec(`ALTER TABLE documents ADD COLUMN title TEXT`);
 }
 
 export const uploadsDir = path.join(dataDir, "uploads");
@@ -736,12 +749,13 @@ export interface DocumentRow {
   mimeType: string;
   storedPath: string;
   caption: string | null;
+  title: string | null;
   extractedText: string;
   createdAt: number;
 }
 
 const DOCUMENT_COLUMNS = `id, phone, filename, mime_type AS mimeType, stored_path AS storedPath,
-  caption, extracted_text AS extractedText, created_at AS createdAt`;
+  caption, title, extracted_text AS extractedText, created_at AS createdAt`;
 
 export function saveDocument(
   ownerId: number,
@@ -751,13 +765,14 @@ export function saveDocument(
     mimeType: string;
     storedPath: string;
     caption: string | null;
+    title: string | null;
     extractedText: string;
   }
 ): DocumentRow {
   const info = db
     .prepare(
-      `INSERT INTO documents (owner_id, phone, filename, mime_type, stored_path, caption, extracted_text, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO documents (owner_id, phone, filename, mime_type, stored_path, caption, title, extracted_text, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
       ownerId,
@@ -766,6 +781,7 @@ export function saveDocument(
       doc.mimeType,
       doc.storedPath,
       doc.caption,
+      doc.title,
       doc.extractedText,
       Date.now()
     );
@@ -785,10 +801,10 @@ export function searchDocuments(ownerId: number, query: string, limit = 10): Doc
   return db
     .prepare(
       `SELECT ${DOCUMENT_COLUMNS} FROM documents
-       WHERE owner_id = ? AND (filename LIKE ? OR caption LIKE ? OR extracted_text LIKE ?)
+       WHERE owner_id = ? AND (filename LIKE ? OR caption LIKE ? OR title LIKE ? OR extracted_text LIKE ?)
        ORDER BY id DESC LIMIT ?`
     )
-    .all(ownerId, like, like, like, limit) as DocumentRow[];
+    .all(ownerId, like, like, like, like, limit) as DocumentRow[];
 }
 
 // Scoped by owner — this used to accept any numeric id with no ownership check at all (a live

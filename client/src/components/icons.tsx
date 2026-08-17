@@ -86,6 +86,19 @@ export const IconChevronDown = () => (
   </svg>
 );
 
+export const IconTravel = () => (
+  <svg {...base}>
+    <circle cx="12" cy="12" r="9" />
+    <path d="M3 12h18M12 3a15 15 0 0 1 0 18 15 15 0 0 1 0-18" />
+  </svg>
+);
+
+export const IconClose = () => (
+  <svg {...base} width={16} height={16}>
+    <path d="M18 6 6 18M6 6l12 12" />
+  </svg>
+);
+
 export const IconRefresh = () => (
   <svg {...base} width={13} height={13}>
     <path d="M21 2v6h-6M3 22v-6h6M3.51 9a9 9 0 0 1 14.85-3.36L21 8M3 16l2.64 2.36A9 9 0 0 0 20.49 15" />

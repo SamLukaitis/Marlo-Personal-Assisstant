@@ -1,46 +1,56 @@
 import { useEffect, useState } from "react";
-import { Link, useNavigate, useSearchParams } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import {
   fetchProviders,
   fetchAccounts,
   fetchWhatsAppAllowedNumbers,
   saveWhatsAppAllowedNumbers,
-  fetchTools,
-  setToolEnabled as apiSetToolEnabled,
+  fetchBriefingSettings,
+  saveBriefingSettings,
   loginUrl,
+  DEFAULT_BRIEFING_SETTINGS,
   type ProviderInfo,
   type Account,
-  type Tool,
+  type BriefingSettings,
 } from "../api/client";
-import { IconPlus } from "../components/icons";
+import { IconPlus, IconTrash } from "../components/icons";
+import { BriefingSourcePicker } from "../components/BriefingSourcePicker";
+import { useTools } from "../context/ToolsContext";
 
-// First-run flow for a just-invited user with no connected accounts yet — reached right after
-// login (see authRoutes.ts's callback: redirects here when listAccounts(user.id) is empty).
-// Deliberately never blocks — "skip for now" always works, since the full Setup page covers the
-// same ground later. No dedicated design mockup exists for this page — styled to match the rest
-// of the app's system (same cards/buttons/tokens) rather than left in the old look.
+const STEPS = ["Accounts", "WhatsApp", "Your hub", "Briefing"] as const;
+
+// First run for a just-invited user. Four steps, because picking your tools is the moment the
+// product stops being generic — it's what decides which sections exist in the sidebar — and that
+// decision was previously an afterthought at the bottom of one long scroll. Still never blocks:
+// every step can be skipped and everything here stays editable in Settings.
 export function OnboardingPage() {
+  const [step, setStep] = useState(0);
   const [providers, setProviders] = useState<ProviderInfo[]>([]);
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [numbers, setNumbers] = useState<string[]>([]);
   const [newNumber, setNewNumber] = useState("");
   const [saving, setSaving] = useState(false);
-  const [tools, setTools] = useState<Tool[]>([]);
+  const [briefing, setBriefing] = useState<BriefingSettings>(DEFAULT_BRIEFING_SETTINGS);
+  const [finishing, setFinishing] = useState(false);
   const [params] = useSearchParams();
   const navigate = useNavigate();
+
+  const { tools, setEnabled } = useTools();
 
   useEffect(() => {
     Promise.all([
       fetchProviders(),
       fetchAccounts(),
       fetchWhatsAppAllowedNumbers(),
-      fetchTools(),
-    ]).then(([p, a, n, t]) => {
-      setProviders(p);
-      setAccounts(a);
-      setNumbers(n);
-      setTools(t);
-    });
+      fetchBriefingSettings(),
+    ])
+      .then(([p, a, n, b]) => {
+        setProviders(p);
+        setAccounts(a);
+        setNumbers(n);
+        setBriefing(b);
+      })
+      .catch(() => {});
   }, [params]);
 
   async function addNumber() {
@@ -59,103 +69,193 @@ export function OnboardingPage() {
     }
   }
 
-  async function handleToggleTool(key: Tool["key"], enabled: boolean) {
-    setTools((prev) => prev.map((t) => (t.key === key ? { ...t, enabled } : t)));
+  async function removeNumber(number: string) {
+    const next = numbers.filter((n) => n !== number);
+    setNumbers(next);
+    await saveWhatsAppAllowedNumbers(next).catch(() => {});
+  }
+
+  async function handleToggleTool(key: (typeof tools)[number]["key"], enabled: boolean) {
     try {
-      await apiSetToolEnabled(key, enabled);
+      await setEnabled(key, enabled);
     } catch (err) {
-      setTools((prev) => prev.map((t) => (t.key === key ? { ...t, enabled: !enabled } : t)));
       alert((err as Error).message);
     }
   }
 
+  async function finish() {
+    setFinishing(true);
+    // Briefing choices are only persisted at the end — the picker edits local state, so bailing
+    // out mid-flow leaves the saved settings untouched rather than half-applied.
+    await saveBriefingSettings(briefing).catch(() => {});
+    navigate("/assistant");
+  }
+
+  const isLast = step === STEPS.length - 1;
+
   return (
     <div className="main scrollable" style={{ background: "var(--bg)" }}>
-      <div className="main-inner scrollable" style={{ maxWidth: 640 }}>
+      <div className="main-inner scrollable" style={{ maxWidth: 620 }}>
         <div className="page-header" style={{ marginTop: 24 }}>
-          <h1 className="heading-font">Let's set up your hub</h1>
+          <h1 className="heading-font">Set up your hub</h1>
         </div>
-        <p className="muted" style={{ marginTop: -12, marginBottom: 24 }}>
-          A few quick steps — or skip straight to the assistant and do this later from Setup.
-        </p>
 
-        <h2>1. Connect an account</h2>
-        {accounts.length > 0 && (
-          <div className="banner-note">
-            {accounts.length} account{accounts.length > 1 ? "s" : ""} connected.
-          </div>
-        )}
-        {providers.map((p) => (
-          <div key={p.provider} className="card card-padded row" style={{ justifyContent: "space-between", marginBottom: 8 }}>
-            <div>
-              <strong>{p.label}</strong>
-              <div className="muted">
-                {p.configured ? "Ready to connect." : "Not available on this deployment."}
+        <ol className="stepper">
+          {STEPS.map((label, i) => (
+            <li
+              key={label}
+              className={`stepper-item${i === step ? " active" : ""}${i < step ? " done" : ""}`}
+            >
+              <span className="stepper-dot">{i + 1}</span>
+              <span className="stepper-label">{label}</span>
+            </li>
+          ))}
+        </ol>
+
+        {step === 0 && (
+          <section>
+            <h2>Connect an account</h2>
+            <p className="settings-section-intro">
+              This is where your assistant reads your mail, calendar, and files from. You can add
+              more later.
+            </p>
+            {accounts.length > 0 && (
+              <div className="banner-note">
+                {accounts.length} account{accounts.length > 1 ? "s" : ""} connected.
               </div>
+            )}
+            {providers.map((p) => (
+              <div
+                key={p.provider}
+                className="card card-padded row"
+                style={{ justifyContent: "space-between", marginBottom: 8 }}
+              >
+                <div>
+                  <strong>{p.label}</strong>
+                  <div className="muted">
+                    {p.configured ? "Ready to connect." : "Not available at the moment."}
+                  </div>
+                </div>
+                {p.configured ? (
+                  <a href={loginUrl(p.loginPath)}>
+                    <button className="btn-primary">Connect</button>
+                  </a>
+                ) : (
+                  <button className="btn-secondary" disabled>
+                    Unavailable
+                  </button>
+                )}
+              </div>
+            ))}
+          </section>
+        )}
+
+        {step === 1 && (
+          <section>
+            <h2>Message it from your phone</h2>
+            <p className="settings-section-intro">
+              Add your number and you can text your assistant on WhatsApp — ask it anything, or
+              send it a boarding pass or receipt to file away. Include the country code, with no
+              spaces or plus sign.
+            </p>
+            <div className="card card-padded" style={{ marginBottom: 12 }}>
+              <div className="row">
+                <input
+                  value={newNumber}
+                  onChange={(e) => setNewNumber(e.target.value)}
+                  placeholder="447911123456"
+                />
+                <button
+                  className="btn-primary"
+                  onClick={addNumber}
+                  disabled={saving || !newNumber.trim()}
+                >
+                  <IconPlus />
+                  Add
+                </button>
+              </div>
+              {numbers.length > 0 && (
+                <div style={{ marginTop: 10 }}>
+                  {numbers.map((n) => (
+                    <div key={n} className="list-item row" style={{ justifyContent: "space-between" }}>
+                      <span style={{ fontSize: 13.5 }}>{n}</span>
+                      <button className="btn-danger" onClick={() => removeNumber(n)}>
+                        <IconTrash />
+                        Remove
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
-            {p.configured ? (
-              <a href={loginUrl(p.loginPath)}>
-                <button className="btn-primary">Connect</button>
-              </a>
-            ) : (
-              <button className="btn-secondary" disabled>Not configured</button>
+          </section>
+        )}
+
+        {step === 2 && (
+          <section>
+            <h2>Build your hub</h2>
+            <p className="settings-section-intro">
+              Switch on what you actually need. Each one you pick becomes its own section in your
+              sidebar — leave the rest off and they stay out of your way entirely.
+            </p>
+            <div className="card card-padded" style={{ marginBottom: 12 }}>
+              {tools.map((t) => (
+                <label key={t.key} className="check-row">
+                  <input
+                    type="checkbox"
+                    checked={t.enabled}
+                    onChange={(e) => handleToggleTool(t.key, e.target.checked)}
+                  />
+                  <span>
+                    <span className="check-row-title">{t.label}</span>
+                    <span className="check-row-desc">{t.description}</span>
+                  </span>
+                </label>
+              ))}
+              {tools.length === 0 && <p className="muted">Nothing available to add yet.</p>}
+            </div>
+            <p className="settings-field-hint">
+              Assistant, Calendar, and Files are always there — these are the extras.
+            </p>
+          </section>
+        )}
+
+        {step === 3 && (
+          <section>
+            <h2>What should your daily briefing show?</h2>
+            <p className="settings-section-intro">
+              Your unread mail and today's calendar are always included. Add anything else you'd
+              like waiting for you each morning.
+            </p>
+            <div className="card card-padded" style={{ marginBottom: 12 }}>
+              <BriefingSourcePicker value={briefing} onChange={setBriefing} />
+            </div>
+          </section>
+        )}
+
+        <div className="row" style={{ marginTop: 24, marginBottom: 40, justifyContent: "space-between" }}>
+          <div className="row">
+            {step > 0 && (
+              <button className="btn-secondary" onClick={() => setStep((s) => s - 1)}>
+                Back
+              </button>
             )}
           </div>
-        ))}
-
-        <h2>2. Add your WhatsApp number</h2>
-        <p className="muted" style={{ marginTop: -4 }}>
-          So you can message your assistant from your phone — country code, no spaces or +, e.g.
-          447911123456.
-        </p>
-        <div className="card card-padded" style={{ marginBottom: 12 }}>
           <div className="row">
-            <input
-              value={newNumber}
-              onChange={(e) => setNewNumber(e.target.value)}
-              placeholder="447911123456"
-            />
-            <button className="btn-primary" onClick={addNumber} disabled={saving || !newNumber.trim()}>
-              <IconPlus />
-              Add
+            {!isLast && (
+              <button className="btn-primary" onClick={() => setStep((s) => s + 1)}>
+                Continue
+              </button>
+            )}
+            {isLast && (
+              <button className="btn-primary" onClick={finish} disabled={finishing}>
+                {finishing ? "Finishing…" : "Go to my assistant"}
+              </button>
+            )}
+            <button className="link-button" onClick={finish}>
+              Skip for now
             </button>
           </div>
-          {numbers.length > 0 && (
-            <div style={{ marginTop: 10 }}>
-              {numbers.map((n) => (
-                <div key={n} className="list-item">
-                  {n}
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-
-        <h2>3. Pick your tools (optional)</h2>
-        <p className="muted" style={{ marginTop: -4 }}>
-          Turn on whichever of these you want — you can change this anytime from Setup.
-        </p>
-        <div className="card card-padded" style={{ marginBottom: 12 }}>
-          {tools.map((t) => (
-            <label key={t.key} className="row" style={{ marginBottom: 10, textTransform: "none", fontWeight: 400, fontSize: 13.5 }}>
-              <input
-                type="checkbox"
-                style={{ width: "auto" }}
-                checked={t.enabled}
-                onChange={(e) => handleToggleTool(t.key, e.target.checked)}
-              />
-              <span>
-                <strong>{t.label}</strong> — <span className="muted">{t.description}</span>
-              </span>
-            </label>
-          ))}
-        </div>
-
-        <div className="row" style={{ marginTop: 24, marginBottom: 32 }}>
-          <button className="btn-primary" onClick={() => navigate("/assistant")}>Go to my assistant</button>
-          <Link to="/assistant" className="muted" style={{ fontSize: 13.5 }}>
-            skip for now
-          </Link>
         </div>
       </div>
     </div>

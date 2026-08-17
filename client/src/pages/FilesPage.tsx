@@ -4,6 +4,7 @@ import {
   fetchSearchAll,
   documentFileUrl,
   deleteDocument,
+  documentLabel,
   type FileHit,
   type StoredDocument,
 } from "../api/client";
@@ -124,8 +125,8 @@ export function FilesPage() {
               <div className="card">
                 {!searched && (
                   <p className="muted" style={{ padding: 16, margin: 0 }}>
-                    Searches Google Drive, OneDrive, and any local folders you've added on the
-                    Setup page — type above to find a file by name.
+                    Searches Google Drive, OneDrive, and any folders you've added in Settings —
+                    type above to find a file by name.
                   </p>
                 )}
                 {searched && files.length === 0 && (
@@ -170,11 +171,19 @@ export function FilesPage() {
                   documents.map((d) => (
                     <div key={d.id} className="list-item">
                       <div className="row" style={{ justifyContent: "space-between" }}>
-                        <div>
-                          <strong>{d.filename || d.caption || d.mimeType}</strong>{" "}
+                        {/* The title comes from the extraction pass, so the list reads as a set of
+                            named documents rather than a dump of whatever was typed alongside the
+                            file. The original message stays visible underneath, trimmed. */}
+                        <div style={{ minWidth: 0 }}>
+                          <strong>{documentLabel(d)}</strong>{" "}
                           <span className="muted" style={{ fontSize: 12 }}>
-                            {new Date(d.createdAt).toLocaleString()}
+                            {new Date(d.createdAt).toLocaleDateString(undefined, {
+                              day: "numeric",
+                              month: "short",
+                              year: "numeric",
+                            })}
                           </span>
+                          {d.caption && <div className="doc-caption">“{d.caption}”</div>}
                         </div>
                         <div className="row" style={{ gap: 8 }}>
                           <a href={documentFileUrl(d.id)} target="_blank" rel="noreferrer">
