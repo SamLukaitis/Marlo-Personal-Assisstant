@@ -25,3 +25,9 @@ Thumbs.db
 
 # Vite cache
 *.local
+
+# Superdesign scratch files
+.superdesign/tmp/
+
+# Isolated git worktrees for subagent-driven development
+.worktrees/
