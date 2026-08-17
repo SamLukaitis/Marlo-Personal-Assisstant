@@ -5,9 +5,11 @@ import {
   refreshBriefing,
   fetchMessages,
   fetchEvents,
+  fetchNews,
   type Briefing,
   type UnifiedMessage,
   type CalendarEvent,
+  type Headline,
 } from "../api/client";
 import { IconChevronDown, IconRefresh } from "./icons";
 
@@ -27,13 +29,12 @@ interface BriefingBarProps {
 }
 
 // The confirmed design calls for three structured segments (Unread / Calendar / Updates) plus
-// an expanded detail view listing individual emails/events/headlines. The app has real
-// endpoints for unread mail and calendar events (fetchMessages/fetchEvents), so those two
-// segments are backed by real data. There's no dedicated "news headlines" endpoint separate
-// from the AI-written prose briefing (fetchBriefing) — rather than inventing one as part of a
-// visual-only pass, the third segment and the expanded view's third column both surface that
-// existing prose briefing instead of a literal headline list. Revisit if a structured
-// news/briefing-data endpoint gets built later.
+// an expanded detail view listing individual emails/events/headlines. Unread and Calendar are
+// backed by real endpoints (fetchMessages/fetchEvents). Updates uses the real /api/news
+// endpoint (respects the user's opted-in briefing topics, same as the morning briefing) when
+// they've turned news on for their briefing; otherwise it falls back to showing the existing
+// AI-written prose briefing's first line, since there's nothing else to show without that
+// opt-in.
 export function BriefingBar({ expanded, onToggle }: BriefingBarProps) {
   const [enabled, setEnabled] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -42,6 +43,8 @@ export function BriefingBar({ expanded, onToggle }: BriefingBarProps) {
   const [briefing, setBriefing] = useState<Briefing | null>(null);
   const [messages, setMessages] = useState<UnifiedMessage[]>([]);
   const [events, setEvents] = useState<CalendarEvent[]>([]);
+  const [headlines, setHeadlines] = useState<Headline[]>([]);
+  const [newsEnabled, setNewsEnabled] = useState(false);
 
   useEffect(() => {
     fetchBriefingSettings()
@@ -51,6 +54,7 @@ export function BriefingBar({ expanded, onToggle }: BriefingBarProps) {
           setLoading(false);
           return;
         }
+        setNewsEnabled(s.includeNews && s.topics.length > 0);
         return Promise.all([
           fetchBriefing().catch((err) => {
             setError((err as Error).message);
@@ -58,10 +62,12 @@ export function BriefingBar({ expanded, onToggle }: BriefingBarProps) {
           }),
           fetchMessages().catch(() => []),
           fetchEvents(7).catch(() => []),
-        ]).then(([b, m, e]) => {
+          s.includeNews && s.topics.length ? fetchNews(s.topics).catch(() => []) : Promise.resolve([]),
+        ]).then(([b, m, e, h]) => {
           setBriefing(b);
           setMessages(m);
           setEvents(e);
+          setHeadlines(h);
         });
       })
       .catch(() => {})
@@ -72,10 +78,16 @@ export function BriefingBar({ expanded, onToggle }: BriefingBarProps) {
     setRefreshing(true);
     setError(null);
     try {
-      const [b, m, e] = await Promise.all([refreshBriefing(), fetchMessages(), fetchEvents(7)]);
+      const [b, m, e, h] = await Promise.all([
+        refreshBriefing(),
+        fetchMessages(),
+        fetchEvents(7),
+        newsEnabled ? fetchNews() : Promise.resolve([]),
+      ]);
       setBriefing(b);
       setMessages(m);
       setEvents(e);
+      setHeadlines(h);
     } catch (err) {
       setError((err as Error).message);
     } finally {
@@ -115,9 +127,21 @@ export function BriefingBar({ expanded, onToggle }: BriefingBarProps) {
         </div>
         <div className="briefing-divider" />
         <div className="briefing-segment">
-          <span className="briefing-segment-label">Briefing</span>
+          <span className="briefing-segment-label">{newsEnabled ? "Updates" : "Briefing"}</span>
           <p className="briefing-segment-value">
-            {error ? "Unavailable" : briefing ? briefing.content.split("\n")[0] : "Not generated yet"}
+            {newsEnabled ? (
+              headlines.length ? (
+                `• ${headlines[0].title}`
+              ) : (
+                "No headlines yet"
+              )
+            ) : error ? (
+              "Unavailable"
+            ) : briefing ? (
+              briefing.content.split("\n")[0]
+            ) : (
+              "Not generated yet"
+            )}
           </p>
         </div>
         <div style={{ flexShrink: 0, display: "flex", alignItems: "center", paddingLeft: 4 }}>
@@ -161,8 +185,21 @@ export function BriefingBar({ expanded, onToggle }: BriefingBarProps) {
             )}
           </section>
           <section>
-            <h3>Briefing</h3>
-            {error ? (
+            <h3>{newsEnabled ? "Feed updates" : "Briefing"}</h3>
+            {newsEnabled ? (
+              headlines.length === 0 ? (
+                <p className="muted">No headlines yet.</p>
+              ) : (
+                <ul style={{ listStyle: "none", margin: 0, padding: 0, display: "flex", flexDirection: "column", gap: 10 }}>
+                  {headlines.slice(0, 5).map((h, i) => (
+                    <li key={i} style={{ display: "flex", flexDirection: "column", gap: 3, fontSize: 12 }}>
+                      <span className="badge-pill" style={{ width: "fit-content" }}>{h.topic}</span>
+                      <span style={{ fontWeight: 500, lineHeight: 1.4 }}>{h.title}</span>
+                    </li>
+                  ))}
+                </ul>
+              )
+            ) : error ? (
               <p className="error">{error}</p>
             ) : briefing ? (
               <p style={{ whiteSpace: "pre-wrap", fontSize: 12, margin: 0 }}>{briefing.content}</p>
