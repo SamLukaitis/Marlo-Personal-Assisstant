@@ -37,6 +37,9 @@ export function OnboardingPage() {
 
   const { tools, setEnabled } = useTools();
 
+  const connectedParam = params.get("connected");
+  const errorParam = params.get("error");
+
   useEffect(() => {
     Promise.all([
       fetchProviders(),
@@ -119,34 +122,52 @@ export function OnboardingPage() {
               This is where your assistant reads your mail, calendar, and files from. You can add
               more later.
             </p>
+            {connectedParam && (
+              <div className="banner-note">Connected {connectedParam} successfully.</div>
+            )}
+            {errorParam && <p className="error">That connection didn't go through. Try again.</p>}
             {accounts.length > 0 && (
               <div className="banner-note">
                 {accounts.length} account{accounts.length > 1 ? "s" : ""} connected.
               </div>
             )}
-            {providers.map((p) => (
-              <div
-                key={p.provider}
-                className="card card-padded row"
-                style={{ justifyContent: "space-between", marginBottom: 8 }}
-              >
-                <div>
-                  <strong>{p.label}</strong>
-                  <div className="muted">
-                    {p.configured ? "Ready to connect." : "Not available at the moment."}
+            {providers.map((p) => {
+              // Signing in already connects whichever provider you used (see authRoutes.ts) — so
+              // by the time someone lands here, that one's often already done. Show what's
+              // actually connected instead of a bare "Connect" that looks like nothing happened
+              // yet, and let "Connect" mean "add another" for a provider that supports more than
+              // one account.
+              const connectedEmails = accounts.filter((a) => a.provider === p.provider).map((a) => a.email);
+              return (
+                <div
+                  key={p.provider}
+                  className="card card-padded row"
+                  style={{ justifyContent: "space-between", marginBottom: 8 }}
+                >
+                  <div>
+                    <strong>{p.label}</strong>
+                    <div className="muted">
+                      {connectedEmails.length > 0
+                        ? `Connected: ${connectedEmails.join(", ")}`
+                        : p.configured
+                        ? "Ready to connect."
+                        : "Not available at the moment."}
+                    </div>
                   </div>
+                  {p.configured ? (
+                    <a href={`${loginUrl(p.loginPath)}?from=onboarding`}>
+                      <button className={connectedEmails.length > 0 ? "btn-secondary" : "btn-primary"}>
+                        {connectedEmails.length > 0 ? "Connect another" : "Connect"}
+                      </button>
+                    </a>
+                  ) : (
+                    <button className="btn-secondary" disabled>
+                      Unavailable
+                    </button>
+                  )}
                 </div>
-                {p.configured ? (
-                  <a href={loginUrl(p.loginPath)}>
-                    <button className="btn-primary">Connect</button>
-                  </a>
-                ) : (
-                  <button className="btn-secondary" disabled>
-                    Unavailable
-                  </button>
-                )}
-              </div>
-            ))}
+              );
+            })}
           </section>
         )}
 

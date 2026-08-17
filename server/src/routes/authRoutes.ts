@@ -18,6 +18,7 @@ import {
   createSession,
   deleteSession,
   listAccounts,
+  upsertAccount,
 } from "../db/store.js";
 import { requireAuth, SESSION_COOKIE_NAME, type AuthedRequest } from "../middleware/auth.js";
 
@@ -40,15 +41,25 @@ const SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // 30 days, matches store.t
 // independent of who's logged in). A `state` param carries which one this round trip is, plus a
 // nonce checked against a short-lived cookie set right before redirecting — the standard
 // CSRF-safe OAuth `state` pattern, not a new crypto scheme.
+//
+// `returnTo` carries where a "connect" round trip started, so finishing it lands back where the
+// user was — specifically, connecting an account from mid-onboarding must not eject them into
+// the main app before they've picked their tools/briefing. Only meaningful for intent "connect";
+// "login" always decides its own destination (see the login-intent branch of each callback).
 interface OAuthState {
   intent: "login" | "connect";
   ownerId?: number;
+  returnTo?: "onboarding" | "settings";
   nonce: string;
 }
 
-function buildState(intent: "login" | "connect", ownerId?: number): { state: string; nonce: string } {
+function buildState(
+  intent: "login" | "connect",
+  ownerId?: number,
+  returnTo?: "onboarding" | "settings"
+): { state: string; nonce: string } {
   const nonce = crypto.randomBytes(16).toString("hex");
-  const payload: OAuthState = { intent, ownerId, nonce };
+  const payload: OAuthState = { intent, ownerId, returnTo, nonce };
   return { state: Buffer.from(JSON.stringify(payload)).toString("base64url"), nonce };
 }
 
@@ -63,6 +74,12 @@ function parseState(raw: string | undefined): OAuthState | null {
   } catch {
     return null;
   }
+}
+
+// Where a "connect" callback sends the browser once the account is saved — mirrors whichever
+// page's Connect button the user actually clicked, not always Settings.
+function connectReturnPath(state: OAuthState): string {
+  return state.returnTo === "onboarding" ? "/onboarding" : "/settings";
 }
 
 function setNonceCookie(res: Response, nonce: string): void {
@@ -109,22 +126,30 @@ authRoutes.get("/auth/microsoft/login-signin", (_req, res) => {
 
 // --- "Connect a data source" — requires an existing session, attaches a mail/calendar account ---
 
+// The Connect button on OnboardingPage.tsx links here with ?from=onboarding; the one on
+// SettingsPage.tsx links here with no query param at all, which defaults to "settings" below.
+function returnToFromQuery(req: { query: Record<string, unknown> }): "onboarding" | "settings" {
+  return req.query.from === "onboarding" ? "onboarding" : "settings";
+}
+
 authRoutes.get("/auth/google/login", requireAuth, (req, res) => {
+  const returnTo = returnToFromQuery(req);
   if (!isGoogleConfigured()) {
-    res.redirect(`${CLIENT_URL}/setup?error=google_not_configured`);
+    res.redirect(`${CLIENT_URL}${returnTo === "onboarding" ? "/onboarding" : "/settings"}?error=google_not_configured`);
     return;
   }
-  const { state, nonce } = buildState("connect", (req as unknown as AuthedRequest).userId);
+  const { state, nonce } = buildState("connect", (req as unknown as AuthedRequest).userId, returnTo);
   setNonceCookie(res, nonce);
   res.redirect(getGoogleAuthUrl(state));
 });
 
 authRoutes.get("/auth/microsoft/login", requireAuth, (req, res) => {
+  const returnTo = returnToFromQuery(req);
   if (!isMicrosoftConfigured()) {
-    res.redirect(`${CLIENT_URL}/setup?error=microsoft_not_configured`);
+    res.redirect(`${CLIENT_URL}${returnTo === "onboarding" ? "/onboarding" : "/settings"}?error=microsoft_not_configured`);
     return;
   }
-  const { state, nonce } = buildState("connect", (req as unknown as AuthedRequest).userId);
+  const { state, nonce } = buildState("connect", (req as unknown as AuthedRequest).userId, returnTo);
   setNonceCookie(res, nonce);
   res.redirect(getMicrosoftAuthUrl(state));
 });
@@ -147,7 +172,7 @@ authRoutes.get("/auth/google/callback", async (req, res) => {
     if (state.intent === "connect") {
       if (!state.ownerId) throw new Error("connect intent missing ownerId");
       const account = await handleGoogleCallback(code, state.ownerId);
-      res.redirect(`${CLIENT_URL}/setup?connected=${encodeURIComponent(account.email)}`);
+      res.redirect(`${CLIENT_URL}${connectReturnPath(state)}?connected=${encodeURIComponent(account.email)}`);
       return;
     }
 
@@ -157,12 +182,28 @@ authRoutes.get("/auth/google/callback", async (req, res) => {
       return;
     }
     const user = findOrCreateUserByEmail(auth.email);
-    setSessionCookie(res, createSession(user.id));
+    // Read BEFORE the auto-connect below — this is what decides onboarding vs. straight into the
+    // app, and it must reflect what the user had connected walking in, not what signing in is
+    // about to add. Otherwise a brand-new user's very first sign-in would immediately count as
+    // "has an account" (from the auto-connect two lines down) and skip onboarding entirely.
     const hasAccounts = listAccounts(user.id).length > 0;
+    // Signing in with Google already requested the same scopes "Connect" would (see SCOPES in
+    // google.ts) — save these tokens as a connected account too, so a user isn't asked to
+    // reconnect the exact provider they just authenticated with. Safe to run on every login:
+    // upsertAccount is keyed on (owner, provider, email), so this just refreshes tokens (and
+    // clears any stale "auth broken" flag) on repeat sign-ins rather than duplicating anything.
+    upsertAccount(user.id, {
+      provider: "google",
+      email: auth.email,
+      accessToken: auth.accessToken,
+      refreshToken: auth.refreshToken,
+      expiryDate: auth.expiryDate,
+    });
+    setSessionCookie(res, createSession(user.id));
     res.redirect(`${CLIENT_URL}${hasAccounts ? "/assistant" : "/onboarding"}`);
   } catch (err) {
     console.error("Google OAuth callback failed", err);
-    res.redirect(`${state.intent === "connect" ? `${CLIENT_URL}/setup` : CLIENT_URL}?error=oauth_failed`);
+    res.redirect(`${state.intent === "connect" ? `${CLIENT_URL}${connectReturnPath(state)}` : CLIENT_URL}?error=oauth_failed`);
   }
 });
 
@@ -181,7 +222,7 @@ authRoutes.get("/auth/microsoft/callback", async (req, res) => {
     if (state.intent === "connect") {
       if (!state.ownerId) throw new Error("connect intent missing ownerId");
       const account = await handleMicrosoftCallback(code, state.ownerId);
-      res.redirect(`${CLIENT_URL}/setup?connected=${encodeURIComponent(account.email)}`);
+      res.redirect(`${CLIENT_URL}${connectReturnPath(state)}?connected=${encodeURIComponent(account.email)}`);
       return;
     }
 
@@ -191,11 +232,19 @@ authRoutes.get("/auth/microsoft/callback", async (req, res) => {
       return;
     }
     const user = findOrCreateUserByEmail(auth.email);
-    setSessionCookie(res, createSession(user.id));
+    // Same ordering reasoning as the Google callback above.
     const hasAccounts = listAccounts(user.id).length > 0;
+    upsertAccount(user.id, {
+      provider: "microsoft",
+      email: auth.email,
+      accessToken: auth.accessToken,
+      refreshToken: auth.refreshToken,
+      expiryDate: auth.expiryDate,
+    });
+    setSessionCookie(res, createSession(user.id));
     res.redirect(`${CLIENT_URL}${hasAccounts ? "/assistant" : "/onboarding"}`);
   } catch (err) {
     console.error("Microsoft OAuth callback failed", err);
-    res.redirect(`${state.intent === "connect" ? `${CLIENT_URL}/setup` : CLIENT_URL}?error=oauth_failed`);
+    res.redirect(`${state.intent === "connect" ? `${CLIENT_URL}${connectReturnPath(state)}` : CLIENT_URL}?error=oauth_failed`);
   }
 });
