@@ -52,6 +52,29 @@ const TRAVEL_MOVEMENT_TOOL: Anthropic.Tool = {
   },
 };
 
+// Named by the same call that extracts the facts, so titling costs nothing extra. A tool rather
+// than a "start your reply with TITLE:" convention because the title has to survive intact —
+// parsing it back out of prose breaks the moment the model reformats its own output.
+const NAME_DOCUMENT_TOOL: Anthropic.Tool = {
+  name: "name_document",
+  description:
+    "Give this document a short title for the user's file list. Always call this exactly once, for every document, before writing your extraction.",
+  input_schema: {
+    type: "object",
+    properties: {
+      title: {
+        type: "string",
+        description:
+          "A specific 3-6 word title naming what this document is, in title case, with no trailing punctuation. Prefer concrete identifying detail over a generic category: 'Ryanair Boarding Pass, Faro' beats 'Boarding Pass'; 'Hilton Lisbon Booking' beats 'Hotel Confirmation'. Never include the user's own words from their message — describe the document itself.",
+      },
+    },
+    required: ["title"],
+  },
+};
+
+// Long enough to stay specific, short enough to sit on one line in the file list.
+const MAX_TITLE_LENGTH = 60;
+
 interface TravelMovement {
   departureCountry?: string;
   departureCity?: string;
@@ -84,9 +107,10 @@ async function extractPdfTextLayer(buffer: Buffer): Promise<string | null> {
 async function extractDocument(
   buffer: Buffer,
   mimeType: string
-): Promise<{ text: string; movement: TravelMovement | null }> {
+): Promise<{ text: string; title: string | null; movement: TravelMovement | null }> {
   const uploadedAt = new Date().toISOString();
   const prompt =
+    "Call name_document first to title this file, then do the extraction below.\n\n" +
     "This is a photo or document the user saved for later reference (e.g. a boarding pass, " +
     "license, ticket, receipt, booking confirmation, or ID). Extract: (1) what kind of " +
     "document this is, (2) every important fact actually part of the document — dates, names, " +
@@ -134,7 +158,7 @@ async function extractDocument(
     // it hadn't gotten to yet, which is exactly how dates/times went missing even though they
     // were legible in the image. 4096 gives real headroom; this is a one-time cost per upload.
     max_tokens: 4096,
-    tools: [TRAVEL_MOVEMENT_TOOL],
+    tools: [NAME_DOCUMENT_TOOL, TRAVEL_MOVEMENT_TOOL],
     messages: [{ role: "user", content }],
   });
 
@@ -142,6 +166,15 @@ async function extractDocument(
   const toolUse = response.content.find(
     (b): b is Anthropic.ToolUseBlock => b.type === "tool_use" && b.name === "record_travel_movement"
   );
+  const nameUse = response.content.find(
+    (b): b is Anthropic.ToolUseBlock => b.type === "tool_use" && b.name === "name_document"
+  );
+
+  const rawTitle = (nameUse?.input as { title?: unknown } | undefined)?.title;
+  const title =
+    typeof rawTitle === "string" && rawTitle.trim()
+      ? rawTitle.trim().slice(0, MAX_TITLE_LENGTH)
+      : null;
 
   let text = textBlock?.text ?? "(couldn't extract any text from this file)";
   if (response.stop_reason === "max_tokens") {
@@ -154,6 +187,7 @@ async function extractDocument(
 
   return {
     text,
+    title,
     movement: toolUse ? (toolUse.input as TravelMovement) : null,
   };
 }
@@ -206,10 +240,15 @@ export async function ingestWhatsAppMedia(params: {
   fs.writeFileSync(storedPath, encryptBuffer(buffer));
 
   const canAnalyze = SUPPORTED_IMAGE_TYPES.has(mimeType) || mimeType === "application/pdf";
-  const { text: extractedText, movement } = canAnalyze
+  const {
+    text: extractedText,
+    title,
+    movement,
+  } = canAnalyze
     ? await extractDocument(buffer, mimeType)
     : {
         text: `(file type ${mimeType} isn't supported for automatic analysis — stored for download only)`,
+        title: null,
         movement: null,
       };
 
@@ -219,6 +258,7 @@ export async function ingestWhatsAppMedia(params: {
     mimeType,
     storedPath,
     caption: params.caption ?? null,
+    title,
     extractedText,
   });
 

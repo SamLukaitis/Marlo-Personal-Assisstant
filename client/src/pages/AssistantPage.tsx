@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from "react";
-import { fetchSettings, sendChatMessage, type ChatMessage } from "../api/client";
-import { IconSend } from "../components/icons";
+import { fetchSettings, sendChatMessage, type ChatMessage, type Settings } from "../api/client";
+import { IconSend, IconSettings } from "../components/icons";
 import { BriefingBar } from "../components/BriefingBar";
+import { AssistantConfigModal } from "../components/AssistantConfigModal";
 
 const SUGGESTIONS = [
   "Summarize my unread emails",
@@ -11,7 +12,8 @@ const SUGGESTIONS = [
 ];
 
 export function AssistantPage() {
-  const [assistantName, setAssistantName] = useState("Assistant");
+  const [settings, setSettings] = useState<Settings>({ assistantName: "Assistant", persona: "" });
+  const [configOpen, setConfigOpen] = useState(false);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
@@ -19,10 +21,10 @@ export function AssistantPage() {
   const [briefingExpanded, setBriefingExpanded] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
 
+  const assistantName = settings.assistantName;
+
   useEffect(() => {
-    fetchSettings()
-      .then((s) => setAssistantName(s.assistantName))
-      .catch(() => {});
+    fetchSettings().then(setSettings).catch(() => {});
   }, []);
 
   useEffect(() => {
@@ -54,6 +56,10 @@ export function AssistantPage() {
       <div className="main-inner">
         <div className="page-header">
           <h1 className="heading-font">{assistantName}</h1>
+          <button className="title-action" onClick={() => setConfigOpen(true)}>
+            <IconSettings />
+            Configure
+          </button>
         </div>
 
         <BriefingBar expanded={briefingExpanded} onToggle={() => setBriefingExpanded((v) => !v)} />
@@ -113,6 +119,14 @@ export function AssistantPage() {
           <span>Connected to your accounts</span>
           <span>{assistantName}</span>
         </footer>
+
+        {configOpen && (
+          <AssistantConfigModal
+            initial={settings}
+            onClose={() => setConfigOpen(false)}
+            onSaved={setSettings}
+          />
+        )}
       </div>
     </div>
   );

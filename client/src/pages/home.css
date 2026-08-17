@@ -1,0 +1,709 @@
+/* ============================================================================
+   Marlowe — public marketing page.
+
+   Scoped under .home so none of this leaks into the app shell, which keeps its
+   own lighter, more utilitarian system. The palette extends the app's forest
+   accent onto warm paper rather than inventing a second identity: someone who
+   signs up should recognise where they've landed.
+
+   Signature: the page is one continuous conversation. Every section is another
+   exchange in the same thread, because a thread is what the product actually
+   is. Scrolling advances the conversation.
+   ========================================================================== */
+
+.home {
+  --ink: #12211d;
+  --paper: #f7f5f0;
+  --paper-deep: #ece7dd;
+  --forest: #1e3a34;
+  --sage: #6f8378;
+  --ember: #b6552b;
+  --rule: #ddd6c9;
+
+  flex: 1;
+  min-width: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font-size: 16px;
+  line-height: 1.6;
+  overflow-x: hidden;
+}
+
+.home ::selection {
+  background: var(--forest);
+  color: var(--paper);
+}
+
+/* The app shell styles bare h2/h3 as tiny uppercase section labels — correct inside the hub,
+   wrong for marketing headlines. Neutralise that here.
+
+   :where() keeps this at .home's specificity (0,1,0): high enough to beat the global bare-element
+   `h2` rule (0,0,1), low enough that every heading rule below still wins. Written as a plain
+   descendant selector it would be (0,1,1) and would silently outrank .home-h1/.home-h2 instead. */
+.home :where(h1, h2, h3, h4) {
+  text-transform: none;
+  letter-spacing: normal;
+  color: var(--ink);
+  font-size: inherit;
+  font-weight: 600;
+  margin: 0;
+}
+
+.home-shell {
+  max-width: 1080px;
+  margin: 0 auto;
+  padding: 0 24px;
+}
+
+@media (min-width: 900px) {
+  .home-shell { padding: 0 40px; }
+}
+
+/* ---------- Top bar ---------- */
+.home-topbar {
+  position: sticky;
+  top: 0;
+  z-index: 30;
+  background: rgba(247, 245, 240, 0.85);
+  backdrop-filter: blur(10px);
+  border-bottom: 1px solid transparent;
+  transition: border-color 0.3s;
+}
+
+.home-topbar.scrolled {
+  border-bottom-color: var(--rule);
+}
+
+.home-topbar-inner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 68px;
+  gap: 16px;
+}
+
+.home-wordmark {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-family: 'Zodiak', serif;
+  font-size: 20px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  color: var(--ink);
+}
+
+.home-mark {
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  background: var(--forest);
+  color: var(--paper);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 15px;
+  flex-shrink: 0;
+}
+
+.home-topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* ---------- Buttons ---------- */
+.home-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  padding: 11px 18px;
+  font-family: inherit;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  text-align: center;
+  /* These are <a> elements so they carry the app's global link underline — a button that looks
+     like a hyperlink reads as unfinished. */
+  text-decoration: none;
+  transition: background 0.18s, color 0.18s, border-color 0.18s;
+}
+
+.home-btn-primary {
+  background: var(--forest);
+  color: #f2f7f4;
+}
+
+.home-btn-primary:hover { background: #16302a; }
+
+.home-btn-ghost {
+  background: transparent;
+  color: var(--ink);
+  border-color: var(--rule);
+}
+
+.home-btn-ghost:hover { border-color: var(--sage); background: rgba(255, 255, 255, 0.6); }
+
+.home-btn-quiet {
+  background: transparent;
+  color: var(--ink);
+  padding: 11px 12px;
+}
+
+.home-btn-quiet:hover { color: var(--forest); }
+
+/* ---------- Reveal on scroll ---------- */
+.reveal {
+  opacity: 0;
+  transform: translateY(18px);
+  transition: opacity 0.7s cubic-bezier(0.2, 0.7, 0.3, 1),
+              transform 0.7s cubic-bezier(0.2, 0.7, 0.3, 1);
+}
+
+.reveal.is-visible {
+  opacity: 1;
+  transform: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .reveal { opacity: 1; transform: none; transition: none; }
+}
+
+/* ---------- Section furniture ---------- */
+.home-section {
+  padding: 88px 0;
+  border-top: 1px solid var(--rule);
+}
+
+@media (min-width: 900px) {
+  .home-section { padding: 120px 0; }
+}
+
+.home-eyebrow {
+  display: block;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.16em;
+  color: var(--sage);
+  margin-bottom: 18px;
+}
+
+.home-h2 {
+  font-family: 'Zodiak', serif;
+  font-weight: 700;
+  font-size: clamp(28px, 4.2vw, 44px);
+  line-height: 1.1;
+  letter-spacing: -0.02em;
+  margin: 0 0 18px;
+  max-width: 18ch;
+}
+
+.home-lede {
+  font-size: clamp(16px, 1.6vw, 18px);
+  line-height: 1.65;
+  color: #3d4b45;
+  max-width: 54ch;
+  margin: 0;
+}
+
+/* ---------- Hero ---------- */
+.home-hero {
+  padding: 64px 0 88px;
+}
+
+@media (min-width: 900px) {
+  .home-hero {
+    padding: 88px 0 120px;
+    display: grid;
+    grid-template-columns: 1fr 420px;
+    gap: 64px;
+    align-items: center;
+  }
+}
+
+.home-h1 {
+  font-family: 'Zodiak', serif;
+  font-weight: 700;
+  font-size: clamp(38px, 6.4vw, 68px);
+  line-height: 1.03;
+  letter-spacing: -0.03em;
+  margin: 0 0 22px;
+  max-width: 14ch;
+}
+
+/* The one place the ember accent is spent: the verb the whole product turns on. */
+.home-h1 em {
+  font-style: italic;
+  font-weight: 400;
+  color: var(--ember);
+}
+
+.home-hero-sub {
+  font-size: clamp(16px, 1.8vw, 19px);
+  line-height: 1.6;
+  color: #3d4b45;
+  max-width: 46ch;
+  margin: 0 0 32px;
+}
+
+.home-hero-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 20px;
+}
+
+.home-hero-note {
+  font-size: 13px;
+  color: var(--sage);
+  margin: 0;
+}
+
+.home-hero-thread {
+  margin-top: 48px;
+}
+
+@media (min-width: 900px) {
+  .home-hero-thread { margin-top: 0; }
+}
+
+/* ---------- The thread ---------- */
+.thread {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  background: #fff;
+  border: 1px solid var(--rule);
+  border-radius: 16px;
+  padding: 20px;
+  box-shadow: 0 18px 50px -28px rgba(18, 33, 29, 0.4);
+}
+
+.thread-head {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid #f0ece4;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--sage);
+}
+
+.thread-head-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #3fa46a;
+  flex-shrink: 0;
+}
+
+.bubble {
+  max-width: 86%;
+  padding: 11px 15px;
+  border-radius: 14px;
+  font-size: 14.5px;
+  line-height: 1.5;
+}
+
+.bubble-user {
+  align-self: flex-end;
+  background: var(--forest);
+  color: #eef5f1;
+  border-bottom-right-radius: 4px;
+}
+
+.bubble-marlowe {
+  align-self: flex-start;
+  background: var(--paper-deep);
+  color: var(--ink);
+  border-bottom-left-radius: 4px;
+}
+
+/* Blinking caret while the hero message types itself out. */
+.caret {
+  display: inline-block;
+  width: 2px;
+  height: 1em;
+  background: currentColor;
+  margin-left: 2px;
+  vertical-align: text-bottom;
+  animation: blink 1s steps(2, start) infinite;
+}
+
+@keyframes blink {
+  to { visibility: hidden; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .caret { display: none; }
+}
+
+.typing {
+  align-self: flex-start;
+  display: flex;
+  gap: 4px;
+  padding: 13px 15px;
+  background: var(--paper-deep);
+  border-radius: 14px;
+  border-bottom-left-radius: 4px;
+}
+
+.typing span {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--sage);
+  animation: bounce 1.2s infinite;
+}
+
+.typing span:nth-child(2) { animation-delay: 0.15s; }
+.typing span:nth-child(3) { animation-delay: 0.3s; }
+
+@keyframes bounce {
+  0%, 60%, 100% { opacity: 0.35; transform: translateY(0); }
+  30% { opacity: 1; transform: translateY(-3px); }
+}
+
+/* ---------- Result card (what Marlowe answers with) ---------- */
+.result-card {
+  align-self: flex-start;
+  width: 100%;
+  background: #fff;
+  border: 1px solid var(--rule);
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+.result-card-head {
+  padding: 11px 15px;
+  border-bottom: 1px solid #f0ece4;
+  font-size: 10.5px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--sage);
+}
+
+.result-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 11px 15px;
+  font-size: 14px;
+  border-bottom: 1px solid #f6f3ed;
+}
+
+.result-row:last-child { border-bottom: none; }
+
+.result-row-key {
+  color: var(--sage);
+  flex-shrink: 0;
+  font-size: 13px;
+}
+
+.result-row-value {
+  font-weight: 600;
+  text-align: right;
+}
+
+.result-meter {
+  padding: 14px 15px 16px;
+}
+
+.result-meter-track {
+  height: 6px;
+  border-radius: 3px;
+  background: var(--paper-deep);
+  overflow: hidden;
+  margin-bottom: 9px;
+}
+
+.result-meter-fill {
+  height: 100%;
+  border-radius: 3px;
+  background: var(--forest);
+  width: 0;
+  transition: width 1.1s cubic-bezier(0.2, 0.7, 0.3, 1);
+}
+
+.is-visible .result-meter-fill { width: var(--fill, 68%); }
+
+@media (prefers-reduced-motion: reduce) {
+  .result-meter-fill { transition: none; width: var(--fill, 68%); }
+}
+
+.result-meter-label {
+  font-size: 12.5px;
+  color: var(--sage);
+}
+
+/* ---------- Exchange sections (text beside thread) ---------- */
+.exchange {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 36px;
+  align-items: center;
+}
+
+@media (min-width: 900px) {
+  .exchange {
+    grid-template-columns: 1fr 1fr;
+    gap: 72px;
+  }
+  /* Alternate which side the thread sits on so the page doesn't march. */
+  .exchange.flip .exchange-copy { order: 2; }
+}
+
+/* ---------- Connector strip ---------- */
+.connector-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 1px;
+  background: var(--rule);
+  border: 1px solid var(--rule);
+  border-radius: 12px;
+  overflow: hidden;
+  margin-top: 40px;
+}
+
+@media (min-width: 700px) {
+  .connector-grid { grid-template-columns: repeat(3, 1fr); }
+}
+
+@media (min-width: 1000px) {
+  .connector-grid { grid-template-columns: repeat(6, 1fr); }
+}
+
+.connector-cell {
+  background: var(--paper);
+  padding: 22px 14px;
+  text-align: center;
+  font-size: 13px;
+  font-weight: 600;
+  color: #3d4b45;
+}
+
+/* ---------- Tool cards ---------- */
+.tool-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 14px;
+  margin-top: 44px;
+}
+
+@media (min-width: 700px) {
+  .tool-grid { grid-template-columns: repeat(3, 1fr); }
+}
+
+.tool-card {
+  background: #fff;
+  border: 1px solid var(--rule);
+  border-radius: 12px;
+  padding: 24px;
+}
+
+.tool-card h3 {
+  font-family: 'Zodiak', serif;
+  font-size: 19px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  margin: 0 0 8px;
+}
+
+.tool-card p {
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.6;
+  color: #55635c;
+}
+
+.tool-card-tag {
+  display: inline-block;
+  font-size: 10.5px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--sage);
+  margin-bottom: 12px;
+}
+
+/* ---------- Trust list ---------- */
+.trust-list {
+  list-style: none;
+  margin: 40px 0 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 26px;
+}
+
+@media (min-width: 800px) {
+  .trust-list { grid-template-columns: repeat(3, 1fr); gap: 40px; }
+}
+
+.trust-list h3 {
+  font-size: 15px;
+  font-weight: 600;
+  margin: 0 0 7px;
+  padding-top: 16px;
+  border-top: 2px solid var(--ink);
+}
+
+.trust-list p {
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.6;
+  color: #55635c;
+}
+
+/* ---------- Closing CTA ---------- */
+.home-cta {
+  background: var(--ink);
+  color: var(--paper);
+  border-radius: 18px;
+  padding: 56px 28px;
+  text-align: center;
+  margin: 88px 0;
+}
+
+@media (min-width: 900px) {
+  .home-cta { padding: 80px 48px; margin: 120px 0; }
+}
+
+.home-cta h2 {
+  font-family: 'Zodiak', serif;
+  font-weight: 700;
+  font-size: clamp(28px, 4vw, 42px);
+  line-height: 1.1;
+  letter-spacing: -0.02em;
+  color: var(--paper);
+  margin: 0 auto 16px;
+  max-width: 18ch;
+}
+
+.home-cta p {
+  color: #a9bab2;
+  max-width: 46ch;
+  margin: 0 auto 30px;
+  font-size: 16px;
+}
+
+.home-cta .home-btn-primary {
+  background: var(--paper);
+  color: var(--ink);
+}
+
+.home-cta .home-btn-primary:hover { background: #fff; }
+
+.home-cta .home-btn-ghost {
+  color: var(--paper);
+  border-color: rgba(247, 245, 240, 0.28);
+}
+
+.home-cta .home-btn-ghost:hover {
+  border-color: rgba(247, 245, 240, 0.6);
+  background: rgba(247, 245, 240, 0.06);
+}
+
+.home-cta-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  justify-content: center;
+}
+
+/* ---------- Footer ---------- */
+.home-footer {
+  border-top: 1px solid var(--rule);
+  padding: 56px 0 40px;
+}
+
+.home-footer-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 32px;
+  margin-bottom: 44px;
+}
+
+@media (min-width: 800px) {
+  .home-footer-grid { grid-template-columns: 2fr 1fr 1fr 1fr; gap: 48px; }
+}
+
+.home-footer-brand p {
+  margin: 14px 0 0;
+  font-size: 13.5px;
+  color: var(--sage);
+  max-width: 30ch;
+  line-height: 1.6;
+}
+
+.home-footer h4 {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--sage);
+  margin: 0 0 14px;
+}
+
+.home-footer ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.home-footer a {
+  font-size: 14px;
+  color: #3d4b45;
+  text-decoration: none;
+}
+
+.home-footer a:hover {
+  color: var(--forest);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.home-footer-base {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 20px;
+  justify-content: space-between;
+  align-items: center;
+  padding-top: 26px;
+  border-top: 1px solid var(--rule);
+  font-size: 13px;
+  color: var(--sage);
+}
+
+/* ---------- Sign-in banners ---------- */
+.home-banner {
+  border-radius: 10px;
+  padding: 14px 16px;
+  font-size: 14px;
+  line-height: 1.55;
+  margin-bottom: 24px;
+  border: 1px solid;
+}
+
+.home-banner.warn {
+  background: #fdf3ee;
+  border-color: #e8c9b7;
+  color: #8a3f1c;
+}
+
+.home a:focus-visible,
+.home button:focus-visible {
+  outline: 2px solid var(--forest);
+  outline-offset: 3px;
+  border-radius: 6px;
+}

@@ -15,6 +15,8 @@ import {
 } from "../db/store.js";
 import { listLocalFolders } from "../providers/local.js";
 import { fetchHeadlines, NEWS_TOPICS, type NewsTopic } from "../providers/news.js";
+import { fetchWeather } from "../providers/weather.js";
+import { fetchQuotes, DEFAULT_SYMBOLS } from "../providers/markets.js";
 import { countTravelDays } from "../services/travelDays.js";
 import {
   hubListMessages,
@@ -290,8 +292,37 @@ const ALWAYS_ON_TOOLS: Anthropic.Tool[] = [
         topics: {
           type: "array",
           items: { type: "string", enum: Object.keys(NEWS_TOPICS) },
-          description:
-            "One or more of: world, technology, business, sports. Omit to fetch all topics.",
+          description: `One or more of: ${Object.keys(NEWS_TOPICS).join(", ")}. Omit to fetch all topics.`,
+        },
+      },
+    },
+  },
+  {
+    name: "get_weather",
+    description:
+      "Look up the current weather and today's high/low for a place. Call this whenever the user asks about weather anywhere — it accepts any city or place name, not just the one saved in their briefing settings.",
+    input_schema: {
+      type: "object",
+      properties: {
+        location: {
+          type: "string",
+          description: "A city or place name, e.g. 'Lisbon' or 'Austin, Texas'.",
+        },
+      },
+      required: ["location"],
+    },
+  },
+  {
+    name: "get_markets",
+    description:
+      "Fetch current prices and daily change for stock tickers or market indices. Call this for questions about how a stock or the market is doing. Use standard ticker symbols (AAPL, MSFT) and caret-prefixed symbols for indices (^GSPC for S&P 500, ^IXIC for Nasdaq, ^FTSE for FTSE 100). Omit symbols to get the major indices.",
+    input_schema: {
+      type: "object",
+      properties: {
+        symbols: {
+          type: "array",
+          items: { type: "string" },
+          description: "Ticker symbols to look up. Omit for the major indices.",
         },
       },
     },
@@ -467,6 +498,15 @@ export async function runTool(ownerId: number, name: string, input: Record<strin
       const topics = requested?.length ? requested : (Object.keys(NEWS_TOPICS) as NewsTopic[]);
       return fetchHeadlines(topics, 6);
     }
+    case "get_weather": {
+      const report = await fetchWeather(input.location as string);
+      return report ?? { error: `couldn't find a place called "${input.location as string}"` };
+    }
+    case "get_markets": {
+      const requested = (input.symbols as string[] | undefined) ?? [];
+      const quotes = await fetchQuotes(requested.length ? requested : DEFAULT_SYMBOLS);
+      return quotes.length ? quotes : { error: "no quotes could be fetched for those symbols" };
+    }
     case "list_travel_checkins":
       return listCheckins(ownerId, (input.limit as number | undefined) ?? 50);
     case "count_travel_days": {
@@ -497,6 +537,7 @@ function buildRules(enabled: Set<ToolKey>): string {
     "- Use the remember tool proactively whenever the user shares something worth recalling later (preferences, which account is which, standing instructions) — don't wait to be asked.",
     '- Use search_documents/list_recent_documents when the user asks about something they photographed or sent via WhatsApp (boarding passes, licenses, tickets, receipts) — e.g. "when did I fly to X" or "what\'s the code on my license".',
     "- Use get_news for news/current-events questions. Only report headlines the tool actually returned — never supplement with your own general knowledge or training data, even for well-known ongoing events. Fabricating a headline is a serious error, same as with any other tool's data.",
+    "- Use get_weather and get_markets for weather and stock/index questions. The same rule applies: report only what the tool returned. Never state a price, a percentage move, or a forecast you didn't just fetch.",
   ];
   const travel = [
     "- Use list_travel_checkins for questions about where the user has physically been or when they arrived somewhere — this is automatic location history, separate from documents.",

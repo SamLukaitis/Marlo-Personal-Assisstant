@@ -94,22 +94,50 @@ export interface Settings {
   persona: string;
 }
 
-export type NewsTopic = "world" | "technology" | "business" | "sports";
+export type NewsTopic =
+  | "world"
+  | "technology"
+  | "business"
+  | "sports"
+  | "politics"
+  | "science"
+  | "health"
+  | "entertainment";
 
 export const NEWS_TOPIC_LABELS: Record<NewsTopic, string> = {
   world: "World",
   technology: "Technology",
   business: "Business",
-  sports: "Sports",
+  sports: "Sport",
+  politics: "Politics",
+  science: "Science",
+  health: "Health",
+  entertainment: "Culture",
 };
 
 export interface BriefingSettings {
   enabled: boolean;
   includeNews: boolean;
   topics: NewsTopic[];
+  includeMarkets: boolean;
+  tickers: string[];
+  includeWeather: boolean;
+  weatherLocation: string;
   proactive: boolean;
   sendTime: string;
 }
+
+export const DEFAULT_BRIEFING_SETTINGS: BriefingSettings = {
+  enabled: true,
+  includeNews: false,
+  topics: [],
+  includeMarkets: false,
+  tickers: [],
+  includeWeather: false,
+  weatherLocation: "",
+  proactive: false,
+  sendTime: "07:30",
+};
 
 export interface Briefing {
   date: string;
@@ -122,8 +150,33 @@ export interface Headline {
   link?: string;
 }
 
+export interface Quote {
+  symbol: string;
+  name: string;
+  price: number;
+  change: number;
+  changePercent: number;
+  currency: string | null;
+}
+
+export interface WeatherReport {
+  place: string;
+  tempC: number;
+  highC: number;
+  lowC: number;
+  condition: string;
+}
+
+export interface BriefingFeed {
+  headlines: Headline[];
+  quotes: Quote[];
+  weather: WeatherReport | null;
+}
+
 export const fetchNews = (topics?: NewsTopic[]) =>
   getJson<Headline[]>(`/api/news${topics?.length ? `?topics=${topics.join(",")}` : ""}`);
+
+export const fetchBriefingFeed = () => getJson<BriefingFeed>("/api/briefing/feed");
 
 export interface MemoryNote {
   id: number;
@@ -147,8 +200,17 @@ export interface StoredDocument {
   filename: string | null;
   mimeType: string;
   caption: string | null;
+  /** Assigned during extraction. Null for documents saved before auto-titling shipped. */
+  title: string | null;
   extractedText: string;
   createdAt: number;
+}
+
+/** What to show as a document's headline: its title, else its filename, else its type. */
+export function documentLabel(doc: StoredDocument): string {
+  if (doc.title?.trim()) return doc.title;
+  if (doc.filename?.trim()) return doc.filename;
+  return doc.mimeType === "application/pdf" ? "PDF document" : "Saved file";
 }
 
 export interface TravelCheckin {

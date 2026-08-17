@@ -1,27 +1,42 @@
 import { NavLink, useNavigate } from "react-router-dom";
-import { useEffect, useState } from "react";
-import { fetchAccounts, logout, type Account } from "../api/client";
+import { useEffect, useState, type ReactElement } from "react";
+import { fetchAccounts, logout, type Account, type Tool } from "../api/client";
 import { useAuth } from "../context/AuthContext";
+import { useTools } from "../context/ToolsContext";
 import {
   IconAssistant,
   IconChat,
   IconCalendar,
   IconFolder,
+  IconTravel,
   IconSettings,
   IconLogOut,
 } from "./icons";
 
-const NAV_ITEMS = [
+interface NavItem {
+  to: string;
+  label: string;
+  Icon: () => ReactElement;
+  /** When set, this item only appears if the user has that tool switched on. */
+  requiresTool?: Tool["key"];
+}
+
+// The nav is a function of which tools the user picked, not a fixed list. Someone who never
+// connects Teams shouldn't have a Chats tab sitting there doing nothing, and someone who turns
+// the travel tracker on should get somewhere to actually look at it.
+const NAV_ITEMS: NavItem[] = [
   { to: "/assistant", label: "Assistant", Icon: IconAssistant },
-  { to: "/chats", label: "Chats", Icon: IconChat },
+  { to: "/chats", label: "Chats", Icon: IconChat, requiresTool: "teams" },
   { to: "/calendar", label: "Calendar", Icon: IconCalendar },
   { to: "/files", label: "Files", Icon: IconFolder },
-  { to: "/setup", label: "Setup", Icon: IconSettings },
+  { to: "/travel", label: "Travel", Icon: IconTravel, requiresTool: "travel" },
+  { to: "/settings", label: "Settings", Icon: IconSettings },
 ];
 
 export function Sidebar() {
   const [accounts, setAccounts] = useState<Account[]>([]);
   const { refresh } = useAuth();
+  const { isEnabled, loaded } = useTools();
   const navigate = useNavigate();
 
   useEffect(() => {
@@ -36,16 +51,22 @@ export function Sidebar() {
     navigate("/");
   }
 
+  // Render the un-gated items during the first load rather than nothing, so the nav doesn't
+  // flash empty; gated items appear once we actually know whether they belong.
+  const items = NAV_ITEMS.filter(
+    (item) => !item.requiresTool || (loaded && isEnabled(item.requiresTool))
+  );
+
   return (
     <>
       {/* Desktop (>=1024px, labeled) / tablet (768-1023px, icon rail) sidebar — hidden below 768px */}
       <nav className="sidebar">
         <NavLink to="/assistant" className="sidebar-brand">
-          <span className="sidebar-brand-mark">H</span>
-          <span className="sidebar-label">Hub</span>
+          <span className="sidebar-brand-mark">M</span>
+          <span className="sidebar-label">Marlowe</span>
         </NavLink>
 
-        {NAV_ITEMS.map(({ to, label, Icon }) => (
+        {items.map(({ to, label, Icon }) => (
           <NavLink key={to} to={to} className={cls}>
             <Icon />
             <span className="sidebar-label">{label}</span>
@@ -70,7 +91,7 @@ export function Sidebar() {
 
       {/* Mobile (<768px) bottom tab bar */}
       <nav className="mobile-tabbar">
-        {NAV_ITEMS.map(({ to, label, Icon }) => (
+        {items.map(({ to, label, Icon }) => (
           <NavLink
             key={to}
             to={to}

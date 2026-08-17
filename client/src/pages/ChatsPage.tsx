@@ -1,14 +1,16 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { fetchChats, fetchTools, type ChatThread } from "../api/client";
+import { fetchChats, type ChatThread } from "../api/client";
 import { IconSearch } from "../components/icons";
+import { useTools } from "../context/ToolsContext";
 
 export function ChatsPage() {
   const [chats, setChats] = useState<ChatThread[]>([]);
   const [query, setQuery] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [teamsEnabled, setTeamsEnabled] = useState<boolean | null>(null);
+  const { isEnabled, loaded } = useTools();
+  const teamsEnabled = isEnabled("teams");
 
   async function load(q?: string) {
     setLoading(true);
@@ -23,16 +25,10 @@ export function ChatsPage() {
   }
 
   useEffect(() => {
-    fetchTools()
-      .then((tools) => setTeamsEnabled(tools.find((t) => t.key === "teams")?.enabled ?? false))
-      .catch(() => setTeamsEnabled(false));
-  }, []);
+    if (loaded && teamsEnabled) load();
+  }, [loaded, teamsEnabled]);
 
-  useEffect(() => {
-    if (teamsEnabled) load();
-  }, [teamsEnabled]);
-
-  if (teamsEnabled === null) return null; // brief flash-avoidance, same pattern as RequireAuth
+  if (!loaded) return null; // brief flash-avoidance, same pattern as RequireAuth
 
   if (!teamsEnabled) {
     return (
@@ -43,10 +39,10 @@ export function ChatsPage() {
           </div>
           <div className="card card-padded">
             <p className="muted" style={{ marginTop: 0 }}>
-              Teams chat isn't enabled for your account.
+              Teams chat isn't switched on for your hub.
             </p>
-            <Link to="/setup">
-              <button className="btn-primary">Turn it on in Setup</button>
+            <Link to="/settings?section=tools">
+              <button className="btn-primary">Turn it on</button>
             </Link>
           </div>
         </div>
