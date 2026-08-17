@@ -20,6 +20,7 @@ import { documentRoutes } from "./routes/documentRoutes.js";
 import { checkinRoutes, checkinReadRoutes } from "./routes/checkinRoutes.js";
 import { searchRoutes } from "./routes/searchRoutes.js";
 import { alertRoutes } from "./routes/alertRoutes.js";
+import { toolsRoutes } from "./routes/toolsRoutes.js";
 import { requireAuth } from "./middleware/auth.js";
 import { startScheduler } from "./services/scheduler.js";
 
@@ -84,6 +85,7 @@ app.use(documentRoutes);
 app.use(checkinReadRoutes);
 app.use(searchRoutes);
 app.use(alertRoutes);
+app.use(toolsRoutes);
 
 app.get("/health", (_req, res) => res.json({ ok: true }));
 

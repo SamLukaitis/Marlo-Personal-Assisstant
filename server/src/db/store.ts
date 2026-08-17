@@ -4,7 +4,10 @@ import fs from "node:fs";
 import crypto from "node:crypto";
 import { encryptField, decryptField } from "../services/crypto.js";
 
-const dataDir = path.join(process.cwd(), "data");
+// DATA_DIR lets tests (see server/src/test/setup.ts) point this at an isolated temp directory
+// instead of the real server/data — unset in normal dev/production, where this falls back to
+// the existing behavior unchanged.
+const dataDir = process.env.DATA_DIR ?? path.join(process.cwd(), "data");
 if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
 // Printed once at startup so a Railway Volume (or any host's persistent-disk mount) can be
 // pointed at the exact right path — guessing wrong here silently loses the DB + uploads on
@@ -103,6 +106,12 @@ db.exec(`
     created_at INTEGER NOT NULL
   );
   CREATE INDEX IF NOT EXISTS idx_user_phone_numbers_user ON user_phone_numbers(user_id);
+  CREATE TABLE IF NOT EXISTS user_enabled_tools (
+    owner_id INTEGER NOT NULL REFERENCES users(id),
+    tool_key TEXT NOT NULL,
+    enabled_at INTEGER NOT NULL,
+    PRIMARY KEY(owner_id, tool_key)
+  );
 `);
 
 // Lightweight migration: CREATE TABLE IF NOT EXISTS doesn't add columns to a table that
@@ -346,6 +355,38 @@ if (!hasOwnerId) {
 
   migrateToMultiTenant();
   console.log("store: migrated to multi-tenant schema (owner_id added to every table)");
+}
+
+// One-time backfill: user_enabled_tools started empty for every user, including users who
+// already existed before this feature shipped — on deploy that would silently flip their prior
+// always-on Teams chat / travel tracker to off with no notice. If the table is still empty AND
+// there's at least one pre-existing user, seed both tools as enabled for every one of them so
+// upgrading preserves prior behavior. Guarded the same way as hasOwnerId above: once this has
+// run once (or a real user has toggled anything), the table is non-empty and this never fires
+// again — a new signup after that point still correctly starts with both tools off, since the
+// guard's emptiness check is what's being read, not "does this specific user have rows yet".
+const hasEnabledToolsRows = !!db.prepare(`SELECT 1 FROM user_enabled_tools LIMIT 1`).get();
+if (!hasEnabledToolsRows) {
+  const preExistingUserIds = (db.prepare(`SELECT id FROM users`).all() as { id: number }[]).map(
+    (r) => r.id
+  );
+  if (preExistingUserIds.length > 0) {
+    const backfillEnabledTools = db.transaction(() => {
+      const now = Date.now();
+      const insert = db.prepare(
+        `INSERT INTO user_enabled_tools (owner_id, tool_key, enabled_at) VALUES (?, ?, ?)
+         ON CONFLICT(owner_id, tool_key) DO NOTHING`
+      );
+      for (const userId of preExistingUserIds) {
+        insert.run(userId, "teams", now);
+        insert.run(userId, "travel", now);
+      }
+    });
+    backfillEnabledTools();
+    console.log(
+      `store: backfilled user_enabled_tools (teams+travel enabled) for ${preExistingUserIds.length} pre-existing user(s)`
+    );
+  }
 }
 
 export const uploadsDir = path.join(dataDir, "uploads");
@@ -651,6 +692,30 @@ export function addPhoneNumberForUser(ownerId: number, phone: string): UserPhone
 
 export function removePhoneNumberForUser(ownerId: number, id: number): void {
   db.prepare(`DELETE FROM user_phone_numbers WHERE id = ? AND user_id = ?`).run(id, ownerId);
+}
+
+export type ToolKey = "teams" | "travel";
+export const TOOL_KEYS: ToolKey[] = ["teams", "travel"];
+
+export function getEnabledTools(ownerId: number): Set<ToolKey> {
+  const rows = db
+    .prepare(`SELECT tool_key AS toolKey FROM user_enabled_tools WHERE owner_id = ?`)
+    .all(ownerId) as { toolKey: ToolKey }[];
+  return new Set(rows.map((r) => r.toolKey));
+}
+
+export function setToolEnabled(ownerId: number, toolKey: ToolKey, enabled: boolean): void {
+  if (!TOOL_KEYS.includes(toolKey)) {
+    throw new Error(`unknown tool: ${toolKey}`);
+  }
+  if (enabled) {
+    db.prepare(
+      `INSERT INTO user_enabled_tools (owner_id, tool_key, enabled_at) VALUES (?, ?, ?)
+       ON CONFLICT(owner_id, tool_key) DO NOTHING`
+    ).run(ownerId, toolKey, Date.now());
+  } else {
+    db.prepare(`DELETE FROM user_enabled_tools WHERE owner_id = ? AND tool_key = ?`).run(ownerId, toolKey);
+  }
 }
 
 // The core of WhatsApp multi-tenant routing: given an inbound sender's phone number, which

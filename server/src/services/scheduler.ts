@@ -1,5 +1,12 @@
 import { getBriefingSettings, getTodaysBriefing } from "./briefing.js";
-import { getSetting, setSetting, listPhoneNumbersForUser, listAllCheckinsAscending, listAllUserIds } from "../db/store.js";
+import {
+  getSetting,
+  setSetting,
+  listPhoneNumbersForUser,
+  listAllCheckinsAscending,
+  listAllUserIds,
+  getEnabledTools,
+} from "../db/store.js";
 import { sendWhatsAppMessage, isWhatsAppConfigured } from "../providers/whatsapp.js";
 import { countTravelDays } from "./travelDays.js";
 import { checkForNewImportantMessages } from "./alerts.js";
@@ -61,7 +68,9 @@ async function runDailyCheckForUser(ownerId: number): Promise<void> {
 
   try {
     const briefing = await getTodaysBriefing(ownerId);
-    const alert = schengenAlertLine(ownerId);
+    // Both channels (UI and WhatsApp) must reflect the same enabled/disabled state — a user
+    // with travel off gets no Schengen line, same as their Setup page shows no travel section.
+    const alert = getEnabledTools(ownerId).has("travel") ? schengenAlertLine(ownerId) : null;
     const message = alert ? `${briefing.content}\n\n${alert}` : briefing.content;
     for (const number of numbers) {
       await sendWhatsAppMessage(number, message);

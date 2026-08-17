@@ -1,11 +1,13 @@
 import { useEffect, useState } from "react";
-import { fetchChats, type ChatThread } from "../api/client";
+import { Link } from "react-router-dom";
+import { fetchChats, fetchTools, type ChatThread } from "../api/client";
 
 export function ChatsPage() {
   const [chats, setChats] = useState<ChatThread[]>([]);
   const [query, setQuery] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [teamsEnabled, setTeamsEnabled] = useState<boolean | null>(null);
 
   async function load(q?: string) {
     setLoading(true);
@@ -20,8 +22,32 @@ export function ChatsPage() {
   }
 
   useEffect(() => {
-    load();
+    fetchTools()
+      .then((tools) => setTeamsEnabled(tools.find((t) => t.key === "teams")?.enabled ?? false))
+      .catch(() => setTeamsEnabled(false));
   }, []);
+
+  useEffect(() => {
+    if (teamsEnabled) load();
+  }, [teamsEnabled]);
+
+  if (teamsEnabled === null) return null; // brief flash-avoidance, same pattern as RequireAuth
+
+  if (!teamsEnabled) {
+    return (
+      <div className="main">
+        <h1>Chats</h1>
+        <div className="card">
+          <p className="muted" style={{ marginTop: 0 }}>
+            Teams chat isn't enabled for your account.
+          </p>
+          <Link to="/setup">
+            <button>Turn it on in Setup</button>
+          </Link>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="main">

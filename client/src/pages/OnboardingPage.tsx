@@ -5,9 +5,12 @@ import {
   fetchAccounts,
   fetchWhatsAppAllowedNumbers,
   saveWhatsAppAllowedNumbers,
+  fetchTools,
+  setToolEnabled as apiSetToolEnabled,
   loginUrl,
   type ProviderInfo,
   type Account,
+  type Tool,
 } from "../api/client";
 
 // First-run flow for a just-invited user with no connected accounts yet — reached right after
@@ -20,17 +23,22 @@ export function OnboardingPage() {
   const [numbers, setNumbers] = useState<string[]>([]);
   const [newNumber, setNewNumber] = useState("");
   const [saving, setSaving] = useState(false);
+  const [tools, setTools] = useState<Tool[]>([]);
   const [params] = useSearchParams();
   const navigate = useNavigate();
 
   useEffect(() => {
-    Promise.all([fetchProviders(), fetchAccounts(), fetchWhatsAppAllowedNumbers()]).then(
-      ([p, a, n]) => {
-        setProviders(p);
-        setAccounts(a);
-        setNumbers(n);
-      }
-    );
+    Promise.all([
+      fetchProviders(),
+      fetchAccounts(),
+      fetchWhatsAppAllowedNumbers(),
+      fetchTools(),
+    ]).then(([p, a, n, t]) => {
+      setProviders(p);
+      setAccounts(a);
+      setNumbers(n);
+      setTools(t);
+    });
   }, [params]);
 
   async function addNumber() {
@@ -49,11 +57,23 @@ export function OnboardingPage() {
     }
   }
 
+  async function handleToggleTool(key: Tool["key"], enabled: boolean) {
+    setTools((prev) => prev.map((t) => (t.key === key ? { ...t, enabled } : t)));
+    try {
+      await apiSetToolEnabled(key, enabled);
+    } catch (err) {
+      // Revert the optimistic change — otherwise the checkbox stays checked/unchecked with
+      // nothing actually persisted, and the user only discovers it on reload.
+      setTools((prev) => prev.map((t) => (t.key === key ? { ...t, enabled: !enabled } : t)));
+      alert((err as Error).message);
+    }
+  }
+
   return (
     <div className="main">
       <h1>Let's set up your hub</h1>
       <p className="muted" style={{ marginTop: -12, marginBottom: 24 }}>
-        Two quick steps — or skip straight to the assistant and do this later from Setup.
+        A few quick steps — or skip straight to the assistant and do this later from Setup.
       </p>
 
       <h2>1. Connect an account</h2>
@@ -105,6 +125,26 @@ export function OnboardingPage() {
             ))}
           </div>
         )}
+      </div>
+
+      <h2>3. Pick your tools (optional)</h2>
+      <p className="muted" style={{ marginTop: -4 }}>
+        Turn on whichever of these you want — you can change this anytime from Setup.
+      </p>
+      <div className="card">
+        {tools.map((t) => (
+          <label key={t.key} className="row" style={{ marginBottom: 10 }}>
+            <input
+              type="checkbox"
+              style={{ width: "auto" }}
+              checked={t.enabled}
+              onChange={(e) => handleToggleTool(t.key, e.target.checked)}
+            />
+            <span>
+              <strong>{t.label}</strong> — <span className="muted">{t.description}</span>
+            </span>
+          </label>
+        ))}
       </div>
 
       <div className="row" style={{ marginTop: 24 }}>
