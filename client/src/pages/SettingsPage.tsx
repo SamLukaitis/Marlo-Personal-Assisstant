@@ -18,6 +18,9 @@ import {
   saveWhatsAppAllowedNumbers,
   fetchAlertSettings,
   saveAlertSettings,
+  fetchInvites,
+  addInvite,
+  removeInvite,
   DEFAULT_BRIEFING_SETTINGS,
   type ProviderInfo,
   type Account,
@@ -26,9 +29,11 @@ import {
   type MemoryNote,
   type WhatsAppStatus,
   type AlertSettings,
+  type InvitedEmail,
 } from "../api/client";
 import { IconTrash, IconPlus } from "../components/icons";
 import { useTools } from "../context/ToolsContext";
+import { useAuth } from "../context/AuthContext";
 import { BriefingSourcePicker } from "../components/BriefingSourcePicker";
 
 // Sign-in failures are the user's problem to understand, not their sysadmin's — these say what
@@ -48,6 +53,9 @@ const SECTIONS = [
   { key: "messaging", label: "Messaging" },
   { key: "tools", label: "Tools" },
   { key: "files", label: "Files" },
+  // Only ever shown/reachable for the app owner — filtered out of the nav and refused a redirect
+  // target for everyone else, see visibleSections/section below.
+  { key: "admin", label: "Admin" },
 ] as const;
 
 type SectionKey = (typeof SECTIONS)[number]["key"];
@@ -75,12 +83,24 @@ export function SettingsPage() {
   const [numbersSaved, setNumbersSaved] = useState(false);
   const [alertSettings, setAlertSettings] = useState<AlertSettings>({ enabled: false });
   const [alertSaved, setAlertSaved] = useState(false);
+  const [invites, setInvites] = useState<InvitedEmail[]>([]);
+  const [newInvite, setNewInvite] = useState("");
+  const [inviteError, setInviteError] = useState<string | null>(null);
+  const [invitesLoaded, setInvitesLoaded] = useState(false);
 
   const { tools, setEnabled } = useTools();
+  const { user } = useAuth();
   const [searchParams, setSearchParams] = useSearchParams();
 
+  const visibleSections = SECTIONS.filter((s) => s.key !== "admin" || user?.isAdmin);
+
   const sectionParam = searchParams.get("section");
-  const section: SectionKey = isSectionKey(sectionParam) ? sectionParam : "accounts";
+  // A non-admin can't land on "admin" even by pasting the URL — falls back the same as an
+  // unrecognized section would.
+  const section: SectionKey =
+    isSectionKey(sectionParam) && (sectionParam !== "admin" || user?.isAdmin)
+      ? sectionParam
+      : "accounts";
 
   function goToSection(next: SectionKey) {
     const params = new URLSearchParams(searchParams);
@@ -113,6 +133,16 @@ export function SettingsPage() {
   useEffect(() => {
     load().catch(() => {});
   }, []);
+
+  // Separate from load(): fetching this for every user would just draw a guaranteed 403 from
+  // adminRoutes.ts for the vast majority of them, for a section they'll never see.
+  useEffect(() => {
+    if (!user?.isAdmin) return;
+    fetchInvites()
+      .then(setInvites)
+      .catch(() => {})
+      .finally(() => setInvitesLoaded(true));
+  }, [user?.isAdmin]);
 
   const connected = searchParams.get("connected");
   const errorKey = searchParams.get("error");
@@ -150,6 +180,27 @@ export function SettingsPage() {
     await saveAlertSettings(next);
     setAlertSaved(true);
     setTimeout(() => setAlertSaved(false), 2500);
+  }
+
+  async function handleAddInvite(e: React.FormEvent) {
+    e.preventDefault();
+    const email = newInvite.trim();
+    if (!email) return;
+    setInviteError(null);
+    try {
+      setInvites(await addInvite(email));
+      setNewInvite("");
+    } catch (err) {
+      setInviteError((err as Error).message);
+    }
+  }
+
+  async function handleRemoveInvite(email: string) {
+    try {
+      setInvites(await removeInvite(email));
+    } catch (err) {
+      setInviteError((err as Error).message);
+    }
   }
 
   async function handleToggleTool(key: (typeof tools)[number]["key"], enabled: boolean) {
@@ -190,7 +241,7 @@ export function SettingsPage() {
 
         <div className="settings-layout">
           <nav className="settings-nav">
-            {SECTIONS.map((s) => (
+            {visibleSections.map((s) => (
               <button
                 key={s.key}
                 className={`settings-nav-item${s.key === section ? " active" : ""}`}
@@ -549,6 +600,63 @@ export function SettingsPage() {
                             load();
                           }}
                         >
+                          <IconTrash />
+                          Remove
+                        </button>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </>
+            )}
+
+            {section === "admin" && user?.isAdmin && (
+              <>
+                <h2>Invited testers</h2>
+                <p className="settings-section-intro">
+                  Only people on this list can sign in. Add an email and they can sign in with
+                  Google right away — no separate setup needed on their end.
+                </p>
+                <div className="card card-padded" style={{ marginBottom: 20 }}>
+                  <form className="row" onSubmit={handleAddInvite}>
+                    <input
+                      type="email"
+                      value={newInvite}
+                      onChange={(e) => setNewInvite(e.target.value)}
+                      placeholder="someone@example.com"
+                    />
+                    <button className="btn-primary" type="submit">
+                      <IconPlus />
+                      Invite
+                    </button>
+                  </form>
+                  {inviteError && (
+                    <p className="error" style={{ marginTop: 8 }}>
+                      {inviteError}
+                    </p>
+                  )}
+                  {!invitesLoaded ? (
+                    <p className="muted" style={{ marginTop: 12 }}>
+                      Loading…
+                    </p>
+                  ) : invites.length === 0 ? (
+                    <p className="muted" style={{ marginTop: 12 }}>
+                      Nobody invited yet.
+                    </p>
+                  ) : (
+                    invites.map((inv) => (
+                      <div key={inv.email} className="list-item row" style={{ justifyContent: "space-between" }}>
+                        <div>
+                          <span style={{ fontSize: 13.5 }}>{inv.email}</span>{" "}
+                          <span className="muted" style={{ fontSize: 12 }}>
+                            invited {new Date(inv.invitedAt).toLocaleDateString(undefined, {
+                              day: "numeric",
+                              month: "short",
+                              year: "numeric",
+                            })}
+                          </span>
+                        </div>
+                        <button className="btn-danger" onClick={() => handleRemoveInvite(inv.email)}>
                           <IconTrash />
                           Remove
                         </button>

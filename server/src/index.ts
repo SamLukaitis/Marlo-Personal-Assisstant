@@ -22,6 +22,7 @@ import { searchRoutes } from "./routes/searchRoutes.js";
 import { alertRoutes } from "./routes/alertRoutes.js";
 import { toolsRoutes } from "./routes/toolsRoutes.js";
 import { newsRoutes } from "./routes/newsRoutes.js";
+import { adminRoutes } from "./routes/adminRoutes.js";
 import { requireAuth } from "./middleware/auth.js";
 import { startScheduler } from "./services/scheduler.js";
 
@@ -88,6 +89,7 @@ app.use(searchRoutes);
 app.use(alertRoutes);
 app.use(toolsRoutes);
 app.use(newsRoutes);
+app.use(adminRoutes);
 
 app.get("/health", (_req, res) => res.json({ ok: true }));
 
