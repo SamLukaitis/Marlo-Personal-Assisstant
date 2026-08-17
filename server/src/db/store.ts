@@ -106,6 +106,12 @@ db.exec(`
     created_at INTEGER NOT NULL
   );
   CREATE INDEX IF NOT EXISTS idx_user_phone_numbers_user ON user_phone_numbers(user_id);
+  CREATE TABLE IF NOT EXISTS user_enabled_tools (
+    owner_id INTEGER NOT NULL REFERENCES users(id),
+    tool_key TEXT NOT NULL,
+    enabled_at INTEGER NOT NULL,
+    PRIMARY KEY(owner_id, tool_key)
+  );
 `);
 
 // Lightweight migration: CREATE TABLE IF NOT EXISTS doesn't add columns to a table that
@@ -654,6 +660,30 @@ export function addPhoneNumberForUser(ownerId: number, phone: string): UserPhone
 
 export function removePhoneNumberForUser(ownerId: number, id: number): void {
   db.prepare(`DELETE FROM user_phone_numbers WHERE id = ? AND user_id = ?`).run(id, ownerId);
+}
+
+export type ToolKey = "teams" | "travel";
+export const TOOL_KEYS: ToolKey[] = ["teams", "travel"];
+
+export function getEnabledTools(ownerId: number): Set<ToolKey> {
+  const rows = db
+    .prepare(`SELECT tool_key AS toolKey FROM user_enabled_tools WHERE owner_id = ?`)
+    .all(ownerId) as { toolKey: ToolKey }[];
+  return new Set(rows.map((r) => r.toolKey));
+}
+
+export function setToolEnabled(ownerId: number, toolKey: ToolKey, enabled: boolean): void {
+  if (!TOOL_KEYS.includes(toolKey)) {
+    throw new Error(`unknown tool: ${toolKey}`);
+  }
+  if (enabled) {
+    db.prepare(
+      `INSERT INTO user_enabled_tools (owner_id, tool_key, enabled_at) VALUES (?, ?, ?)
+       ON CONFLICT(owner_id, tool_key) DO NOTHING`
+    ).run(ownerId, toolKey, Date.now());
+  } else {
+    db.prepare(`DELETE FROM user_enabled_tools WHERE owner_id = ? AND tool_key = ?`).run(ownerId, toolKey);
+  }
 }
 
 // The core of WhatsApp multi-tenant routing: given an inbound sender's phone number, which
