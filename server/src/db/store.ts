@@ -970,6 +970,27 @@ export function getAppOwnerUserId(): number {
   return findOrCreateUserByEmail(email).id;
 }
 
+// Gates the admin invites UI/API — the one account (APP_OWNER_EMAIL) that can grant other people
+// a hub, replacing the "run a script on your own machine" flow with a page in the app itself.
+export function isAppOwner(userId: number): boolean {
+  return userId === getAppOwnerUserId();
+}
+
+export interface InvitedEmailRow {
+  email: string;
+  invitedAt: number;
+}
+
+export function listInvitedEmails(): InvitedEmailRow[] {
+  return db
+    .prepare(`SELECT email, invited_at AS invitedAt FROM invited_emails ORDER BY invited_at DESC`)
+    .all() as InvitedEmailRow[];
+}
+
+export function removeInvitedEmail(email: string): void {
+  db.prepare(`DELETE FROM invited_emails WHERE email = ?`).run(normalizeEmail(email));
+}
+
 const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days, sliding — refreshed on each use
 
 function hashSessionToken(raw: string): string {

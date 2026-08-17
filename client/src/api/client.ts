@@ -33,6 +33,7 @@ export interface Account {
 export interface Me {
   id: number;
   email: string;
+  isAdmin: boolean;
 }
 
 export interface UnifiedMessage {
@@ -438,6 +439,41 @@ export const fetchSearchAll = (q: string) =>
 export const fetchCheckins = () => getJson<TravelCheckin[]>("/api/checkins");
 export const fetchTravelDays = (area = "schengen", days = 180) =>
   getJson<TravelDaysResult>(`/api/travel-days?area=${encodeURIComponent(area)}&days=${days}`);
+
+export interface InvitedEmail {
+  email: string;
+  invitedAt: number;
+}
+
+export const fetchInvites = () => getJson<InvitedEmail[]>("/api/admin/invites");
+
+export async function addInvite(email: string): Promise<InvitedEmail[]> {
+  const res = await fetch(
+    `${API_BASE}/api/admin/invites`,
+    withCredentials({
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email }),
+    })
+  );
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.error ?? "failed to add invite");
+  }
+  return res.json();
+}
+
+export async function removeInvite(email: string): Promise<InvitedEmail[]> {
+  const res = await fetch(
+    `${API_BASE}/api/admin/invites/${encodeURIComponent(email)}`,
+    withCredentials({ method: "DELETE" })
+  );
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.error ?? "failed to remove invite");
+  }
+  return res.json();
+}
 
 export async function sendChatMessage(messages: ChatMessage[]): Promise<string> {
   const res = await fetch(
