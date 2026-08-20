@@ -21,6 +21,7 @@ import {
   fetchInvites,
   addInvite,
   removeInvite,
+  resetTestPhone,
   DEFAULT_BRIEFING_SETTINGS,
   type ProviderInfo,
   type Account,
@@ -87,6 +88,9 @@ export function SettingsPage() {
   const [newInvite, setNewInvite] = useState("");
   const [inviteError, setInviteError] = useState<string | null>(null);
   const [invitesLoaded, setInvitesLoaded] = useState(false);
+  const [resetPhone, setResetPhone] = useState("");
+  const [resetting, setResetting] = useState(false);
+  const [resetMessage, setResetMessage] = useState<string | null>(null);
 
   const { tools, setEnabled } = useTools();
   const { user } = useAuth();
@@ -200,6 +204,34 @@ export function SettingsPage() {
       setInvites(await removeInvite(email));
     } catch (err) {
       setInviteError((err as Error).message);
+    }
+  }
+
+  async function handleResetTestPhone(e: React.FormEvent) {
+    e.preventDefault();
+    const phone = resetPhone.trim();
+    if (!phone) return;
+    if (
+      !window.confirm(
+        `This permanently deletes any account connected to ${phone} — every mail account, document, and setting. Continue?`
+      )
+    ) {
+      return;
+    }
+    setResetting(true);
+    setResetMessage(null);
+    try {
+      const result = await resetTestPhone(phone);
+      setResetMessage(
+        result.hadAccount
+          ? `Done — the account behind ${phone} was fully deleted. Message it again to sign up from scratch.`
+          : `Done — no account was bound to ${phone} yet, but any half-finished registration for it is cleared.`
+      );
+      setResetPhone("");
+    } catch (err) {
+      setResetMessage((err as Error).message);
+    } finally {
+      setResetting(false);
     }
   }
 
@@ -662,6 +694,31 @@ export function SettingsPage() {
                         </button>
                       </div>
                     ))
+                  )}
+                </div>
+
+                <h2>Reset a test account</h2>
+                <p className="settings-section-intro">
+                  For testing the WhatsApp sign-up flow repeatedly with the same number. This
+                  permanently deletes everything for whatever account is connected to that phone
+                  (mail accounts, documents, settings) so it can sign up again from scratch.
+                </p>
+                <div className="card card-padded">
+                  <form className="row" onSubmit={handleResetTestPhone}>
+                    <input
+                      value={resetPhone}
+                      onChange={(e) => setResetPhone(e.target.value)}
+                      placeholder="447911123456"
+                    />
+                    <button className="btn-danger" type="submit" disabled={resetting || !resetPhone.trim()}>
+                      <IconTrash />
+                      Reset
+                    </button>
+                  </form>
+                  {resetMessage && (
+                    <p className="muted" style={{ marginTop: 8 }}>
+                      {resetMessage}
+                    </p>
                   )}
                 </div>
               </>

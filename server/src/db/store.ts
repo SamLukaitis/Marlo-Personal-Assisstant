@@ -1012,6 +1012,40 @@ export function removeInvitedEmail(email: string): void {
   db.prepare(`DELETE FROM invited_emails WHERE email = ?`).run(normalizeEmail(email));
 }
 
+// Full account purge — built for repeatable testing of the WhatsApp registration flow (admin-
+// only, see adminRoutes.ts), but a genuine "delete my account" is the same operation, so this is
+// written as that rather than a test-only shortcut. Removes every row this owner_id touches
+// across every table, plus the users row itself. Returns the uploaded documents' storedPaths so
+// the caller can also unlink the actual files from disk (this function only touches the DB —
+// deleting from server/data/uploads is a filesystem concern, kept in the route/caller, same
+// separation documentRoutes.ts already uses for single-document deletes).
+export function deleteUserCompletely(ownerId: number): { deletedDocumentPaths: string[] } {
+  const documentPaths = (
+    db.prepare(`SELECT stored_path AS storedPath FROM documents WHERE owner_id = ?`).all(ownerId) as {
+      storedPath: string;
+    }[]
+  ).map((r) => r.storedPath);
+
+  const purge = db.transaction(() => {
+    db.prepare(`DELETE FROM accounts WHERE owner_id = ?`).run(ownerId);
+    db.prepare(`DELETE FROM settings WHERE owner_id = ?`).run(ownerId);
+    db.prepare(`DELETE FROM local_roots WHERE owner_id = ?`).run(ownerId);
+    db.prepare(`DELETE FROM briefings WHERE owner_id = ?`).run(ownerId);
+    db.prepare(`DELETE FROM memory_notes WHERE owner_id = ?`).run(ownerId);
+    db.prepare(`DELETE FROM whatsapp_messages WHERE owner_id = ?`).run(ownerId);
+    db.prepare(`DELETE FROM documents WHERE owner_id = ?`).run(ownerId);
+    db.prepare(`DELETE FROM travel_checkins WHERE owner_id = ?`).run(ownerId);
+    db.prepare(`DELETE FROM alerted_messages WHERE owner_id = ?`).run(ownerId);
+    db.prepare(`DELETE FROM user_enabled_tools WHERE owner_id = ?`).run(ownerId);
+    db.prepare(`DELETE FROM user_phone_numbers WHERE user_id = ?`).run(ownerId);
+    db.prepare(`DELETE FROM sessions WHERE user_id = ?`).run(ownerId);
+    db.prepare(`DELETE FROM users WHERE id = ?`).run(ownerId);
+  });
+  purge();
+
+  return { deletedDocumentPaths: documentPaths };
+}
+
 const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days, sliding — refreshed on each use
 
 // Shared by session tokens and WhatsApp registration link tokens below — same primitive, two

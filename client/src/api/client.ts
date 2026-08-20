@@ -475,6 +475,25 @@ export async function removeInvite(email: string): Promise<InvitedEmail[]> {
   return res.json();
 }
 
+// Wipes any in-progress WhatsApp registration for this number, and if it's already bound to a
+// full account, wipes that account entirely — so the same phone/email can go through the
+// WhatsApp-native signup flow again from scratch. Irreversible; the caller should confirm first.
+export async function resetTestPhone(phone: string): Promise<{ ok: true; hadAccount: boolean }> {
+  const res = await fetch(
+    `${API_BASE}/api/admin/reset-test-phone`,
+    withCredentials({
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ phone }),
+    })
+  );
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.error ?? "failed to reset that number");
+  }
+  return res.json();
+}
+
 export async function sendChatMessage(messages: ChatMessage[]): Promise<string> {
   const res = await fetch(
     `${API_BASE}/api/assistant/chat`,

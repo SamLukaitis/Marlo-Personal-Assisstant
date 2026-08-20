@@ -1,5 +1,15 @@
 import { Router } from "express";
-import { isAppOwner, listInvitedEmails, addInvitedEmail, removeInvitedEmail } from "../db/store.js";
+import fs from "node:fs";
+import {
+  isAppOwner,
+  listInvitedEmails,
+  addInvitedEmail,
+  removeInvitedEmail,
+  resolveOwnerByPhone,
+  deleteUserCompletely,
+  deletePendingRegistration,
+  normalizePhone,
+} from "../db/store.js";
 import type { AuthedRequest } from "../middleware/auth.js";
 
 export const adminRoutes = Router();
@@ -38,4 +48,37 @@ adminRoutes.delete("/api/admin/invites/:email", (req, res) => {
   }
   removeInvitedEmail(req.params.email);
   res.json(listInvitedEmails());
+});
+
+// For repeatedly testing the WhatsApp registration flow with the same real phone number without
+// needing a fresh one each time — wipes any in-progress registration for that number, and if it's
+// already bound to a full account, wipes that account entirely (every table, plus the uploaded
+// files themselves) so the same number/email can go through signup again from a clean slate.
+// Irreversible, so this stays owner-only and the client puts a confirm() in front of it.
+adminRoutes.post("/api/admin/reset-test-phone", (req, res) => {
+  if (!isAppOwner((req as unknown as AuthedRequest).userId)) {
+    res.status(403).json({ error: "not allowed" });
+    return;
+  }
+  const phone = typeof req.body?.phone === "string" ? normalizePhone(req.body.phone) : "";
+  if (!phone) {
+    res.status(400).json({ error: "phone is required" });
+    return;
+  }
+
+  deletePendingRegistration(phone);
+
+  const ownerId = resolveOwnerByPhone(phone);
+  if (ownerId !== null) {
+    const { deletedDocumentPaths } = deleteUserCompletely(ownerId);
+    for (const p of deletedDocumentPaths) {
+      try {
+        fs.unlinkSync(p);
+      } catch {
+        // best-effort — a missing file on disk shouldn't block the rest of the reset
+      }
+    }
+  }
+
+  res.json({ ok: true, hadAccount: ownerId !== null });
 });
