@@ -4,8 +4,24 @@ import crypto from "node:crypto";
 import Anthropic from "@anthropic-ai/sdk";
 import { PDFParse } from "pdf-parse";
 import { downloadWhatsAppMedia } from "../providers/whatsapp.js";
-import { saveDocument, saveCheckin, uploadsDir, type DocumentRow } from "../db/store.js";
+import {
+  saveDocument,
+  saveCheckin,
+  uploadsDir,
+  DOCUMENT_CATEGORIES,
+  type DocumentRow,
+  type DocumentCategory,
+} from "../db/store.js";
 import { encryptBuffer } from "./crypto.js";
+
+// Pure on purpose — the one bit of category logic worth its own unit test is "what happens when
+// the model's tool call doesn't give us a valid category," and that doesn't need an Anthropic
+// call in the loop to verify.
+export function resolveDocumentCategory(raw: unknown): DocumentCategory | null {
+  return typeof raw === "string" && (DOCUMENT_CATEGORIES as string[]).includes(raw)
+    ? (raw as DocumentCategory)
+    : null;
+}
 
 // Extraction is a one-time cost per uploaded file — worth the richer tier since a wrong digit
 // in a transcribed code/number is worse than the marginal savings of a cheaper model.
@@ -67,8 +83,14 @@ const NAME_DOCUMENT_TOOL: Anthropic.Tool = {
         description:
           "A specific 3-6 word title naming what this document is, in title case, with no trailing punctuation. Prefer concrete identifying detail over a generic category: 'Ryanair Boarding Pass, Faro' beats 'Boarding Pass'; 'Hilton Lisbon Booking' beats 'Hotel Confirmation'. Never include the user's own words from their message — describe the document itself.",
       },
+      category: {
+        type: "string",
+        enum: DOCUMENT_CATEGORIES,
+        description:
+          "Which bucket this document belongs in on the user's file list: 'travel' (boarding passes, tickets, itineraries), 'id_legal' (licenses, passports, IDs, official paperwork), 'receipts_bookings' (receipts, invoices, hotel/booking confirmations), or 'other' for anything that genuinely doesn't fit those.",
+      },
     },
-    required: ["title"],
+    required: ["title", "category"],
   },
 };
 
@@ -107,7 +129,12 @@ async function extractPdfTextLayer(buffer: Buffer): Promise<string | null> {
 async function extractDocument(
   buffer: Buffer,
   mimeType: string
-): Promise<{ text: string; title: string | null; movement: TravelMovement | null }> {
+): Promise<{
+  text: string;
+  title: string | null;
+  category: DocumentCategory | null;
+  movement: TravelMovement | null;
+}> {
   const uploadedAt = new Date().toISOString();
   const prompt =
     "Call name_document first to title this file, then do the extraction below.\n\n" +
@@ -170,11 +197,13 @@ async function extractDocument(
     (b): b is Anthropic.ToolUseBlock => b.type === "tool_use" && b.name === "name_document"
   );
 
-  const rawTitle = (nameUse?.input as { title?: unknown } | undefined)?.title;
+  const nameInput = nameUse?.input as { title?: unknown; category?: unknown } | undefined;
+  const rawTitle = nameInput?.title;
   const title =
     typeof rawTitle === "string" && rawTitle.trim()
       ? rawTitle.trim().slice(0, MAX_TITLE_LENGTH)
       : null;
+  const category = resolveDocumentCategory(nameInput?.category);
 
   let text = textBlock?.text ?? "(couldn't extract any text from this file)";
   if (response.stop_reason === "max_tokens") {
@@ -188,6 +217,7 @@ async function extractDocument(
   return {
     text,
     title,
+    category,
     movement: toolUse ? (toolUse.input as TravelMovement) : null,
   };
 }
@@ -243,12 +273,14 @@ export async function ingestWhatsAppMedia(params: {
   const {
     text: extractedText,
     title,
+    category,
     movement,
   } = canAnalyze
     ? await extractDocument(buffer, mimeType)
     : {
         text: `(file type ${mimeType} isn't supported for automatic analysis — stored for download only)`,
         title: null,
+        category: null,
         movement: null,
       };
 
@@ -260,6 +292,7 @@ export async function ingestWhatsAppMedia(params: {
     caption: params.caption ?? null,
     title,
     extractedText,
+    category,
   });
 
   if (movement) {

@@ -5,12 +5,36 @@ import {
   documentFileUrl,
   deleteDocument,
   documentLabel,
+  DOCUMENT_CATEGORIES,
+  DOCUMENT_CATEGORY_LABELS,
   type FileHit,
   type StoredDocument,
+  type DocumentCategory,
 } from "../api/client";
 import { IconSearch, IconTrash } from "../components/icons";
 
 type Filter = "all" | "files" | "documents";
+type CategoryFilter = DocumentCategory | "all" | "uncategorized";
+
+// "Uncategorized" isn't a real DocumentCategory (never assigned by extraction) — it's the
+// display bucket for documents.category === null (predates this feature, or the file type
+// couldn't be analyzed). Grouped last so the real categories lead.
+const GROUP_ORDER: Array<DocumentCategory | "uncategorized"> = [...DOCUMENT_CATEGORIES, "uncategorized"];
+const GROUP_LABELS: Record<DocumentCategory | "uncategorized", string> = {
+  ...DOCUMENT_CATEGORY_LABELS,
+  uncategorized: "Uncategorized",
+};
+
+function groupByCategory(docs: StoredDocument[]): Array<[DocumentCategory | "uncategorized", StoredDocument[]]> {
+  const groups = new Map<DocumentCategory | "uncategorized", StoredDocument[]>();
+  for (const doc of docs) {
+    const key = doc.category ?? "uncategorized";
+    const bucket = groups.get(key);
+    if (bucket) bucket.push(doc);
+    else groups.set(key, [doc]);
+  }
+  return GROUP_ORDER.filter((key) => groups.has(key)).map((key) => [key, groups.get(key)!]);
+}
 
 // Absorbs the old standalone Search page, scoped to files/documents only — mail and Teams chat
 // search now happen by asking the Assistant directly (natural language), per the IA decision in
@@ -26,6 +50,7 @@ export function FilesPage() {
   const [files, setFiles] = useState<FileHit[]>([]);
   const [documents, setDocuments] = useState<StoredDocument[]>([]);
   const [filter, setFilter] = useState<Filter>("all");
+  const [categoryFilter, setCategoryFilter] = useState<CategoryFilter>("all");
   const [expandedDoc, setExpandedDoc] = useState<number | null>(null);
 
   async function loadDocuments() {
@@ -60,6 +85,68 @@ export function FilesPage() {
 
   const showFiles = filter === "all" || filter === "files";
   const showDocuments = filter === "all" || filter === "documents";
+
+  // Filtered client-side rather than re-fetched per chip click — `documents` already holds the
+  // full set (capped at 200 by the API), whether from a plain load or a search, so this covers
+  // both without a second round trip and without the "which mode am I in" bookkeeping that would
+  // take to keep a server-side ?category= fetch in sync with search state too.
+  const visibleDocuments =
+    categoryFilter === "all"
+      ? documents
+      : categoryFilter === "uncategorized"
+      ? documents.filter((d) => d.category === null)
+      : documents.filter((d) => d.category === categoryFilter);
+  const uncategorizedCount = documents.filter((d) => d.category === null).length;
+
+  // Used by both the flat and grouped-by-category render paths below, hence pulled out rather
+  // than inlined twice.
+  function renderDocument(d: StoredDocument) {
+    return (
+      <div key={d.id} className="list-item">
+        <div className="row" style={{ justifyContent: "space-between" }}>
+          {/* The title comes from the extraction pass, so the list reads as a set of
+              named documents rather than a dump of whatever was typed alongside the
+              file. The original message stays visible underneath, trimmed. */}
+          <div style={{ minWidth: 0 }}>
+            <strong>{documentLabel(d)}</strong>{" "}
+            <span className="muted" style={{ fontSize: 12 }}>
+              {new Date(d.createdAt).toLocaleDateString(undefined, {
+                day: "numeric",
+                month: "short",
+                year: "numeric",
+              })}
+            </span>
+            {d.caption && <div className="doc-caption">“{d.caption}”</div>}
+          </div>
+          <div className="row" style={{ gap: 8 }}>
+            <a href={documentFileUrl(d.id)} target="_blank" rel="noreferrer">
+              <button className="btn-secondary">View</button>
+            </a>
+            <button
+              className="btn-secondary"
+              onClick={() => setExpandedDoc(expandedDoc === d.id ? null : d.id)}
+            >
+              {expandedDoc === d.id ? "Hide details" : "Details"}
+            </button>
+            <button
+              className="btn-danger"
+              onClick={async () => {
+                await deleteDocument(d.id);
+                loadDocuments();
+              }}
+            >
+              <IconTrash />
+            </button>
+          </div>
+        </div>
+        {expandedDoc === d.id && (
+          <p className="muted" style={{ fontSize: 12.5, marginTop: 10, whiteSpace: "pre-wrap" }}>
+            {d.extractedText}
+          </p>
+        )}
+      </div>
+    );
+  }
 
   return (
     <div className="main">
@@ -156,6 +243,31 @@ export function FilesPage() {
               <div className="row" style={{ justifyContent: "space-between", marginBottom: 10 }}>
                 <h2 style={{ margin: 0 }}>WhatsApp saved documents</h2>
               </div>
+              <div className="row" style={{ marginBottom: 10, flexWrap: "wrap" }}>
+                <button
+                  className={`filter-chip${categoryFilter === "all" ? " active" : ""}`}
+                  onClick={() => setCategoryFilter("all")}
+                >
+                  All
+                </button>
+                {DOCUMENT_CATEGORIES.map((c) => (
+                  <button
+                    key={c}
+                    className={`filter-chip${categoryFilter === c ? " active" : ""}`}
+                    onClick={() => setCategoryFilter(c)}
+                  >
+                    {DOCUMENT_CATEGORY_LABELS[c]}
+                  </button>
+                ))}
+                {uncategorizedCount > 0 && (
+                  <button
+                    className={`filter-chip${categoryFilter === "uncategorized" ? " active" : ""}`}
+                    onClick={() => setCategoryFilter("uncategorized")}
+                  >
+                    Uncategorized ({uncategorizedCount})
+                  </button>
+                )}
+              </div>
               <div className="card" style={{ padding: 16 }}>
                 <p className="muted" style={{ marginTop: 0 }}>
                   Photos and files you've sent your assistant on WhatsApp (boarding passes,
@@ -163,54 +275,23 @@ export function FilesPage() {
                   later ask things like "when did I fly to Berlin" or "what's the code on my
                   license".
                 </p>
-                {documents.length === 0 ? (
+                {visibleDocuments.length === 0 ? (
                   <p className="muted" style={{ marginTop: 12 }}>
-                    {searched ? "No documents matched that search." : "Nothing saved yet — send a photo or document to your assistant on WhatsApp."}
+                    {searched
+                      ? "No documents matched that search."
+                      : categoryFilter !== "all"
+                      ? "Nothing in this category yet."
+                      : "Nothing saved yet — send a photo or document to your assistant on WhatsApp."}
                   </p>
+                ) : categoryFilter !== "all" ? (
+                  visibleDocuments.map((d) => renderDocument(d))
                 ) : (
-                  documents.map((d) => (
-                    <div key={d.id} className="list-item">
-                      <div className="row" style={{ justifyContent: "space-between" }}>
-                        {/* The title comes from the extraction pass, so the list reads as a set of
-                            named documents rather than a dump of whatever was typed alongside the
-                            file. The original message stays visible underneath, trimmed. */}
-                        <div style={{ minWidth: 0 }}>
-                          <strong>{documentLabel(d)}</strong>{" "}
-                          <span className="muted" style={{ fontSize: 12 }}>
-                            {new Date(d.createdAt).toLocaleDateString(undefined, {
-                              day: "numeric",
-                              month: "short",
-                              year: "numeric",
-                            })}
-                          </span>
-                          {d.caption && <div className="doc-caption">“{d.caption}”</div>}
-                        </div>
-                        <div className="row" style={{ gap: 8 }}>
-                          <a href={documentFileUrl(d.id)} target="_blank" rel="noreferrer">
-                            <button className="btn-secondary">View</button>
-                          </a>
-                          <button
-                            className="btn-secondary"
-                            onClick={() => setExpandedDoc(expandedDoc === d.id ? null : d.id)}
-                          >
-                            {expandedDoc === d.id ? "Hide details" : "Details"}
-                          </button>
-                          <button
-                            className="btn-danger"
-                            onClick={async () => {
-                              await deleteDocument(d.id);
-                              loadDocuments();
-                            }}
-                          >
-                            <IconTrash />
-                          </button>
-                        </div>
+                  groupByCategory(visibleDocuments).map(([key, docs]) => (
+                    <div key={key} style={{ marginBottom: 14 }}>
+                      <div className="muted" style={{ fontSize: 12, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.4, margin: "10px 0 4px" }}>
+                        {GROUP_LABELS[key]} ({docs.length})
                       </div>
-                      {expandedDoc === d.id && (
-                        <p className="muted" style={{ fontSize: 12.5, marginTop: 10, whiteSpace: "pre-wrap" }}>
-                          {d.extractedText}
-                        </p>
-                      )}
+                      {docs.map((d) => renderDocument(d))}
                     </div>
                   ))
                 )}

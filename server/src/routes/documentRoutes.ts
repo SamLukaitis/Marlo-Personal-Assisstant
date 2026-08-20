@@ -1,6 +1,13 @@
 import { Router } from "express";
 import fs from "node:fs";
-import { listDocuments, searchDocuments, getDocument, deleteDocument } from "../db/store.js";
+import {
+  listDocuments,
+  searchDocuments,
+  getDocument,
+  deleteDocument,
+  DOCUMENT_CATEGORIES,
+  type DocumentCategory,
+} from "../db/store.js";
 import { decryptBuffer } from "../services/crypto.js";
 import type { AuthedRequest } from "../middleware/auth.js";
 
@@ -9,7 +16,14 @@ export const documentRoutes = Router();
 documentRoutes.get("/api/documents", (req, res) => {
   const ownerId = (req as unknown as AuthedRequest).userId;
   const q = typeof req.query.q === "string" ? req.query.q : undefined;
-  res.json(q ? searchDocuments(ownerId, q, 50) : listDocuments(ownerId, 200));
+  const rawCategory = typeof req.query.category === "string" ? req.query.category : undefined;
+  // An unrecognized value (typo, stale link) falls back to "no filter" rather than a confusing
+  // empty result — same defensive posture as category parsing elsewhere in this feature.
+  const category =
+    rawCategory && (DOCUMENT_CATEGORIES as string[]).includes(rawCategory)
+      ? (rawCategory as DocumentCategory)
+      : undefined;
+  res.json(q ? searchDocuments(ownerId, q, 50) : listDocuments(ownerId, 200, category));
 });
 
 documentRoutes.get("/api/documents/:id/file", (req, res) => {
