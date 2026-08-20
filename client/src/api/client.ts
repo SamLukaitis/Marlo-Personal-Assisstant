@@ -195,6 +195,17 @@ export interface WhatsAppStatus {
   signatureConfigured: boolean;
 }
 
+export type DocumentCategory = "travel" | "id_legal" | "receipts_bookings" | "other";
+
+export const DOCUMENT_CATEGORIES: DocumentCategory[] = ["travel", "id_legal", "receipts_bookings", "other"];
+
+export const DOCUMENT_CATEGORY_LABELS: Record<DocumentCategory, string> = {
+  travel: "Travel",
+  id_legal: "ID & Legal",
+  receipts_bookings: "Receipts & Bookings",
+  other: "Other",
+};
+
 export interface StoredDocument {
   id: number;
   phone: string;
@@ -204,6 +215,8 @@ export interface StoredDocument {
   /** Assigned during extraction. Null for documents saved before auto-titling shipped. */
   title: string | null;
   extractedText: string;
+  /** Assigned during extraction, same call as title. Null predates this feature or wasn't analyzable. */
+  category: DocumentCategory | null;
   createdAt: number;
 }
 
@@ -416,7 +429,8 @@ export async function saveWhatsAppAllowedNumbers(numbers: string[]): Promise<voi
   }
 }
 
-export const fetchDocuments = () => getJson<StoredDocument[]>("/api/documents");
+export const fetchDocuments = (category?: DocumentCategory) =>
+  getJson<StoredDocument[]>(category ? `/api/documents?category=${category}` : "/api/documents");
 
 export function documentFileUrl(id: number): string {
   return `${API_BASE}/api/documents/${id}/file`;

@@ -413,6 +413,14 @@ if (!documentColumns.includes("title")) {
   db.exec(`ALTER TABLE documents ADD COLUMN title TEXT`);
 }
 
+// Groups documents on the Files page (Travel / ID & Legal / Receipts & Bookings / Other) —
+// assigned by the same extraction call that already names the document, so it costs nothing
+// extra. Nullable and deliberately distinct from "other": null means "predates this feature or
+// couldn't be analyzed", "other" means the model looked and it genuinely didn't fit.
+if (!documentColumns.includes("category")) {
+  db.exec(`ALTER TABLE documents ADD COLUMN category TEXT`);
+}
+
 export const uploadsDir = path.join(dataDir, "uploads");
 if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
 
@@ -753,6 +761,12 @@ export function resolveOwnerByPhone(phone: string): number | null {
   return row ? row.userId : null;
 }
 
+// Fixed on purpose (not free-form LLM tags) — a small, predictable set keeps the Files page
+// grouping/filter UI simple and avoids near-duplicate categories ("Receipt" vs "Receipts")
+// fragmenting the view over time.
+export type DocumentCategory = "travel" | "id_legal" | "receipts_bookings" | "other";
+export const DOCUMENT_CATEGORIES: DocumentCategory[] = ["travel", "id_legal", "receipts_bookings", "other"];
+
 export interface DocumentRow {
   id: number;
   phone: string;
@@ -762,11 +776,12 @@ export interface DocumentRow {
   caption: string | null;
   title: string | null;
   extractedText: string;
+  category: DocumentCategory | null;
   createdAt: number;
 }
 
 const DOCUMENT_COLUMNS = `id, phone, filename, mime_type AS mimeType, stored_path AS storedPath,
-  caption, title, extracted_text AS extractedText, created_at AS createdAt`;
+  caption, title, extracted_text AS extractedText, category, created_at AS createdAt`;
 
 export function saveDocument(
   ownerId: number,
@@ -778,12 +793,13 @@ export function saveDocument(
     caption: string | null;
     title: string | null;
     extractedText: string;
+    category: DocumentCategory | null;
   }
 ): DocumentRow {
   const info = db
     .prepare(
-      `INSERT INTO documents (owner_id, phone, filename, mime_type, stored_path, caption, title, extracted_text, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO documents (owner_id, phone, filename, mime_type, stored_path, caption, title, extracted_text, category, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
       ownerId,
@@ -794,6 +810,7 @@ export function saveDocument(
       doc.caption,
       doc.title,
       doc.extractedText,
+      doc.category,
       Date.now()
     );
   return db
@@ -801,7 +818,12 @@ export function saveDocument(
     .get(info.lastInsertRowid) as DocumentRow;
 }
 
-export function listDocuments(ownerId: number, limit = 50): DocumentRow[] {
+export function listDocuments(ownerId: number, limit = 50, category?: DocumentCategory): DocumentRow[] {
+  if (category) {
+    return db
+      .prepare(`SELECT ${DOCUMENT_COLUMNS} FROM documents WHERE owner_id = ? AND category = ? ORDER BY id DESC LIMIT ?`)
+      .all(ownerId, category, limit) as DocumentRow[];
+  }
   return db
     .prepare(`SELECT ${DOCUMENT_COLUMNS} FROM documents WHERE owner_id = ? ORDER BY id DESC LIMIT ?`)
     .all(ownerId, limit) as DocumentRow[];
