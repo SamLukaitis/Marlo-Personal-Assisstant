@@ -9,6 +9,7 @@ import {
   listCheckins,
   listAllCheckinsAscending,
   getEnabledTools,
+  setToolEnabled,
   TOOL_KEYS,
   type ToolKey,
   type DocumentRow,
@@ -18,6 +19,7 @@ import { fetchHeadlines, NEWS_TOPICS, type NewsTopic } from "../providers/news.j
 import { fetchWeather } from "../providers/weather.js";
 import { fetchQuotes, DEFAULT_SYMBOLS } from "../providers/markets.js";
 import { countTravelDays } from "../services/travelDays.js";
+import { getBriefingSettings, saveBriefingSettings, hasBriefingSettings } from "../services/briefing.js";
 import {
   hubListMessages,
   hubGetMessage,
@@ -327,6 +329,45 @@ const ALWAYS_ON_TOOLS: Anthropic.Tool[] = [
       },
     },
   },
+  {
+    name: "set_briefing_preferences",
+    description:
+      "Update what the user's morning briefing includes and when it's sent. Their unread mail and today's calendar are always included and don't need to be requested. Call this whenever the user tells you what they'd like added — news, business headlines, weather, market tickers — or when they give a send time. This is a patch: only pass the fields the user actually mentioned, anything omitted keeps its current value.",
+    input_schema: {
+      type: "object",
+      properties: {
+        include_weather: { type: "boolean" },
+        weather_location: { type: "string", description: "City or place name for the weather segment." },
+        include_news: { type: "boolean" },
+        topics: {
+          type: "array",
+          items: { type: "string", enum: Object.keys(NEWS_TOPICS) },
+          description: `News topics to include. One or more of: ${Object.keys(NEWS_TOPICS).join(", ")}.`,
+        },
+        include_markets: { type: "boolean" },
+        tickers: {
+          type: "array",
+          items: { type: "string" },
+          description: "Ticker symbols to include in the briefing. Omit for the major indices.",
+        },
+        proactive: { type: "boolean", description: "Whether to push the briefing automatically each day." },
+        send_time: { type: "string", description: '24h "HH:MM", server-local time.' },
+      },
+    },
+  },
+  {
+    name: "set_tool_enabled",
+    description:
+      "Turn an optional tool on or off for the user — currently Microsoft Teams chat search and the travel/Schengen day tracker. Call this when the user asks to use, enable, disable, or stop using one of these.",
+    input_schema: {
+      type: "object",
+      properties: {
+        tool: { type: "string", enum: TOOL_KEYS, description: "Which tool to toggle." },
+        enabled: { type: "boolean" },
+      },
+      required: ["tool", "enabled"],
+    },
+  },
 ];
 
 const CONDITIONAL_TOOLS: Record<ToolKey, Anthropic.Tool[]> = {
@@ -507,6 +548,32 @@ export async function runTool(ownerId: number, name: string, input: Record<strin
       const quotes = await fetchQuotes(requested.length ? requested : DEFAULT_SYMBOLS);
       return quotes.length ? quotes : { error: "no quotes could be fetched for those symbols" };
     }
+    case "set_briefing_preferences": {
+      const current = getBriefingSettings(ownerId);
+      const requestedTopics = (input.topics as string[] | undefined)?.filter((t): t is NewsTopic =>
+        Object.prototype.hasOwnProperty.call(NEWS_TOPICS, t)
+      );
+      saveBriefingSettings(ownerId, {
+        ...current,
+        ...(input.include_weather !== undefined ? { includeWeather: input.include_weather as boolean } : {}),
+        ...(input.weather_location !== undefined ? { weatherLocation: input.weather_location as string } : {}),
+        ...(input.include_news !== undefined ? { includeNews: input.include_news as boolean } : {}),
+        ...(requestedTopics !== undefined ? { topics: requestedTopics } : {}),
+        ...(input.include_markets !== undefined ? { includeMarkets: input.include_markets as boolean } : {}),
+        ...(input.tickers !== undefined ? { tickers: input.tickers as string[] } : {}),
+        ...(input.proactive !== undefined ? { proactive: input.proactive as boolean } : {}),
+        ...(input.send_time !== undefined ? { sendTime: input.send_time as string } : {}),
+      });
+      return { ok: true };
+    }
+    case "set_tool_enabled": {
+      const tool = input.tool as string;
+      if (!TOOL_KEYS.includes(tool as ToolKey)) {
+        return { error: `unknown tool: ${tool}` };
+      }
+      setToolEnabled(ownerId, tool as ToolKey, !!input.enabled);
+      return { ok: true };
+    }
     case "list_travel_checkins":
       return listCheckins(ownerId, (input.limit as number | undefined) ?? 50);
     case "count_travel_days": {
@@ -571,12 +638,27 @@ export function buildSystemPrompt(ownerId: number): string {
     ? memories.map((m) => `- ${m.content}`).join("\n")
     : "(nothing remembered yet)";
 
+  // This user has never saved briefing settings — they're mid-onboarding (just connected their
+  // account via WhatsApp). Settle briefing content first, then pivot to the open-ended tools
+  // question in the same reply, so it reads as one continuous conversation rather than two
+  // separate scripted prompts. Disappears the moment set_briefing_preferences is called for them
+  // (any time, not just onboarding), so a returning user never sees this again.
+  const onboardingNote = hasBriefingSettings(ownerId)
+    ? ""
+    : "The user just connected their account and hasn't configured their morning briefing yet. " +
+      "Once they tell you what they want in it (or say skip/no thanks), call set_briefing_preferences " +
+      "to save it, confirm briefly, and — in that same reply — ask what else they'd like help with " +
+      "day to day (e.g. Teams chat search, travel/Schengen tracking) and act on it via " +
+      "set_tool_enabled. If they already mentioned wanting one of those tools while answering the " +
+      "briefing question, don't ask again — just confirm you've turned it on.";
+
   return [
     `You are ${name}, a personal assistant that manages the user's connected accounts. Today's date is ${new Date().toDateString()}.`,
     persona ? `The user described how they want you to behave:\n${persona}` : "",
     `Connected accounts:\n${accountList}`,
     `Local computer folders searchable by file name:\n${folderList}`,
     `Things you've learned about the user over past conversations:\n${memoryList}`,
+    onboardingNote,
     buildRules(getEnabledTools(ownerId)),
   ]
     .filter(Boolean)

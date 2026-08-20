@@ -80,6 +80,14 @@ export async function getBriefingFeed(ownerId: number): Promise<BriefingFeed> {
   return { headlines, quotes, weather };
 }
 
+// Whether this user has ever saved briefing settings — distinct from getBriefingSettings()
+// returning non-defaults, since someone can deliberately keep every default value. Used as the
+// "still onboarding" signal in assistant.ts's system prompt: no new flag/table, just reusing
+// whether this specific setting exists yet.
+export function hasBriefingSettings(ownerId: number): boolean {
+  return getSetting(ownerId, "briefing_settings") !== null;
+}
+
 export function getBriefingSettings(ownerId: number): BriefingSettings {
   const raw = getSetting(ownerId, "briefing_settings");
   if (!raw) return DEFAULT_SETTINGS;

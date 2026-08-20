@@ -21,11 +21,10 @@ import {
   upsertAccount,
   consumePendingRegistrationToken,
   peekPendingRegistrationByToken,
-  upsertPendingRegistration,
   addPhoneNumberForUser,
 } from "../db/store.js";
 import { sendWhatsAppMessage } from "../providers/whatsapp.js";
-import { sendFirstValueAndAskBriefingTime } from "../services/whatsappRegistration.js";
+import { sendFirstValueAndBriefingPrompt } from "../services/whatsappRegistration.js";
 import { requireAuth, SESSION_COOKIE_NAME, type AuthedRequest } from "../middleware/auth.js";
 
 export const authRoutes = Router();
@@ -261,14 +260,13 @@ authRoutes.get("/auth/google/callback", async (req, res) => {
         refreshToken: auth.refreshToken,
         expiryDate: auth.expiryDate,
       });
-      upsertPendingRegistration(reg.phone, { step: "awaiting_briefing_time" });
       // Nice-to-have: the same phone's browser is now also logged into the website.
       setSessionCookie(res, createSession(user.id));
       res.redirect(`${CLIENT_URL}/connected`);
       // Fire-and-forget — this is the proactive WhatsApp push confirming the connection, which
       // has to happen from here since this moment (finishing OAuth in a browser) is outside any
       // inbound webhook the conversation state machine could otherwise react to.
-      sendFirstValueAndAskBriefingTime(user.id, reg.phone).catch((err) =>
+      sendFirstValueAndBriefingPrompt(user.id, reg.phone).catch((err) =>
         console.error("whatsapp-register: post-connect message failed", err)
       );
       return;
@@ -366,10 +364,9 @@ authRoutes.get("/auth/microsoft/callback", async (req, res) => {
         refreshToken: auth.refreshToken,
         expiryDate: auth.expiryDate,
       });
-      upsertPendingRegistration(reg.phone, { step: "awaiting_briefing_time" });
       setSessionCookie(res, createSession(user.id));
       res.redirect(`${CLIENT_URL}/connected`);
-      sendFirstValueAndAskBriefingTime(user.id, reg.phone).catch((err) =>
+      sendFirstValueAndBriefingPrompt(user.id, reg.phone).catch((err) =>
         console.error("whatsapp-register: post-connect message failed", err)
       );
       return;
