@@ -109,9 +109,40 @@ interface TravelMovement {
 // A real digital PDF (not a scan/photo saved as PDF) has an embedded text layer pdf-parse can
 // read exactly, for free, with zero risk of a misread digit — strictly better than vision for
 // that case: cheaper (no image tokens) and more accurate (guaranteed-correct source text).
-// Below this length, treat it as having no usable text layer (e.g. a scanned/photographed PDF)
-// and fall back to vision, same as before.
+// Below this length, don't even bother with the gibberish check below — too short to be a real
+// text layer (e.g. a scanned/photographed PDF) — just fall back to vision, same as before.
 const MIN_PDF_TEXT_LENGTH = 40;
+
+// Cheap/fast tier — this only has to make a garbled-vs-clean call, not do real extraction.
+const GIBBERISH_CHECK_MODEL = process.env.ASSISTANT_MODEL_SIMPLE ?? "claude-haiku-4-5";
+
+// A length check alone can't tell a clean transcript from font-mangled garbage that happens to
+// be long — ticket/boarding-pass PDFs often render the fields that actually matter (date, time,
+// reference number) with custom or barcode fonts pdf-parse can't decode, while the surrounding
+// boilerplate text extracts fine and pads the result past any length threshold. This is what
+// actually catches that: a fast model reading the text and judging whether a meaningful chunk of
+// it is corrupted, not just checking how many characters came out.
+async function looksLikeGibberish(text: string): Promise<boolean> {
+  const response = await getClient().messages.create({
+    model: GIBBERISH_CHECK_MODEL,
+    max_tokens: 5,
+    messages: [
+      {
+        role: "user",
+        content:
+          "The following text was pulled from a PDF by an automated text-layer parser. Some " +
+          "PDFs (tickets, boarding passes, etc.) render key fields like dates, times, and " +
+          "reference numbers in custom or barcode fonts that this kind of parser can't decode " +
+          "properly, leaving those specific fields garbled or missing even when the surrounding " +
+          "text extracts fine. Judge whether a meaningful portion of THIS text shows that kind of " +
+          "corruption — not just odd spacing or minor typos, but characters/sequences that don't " +
+          "reflect real content. Reply with exactly one word: GIBBERISH or CLEAN.\n\n" + text,
+      },
+    ],
+  });
+  const answer = response.content.find((b): b is Anthropic.TextBlock => b.type === "text")?.text ?? "";
+  return answer.toUpperCase().includes("GIBBERISH");
+}
 
 async function extractPdfTextLayer(buffer: Buffer): Promise<string | null> {
   try {
@@ -119,7 +150,12 @@ async function extractPdfTextLayer(buffer: Buffer): Promise<string | null> {
     const result = await parser.getText();
     await parser.destroy();
     const trimmed = result.text.trim();
-    return trimmed.length >= MIN_PDF_TEXT_LENGTH ? trimmed : null;
+    if (trimmed.length < MIN_PDF_TEXT_LENGTH) return null;
+    if (await looksLikeGibberish(trimmed)) {
+      console.warn("documents: pdf text layer looked garbled — falling back to vision");
+      return null;
+    }
+    return trimmed;
   } catch (err) {
     console.warn("documents: pdf-parse failed, falling back to vision", err);
     return null;
@@ -159,7 +195,7 @@ async function extractDocument(
     ? [
         {
           type: "text",
-          text: `Document text (extracted directly from the PDF's text layer — exact, not a transcription):\n\n${pdfText}\n\n${prompt}`,
+          text: `Document text (extracted directly from the PDF's text layer and screened for garbling — exact, not a transcription):\n\n${pdfText}\n\n${prompt}`,
         },
       ]
     : SUPPORTED_IMAGE_TYPES.has(mimeType)
@@ -178,24 +214,49 @@ async function extractDocument(
         { type: "text", text: prompt },
       ];
 
-  const response = await getClient().messages.create({
-    model: EXTRACTION_MODEL,
-    // 1024 was too tight for busier documents (e.g. a hotel booking confirmation with a full
-    // pricing breakdown) — the model would hit the cap mid-sentence and silently drop whatever
-    // it hadn't gotten to yet, which is exactly how dates/times went missing even though they
-    // were legible in the image. 4096 gives real headroom; this is a one-time cost per upload.
-    max_tokens: 4096,
-    tools: [NAME_DOCUMENT_TOOL, TRAVEL_MOVEMENT_TOOL],
-    messages: [{ role: "user", content }],
-  });
+  // Calling name_document "before writing your extraction" doesn't guarantee the model actually
+  // continues on to write it in the same turn — a model that calls a tool can just as validly stop
+  // there (stop_reason "tool_use") with no text at all, leaving the extraction empty even though
+  // the tool calls themselves succeeded. A single non-looping call can't recover from that; feed
+  // the tool call back as a normal tool_result and let the conversation continue, same as the main
+  // assistant loop in ai/assistant.ts does, until the model actually produces the write-up.
+  const messages: Anthropic.MessageParam[] = [{ role: "user", content }];
+  let response: Anthropic.Message;
+  let textBlock: Anthropic.TextBlock | undefined;
+  let toolUse: Anthropic.ToolUseBlock | undefined;
+  let nameUse: Anthropic.ToolUseBlock | undefined;
 
-  const textBlock = response.content.find((b): b is Anthropic.TextBlock => b.type === "text");
-  const toolUse = response.content.find(
-    (b): b is Anthropic.ToolUseBlock => b.type === "tool_use" && b.name === "record_travel_movement"
-  );
-  const nameUse = response.content.find(
-    (b): b is Anthropic.ToolUseBlock => b.type === "tool_use" && b.name === "name_document"
-  );
+  for (let turn = 0; turn < 3; turn++) {
+    response = await getClient().messages.create({
+      model: EXTRACTION_MODEL,
+      // 1024 was too tight for busier documents (e.g. a hotel booking confirmation with a full
+      // pricing breakdown) — the model would hit the cap mid-sentence and silently drop whatever
+      // it hadn't gotten to yet, which is exactly how dates/times went missing even though they
+      // were legible in the image. 4096 gives real headroom; this is a one-time cost per upload.
+      max_tokens: 4096,
+      tools: [NAME_DOCUMENT_TOOL, TRAVEL_MOVEMENT_TOOL],
+      messages,
+    });
+
+    textBlock = response.content.find((b): b is Anthropic.TextBlock => b.type === "text");
+    const toolUses = response.content.filter(
+      (b): b is Anthropic.ToolUseBlock => b.type === "tool_use"
+    );
+    toolUse = toolUses.find((b) => b.name === "record_travel_movement") ?? toolUse;
+    nameUse = toolUses.find((b) => b.name === "name_document") ?? nameUse;
+
+    if (textBlock || toolUses.length === 0) break;
+
+    messages.push({ role: "assistant", content: response.content });
+    messages.push({
+      role: "user",
+      content: toolUses.map((tu) => ({
+        type: "tool_result" as const,
+        tool_use_id: tu.id,
+        content: "Saved. Continue with the extraction as instructed.",
+      })),
+    });
+  }
 
   const nameInput = nameUse?.input as { title?: unknown; category?: unknown } | undefined;
   const rawTitle = nameInput?.title;
@@ -206,7 +267,7 @@ async function extractDocument(
   const category = resolveDocumentCategory(nameInput?.category);
 
   let text = textBlock?.text ?? "(couldn't extract any text from this file)";
-  if (response.stop_reason === "max_tokens") {
+  if (response!.stop_reason === "max_tokens") {
     // Surface truncation instead of silently returning a partial extraction — the model itself
     // (and the user, if they ask to see the details) should know some facts may be missing
     // rather than assuming the extraction was complete.
@@ -269,31 +330,42 @@ export async function ingestWhatsAppMedia(params: {
   const storedPath = path.join(uploadsDir, storedName);
   fs.writeFileSync(storedPath, encryptBuffer(buffer));
 
-  const canAnalyze = SUPPORTED_IMAGE_TYPES.has(mimeType) || mimeType === "application/pdf";
-  const {
-    text: extractedText,
-    title,
-    category,
-    movement,
-  } = canAnalyze
-    ? await extractDocument(buffer, mimeType)
-    : {
-        text: `(file type ${mimeType} isn't supported for automatic analysis — stored for download only)`,
-        title: null,
-        category: null,
-        movement: null,
-      };
+  let doc: DocumentRow;
+  let movement: TravelMovement | null;
+  try {
+    const canAnalyze = SUPPORTED_IMAGE_TYPES.has(mimeType) || mimeType === "application/pdf";
+    const {
+      text: extractedText,
+      title,
+      category,
+      movement: extractedMovement,
+    } = canAnalyze
+      ? await extractDocument(buffer, mimeType)
+      : {
+          text: `(file type ${mimeType} isn't supported for automatic analysis — stored for download only)`,
+          title: null,
+          category: null,
+          movement: null,
+        };
+    movement = extractedMovement;
 
-  const doc = saveDocument(params.ownerId, {
-    phone: params.phone,
-    filename: params.filename ?? null,
-    mimeType,
-    storedPath,
-    caption: params.caption ?? null,
-    title,
-    extractedText,
-    category,
-  });
+    doc = saveDocument(params.ownerId, {
+      phone: params.phone,
+      filename: params.filename ?? null,
+      mimeType,
+      storedPath,
+      caption: params.caption ?? null,
+      title,
+      extractedText,
+      category,
+    });
+  } catch (err) {
+    // Extraction or the DB insert failed after the encrypted file already landed on disk —
+    // without this, that file would be orphaned (undeletable via the API, since there's no
+    // document row pointing at it).
+    fs.unlinkSync(storedPath);
+    throw err;
+  }
 
   if (movement) {
     for (const c of movementToCheckins(movement, doc.id)) {
