@@ -26,7 +26,9 @@ function redirectUri(): string {
   return process.env.MS_REDIRECT_URI ?? "http://localhost:4000/auth/microsoft/callback";
 }
 
-export function getMicrosoftAuthUrl(state: string): string {
+// loginHint preselects an account on Microsoft's picker — same param name as Google's, optional
+// so every existing call site keeps working unchanged with it omitted.
+export function getMicrosoftAuthUrl(state: string, loginHint?: string): string {
   if (!isMicrosoftConfigured()) {
     throw new Error("MS_CLIENT_ID / MS_CLIENT_SECRET are not set in the environment");
   }
@@ -38,6 +40,7 @@ export function getMicrosoftAuthUrl(state: string): string {
     scope: SCOPES,
     prompt: "select_account",
     state,
+    ...(loginHint ? { login_hint: loginHint } : {}),
   });
   return `${AUTH_BASE}/authorize?${params}`;
 }

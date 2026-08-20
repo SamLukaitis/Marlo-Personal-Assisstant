@@ -113,6 +113,17 @@ db.exec(`
     enabled_at INTEGER NOT NULL,
     PRIMARY KEY(owner_id, tool_key)
   );
+  CREATE TABLE IF NOT EXISTS pending_whatsapp_registrations (
+    phone TEXT PRIMARY KEY,
+    step TEXT NOT NULL,
+    name TEXT,
+    typed_email TEXT,
+    token_hash TEXT,
+    token_expires_at INTEGER,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_pending_reg_token_hash ON pending_whatsapp_registrations(token_hash);
 `);
 
 // Lightweight migration: CREATE TABLE IF NOT EXISTS doesn't add columns to a table that
@@ -940,6 +951,16 @@ export function findOrCreateUserByEmail(email: string): UserRow {
   return row;
 }
 
+// Read-only, unlike findOrCreateUserByEmail — used to check "does this email already belong to
+// someone" without the side effect of creating a row for an address that was only typed into a
+// WhatsApp conversation, not yet OAuth-verified.
+export function getUserByEmail(email: string): UserRow | null {
+  const row = db
+    .prepare(`SELECT id, email, created_at AS createdAt FROM users WHERE email = ?`)
+    .get(normalizeEmail(email)) as UserRow | undefined;
+  return row ?? null;
+}
+
 export function getUser(id: number): UserRow | null {
   const row = db.prepare(`SELECT id, email, created_at AS createdAt FROM users WHERE id = ?`).get(id) as
     | UserRow
@@ -993,7 +1014,9 @@ export function removeInvitedEmail(email: string): void {
 
 const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days, sliding — refreshed on each use
 
-function hashSessionToken(raw: string): string {
+// Shared by session tokens and WhatsApp registration link tokens below — same primitive, two
+// different token types, only the hash is ever stored for either.
+function hashToken(raw: string): string {
   return crypto.createHash("sha256").update(raw).digest("hex");
 }
 
@@ -1005,7 +1028,7 @@ export function createSession(userId: number): string {
   const raw = crypto.randomBytes(32).toString("hex");
   const now = Date.now();
   db.prepare(`INSERT INTO sessions (id, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)`).run(
-    hashSessionToken(raw),
+    hashToken(raw),
     userId,
     now,
     now + SESSION_TTL_MS
@@ -1014,7 +1037,7 @@ export function createSession(userId: number): string {
 }
 
 export function getUserIdBySessionToken(raw: string): number | null {
-  const hash = hashSessionToken(raw);
+  const hash = hashToken(raw);
   const now = Date.now();
   const row = db.prepare(`SELECT user_id AS userId, expires_at AS expiresAt FROM sessions WHERE id = ?`).get(
     hash
@@ -1026,5 +1049,125 @@ export function getUserIdBySessionToken(raw: string): number | null {
 }
 
 export function deleteSession(raw: string): void {
-  db.prepare(`DELETE FROM sessions WHERE id = ?`).run(hashSessionToken(raw));
+  db.prepare(`DELETE FROM sessions WHERE id = ?`).run(hashToken(raw));
+}
+
+// ---------------------------------------------------------------------------
+// Pending WhatsApp registrations — conversation state for a brand-new, unregistered phone
+// number working through "what's your name? / which email? / tap this link" before it has an
+// owner at all. See server/src/services/whatsappRegistration.ts for the state machine that
+// drives this; these are just the storage primitives.
+// ---------------------------------------------------------------------------
+
+export type PendingRegistrationStep =
+  | "awaiting_name"
+  | "awaiting_email"
+  | "awaiting_link_tap"
+  | "awaiting_briefing_time"
+  | "completed";
+
+export interface PendingRegistrationRow {
+  phone: string;
+  step: PendingRegistrationStep;
+  name: string | null;
+  typedEmail: string | null;
+  tokenHash: string | null;
+  tokenExpiresAt: number | null;
+  createdAt: number;
+  updatedAt: number;
+}
+
+const PENDING_REG_SELECT = `phone, step, name, typed_email AS typedEmail, token_hash AS tokenHash,
+  token_expires_at AS tokenExpiresAt, created_at AS createdAt, updated_at AS updatedAt`;
+
+export function getPendingRegistration(phone: string): PendingRegistrationRow | null {
+  const row = db
+    .prepare(`SELECT ${PENDING_REG_SELECT} FROM pending_whatsapp_registrations WHERE phone = ?`)
+    .get(normalizePhone(phone)) as PendingRegistrationRow | undefined;
+  return row ?? null;
+}
+
+export function upsertPendingRegistration(
+  phone: string,
+  patch: Partial<{ step: PendingRegistrationStep; name: string; typedEmail: string }>
+): PendingRegistrationRow {
+  const normalized = normalizePhone(phone);
+  const now = Date.now();
+  const existing = getPendingRegistration(normalized);
+  if (!existing) {
+    db.prepare(
+      `INSERT INTO pending_whatsapp_registrations (phone, step, name, typed_email, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?)`
+    ).run(normalized, patch.step ?? "awaiting_name", patch.name ?? null, patch.typedEmail ?? null, now, now);
+  } else {
+    db.prepare(
+      `UPDATE pending_whatsapp_registrations SET
+         step = @step, name = @name, typed_email = @typedEmail, updated_at = @updatedAt
+       WHERE phone = @phone`
+    ).run({
+      phone: normalized,
+      step: patch.step ?? existing.step,
+      name: patch.name ?? existing.name,
+      typedEmail: patch.typedEmail ?? existing.typedEmail,
+      updatedAt: now,
+    });
+  }
+  return getPendingRegistration(normalized)!;
+}
+
+// Generates the one-time link token, storing only its hash (same pattern as session tokens) —
+// returns the raw token to embed in the WhatsApp message, never persisted anywhere itself.
+// ttlMs defaults to the deck's 10-minute window; overridable only so tests can produce an
+// already-expired token deterministically instead of waiting on a real clock.
+export function setPendingRegistrationToken(phone: string, ttlMs = 10 * 60 * 1000): string {
+  const normalized = normalizePhone(phone);
+  const raw = crypto.randomBytes(32).toString("hex");
+  const now = Date.now();
+  db.prepare(
+    `UPDATE pending_whatsapp_registrations SET token_hash = ?, token_expires_at = ?, updated_at = ? WHERE phone = ?`
+  ).run(hashToken(raw), now + ttlMs, now, normalized);
+  return raw;
+}
+
+// Read-only version of the lookup below — used by the /auth/{provider}/register route to
+// validate the link and read typedEmail for login_hint BEFORE redirecting to the provider,
+// without spending the token yet. If Google's consent screen fails or the user cancels there,
+// the link must still work if they come back and tap it again.
+export function peekPendingRegistrationByToken(rawToken: string): PendingRegistrationRow | null {
+  const hash = hashToken(rawToken);
+  const now = Date.now();
+  const row = db
+    .prepare(`SELECT ${PENDING_REG_SELECT} FROM pending_whatsapp_registrations WHERE token_hash = ?`)
+    .get(hash) as PendingRegistrationRow | undefined;
+  if (!row || row.tokenExpiresAt === null || row.tokenExpiresAt < now) return null;
+  return row;
+}
+
+// Single-use: nulls out the token immediately on a successful lookup, so a second tap of either
+// the Google or Microsoft link (whichever wasn't used first) fails cleanly instead of re-running
+// OAuth against a stale registration. Does NOT advance `step` or delete the row — the caller
+// (the OAuth callback) does that explicitly once the rest of the connect flow actually succeeds,
+// so a failed callback (e.g. not invited) doesn't strand the row in a half-consumed state.
+export function consumePendingRegistrationToken(rawToken: string): PendingRegistrationRow | null {
+  const hash = hashToken(rawToken);
+  const now = Date.now();
+  const row = db
+    .prepare(`SELECT ${PENDING_REG_SELECT} FROM pending_whatsapp_registrations WHERE token_hash = ?`)
+    .get(hash) as PendingRegistrationRow | undefined;
+  if (!row || row.tokenExpiresAt === null || row.tokenExpiresAt < now) return null;
+  db.prepare(
+    `UPDATE pending_whatsapp_registrations SET token_hash = NULL, token_expires_at = NULL WHERE phone = ?`
+  ).run(row.phone);
+  return row;
+}
+
+export function completePendingRegistration(phone: string): void {
+  db.prepare(`UPDATE pending_whatsapp_registrations SET step = 'completed', updated_at = ? WHERE phone = ?`).run(
+    Date.now(),
+    normalizePhone(phone)
+  );
+}
+
+export function deletePendingRegistration(phone: string): void {
+  db.prepare(`DELETE FROM pending_whatsapp_registrations WHERE phone = ?`).run(normalizePhone(phone));
 }

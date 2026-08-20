@@ -19,7 +19,13 @@ import {
   deleteSession,
   listAccounts,
   upsertAccount,
+  consumePendingRegistrationToken,
+  peekPendingRegistrationByToken,
+  upsertPendingRegistration,
+  addPhoneNumberForUser,
 } from "../db/store.js";
+import { sendWhatsAppMessage } from "../providers/whatsapp.js";
+import { sendFirstValueAndAskBriefingTime } from "../services/whatsappRegistration.js";
 import { requireAuth, SESSION_COOKIE_NAME, type AuthedRequest } from "../middleware/auth.js";
 
 export const authRoutes = Router();
@@ -47,19 +53,21 @@ const SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // 30 days, matches store.t
 // the main app before they've picked their tools/briefing. Only meaningful for intent "connect";
 // "login" always decides its own destination (see the login-intent branch of each callback).
 interface OAuthState {
-  intent: "login" | "connect";
+  intent: "login" | "connect" | "whatsapp_register";
   ownerId?: number;
   returnTo?: "onboarding" | "settings";
+  registrationToken?: string;
   nonce: string;
 }
 
 function buildState(
-  intent: "login" | "connect",
+  intent: "login" | "connect" | "whatsapp_register",
   ownerId?: number,
-  returnTo?: "onboarding" | "settings"
+  returnTo?: "onboarding" | "settings",
+  registrationToken?: string
 ): { state: string; nonce: string } {
   const nonce = crypto.randomBytes(16).toString("hex");
-  const payload: OAuthState = { intent, ownerId, returnTo, nonce };
+  const payload: OAuthState = { intent, ownerId, returnTo, registrationToken, nonce };
   return { state: Buffer.from(JSON.stringify(payload)).toString("base64url"), nonce };
 }
 
@@ -67,7 +75,11 @@ function parseState(raw: string | undefined): OAuthState | null {
   if (!raw) return null;
   try {
     const parsed = JSON.parse(Buffer.from(raw, "base64url").toString("utf8"));
-    if (parsed && (parsed.intent === "login" || parsed.intent === "connect") && typeof parsed.nonce === "string") {
+    if (
+      parsed &&
+      (parsed.intent === "login" || parsed.intent === "connect" || parsed.intent === "whatsapp_register") &&
+      typeof parsed.nonce === "string"
+    ) {
       return parsed as OAuthState;
     }
     return null;
@@ -154,6 +166,43 @@ authRoutes.get("/auth/microsoft/login", requireAuth, (req, res) => {
   res.redirect(getMicrosoftAuthUrl(state));
 });
 
+// --- "Register via WhatsApp" — unauthenticated, no session exists yet. Reached by tapping the
+// magic link services/whatsappRegistration.ts sends over WhatsApp once someone mid-conversation
+// has typed an invited email. The token (not a session or ownerId) is what authorizes this round
+// trip — see store.ts's pending_whatsapp_registrations functions. ---
+
+authRoutes.get("/auth/google/register", (req, res) => {
+  const token = req.query.token as string | undefined;
+  const reg = token ? peekPendingRegistrationByToken(token) : null;
+  if (!reg) {
+    res.redirect(`${CLIENT_URL}/connected?error=expired`);
+    return;
+  }
+  if (!isGoogleConfigured()) {
+    res.redirect(`${CLIENT_URL}/connected?error=google_not_configured`);
+    return;
+  }
+  const { state, nonce } = buildState("whatsapp_register", undefined, undefined, token);
+  setNonceCookie(res, nonce);
+  res.redirect(getGoogleAuthUrl(state, reg.typedEmail ?? undefined));
+});
+
+authRoutes.get("/auth/microsoft/register", (req, res) => {
+  const token = req.query.token as string | undefined;
+  const reg = token ? peekPendingRegistrationByToken(token) : null;
+  if (!reg) {
+    res.redirect(`${CLIENT_URL}/connected?error=expired`);
+    return;
+  }
+  if (!isMicrosoftConfigured()) {
+    res.redirect(`${CLIENT_URL}/connected?error=microsoft_not_configured`);
+    return;
+  }
+  const { state, nonce } = buildState("whatsapp_register", undefined, undefined, token);
+  setNonceCookie(res, nonce);
+  res.redirect(getMicrosoftAuthUrl(state, reg.typedEmail ?? undefined));
+});
+
 // --- Shared callbacks — one redirect URI per provider handles both intents, so Google/Microsoft
 // only ever needed one callback URL registered, avoiding a second round of console setup ---
 
@@ -173,6 +222,55 @@ authRoutes.get("/auth/google/callback", async (req, res) => {
       if (!state.ownerId) throw new Error("connect intent missing ownerId");
       const account = await handleGoogleCallback(code, state.ownerId);
       res.redirect(`${CLIENT_URL}${connectReturnPath(state)}?connected=${encodeURIComponent(account.email)}`);
+      return;
+    }
+
+    if (state.intent === "whatsapp_register") {
+      if (!state.registrationToken) {
+        res.redirect(`${CLIENT_URL}/connected?error=expired`);
+        return;
+      }
+      const reg = consumePendingRegistrationToken(state.registrationToken);
+      if (!reg) {
+        res.redirect(`${CLIENT_URL}/connected?error=expired`);
+        return;
+      }
+      const auth = await exchangeGoogleCode(code);
+      if (!isEmailInvited(auth.email)) {
+        res.redirect(`${CLIENT_URL}/connected?error=not_invited`);
+        sendWhatsAppMessage(
+          reg.phone,
+          "That email isn't on the early-access list yet — try a different one, or check back once you've been invited."
+        ).catch(() => {});
+        return;
+      }
+      const user = findOrCreateUserByEmail(auth.email);
+      try {
+        addPhoneNumberForUser(user.id, reg.phone);
+      } catch {
+        res.redirect(`${CLIENT_URL}/connected?error=phone_taken`);
+        sendWhatsAppMessage(reg.phone, "This WhatsApp number is already connected to a different Marlowe account.").catch(
+          () => {}
+        );
+        return;
+      }
+      upsertAccount(user.id, {
+        provider: "google",
+        email: auth.email,
+        accessToken: auth.accessToken,
+        refreshToken: auth.refreshToken,
+        expiryDate: auth.expiryDate,
+      });
+      upsertPendingRegistration(reg.phone, { step: "awaiting_briefing_time" });
+      // Nice-to-have: the same phone's browser is now also logged into the website.
+      setSessionCookie(res, createSession(user.id));
+      res.redirect(`${CLIENT_URL}/connected`);
+      // Fire-and-forget — this is the proactive WhatsApp push confirming the connection, which
+      // has to happen from here since this moment (finishing OAuth in a browser) is outside any
+      // inbound webhook the conversation state machine could otherwise react to.
+      sendFirstValueAndAskBriefingTime(user.id, reg.phone).catch((err) =>
+        console.error("whatsapp-register: post-connect message failed", err)
+      );
       return;
     }
 
@@ -203,7 +301,13 @@ authRoutes.get("/auth/google/callback", async (req, res) => {
     res.redirect(`${CLIENT_URL}${hasAccounts ? "/assistant" : "/onboarding"}`);
   } catch (err) {
     console.error("Google OAuth callback failed", err);
-    res.redirect(`${state.intent === "connect" ? `${CLIENT_URL}${connectReturnPath(state)}` : CLIENT_URL}?error=oauth_failed`);
+    const errorDest =
+      state.intent === "connect"
+        ? `${CLIENT_URL}${connectReturnPath(state)}`
+        : state.intent === "whatsapp_register"
+        ? `${CLIENT_URL}/connected`
+        : CLIENT_URL;
+    res.redirect(`${errorDest}?error=oauth_failed`);
   }
 });
 
@@ -226,6 +330,51 @@ authRoutes.get("/auth/microsoft/callback", async (req, res) => {
       return;
     }
 
+    if (state.intent === "whatsapp_register") {
+      if (!state.registrationToken) {
+        res.redirect(`${CLIENT_URL}/connected?error=expired`);
+        return;
+      }
+      const reg = consumePendingRegistrationToken(state.registrationToken);
+      if (!reg) {
+        res.redirect(`${CLIENT_URL}/connected?error=expired`);
+        return;
+      }
+      const auth = await exchangeMicrosoftCode(code);
+      if (!isEmailInvited(auth.email)) {
+        res.redirect(`${CLIENT_URL}/connected?error=not_invited`);
+        sendWhatsAppMessage(
+          reg.phone,
+          "That email isn't on the early-access list yet — try a different one, or check back once you've been invited."
+        ).catch(() => {});
+        return;
+      }
+      const user = findOrCreateUserByEmail(auth.email);
+      try {
+        addPhoneNumberForUser(user.id, reg.phone);
+      } catch {
+        res.redirect(`${CLIENT_URL}/connected?error=phone_taken`);
+        sendWhatsAppMessage(reg.phone, "This WhatsApp number is already connected to a different Marlowe account.").catch(
+          () => {}
+        );
+        return;
+      }
+      upsertAccount(user.id, {
+        provider: "microsoft",
+        email: auth.email,
+        accessToken: auth.accessToken,
+        refreshToken: auth.refreshToken,
+        expiryDate: auth.expiryDate,
+      });
+      upsertPendingRegistration(reg.phone, { step: "awaiting_briefing_time" });
+      setSessionCookie(res, createSession(user.id));
+      res.redirect(`${CLIENT_URL}/connected`);
+      sendFirstValueAndAskBriefingTime(user.id, reg.phone).catch((err) =>
+        console.error("whatsapp-register: post-connect message failed", err)
+      );
+      return;
+    }
+
     const auth = await exchangeMicrosoftCode(code);
     if (!isEmailInvited(auth.email)) {
       res.redirect(`${CLIENT_URL}/?not_invited=1`);
@@ -245,6 +394,12 @@ authRoutes.get("/auth/microsoft/callback", async (req, res) => {
     res.redirect(`${CLIENT_URL}${hasAccounts ? "/assistant" : "/onboarding"}`);
   } catch (err) {
     console.error("Microsoft OAuth callback failed", err);
-    res.redirect(`${state.intent === "connect" ? `${CLIENT_URL}${connectReturnPath(state)}` : CLIENT_URL}?error=oauth_failed`);
+    const errorDest =
+      state.intent === "connect"
+        ? `${CLIENT_URL}${connectReturnPath(state)}`
+        : state.intent === "whatsapp_register"
+        ? `${CLIENT_URL}/connected`
+        : CLIENT_URL;
+    res.redirect(`${errorDest}?error=oauth_failed`);
   }
 });

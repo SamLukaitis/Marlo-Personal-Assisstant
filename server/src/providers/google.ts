@@ -38,12 +38,16 @@ function createOAuthClient() {
   );
 }
 
-export function getGoogleAuthUrl(state: string): string {
+// loginHint preselects an account on Google's picker (per the WhatsApp registration flow, where
+// the user already typed their email in chat) — optional so every existing call site keeps
+// working unchanged with it omitted.
+export function getGoogleAuthUrl(state: string, loginHint?: string): string {
   return createOAuthClient().generateAuthUrl({
     access_type: "offline",
     prompt: "consent select_account",
     scope: SCOPES,
     state,
+    ...(loginHint ? { login_hint: loginHint } : {}),
   });
 }
 

@@ -11,6 +11,7 @@ import {
 import { resolveOwnerByPhone, getWhatsAppHistory, appendWhatsAppMessage } from "../db/store.js";
 import { runAssistantChat, MAX_HISTORY_MESSAGES } from "../ai/assistant.js";
 import { ingestWhatsAppMedia } from "../services/documents.js";
+import { handlePendingRegistration } from "../services/whatsappRegistration.js";
 
 export const whatsappRoutes = Router();
 
@@ -100,7 +101,12 @@ async function handleIncoming(message: IncomingWhatsAppMessage): Promise<void> {
   // per-tenant now instead of against one shared list.
   const ownerId = resolveOwnerByPhone(message.from);
   if (ownerId === null) {
-    console.warn(`whatsapp: ignoring message from unregistered number ${message.from}`);
+    // No hub for this number yet — instead of silently dropping it, walk them through
+    // registering: name, email (invite-checked), a one-time link to connect Gmail/Outlook. See
+    // services/whatsappRegistration.ts for the conversation state machine.
+    await handlePendingRegistration(message).catch((err) =>
+      console.error("whatsapp: registration flow failed", err)
+    );
     return;
   }
 

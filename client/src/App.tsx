@@ -3,6 +3,7 @@ import { AuthedLayout } from "./components/AuthedLayout";
 import { RequireAuth } from "./components/RequireAuth";
 import { ToolsProvider } from "./context/ToolsContext";
 import { HomePage } from "./pages/HomePage";
+import { ConnectedPage } from "./pages/ConnectedPage";
 import { OnboardingPage } from "./pages/OnboardingPage";
 import { AssistantPage } from "./pages/AssistantPage";
 import { ChatsPage } from "./pages/ChatsPage";
@@ -18,6 +19,9 @@ function App() {
         <Routes>
           {/* Public — the sidebar/nav must not render here, there's no hub to navigate yet */}
           <Route path="/" element={<HomePage />} />
+          {/* Lands here after the WhatsApp-native registration flow's OAuth round trip — no
+              session exists yet at this point, so this must stay outside RequireAuth. */}
+          <Route path="/connected" element={<ConnectedPage />} />
 
           <Route
             path="/onboarding"
