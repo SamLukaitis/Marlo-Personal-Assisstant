@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { buildToolsForOwner, buildSystemPrompt, runTool } from "./assistant.js";
-import { findOrCreateUserByEmail, setToolEnabled } from "../db/store.js";
+import { findOrCreateUserByEmail, setToolEnabled, getEnabledTools } from "../db/store.js";
+import { getBriefingSettings, saveBriefingSettings, type BriefingSettings } from "../services/briefing.js";
 
 let counter = 0;
 function uniqueEmail(prefix: string): string {
@@ -118,5 +119,99 @@ describe("runTool defense-in-depth", () => {
     const user = findOrCreateUserByEmail(uniqueEmail("defense-remember"));
     const result = await runTool(user.id, "remember", { note: "test note" });
     expect(result).toEqual({ ok: true });
+  });
+});
+
+describe("set_briefing_preferences tool", () => {
+  it("merges a patch onto a user's existing briefing settings", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("briefing-merge"));
+    const existing: BriefingSettings = {
+      enabled: true,
+      includeNews: false,
+      topics: [],
+      includeMarkets: false,
+      tickers: [],
+      includeWeather: false,
+      weatherLocation: "",
+      proactive: false,
+      sendTime: "07:30",
+    };
+    saveBriefingSettings(user.id, existing);
+
+    const result = await runTool(user.id, "set_briefing_preferences", {
+      include_weather: true,
+      weather_location: "Lisbon",
+      include_news: true,
+      topics: ["technology", "business"],
+      send_time: "08:00",
+    });
+
+    expect(result).toEqual({ ok: true });
+    const saved = getBriefingSettings(user.id);
+    expect(saved.includeWeather).toBe(true);
+    expect(saved.weatherLocation).toBe("Lisbon");
+    expect(saved.includeNews).toBe(true);
+    expect(saved.topics).toEqual(["technology", "business"]);
+    expect(saved.sendTime).toBe("08:00");
+    // Untouched fields keep their prior value — this is a patch, not a replace.
+    expect(saved.includeMarkets).toBe(false);
+  });
+
+  it("silently drops unrecognized news topics instead of erroring", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("briefing-bad-topic"));
+    const result = await runTool(user.id, "set_briefing_preferences", {
+      include_news: true,
+      topics: ["technology", "not_a_real_topic"],
+    });
+    expect(result).toEqual({ ok: true });
+    expect(getBriefingSettings(user.id).topics).toEqual(["technology"]);
+  });
+});
+
+describe("set_tool_enabled tool", () => {
+  it("enables a tool for the calling owner", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("enable-via-tool"));
+    const result = await runTool(user.id, "set_tool_enabled", { tool: "teams", enabled: true });
+    expect(result).toEqual({ ok: true });
+    expect(getEnabledTools(user.id)).toEqual(new Set(["teams"]));
+  });
+
+  it("disables a tool for the calling owner", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("disable-via-tool"));
+    setToolEnabled(user.id, "travel", true);
+    const result = await runTool(user.id, "set_tool_enabled", { tool: "travel", enabled: false });
+    expect(result).toEqual({ ok: true });
+    expect(getEnabledTools(user.id)).toEqual(new Set());
+  });
+
+  it("returns an error object (not a throw) for an unknown tool key", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("unknown-tool-key"));
+    const result = await runTool(user.id, "set_tool_enabled", { tool: "finance", enabled: true });
+    expect(result).toEqual({ error: "unknown tool: finance" });
+  });
+});
+
+describe("buildSystemPrompt onboarding paragraph", () => {
+  it("is present when the user has never saved briefing settings", () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("prompt-onboarding-on"));
+    const prompt = buildSystemPrompt(user.id);
+    expect(prompt).toContain("set_briefing_preferences");
+  });
+
+  it("is absent once briefing settings have been saved", () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("prompt-onboarding-off"));
+    saveBriefingSettings(user.id, {
+      enabled: true,
+      includeNews: false,
+      topics: [],
+      includeMarkets: false,
+      tickers: [],
+      includeWeather: false,
+      weatherLocation: "",
+      proactive: false,
+      sendTime: "07:30",
+    });
+    const prompt = buildSystemPrompt(user.id);
+    expect(prompt).not.toContain("set_briefing_preferences");
   });
 });

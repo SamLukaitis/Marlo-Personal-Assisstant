@@ -78,7 +78,7 @@ describe("pending WhatsApp registrations", () => {
 
   it("marks a registration completed and supports a hard reset", () => {
     const phone = freshPhone();
-    upsertPendingRegistration(phone, { step: "awaiting_briefing_time" });
+    upsertPendingRegistration(phone, { step: "awaiting_link_tap" });
     completePendingRegistration(phone);
     expect(getPendingRegistration(phone)?.step).toBe("completed");
 

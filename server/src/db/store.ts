@@ -1097,7 +1097,6 @@ export type PendingRegistrationStep =
   | "awaiting_name"
   | "awaiting_email"
   | "awaiting_link_tap"
-  | "awaiting_briefing_time"
   | "completed";
 
 export interface PendingRegistrationRow {

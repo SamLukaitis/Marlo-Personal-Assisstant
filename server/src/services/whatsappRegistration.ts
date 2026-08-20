@@ -4,10 +4,14 @@
 // the OAuth consent screen itself — Google/Microsoft don't allow sign-in inside an embedded
 // webview, so a one-time link is sent instead (see authRoutes.ts's "whatsapp_register" intent).
 //
-// v1 is plain conversational text throughout. Two explicit future upgrades, not built here:
-// Meta WhatsApp Flows (native in-chat forms) for the name/email capture, and interactive reply
-// buttons for the 8am/9am/no-thanks choice — both would reduce typing further, neither is
-// required for the flow to work.
+// v1 is plain conversational text throughout. One explicit future upgrade, not built here: Meta
+// WhatsApp Flows (native in-chat forms) for the name/email capture — would reduce typing further,
+// not required for the flow to work.
+//
+// Everything past OAuth (briefing content, optional tools like Teams/travel tracking) is
+// deliberately NOT a scripted step here — it's handled by the real, tool-calling assistant
+// (assistant.ts's set_briefing_preferences / set_tool_enabled tools) once the person has a
+// working hub. See docs/superpowers/specs/2026-08-20-whatsapp-onboarding-expansion-design.md.
 import {
   getPendingRegistration,
   upsertPendingRegistration,
@@ -16,12 +20,10 @@ import {
   deletePendingRegistration,
   isEmailInvited,
   getUserByEmail,
-  resolveOwnerByPhone,
   type PendingRegistrationRow,
 } from "../db/store.js";
 import { sendWhatsAppMessage } from "../providers/whatsapp.js";
 import { hubListMessages, hubListEvents } from "./hub.js";
-import { getBriefingSettings, saveBriefingSettings } from "./briefing.js";
 import { SERVER_URL } from "../config.js";
 import type { IncomingWhatsAppMessage } from "../providers/whatsapp.js";
 
@@ -56,18 +58,15 @@ async function sendLinks(row: PendingRegistrationRow): Promise<void> {
   upsertPendingRegistration(row.phone, { step: "awaiting_link_tap" });
 }
 
-function parseBriefingTimeReply(text: string): { proactive: boolean; sendTime?: string } | null {
-  const t = text.trim().toLowerCase();
-  if (/\bno\b|none|nothing|skip/.test(t)) return { proactive: false };
-  if (/\b8\s*a?m?\b|8:00|08:00/.test(t)) return { proactive: true, sendTime: "08:00" };
-  if (/\b9\s*a?m?\b|9:00|09:00/.test(t)) return { proactive: true, sendTime: "09:00" };
-  return null; // didn't understand — ask again rather than guess
-}
-
 // Called from the OAuth callback (authRoutes.ts) once the mailbox is actually connected — this
 // is a proactive, server-initiated WhatsApp push, not a reply to an inbound webhook, since the
 // event it's reacting to (finishing OAuth in a browser) happens outside any webhook.
-export async function sendFirstValueAndAskBriefingTime(ownerId: number, phone: string): Promise<void> {
+//
+// Marks the pending-registration row completed right away: there's nothing left to await
+// server-side. The user's reply is their first ordinary chat message — addPhoneNumberForUser
+// already ran before this is called, so resolveOwnerByPhone resolves it and it's routed straight
+// to the real assistant (runAssistantChat), not back into handlePendingRegistration.
+export async function sendFirstValueAndBriefingPrompt(ownerId: number, phone: string): Promise<void> {
   let fact = "";
   try {
     const [messages, events] = await Promise.all([
@@ -84,7 +83,12 @@ export async function sendFirstValueAndAskBriefingTime(ownerId: number, phone: s
   }
 
   await reply(phone, `Connected — I can see your inbox and your calendar.${fact}`);
-  await reply(phone, "What time shall I say good morning? Reply 8am, 9am, or no thanks.");
+  await reply(
+    phone,
+    "Each morning I'll send you an update on your email, calendar, and anything that looks like " +
+      "it needs a reply. Want me to also include news, business headlines, or weather?"
+  );
+  completePendingRegistration(phone);
 }
 
 async function handleAwaitingName(row: PendingRegistrationRow, text: string): Promise<void> {
@@ -131,24 +135,6 @@ async function handleAwaitingLinkTap(row: PendingRegistrationRow, text: string):
   await reply(row.phone, "Tap the link above to connect your email — I'll message you the moment it's done. Reply \"resend\" if it expired.");
 }
 
-async function handleAwaitingBriefingTime(row: PendingRegistrationRow, text: string): Promise<void> {
-  const parsed = parseBriefingTimeReply(text);
-  if (!parsed) {
-    await reply(row.phone, "Sorry, just reply 8am, 9am, or no thanks.");
-    return;
-  }
-  // The pending-registration row has no ownerId of its own (it only exists pre-account) — but by
-  // this step addPhoneNumberForUser already ran in the OAuth callback, so resolveOwnerByPhone
-  // already resolves this number to the account that was just created.
-  const ownerId = resolveOwnerByPhone(row.phone);
-  if (ownerId !== null) {
-    const current = getBriefingSettings(ownerId);
-    saveBriefingSettings(ownerId, { ...current, proactive: parsed.proactive, sendTime: parsed.sendTime ?? current.sendTime });
-  }
-  completePendingRegistration(row.phone);
-  await reply(row.phone, "Done — that's everything. You don't need to do anything else.");
-}
-
 // The entry point whatsappRoutes.ts calls when resolveOwnerByPhone finds no owner for an
 // incoming text message. Media messages during registration get a short redirect instead —
 // ingestWhatsAppMedia requires a resolved ownerId, which doesn't exist yet at this point.
@@ -184,9 +170,6 @@ export async function handlePendingRegistration(message: IncomingWhatsAppMessage
       return;
     case "awaiting_link_tap":
       await handleAwaitingLinkTap(row, message.text);
-      return;
-    case "awaiting_briefing_time":
-      await handleAwaitingBriefingTime(row, message.text);
       return;
     case "completed":
       // Unreachable in practice — once addPhoneNumberForUser ran, resolveOwnerByPhone already
