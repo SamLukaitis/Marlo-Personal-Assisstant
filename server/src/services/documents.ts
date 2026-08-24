@@ -15,6 +15,7 @@ import {
 import { encryptBuffer } from "./crypto.js";
 import { validateTravelMovement, type TravelMovement } from "./travelValidation.js";
 import { fetchPageText, type FetchFailureReason } from "./safeLinkFetcher.js";
+import { type MatchKeys } from "./reconciliation.js";
 
 // Pure on purpose — the one bit of category logic worth its own unit test is "what happens when
 // the model's tool call doesn't give us a valid category," and that doesn't need an Anthropic
@@ -70,6 +71,28 @@ const TRAVEL_MOVEMENT_TOOL: Anthropic.Tool = {
   },
 };
 
+// Optional — the model only calls this if the document contains an identifier actually worth
+// indexing for later cross-referencing against email. Folded into the same extraction call as
+// name_document/record_travel_movement, so this costs nothing extra — see
+// docs/superpowers/specs/2026-08-24-document-email-cross-referencing-design.md.
+const RECORD_MATCH_KEYS_TOOL: Anthropic.Tool = {
+  name: "record_match_keys",
+  description:
+    "Call this only if the document contains a machine-checkable identifier worth cross-" +
+    "referencing against email later — a booking/confirmation/reference code, a flight number, " +
+    "or a clear vendor name with a specific date. Skip it entirely if none of these are actually " +
+    "present and legible; never guess or invent one.",
+  input_schema: {
+    type: "object",
+    properties: {
+      referenceCode: { type: "string", description: "Booking/confirmation/reference code exactly as shown" },
+      flightNumber: { type: "string", description: "e.g. DL1234" },
+      vendor: { type: "string", description: "Airline/hotel/company name, e.g. Delta, Hilton" },
+      eventDate: { type: "string", description: "ISO 8601 date, e.g. 2026-09-12" },
+    },
+  },
+};
+
 // Named by the same call that extracts the facts, so titling costs nothing extra. A tool rather
 // than a "start your reply with TITLE:" convention because the title has to survive intact —
 // parsing it back out of prose breaks the moment the model reformats its own output.
@@ -119,22 +142,29 @@ async function extractPdfTextLayer(buffer: Buffer): Promise<string | null> {
   }
 }
 
-// Shared by every extraction path (image/PDF today; link/voice-transcript text below) — the
-// tool-call schemas and this response-parsing tail are the one part all of them have in common,
-// so it's factored out rather than copied. Everything upstream of this (how the content blocks
-// get built — vision, PDF text layer, plain text) stays specific to each source.
-function parseExtractionResponse(response: Anthropic.Message): {
+// Pure on purpose, exported for its own unit tests — same reasoning as resolveDocumentCategory.
+interface ExtractionResult {
   text: string;
   title: string | null;
   category: DocumentCategory | null;
   movement: TravelMovement | null;
-} {
+  matchKeys: MatchKeys | null;
+}
+
+// Shared by every extraction path (image/PDF today; link/voice-transcript text below) — the
+// tool-call schemas and this response-parsing tail are the one part all of them have in common,
+// so it's factored out rather than copied. Everything upstream of this (how the content blocks
+// get built — vision, PDF text layer, plain text) stays specific to each source.
+export function parseExtractionResponse(response: Anthropic.Message): ExtractionResult {
   const textBlock = response.content.find((b): b is Anthropic.TextBlock => b.type === "text");
   const toolUse = response.content.find(
     (b): b is Anthropic.ToolUseBlock => b.type === "tool_use" && b.name === "record_travel_movement"
   );
   const nameUse = response.content.find(
     (b): b is Anthropic.ToolUseBlock => b.type === "tool_use" && b.name === "name_document"
+  );
+  const matchKeysUse = response.content.find(
+    (b): b is Anthropic.ToolUseBlock => b.type === "tool_use" && b.name === "record_match_keys"
   );
 
   const nameInput = nameUse?.input as { title?: unknown; category?: unknown } | undefined;
@@ -147,9 +177,6 @@ function parseExtractionResponse(response: Anthropic.Message): {
 
   let text = textBlock?.text ?? "(couldn't extract any text from this file)";
   if (response.stop_reason === "max_tokens") {
-    // Surface truncation instead of silently returning a partial extraction — the model itself
-    // (and the user, if they ask to see the details) should know some facts may be missing
-    // rather than assuming the extraction was complete.
     console.warn("documents: extraction hit max_tokens — output may be truncated");
     text += "\n\n(Note: this extraction was cut off before finishing — some details, possibly including dates, may be missing.)";
   }
@@ -159,6 +186,7 @@ function parseExtractionResponse(response: Anthropic.Message): {
     title,
     category,
     movement: toolUse ? (toolUse.input as TravelMovement) : null,
+    matchKeys: matchKeysUse ? (matchKeysUse.input as MatchKeys) : null,
   };
 }
 
@@ -198,15 +226,7 @@ function applyTravelValidation(
   return { finalText: extractedText, storableMovement: movement };
 }
 
-async function extractDocument(
-  buffer: Buffer,
-  mimeType: string
-): Promise<{
-  text: string;
-  title: string | null;
-  category: DocumentCategory | null;
-  movement: TravelMovement | null;
-}> {
+async function extractDocument(buffer: Buffer, mimeType: string): Promise<ExtractionResult> {
   const uploadedAt = new Date().toISOString();
   const prompt =
     "Call name_document first to title this file, then do the extraction below.\n\n" +
@@ -257,7 +277,7 @@ async function extractDocument(
     // it hadn't gotten to yet, which is exactly how dates/times went missing even though they
     // were legible in the image. 4096 gives real headroom; this is a one-time cost per upload.
     max_tokens: 4096,
-    tools: [NAME_DOCUMENT_TOOL, TRAVEL_MOVEMENT_TOOL],
+    tools: [NAME_DOCUMENT_TOOL, TRAVEL_MOVEMENT_TOOL, RECORD_MATCH_KEYS_TOOL],
     messages: [{ role: "user", content }],
   });
 
@@ -275,12 +295,7 @@ async function extractFactsFromLinkText(
   pageText: string,
   sourceUrl: string,
   uploadedAt: Date
-): Promise<{
-  text: string;
-  title: string | null;
-  category: DocumentCategory | null;
-  movement: TravelMovement | null;
-}> {
+): Promise<ExtractionResult> {
   const truncated = pageText.length > MAX_LINK_TEXT_CHARS;
   const bodyText = truncated ? pageText.slice(0, MAX_LINK_TEXT_CHARS) : pageText;
 
@@ -304,7 +319,7 @@ async function extractFactsFromLinkText(
   const response = await getClient().messages.create({
     model: EXTRACTION_MODEL,
     max_tokens: 4096,
-    tools: [NAME_DOCUMENT_TOOL, TRAVEL_MOVEMENT_TOOL],
+    tools: [NAME_DOCUMENT_TOOL, TRAVEL_MOVEMENT_TOOL, RECORD_MATCH_KEYS_TOOL],
     messages: [{ role: "user", content: [{ type: "text", text: prompt }] }],
   });
 
