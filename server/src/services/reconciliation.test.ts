@@ -203,7 +203,7 @@ describe("checkNewEmailsAgainstRecentDocuments", () => {
       caption: null,
       title: "Hilton Booking",
       extractedText: "text",
-      category: "receipts_bookings",
+      category: "receipts",
     });
     saveMatchKeys(user.id, doc.id, { referenceCode: "H9ZZ21" });
 
@@ -228,7 +228,7 @@ describe("checkNewEmailsAgainstRecentDocuments", () => {
       caption: null,
       title: "Unrelated Doc",
       extractedText: "text",
-      category: "receipts_bookings",
+      category: "receipts",
     });
     // A saved match key is required for the early-return-when-nothing-indexed check not to skip
     // this user entirely — but this reference code deliberately doesn't appear in the message
@@ -265,7 +265,7 @@ describe("checkNewEmailsAgainstRecentDocuments", () => {
       caption: null,
       title: "Hilton Booking",
       extractedText: "text",
-      category: "receipts_bookings",
+      category: "receipts",
     });
     saveMatchKeys(user.id, doc.id, { referenceCode: "H9ZZ22" });
     mockHubListMessages.mockResolvedValue([fakeMessage({ id: "m12", subject: "Change to booking H9ZZ22" })]);
@@ -289,7 +289,7 @@ describe("checkNewEmailsAgainstRecentDocuments", () => {
       caption: null,
       title: "Hilton Booking",
       extractedText: "text",
-      category: "receipts_bookings",
+      category: "receipts",
     });
     saveMatchKeys(user.id, doc.id, { referenceCode: "H9ZZ23" });
     mockHubListMessages.mockResolvedValue([fakeMessage({ id: "m13", subject: "Change to booking H9ZZ23" })]);
@@ -329,7 +329,7 @@ describe("checkNewEmailsAgainstRecentDocuments", () => {
       caption: null,
       title: "Cap Overflow Doc",
       extractedText: "text",
-      category: "receipts_bookings",
+      category: "receipts",
     });
     saveMatchKeys(user.id, doc.id, { referenceCode: "OVERFLOWCODE1" });
 

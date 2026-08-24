@@ -1,0 +1,450 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+</head>
+<body>
+<title>Marlowe Data Map</title>
+<style>
+  :root {
+    --bg: #F6F8F5;
+    --surface: #FFFFFF;
+    --ink: #202721;
+    --muted: #5A665D;
+    --line: #D8DED9;
+    --doc: #3D5A80;
+    --doc-bg: #E9EFF6;
+    --ent: #1B7A4B;
+    --ent-bg: #E4F0E9;
+    --lnk: #6B5B8E;
+    --lnk-bg: #EDE9F4;
+    --warn: #9A6B1A;
+    --chip-live-bg: #1B7A4B;
+    --chip-live-ink: #FFFFFF;
+    --chip-plan-ink: #5A665D;
+    --pill-bg: #EDF1EE;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #141815;
+      --surface: #1C231E;
+      --ink: #E5EBE6;
+      --muted: #96A29A;
+      --line: #333D36;
+      --doc: #8FB0D4;
+      --doc-bg: #22303F;
+      --ent: #4CAF7D;
+      --ent-bg: #1D3328;
+      --lnk: #A899C9;
+      --lnk-bg: #2A2536;
+      --warn: #D0A24C;
+      --chip-live-bg: #4CAF7D;
+      --chip-live-ink: #141815;
+      --chip-plan-ink: #96A29A;
+      --pill-bg: #252C27;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #141815;
+    --surface: #1C231E;
+    --ink: #E5EBE6;
+    --muted: #96A29A;
+    --line: #333D36;
+    --doc: #8FB0D4;
+    --doc-bg: #22303F;
+    --ent: #4CAF7D;
+    --ent-bg: #1D3328;
+    --lnk: #A899C9;
+    --lnk-bg: #2A2536;
+    --warn: #D0A24C;
+    --chip-live-bg: #4CAF7D;
+    --chip-live-ink: #141815;
+    --chip-plan-ink: #96A29A;
+    --pill-bg: #252C27;
+  }
+
+  body {
+    background: var(--bg);
+    color: var(--ink);
+    font-family: Charter, "Bitstream Charter", Cambria, Georgia, serif;
+    font-size: 17px;
+    line-height: 1.6;
+    margin: 0;
+    padding: 3rem 1.25rem 5rem;
+  }
+  main { max-width: 920px; margin: 0 auto; }
+
+  h1, h2, h3 {
+    font-family: "Avenir Next", Avenir, "Segoe UI", -apple-system, sans-serif;
+    text-wrap: balance;
+    line-height: 1.15;
+  }
+  h1 { font-size: 2.4rem; font-weight: 600; margin: 0.4rem 0 0.6rem; }
+  h2 { font-size: 1.4rem; font-weight: 600; margin: 0 0 0.5rem; }
+  h3 { font-size: 1rem; font-weight: 600; margin: 1.5rem 0 0.4rem; }
+
+  .eyebrow {
+    font-family: "Avenir Next", Avenir, "Segoe UI", sans-serif;
+    font-size: 0.72rem;
+    font-weight: 600;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+  header p.lede { font-size: 1.08rem; color: var(--muted); max-width: 62ch; margin: 0; }
+  .stamp { font-size: 0.85rem; color: var(--muted); margin-top: 0.75rem; }
+
+  section { margin-top: 3.25rem; }
+  section > .eyebrow { display: block; margin-bottom: 0.3rem; }
+  p { max-width: 70ch; }
+
+  .tablecard {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    margin-top: 1.4rem;
+    overflow: hidden;
+  }
+  .tablecard.doc { border-top: 4px solid var(--doc); }
+  .tablecard.ent { border-top: 4px solid var(--ent); }
+  .tablecard.lnk { border-top: 4px solid var(--lnk); }
+  .tablecard .head {
+    display: flex;
+    align-items: baseline;
+    gap: 0.75rem;
+    padding: 1rem 1.25rem 0.25rem;
+    flex-wrap: wrap;
+  }
+  .tablecard .head .name {
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    font-size: 1.15rem;
+    font-weight: 700;
+  }
+  .tablecard.doc .head .name { color: var(--doc); }
+  .tablecard.ent .head .name { color: var(--ent); }
+  .tablecard.lnk .head .name { color: var(--lnk); }
+  .tablecard .head .role { font-size: 0.9rem; color: var(--muted); }
+
+  .colspec { width: 100%; border-collapse: collapse; font-size: 0.92rem; }
+  .colspec th {
+    font-family: "Avenir Next", Avenir, "Segoe UI", sans-serif;
+    font-size: 0.68rem;
+    font-weight: 600;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--muted);
+    text-align: left;
+    padding: 0.6rem 1.25rem 0.4rem;
+    border-bottom: 2px solid var(--line);
+  }
+  .colspec td {
+    padding: 0.55rem 1.25rem;
+    border-bottom: 1px solid var(--line);
+    vertical-align: top;
+  }
+  .colspec tr:last-child td { border-bottom: none; }
+  .colspec td.col {
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    font-size: 0.84rem;
+    white-space: nowrap;
+    font-weight: 700;
+  }
+  .colspec td.vals { font-size: 0.88rem; }
+  .colspec td.what { color: var(--muted); font-size: 0.88rem; }
+
+  .pill {
+    display: inline-block;
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    font-size: 0.76rem;
+    background: var(--pill-bg);
+    border: 1px solid var(--line);
+    border-radius: 5px;
+    padding: 0.05rem 0.45rem;
+    margin: 0.1rem 0.15rem 0.1rem 0;
+    white-space: nowrap;
+  }
+  .pill.hot { border-color: var(--ent); color: var(--ent); }
+  .pill.dochot { border-color: var(--doc); color: var(--doc); }
+  .pill.lnkhot { border-color: var(--lnk); color: var(--lnk); }
+  .free { font-style: italic; color: var(--muted); font-size: 0.85rem; }
+
+  .example {
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    font-size: 0.78rem;
+    background: var(--bg);
+    border-top: 1px solid var(--line);
+    padding: 0.7rem 1.25rem;
+    overflow-x: auto;
+    white-space: nowrap;
+    color: var(--muted);
+  }
+  .example b { color: var(--ink); font-weight: 700; }
+
+  .chip {
+    display: inline-block;
+    font-family: "Avenir Next", Avenir, "Segoe UI", sans-serif;
+    font-size: 0.66rem;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    padding: 0.12rem 0.5rem;
+    border-radius: 999px;
+    white-space: nowrap;
+    vertical-align: middle;
+  }
+  .chip.live { background: var(--chip-live-bg); color: var(--chip-live-ink); }
+  .chip.plan { color: var(--chip-plan-ink); border: 1px dashed var(--muted); }
+
+  figure {
+    margin: 1.5rem 0 0;
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 1.25rem 1rem 0.75rem;
+  }
+  .scroll { overflow-x: auto; }
+  .scroll svg { display: block; min-width: 700px; max-width: 100%; height: auto; margin: 0 auto; }
+  figcaption {
+    font-size: 0.85rem;
+    color: var(--muted);
+    padding: 0.75rem 0.25rem 0.25rem;
+    border-top: 1px solid var(--line);
+    margin-top: 0.75rem;
+  }
+
+  footer {
+    margin-top: 4rem;
+    padding-top: 1.25rem;
+    border-top: 1px solid var(--line);
+    font-size: 0.85rem;
+    color: var(--muted);
+  }
+  code {
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    font-size: 0.85em;
+    background: var(--pill-bg);
+    padding: 0.08em 0.35em;
+    border-radius: 4px;
+  }
+</style>
+
+<main>
+  <header>
+    <span class="eyebrow">Marlowe · entities &amp; links</span>
+    <h1>Marlowe Data Map</h1>
+    <p class="lede">The three tables that hold everything Marlowe knows — every column, and every
+    value a row is allowed to take. Green chips mean built and live; dashed chips mean planned.</p>
+    <p class="stamp">Reflects <code>server/src/db/store.ts</code> as of 24 Aug 2026 · Phases A–C complete · 171 tests passing</p>
+  </header>
+
+  <section>
+    <span class="eyebrow">01 · The tables</span>
+    <h2>documents — the frozen source</h2>
+    <p>One row per thing received (file, photo, or forwarded link). Saved exactly as it arrived
+    and never edited afterwards — this is the evidence everything else points back to.</p>
+
+    <div class="tablecard doc">
+      <div class="head"><span class="name">documents</span><span class="role">source records · one row per received file/photo/link</span><span class="chip live">LIVE</span></div>
+      <table class="colspec">
+        <thead><tr><th>Column</th><th>Allowed values</th><th>What it is</th></tr></thead>
+        <tbody>
+          <tr><td class="col">id</td><td class="vals"><span class="free">auto-number (1, 2, 3…)</span></td><td class="what">Unique forever; what links point at</td></tr>
+          <tr><td class="col">owner_id</td><td class="vals"><span class="free">a users.id</span></td><td class="what">Whose document this is — every table has this</td></tr>
+          <tr><td class="col">category</td><td class="vals"><span class="pill dochot">travel</span><span class="pill dochot">id_legal</span><span class="pill dochot">receipts</span><span class="pill dochot">other</span><span class="pill">empty</span></td><td class="what">Filing label for the Files page. Empty = predates the feature or couldn't be classified</td></tr>
+          <tr><td class="col">title</td><td class="vals"><span class="free">short text, or empty</span></td><td class="what">AI-written name, e.g. "Ryanair Boarding Pass, Faro"</td></tr>
+          <tr><td class="col">extracted_text</td><td class="vals"><span class="free">free text</span></td><td class="what">Everything readable in the document; what search looks through</td></tr>
+          <tr><td class="col">filename · mime_type · stored_path · caption · phone</td><td class="vals"><span class="free">text</span></td><td class="what">The original file's name/format, where the encrypted copy lives on disk, what you typed when sending, which phone sent it</td></tr>
+          <tr><td class="col">created_at</td><td class="vals"><span class="free">timestamp</span></td><td class="what">When it arrived</td></tr>
+        </tbody>
+      </table>
+      <div class="example"><b>example row →</b> id: <b>12</b> · owner_id: 1 · category: <b>travel</b> · title: "Ryanair Boarding Pass, Faro" · created_at: 12 Jun 2026</div>
+    </div>
+
+    <h2 style="margin-top:2.5rem;">entities — the typed facts</h2>
+    <p>One row per structured fact derived from a document (or logged by your phone). The
+    <code>type</code> column says what kind of fact; the <code>data</code> column holds that
+    type's specific fields as JSON — which is why new types need no new tables.</p>
+
+    <div class="tablecard ent">
+      <div class="head"><span class="name">entities</span><span class="role">derived facts · one row per check-in / expense / booking / trip</span><span class="chip live">LIVE</span></div>
+      <table class="colspec">
+        <thead><tr><th>Column</th><th>Allowed values</th><th>What it is</th></tr></thead>
+        <tbody>
+          <tr><td class="col">id</td><td class="vals"><span class="free">auto-number</span></td><td class="what">Unique forever; what links point at</td></tr>
+          <tr><td class="col">owner_id</td><td class="vals"><span class="free">a users.id</span></td><td class="what">Whose fact this is</td></tr>
+          <tr><td class="col">type</td><td class="vals"><span class="pill hot">travel_checkin</span><span class="pill hot">expense</span><span class="pill hot">booking</span> <span class="chip live">LIVE</span><br><span class="pill">trip</span> <span class="chip plan">PLANNED</span></td><td class="what">What kind of fact this row is. Open-ended by design — new types are added in code, not by changing the table</td></tr>
+          <tr><td class="col">status</td><td class="vals"><span class="pill hot">active</span><span class="pill hot">needs_review</span><span class="pill">archived</span></td><td class="what">Lifecycle. A shaky-but-plausible extraction is stored as <code>needs_review</code> instead of being silently trusted or dropped</td></tr>
+          <tr><td class="col">data</td><td class="vals"><span class="free">JSON — shape depends on type, see below</span></td><td class="what">The fact's actual fields</td></tr>
+          <tr><td class="col">confidence</td><td class="vals"><span class="free">0.0 – 1.0, or empty</span></td><td class="what">How much the validators trust the extraction</td></tr>
+          <tr><td class="col">created_at · updated_at</td><td class="vals"><span class="free">timestamps</span></td><td class="what">When first stored / last changed</td></tr>
+        </tbody>
+      </table>
+      <div class="example"><b>example row →</b> id: <b>47</b> · owner_id: 1 · type: <b>travel_checkin</b> · status: active · data: { country: "Portugal", city: "Faro", checkedInAt: 12 Jun 2026, source: "document" } · confidence: 0.9</div>
+    </div>
+
+    <h2 style="margin-top:2.5rem;">links — the connections</h2>
+    <p>One row per connection between two records. Each side can be an entity or a document,
+    named by its id. This replaces hardwired one-to-one references with connections you can add
+    freely — many things can point at the same trip.</p>
+
+    <div class="tablecard lnk">
+      <div class="head"><span class="name">links</span><span class="role">connections · one row per relationship</span><span class="chip live">LIVE</span></div>
+      <table class="colspec">
+        <thead><tr><th>Column</th><th>Allowed values</th><th>What it is</th></tr></thead>
+        <tbody>
+          <tr><td class="col">id</td><td class="vals"><span class="free">auto-number</span></td><td class="what">Unique forever</td></tr>
+          <tr><td class="col">owner_id</td><td class="vals"><span class="free">a users.id</span></td><td class="what">Whose connection this is</td></tr>
+          <tr><td class="col">relation</td><td class="vals"><span class="pill lnkhot">extracted_from</span> <span class="chip live">LIVE</span><br><span class="pill">belongs_to</span><span class="pill">relates_to</span> <span class="chip plan">PLANNED</span></td><td class="what">What the connection means: "derived from this evidence" / "part of this group" / "loosely related"</td></tr>
+          <tr><td class="col">from_type</td><td class="vals"><span class="pill lnkhot">entity</span><span class="pill lnkhot">document</span></td><td class="what">Which table the arrow starts in</td></tr>
+          <tr><td class="col">from_id</td><td class="vals"><span class="free">an id in that table</span></td><td class="what">The specific starting row</td></tr>
+          <tr><td class="col">to_type</td><td class="vals"><span class="pill lnkhot">entity</span><span class="pill lnkhot">document</span></td><td class="what">Which table the arrow ends in</td></tr>
+          <tr><td class="col">to_id</td><td class="vals"><span class="free">an id in that table</span></td><td class="what">The specific ending row</td></tr>
+          <tr><td class="col">created_at</td><td class="vals"><span class="free">timestamp</span></td><td class="what">When linked</td></tr>
+        </tbody>
+      </table>
+      <div class="example"><b>example row →</b> id: 3 · owner_id: 1 · relation: <b>extracted_from</b> · from: entity <b>#47</b> → to: document <b>#12</b> &nbsp;("check-in #47 came from boarding pass #12")</div>
+    </div>
+  </section>
+
+  <section>
+    <span class="eyebrow">02 · Inside the data column</span>
+    <h2>What each entity type keeps in its <code>data</code> JSON</h2>
+
+    <h3><code>travel_checkin</code> <span class="chip live">LIVE</span></h3>
+    <div class="tablecard ent">
+      <table class="colspec">
+        <thead><tr><th>Field</th><th>Allowed values</th><th>What it is</th></tr></thead>
+        <tbody>
+          <tr><td class="col">country · city</td><td class="vals"><span class="free">text, or empty</span></td><td class="what">Where you were — country feeds the Schengen day-counter</td></tr>
+          <tr><td class="col">checkedInAt</td><td class="vals"><span class="free">timestamp</span></td><td class="what">The moment of arrival / crossing</td></tr>
+          <tr><td class="col">latitude · longitude</td><td class="vals"><span class="free">number, or empty</span></td><td class="what">Exact GPS point — only when it came from the phone</td></tr>
+          <tr><td class="col">source</td><td class="vals"><span class="pill hot">phone</span><span class="pill hot">document</span></td><td class="what">GPS automation ping vs. read out of a travel document</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3><code>expense</code> <span class="chip live">LIVE</span></h3>
+    <div class="tablecard ent">
+      <table class="colspec">
+        <tbody>
+          <tr><td class="col">vendor</td><td class="vals"><span class="free">text</span></td><td class="what">Who was paid, as printed on the receipt</td></tr>
+          <tr><td class="col">amountPence</td><td class="vals"><span class="free">whole number &gt; 0</span></td><td class="what">Amount in the currency's smallest unit (pence/cents) — parsed from the printed amount by hardcoded logic, never by the model</td></tr>
+          <tr><td class="col">currency</td><td class="vals"><span class="free">ISO code: GBP, EUR, USD… (30-code whitelist)</span></td><td class="what">A made-up code ("EURO") fails validation and the expense is dropped</td></tr>
+          <tr><td class="col">date</td><td class="vals"><span class="free">YYYY-MM-DD, real calendar date</span></td><td class="what">When paid — Feb 30 rejected, future/year-off dates flagged needs_review</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3><code>booking</code> <span class="chip live">LIVE</span></h3>
+    <div class="tablecard ent">
+      <table class="colspec">
+        <tbody>
+          <tr><td class="col">kind</td><td class="vals"><span class="pill hot">flight</span><span class="pill hot">hotel</span><span class="free">later: train, car…</span></td><td class="what">The umbrella-with-subgroups you wanted: one type, UI groups by kind</td></tr>
+          <tr><td class="col">name</td><td class="vals"><span class="free">text</span></td><td class="what">"FR1234 LIS→FAO" · "Hotel Eva, Faro"</td></tr>
+          <tr><td class="col">reference</td><td class="vals"><span class="free">text, or empty</span></td><td class="what">Confirmation/PNR code if legible</td></tr>
+          <tr><td class="col">startDate · endDate</td><td class="vals"><span class="free">YYYY-MM-DD · end empty for flights</span></td><td class="what">Flight date / hotel check-in &amp; check-out — checkout-before-checkin rejected</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3><code>trip</code> <span class="chip plan">PLANNED · PHASE D</span></h3>
+    <div class="tablecard ent">
+      <table class="colspec">
+        <tbody>
+          <tr><td class="col">label</td><td class="vals"><span class="free">text</span></td><td class="what">e.g. "Faro, June 2026" — the spatiotemporal ID from the delay-repay idea</td></tr>
+          <tr><td class="col">startDate · endDate</td><td class="vals"><span class="free">dates</span></td><td class="what">The trip's time window</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section>
+    <span class="eyebrow">03 · Why links exist</span>
+    <h2>The picture this is all building toward</h2>
+    <p>A <code>trip</code> entity becomes the anchor everything attaches to. "Everything for the
+    Faro trip" is then one walk along <code>belongs_to</code> links — no searching. Note the
+    boarding pass feeding <em>two</em> entities: something a folder system can't express.</p>
+
+    <figure>
+      <div class="scroll">
+      <svg viewBox="0 0 920 560" role="img" aria-label="A trip entity at the center, with a travel check-in, a flight booking, a hotel booking, and an expense all linked to it by belongs_to edges; below, three documents — a boarding pass, a hotel confirmation, and a taxi receipt — link to their entities by extracted_from edges. The boarding pass produces both the check-in and the flight booking. Only the travel check-in is built today; the rest are planned.">
+        <defs>
+          <marker id="arr2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M 0 1 L 9 5 L 0 9 z" fill="var(--ent)"/>
+          </marker>
+          <marker id="arr2-doc" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M 0 1 L 9 5 L 0 9 z" fill="var(--doc)"/>
+          </marker>
+        </defs>
+
+        <rect x="60" y="60" width="180" height="64" rx="8" fill="var(--ent-bg)" stroke="var(--ent)" stroke-width="1.8"/>
+        <text x="150" y="87" text-anchor="middle" font-size="12.5" font-weight="700" fill="var(--ent)">travel_checkin</text>
+        <text x="150" y="106" text-anchor="middle" font-size="11" fill="var(--ent)" opacity="0.85">arrived Faro, 12 Jun</text>
+
+        <rect x="370" y="60" width="180" height="64" rx="8" fill="var(--ent-bg)" stroke="var(--ent)" stroke-width="1.8"/>
+        <text x="460" y="87" text-anchor="middle" font-size="12.5" font-weight="700" fill="var(--ent)">booking · flight</text>
+        <text x="460" y="106" text-anchor="middle" font-size="11" fill="var(--ent)" opacity="0.85">FR1234, LIS→FAO</text>
+
+        <rect x="680" y="60" width="180" height="64" rx="8" fill="var(--ent-bg)" stroke="var(--ent)" stroke-width="1.8"/>
+        <text x="770" y="87" text-anchor="middle" font-size="12.5" font-weight="700" fill="var(--ent)">booking · hotel</text>
+        <text x="770" y="106" text-anchor="middle" font-size="11" fill="var(--ent)" opacity="0.85">Hotel Eva, 12–15 Jun</text>
+
+        <rect x="680" y="240" width="180" height="64" rx="8" fill="var(--ent-bg)" stroke="var(--ent)" stroke-width="1.8"/>
+        <text x="770" y="267" text-anchor="middle" font-size="12.5" font-weight="700" fill="var(--ent)">expense</text>
+        <text x="770" y="286" text-anchor="middle" font-size="11" fill="var(--ent)" opacity="0.85">taxi, €18.50</text>
+
+        <rect x="330" y="235" width="190" height="74" rx="10" fill="none" stroke="var(--ent)" stroke-width="2.2" stroke-dasharray="7 5"/>
+        <text x="425" y="266" text-anchor="middle" font-size="14" font-weight="700" fill="var(--ent)">trip</text>
+        <text x="425" y="286" text-anchor="middle" font-size="11.5" fill="var(--ent)" opacity="0.85">Faro · 12–15 Jun 2026</text>
+
+        <line x1="165" y1="124" x2="360" y2="240" stroke="var(--ent)" stroke-width="1.4" stroke-dasharray="6 4" marker-end="url(#arr2)"/>
+        <line x1="460" y1="124" x2="435" y2="228" stroke="var(--ent)" stroke-width="1.4" stroke-dasharray="6 4" marker-end="url(#arr2)"/>
+        <line x1="755" y1="124" x2="500" y2="238" stroke="var(--ent)" stroke-width="1.4" stroke-dasharray="6 4" marker-end="url(#arr2)"/>
+        <line x1="680" y1="272" x2="528" y2="272" stroke="var(--ent)" stroke-width="1.4" stroke-dasharray="6 4" marker-end="url(#arr2)"/>
+        <text x="300" y="200" text-anchor="middle" font-size="11.5" font-style="italic" fill="var(--ent)">belongs_to (planned)</text>
+
+        <rect x="60" y="440" width="200" height="60" rx="8" fill="var(--doc-bg)" stroke="var(--doc)" stroke-width="1.6"/>
+        <text x="160" y="465" text-anchor="middle" font-size="12" font-weight="700" fill="var(--doc)">boarding pass</text>
+        <text x="160" y="483" text-anchor="middle" font-size="11" fill="var(--doc)" opacity="0.85">document · category: travel</text>
+
+        <rect x="360" y="440" width="200" height="60" rx="8" fill="var(--doc-bg)" stroke="var(--doc)" stroke-width="1.6"/>
+        <text x="460" y="465" text-anchor="middle" font-size="12" font-weight="700" fill="var(--doc)">hotel confirmation</text>
+        <text x="460" y="483" text-anchor="middle" font-size="11" fill="var(--doc)" opacity="0.85">document · category: travel</text>
+
+        <rect x="660" y="440" width="200" height="60" rx="8" fill="var(--doc-bg)" stroke="var(--doc)" stroke-width="1.6"/>
+        <text x="760" y="465" text-anchor="middle" font-size="12" font-weight="700" fill="var(--doc)">taxi receipt</text>
+        <text x="760" y="483" text-anchor="middle" font-size="11" fill="var(--doc)" opacity="0.85">document · category: receipts</text>
+
+        <line x1="130" y1="440" x2="140" y2="128" stroke="var(--doc)" stroke-width="1.3" stroke-dasharray="5 4" marker-end="url(#arr2-doc)"/>
+        <line x1="220" y1="440" x2="415" y2="128" stroke="var(--doc)" stroke-width="1.3" stroke-dasharray="5 4" marker-end="url(#arr2-doc)"/>
+        <line x1="490" y1="440" x2="740" y2="128" stroke="var(--doc)" stroke-width="1.3" stroke-dasharray="5 4" marker-end="url(#arr2-doc)"/>
+        <line x1="760" y1="440" x2="768" y2="308" stroke="var(--doc)" stroke-width="1.3" stroke-dasharray="5 4" marker-end="url(#arr2-doc)"/>
+        <text x="235" y="395" text-anchor="middle" font-size="11.5" font-style="italic" fill="var(--doc)">extracted_from</text>
+
+        <g transform="translate(60, 530)">
+          <rect x="0" y="-11" width="26" height="14" rx="3" fill="var(--ent-bg)" stroke="var(--ent)" stroke-width="1.4"/>
+          <text x="34" y="0" font-size="11" fill="currentColor">built today</text>
+          <rect x="120" y="-11" width="26" height="14" rx="3" fill="none" stroke="var(--ent)" stroke-width="1.4" stroke-dasharray="4 3"/>
+          <text x="154" y="0" font-size="11" fill="currentColor">planned</text>
+          <line x1="230" y1="-4" x2="262" y2="-4" stroke="var(--ent)" stroke-width="1.4" stroke-dasharray="4 3"/>
+          <text x="270" y="0" font-size="11" fill="currentColor">belongs_to</text>
+          <line x1="360" y1="-4" x2="392" y2="-4" stroke="var(--doc)" stroke-width="1.3" stroke-dasharray="4 3"/>
+          <text x="400" y="0" font-size="11" fill="currentColor">extracted_from</text>
+        </g>
+      </svg>
+      </div>
+      <figcaption>The Faro trip as a link graph — solid means built today, dashed means planned.
+      The extraction layer (documents → entities via extracted_from) is now fully live; what
+      remains is the trip anchor and its belongs_to links (Phase D).</figcaption>
+    </figure>
+  </section>
+
+  <footer>
+    Hand-drawn from <code>server/src/db/store.ts</code>, <code>documents.ts</code>, and
+    <code>entityTypes.ts</code> · re-published as each phase lands · a copy lives in the repo at
+    <code>docs/data-map.html</code>.
+  </footer>
+</main>
+
+</body>
+</html>

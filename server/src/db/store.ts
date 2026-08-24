@@ -134,6 +134,40 @@ db.exec(`
     created_at INTEGER NOT NULL
   );
   CREATE INDEX IF NOT EXISTS idx_document_match_keys_owner ON document_match_keys(owner_id, created_at);
+
+  -- Generic entity store (docs/entities-and-links-guide.md): a typed, owner-scoped "thing derived
+  -- from a document" (travel check-in, expense, trip, ...). Type-specific fields live in the JSON
+  -- data column rather than as real columns, so adding a new entity type is a data change, not a
+  -- schema change. Foundation only for now — nothing reads/writes this table yet.
+  CREATE TABLE IF NOT EXISTS entities (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    owner_id   INTEGER NOT NULL REFERENCES users(id),
+    type       TEXT NOT NULL,
+    status     TEXT NOT NULL DEFAULT 'active',
+    data       TEXT NOT NULL,
+    confidence REAL,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_entities_owner_type ON entities(owner_id, type);
+
+  -- Generic link store (docs/entities-and-links-guide.md): connects two records — either an
+  -- entity or a document, by id — with a labelled relation ('extracted_from', 'belongs_to',
+  -- 'relates_to'). This is what lets several documents/entities all attach to one grouping
+  -- entity (e.g. a trip), instead of hardcoding one foreign key per relationship as
+  -- travel_checkins.document_id currently does. Foundation only for now.
+  CREATE TABLE IF NOT EXISTS links (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    owner_id   INTEGER NOT NULL REFERENCES users(id),
+    relation   TEXT NOT NULL,
+    from_type  TEXT NOT NULL,
+    from_id    INTEGER NOT NULL,
+    to_type    TEXT NOT NULL,
+    to_id      INTEGER NOT NULL,
+    created_at INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_links_from ON links(owner_id, from_type, from_id);
+  CREATE INDEX IF NOT EXISTS idx_links_to   ON links(owner_id, to_type, to_id);
 `);
 
 // Lightweight migration: CREATE TABLE IF NOT EXISTS doesn't add columns to a table that
@@ -429,6 +463,70 @@ if (!documentColumns.includes("title")) {
 // couldn't be analyzed", "other" means the model looked and it genuinely didn't fit.
 if (!documentColumns.includes("category")) {
   db.exec(`ALTER TABLE documents ADD COLUMN category TEXT`);
+}
+
+// One-time relabel: 'receipts_bookings' was split into 'receipts' (booking confirmations moved
+// under 'travel', where they arguably always belonged — see JAKES_TODO.md 2026-08-24). Plain
+// UPDATE rather than a guarded block since it's naturally idempotent: once no row has the old
+// value, this is a no-op on every subsequent boot.
+db.exec(`UPDATE documents SET category = 'receipts' WHERE category = 'receipts_bookings'`);
+
+// One-time migration (docs/entities-and-links-guide.md §7 step 2): copy every existing
+// travel_checkins row into the generic entities table as type='travel_checkin', with a link back
+// to its source document where one exists. This is the proof the generic entities/links shape
+// holds for a real, already-existing type before a second type (expenses) gets built on it.
+// travel_checkins itself is left untouched (rows and all) as a rollback point — saveCheckin/
+// listCheckins below now read and write entities instead, so this only ever needs to run once,
+// guarded by "does an entities row of this type already exist" rather than re-diffing every boot.
+const hasMigratedCheckins = !!db.prepare(`SELECT 1 FROM entities WHERE type = 'travel_checkin' LIMIT 1`).get();
+if (!hasMigratedCheckins) {
+  const oldCheckins = db
+    .prepare(
+      `SELECT id, owner_id AS ownerId, latitude, longitude, country, city,
+         checked_in_at AS checkedInAt, source, document_id AS documentId
+       FROM travel_checkins`
+    )
+    .all() as {
+    id: number;
+    ownerId: number;
+    latitude: number | null;
+    longitude: number | null;
+    country: string | null;
+    city: string | null;
+    checkedInAt: number;
+    source: string;
+    documentId: number | null;
+  }[];
+
+  if (oldCheckins.length > 0) {
+    const migrateCheckins = db.transaction(() => {
+      const now = Date.now();
+      const insertEntity = db.prepare(
+        `INSERT INTO entities (owner_id, type, status, data, confidence, created_at, updated_at)
+         VALUES (?, 'travel_checkin', 'active', ?, NULL, ?, ?)`
+      );
+      const insertLink = db.prepare(
+        `INSERT INTO links (owner_id, relation, from_type, from_id, to_type, to_id, created_at)
+         VALUES (?, 'extracted_from', 'entity', ?, 'document', ?, ?)`
+      );
+      for (const row of oldCheckins) {
+        const data = {
+          latitude: row.latitude,
+          longitude: row.longitude,
+          country: row.country,
+          city: row.city,
+          checkedInAt: row.checkedInAt,
+          source: row.source,
+        };
+        const info = insertEntity.run(row.ownerId, JSON.stringify(data), now, now);
+        if (row.documentId != null) {
+          insertLink.run(row.ownerId, info.lastInsertRowid, row.documentId, now);
+        }
+      }
+    });
+    migrateCheckins();
+    console.log(`store: migrated ${oldCheckins.length} travel_checkins row(s) into entities`);
+  }
 }
 
 export const uploadsDir = path.join(dataDir, "uploads");
@@ -774,8 +872,8 @@ export function resolveOwnerByPhone(phone: string): number | null {
 // Fixed on purpose (not free-form LLM tags) — a small, predictable set keeps the Files page
 // grouping/filter UI simple and avoids near-duplicate categories ("Receipt" vs "Receipts")
 // fragmenting the view over time.
-export type DocumentCategory = "travel" | "id_legal" | "receipts_bookings" | "other";
-export const DOCUMENT_CATEGORIES: DocumentCategory[] = ["travel", "id_legal", "receipts_bookings", "other"];
+export type DocumentCategory = "travel" | "id_legal" | "receipts" | "other";
+export const DOCUMENT_CATEGORIES: DocumentCategory[] = ["travel", "id_legal", "receipts", "other"];
 
 export interface DocumentRow {
   id: number;
@@ -938,8 +1036,30 @@ export interface TravelCheckinRow {
   documentId: number | null;
 }
 
-const CHECKIN_SELECT = `id, latitude, longitude, country, city, checked_in_at AS checkedInAt,
-  source, document_id AS documentId`;
+// The JSON shape stored in entities.data for type='travel_checkin'. documentId is deliberately
+// NOT in here — it's represented as a links row (entity --extracted_from--> document) per the
+// generic design, and reattached onto the compatibility TravelCheckinRow shape in
+// checkinFromEntity below, so travelDays.ts and every existing caller sees an identical shape to
+// before the Phase B migration (docs/entities-and-links-guide.md §7 step 2).
+interface TravelCheckinData {
+  latitude: number | null;
+  longitude: number | null;
+  country: string | null;
+  city: string | null;
+  checkedInAt: number;
+  source: CheckinSource;
+}
+
+function checkinFromEntity(ownerId: number, entity: EntityRow<TravelCheckinData>): TravelCheckinRow {
+  const documentLink = getLinksFrom(ownerId, "entity", entity.id).find(
+    (link) => link.relation === "extracted_from" && link.toType === "document"
+  );
+  return {
+    id: entity.id,
+    ...entity.data,
+    documentId: documentLink ? documentLink.toId : null,
+  };
+}
 
 export function saveCheckin(
   ownerId: number,
@@ -953,32 +1073,32 @@ export function saveCheckin(
     documentId?: number | null;
   }
 ): TravelCheckinRow {
-  const info = db
-    .prepare(
-      `INSERT INTO travel_checkins (owner_id, latitude, longitude, country, city, checked_in_at, source, document_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
-    )
-    .run(
-      ownerId,
-      checkin.latitude ?? null,
-      checkin.longitude ?? null,
-      checkin.country,
-      checkin.city,
-      checkin.checkedInAt,
-      checkin.source ?? "phone",
-      checkin.documentId ?? null
-    );
-  return db
-    .prepare(`SELECT ${CHECKIN_SELECT} FROM travel_checkins WHERE id = ?`)
-    .get(info.lastInsertRowid) as TravelCheckinRow;
+  const entity = saveEntity<TravelCheckinData>(ownerId, {
+    type: "travel_checkin",
+    data: {
+      latitude: checkin.latitude ?? null,
+      longitude: checkin.longitude ?? null,
+      country: checkin.country,
+      city: checkin.city,
+      checkedInAt: checkin.checkedInAt,
+      source: checkin.source ?? "phone",
+    },
+  });
+  if (checkin.documentId != null) {
+    linkRecords(ownerId, {
+      relation: "extracted_from",
+      from: { type: "entity", id: entity.id },
+      to: { type: "document", id: checkin.documentId },
+    });
+  }
+  return checkinFromEntity(ownerId, entity);
 }
 
 export function listCheckins(ownerId: number, limit = 100): TravelCheckinRow[] {
-  return db
-    .prepare(
-      `SELECT ${CHECKIN_SELECT} FROM travel_checkins WHERE owner_id = ? ORDER BY checked_in_at DESC LIMIT ?`
-    )
-    .all(ownerId, limit) as TravelCheckinRow[];
+  return listEntities<TravelCheckinData>(ownerId, { type: "travel_checkin" })
+    .sort((a, b) => b.data.checkedInAt - a.data.checkedInAt)
+    .slice(0, limit)
+    .map((entity) => checkinFromEntity(ownerId, entity));
 }
 
 // Dedup ledger for real-time message alerts: "have we already pinged the user about this
@@ -1002,9 +1122,172 @@ export function markAlerted(ownerId: number, key: string): void {
 
 // Ascending, uncapped — day-counting needs the full timeline, not just the most recent page.
 export function listAllCheckinsAscending(ownerId: number): TravelCheckinRow[] {
+  return listEntities<TravelCheckinData>(ownerId, { type: "travel_checkin" })
+    .sort((a, b) => a.data.checkedInAt - b.data.checkedInAt)
+    .map((entity) => checkinFromEntity(ownerId, entity));
+}
+
+// ---------------------------------------------------------------------------
+// Generic entity + link store (docs/entities-and-links-guide.md §3). Foundation only — nothing
+// calls these yet (that starts in Phase B, migrating travel_checkins). The row-mappers JSON.parse
+// the `data`/JSON column on the way out, the same shape as the column-alias mappers above (e.g.
+// toAccountRow), just with one field that's itself JSON.
+// ---------------------------------------------------------------------------
+
+export type EntityStatus = "active" | "needs_review" | "archived";
+
+export interface EntityRow<T = unknown> {
+  id: number;
+  type: string;
+  status: EntityStatus;
+  data: T;
+  confidence: number | null;
+  createdAt: number;
+  updatedAt: number;
+}
+
+const ENTITY_SELECT = `id, type, status, data, confidence, created_at AS createdAt, updated_at AS updatedAt`;
+
+function toEntityRow<T>(raw: unknown): EntityRow<T> {
+  const row = raw as Omit<EntityRow<T>, "data"> & { data: string };
+  return { ...row, data: JSON.parse(row.data) as T };
+}
+
+export function saveEntity<T>(
+  ownerId: number,
+  entity: { type: string; data: T; confidence?: number | null; status?: EntityStatus }
+): EntityRow<T> {
+  const now = Date.now();
+  const info = db
+    .prepare(
+      `INSERT INTO entities (owner_id, type, status, data, confidence, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`
+    )
+    .run(
+      ownerId,
+      entity.type,
+      entity.status ?? "active",
+      JSON.stringify(entity.data),
+      entity.confidence ?? null,
+      now,
+      now
+    );
+  return toEntityRow<T>(
+    db.prepare(`SELECT ${ENTITY_SELECT} FROM entities WHERE id = ?`).get(info.lastInsertRowid)
+  );
+}
+
+export function getEntity<T>(ownerId: number, id: number): EntityRow<T> | null {
+  const row = db
+    .prepare(`SELECT ${ENTITY_SELECT} FROM entities WHERE id = ? AND owner_id = ?`)
+    .get(id, ownerId);
+  return row ? toEntityRow<T>(row) : null;
+}
+
+export function listEntities<T>(
+  ownerId: number,
+  filter: { type?: string; status?: EntityStatus } = {}
+): EntityRow<T>[] {
+  const conditions = ["owner_id = ?"];
+  const params: unknown[] = [ownerId];
+  if (filter.type) {
+    conditions.push("type = ?");
+    params.push(filter.type);
+  }
+  if (filter.status) {
+    conditions.push("status = ?");
+    params.push(filter.status);
+  }
+  const rows = db
+    .prepare(`SELECT ${ENTITY_SELECT} FROM entities WHERE ${conditions.join(" AND ")} ORDER BY id DESC`)
+    .all(...params);
+  return rows.map((row) => toEntityRow<T>(row));
+}
+
+export function updateEntity<T>(
+  ownerId: number,
+  id: number,
+  patch: Partial<{ data: T; status: EntityStatus; confidence: number | null }>
+): EntityRow<T> {
+  const existing = getEntity<T>(ownerId, id);
+  if (!existing) throw new Error(`entity ${id} not found`);
+  db.prepare(
+    `UPDATE entities SET data = @data, status = @status, confidence = @confidence, updated_at = @updatedAt
+     WHERE id = @id AND owner_id = @ownerId`
+  ).run({
+    id,
+    ownerId,
+    data: JSON.stringify(patch.data !== undefined ? patch.data : existing.data),
+    status: patch.status ?? existing.status,
+    confidence: patch.confidence !== undefined ? patch.confidence : existing.confidence,
+    updatedAt: Date.now(),
+  });
+  return getEntity<T>(ownerId, id)!;
+}
+
+export type LinkableType = "entity" | "document";
+
+export interface LinkRow {
+  id: number;
+  relation: string;
+  fromType: LinkableType;
+  fromId: number;
+  toType: LinkableType;
+  toId: number;
+  createdAt: number;
+}
+
+const LINK_SELECT = `id, relation, from_type AS fromType, from_id AS fromId,
+  to_type AS toType, to_id AS toId, created_at AS createdAt`;
+
+export function linkRecords(
+  ownerId: number,
+  link: {
+    relation: string;
+    from: { type: LinkableType; id: number };
+    to: { type: LinkableType; id: number };
+  }
+): LinkRow {
+  const info = db
+    .prepare(
+      `INSERT INTO links (owner_id, relation, from_type, from_id, to_type, to_id, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`
+    )
+    .run(ownerId, link.relation, link.from.type, link.from.id, link.to.type, link.to.id, Date.now());
   return db
-    .prepare(`SELECT ${CHECKIN_SELECT} FROM travel_checkins WHERE owner_id = ? ORDER BY checked_in_at ASC`)
-    .all(ownerId) as TravelCheckinRow[];
+    .prepare(`SELECT ${LINK_SELECT} FROM links WHERE id = ?`)
+    .get(info.lastInsertRowid) as LinkRow;
+}
+
+export function getLinksFrom(ownerId: number, fromType: LinkableType, fromId: number): LinkRow[] {
+  return db
+    .prepare(`SELECT ${LINK_SELECT} FROM links WHERE owner_id = ? AND from_type = ? AND from_id = ?`)
+    .all(ownerId, fromType, fromId) as LinkRow[];
+}
+
+export function getLinksTo(ownerId: number, toType: LinkableType, toId: number): LinkRow[] {
+  return db
+    .prepare(`SELECT ${LINK_SELECT} FROM links WHERE owner_id = ? AND to_type = ? AND to_id = ?`)
+    .all(ownerId, toType, toId) as LinkRow[];
+}
+
+// Walks links in both directions from a record (an entity or a document) and returns every
+// entity on the other end of one of those links — e.g. "everything belonging to this trip,"
+// regardless of whether the trip is the from-side or the to-side of any given link row.
+export function getRelatedEntities<T = unknown>(
+  ownerId: number,
+  record: { type: LinkableType; id: number }
+): EntityRow<T>[] {
+  const outgoingEntityIds = getLinksFrom(ownerId, record.type, record.id)
+    .filter((link) => link.toType === "entity")
+    .map((link) => link.toId);
+  const incomingEntityIds = getLinksTo(ownerId, record.type, record.id)
+    .filter((link) => link.fromType === "entity")
+    .map((link) => link.fromId);
+  const entityIds = [...new Set([...outgoingEntityIds, ...incomingEntityIds])];
+  return entityIds
+    .map((id) => getEntity<T>(ownerId, id))
+    .filter((entity): entity is EntityRow<T> => entity !== null);
 }
 
 // ---------------------------------------------------------------------------
@@ -1131,6 +1414,8 @@ export function deleteUserCompletely(ownerId: number): { deletedDocumentPaths: s
     db.prepare(`DELETE FROM documents WHERE owner_id = ?`).run(ownerId);
     db.prepare(`DELETE FROM document_match_keys WHERE owner_id = ?`).run(ownerId);
     db.prepare(`DELETE FROM travel_checkins WHERE owner_id = ?`).run(ownerId);
+    db.prepare(`DELETE FROM entities WHERE owner_id = ?`).run(ownerId);
+    db.prepare(`DELETE FROM links WHERE owner_id = ?`).run(ownerId);
     db.prepare(`DELETE FROM alerted_messages WHERE owner_id = ?`).run(ownerId);
     db.prepare(`DELETE FROM user_enabled_tools WHERE owner_id = ?`).run(ownerId);
     db.prepare(`DELETE FROM user_phone_numbers WHERE user_id = ?`).run(ownerId);

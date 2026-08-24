@@ -8,6 +8,8 @@ import {
   saveDocument,
   saveCheckin,
   saveMatchKeys,
+  saveEntity,
+  linkRecords,
   uploadsDir,
   DOCUMENT_CATEGORIES,
   type DocumentRow,
@@ -15,6 +17,13 @@ import {
 } from "../db/store.js";
 import { encryptBuffer } from "./crypto.js";
 import { validateTravelMovement, type TravelMovement } from "./travelValidation.js";
+import {
+  validateExpense,
+  validateBooking,
+  parseAmountToMinorUnits,
+  type ExpenseData,
+  type BookingData,
+} from "./entityValidation.js";
 import { fetchPageText, type FetchFailureReason } from "./safeLinkFetcher.js";
 import { checkDocumentAgainstRecentEmails, type MatchKeys } from "./reconciliation.js";
 
@@ -94,6 +103,51 @@ const RECORD_MATCH_KEYS_TOOL: Anthropic.Tool = {
   },
 };
 
+// Like record_travel_movement, these ride the SAME single extraction call — no extra API cost.
+// Content-based on purpose: whether to record a purchase/booking is decided by what's actually
+// in the document, never by which category it was filed under (a hotel confirmation files under
+// 'travel' but still shows money spent — it should produce both a booking and an expense).
+// The model only transcribes what's printed; all arithmetic, currency, and date checking happens
+// deterministically in entityValidation.ts before anything is stored.
+const RECORD_PURCHASE_TOOL: Anthropic.Tool = {
+  name: "record_purchase",
+  description:
+    "Call this if the document clearly shows money paid to a specific vendor — a receipt, invoice, or a booking confirmation that shows the amount charged. Transcribe only what is printed; never infer or compute an amount. Skip it if no total amount is legible. Call once per distinct payment shown.",
+  input_schema: {
+    type: "object",
+    properties: {
+      vendor: { type: "string", description: "Who was paid, as printed (e.g. 'Ryanair', 'Hotel Eva')" },
+      amount: {
+        type: "string",
+        description: "The total amount exactly as printed, e.g. '18.50' or '1.234,56' — do not convert or reformat",
+      },
+      currency: { type: "string", description: "ISO 4217 code: GBP, EUR, USD… Infer from the printed symbol only if unambiguous." },
+      date: { type: "string", description: "Payment/receipt date as YYYY-MM-DD" },
+    },
+    required: ["vendor", "amount", "currency", "date"],
+  },
+};
+
+const RECORD_BOOKING_TOOL: Anthropic.Tool = {
+  name: "record_booking",
+  description:
+    "Call this if the document clearly shows a reservation — a flight or hotel booking confirmation with legible dates. Transcribe only what is printed; never guess dates. Call once per distinct reservation shown (a page confirming a flight AND a hotel is two calls).",
+  input_schema: {
+    type: "object",
+    properties: {
+      kind: { type: "string", enum: ["flight", "hotel"] },
+      name: {
+        type: "string",
+        description: "Short identifying label: flight number + route for flights ('FR1234 LIS→FAO'), property name + city for hotels ('Hotel Eva, Faro')",
+      },
+      reference: { type: "string", description: "Confirmation/PNR code if legible. Omit if not shown." },
+      startDate: { type: "string", description: "Flight date / hotel check-in, as YYYY-MM-DD" },
+      endDate: { type: "string", description: "Hotel check-out as YYYY-MM-DD. Omit for flights." },
+    },
+    required: ["kind", "name", "startDate"],
+  },
+};
+
 // Named by the same call that extracts the facts, so titling costs nothing extra. A tool rather
 // than a "start your reply with TITLE:" convention because the title has to survive intact —
 // parsing it back out of prose breaks the moment the model reformats its own output.
@@ -113,7 +167,7 @@ const NAME_DOCUMENT_TOOL: Anthropic.Tool = {
         type: "string",
         enum: DOCUMENT_CATEGORIES,
         description:
-          "Which bucket this document belongs in on the user's file list: 'travel' (boarding passes, tickets, itineraries), 'id_legal' (licenses, passports, IDs, official paperwork), 'receipts_bookings' (receipts, invoices, hotel/booking confirmations), or 'other' for anything that genuinely doesn't fit those.",
+          "Which bucket this document belongs in on the user's file list: 'travel' (boarding passes, tickets, itineraries, flight/hotel booking confirmations), 'id_legal' (licenses, passports, IDs, official paperwork), 'receipts' (receipts, invoices — purchases, not bookings), or 'other' for anything that genuinely doesn't fit those.",
       },
     },
     required: ["title", "category"],
@@ -126,9 +180,40 @@ const MAX_TITLE_LENGTH = 60;
 // A real digital PDF (not a scan/photo saved as PDF) has an embedded text layer pdf-parse can
 // read exactly, for free, with zero risk of a misread digit — strictly better than vision for
 // that case: cheaper (no image tokens) and more accurate (guaranteed-correct source text).
-// Below this length, treat it as having no usable text layer (e.g. a scanned/photographed PDF)
-// and fall back to vision, same as before.
+// Below this length, don't even bother with the gibberish check below — too short to be a real
+// text layer (e.g. a scanned/photographed PDF) — just fall back to vision, same as before.
 const MIN_PDF_TEXT_LENGTH = 40;
+
+// Cheap/fast tier — this only has to make a garbled-vs-clean call, not do real extraction.
+const GIBBERISH_CHECK_MODEL = process.env.ASSISTANT_MODEL_SIMPLE ?? "claude-haiku-4-5";
+
+// A length check alone can't tell a clean transcript from font-mangled garbage that happens to
+// be long — ticket/boarding-pass PDFs often render the fields that actually matter (date, time,
+// reference number) with custom or barcode fonts pdf-parse can't decode, while the surrounding
+// boilerplate text extracts fine and pads the result past any length threshold. This is what
+// actually catches that: a fast model reading the text and judging whether a meaningful chunk of
+// it is corrupted, not just checking how many characters came out.
+async function looksLikeGibberish(text: string): Promise<boolean> {
+  const response = await getClient().messages.create({
+    model: GIBBERISH_CHECK_MODEL,
+    max_tokens: 5,
+    messages: [
+      {
+        role: "user",
+        content:
+          "The following text was pulled from a PDF by an automated text-layer parser. Some " +
+          "PDFs (tickets, boarding passes, etc.) render key fields like dates, times, and " +
+          "reference numbers in custom or barcode fonts that this kind of parser can't decode " +
+          "properly, leaving those specific fields garbled or missing even when the surrounding " +
+          "text extracts fine. Judge whether a meaningful portion of THIS text shows that kind of " +
+          "corruption — not just odd spacing or minor typos, but characters/sequences that don't " +
+          "reflect real content. Reply with exactly one word: GIBBERISH or CLEAN.\n\n" + text,
+      },
+    ],
+  });
+  const answer = response.content.find((b): b is Anthropic.TextBlock => b.type === "text")?.text ?? "";
+  return answer.toUpperCase().includes("GIBBERISH");
+}
 
 async function extractPdfTextLayer(buffer: Buffer): Promise<string | null> {
   try {
@@ -136,7 +221,12 @@ async function extractPdfTextLayer(buffer: Buffer): Promise<string | null> {
     const result = await parser.getText();
     await parser.destroy();
     const trimmed = result.text.trim();
-    return trimmed.length >= MIN_PDF_TEXT_LENGTH ? trimmed : null;
+    if (trimmed.length < MIN_PDF_TEXT_LENGTH) return null;
+    if (await looksLikeGibberish(trimmed)) {
+      console.warn("documents: pdf text layer looked garbled — falling back to vision");
+      return null;
+    }
+    return trimmed;
   } catch (err) {
     console.warn("documents: pdf-parse failed, falling back to vision", err);
     return null;
@@ -150,23 +240,63 @@ interface ExtractionResult {
   category: DocumentCategory | null;
   movement: TravelMovement | null;
   matchKeys: MatchKeys | null;
+  purchases: unknown[];
+  bookings: unknown[];
 }
 
-// Shared by every extraction path (image/PDF today; link/voice-transcript text below) — the
-// tool-call schemas and this response-parsing tail are the one part all of them have in common,
-// so it's factored out rather than copied. Everything upstream of this (how the content blocks
-// get built — vision, PDF text layer, plain text) stays specific to each source.
-export function parseExtractionResponse(response: Anthropic.Message): ExtractionResult {
-  const textBlock = response.content.find((b): b is Anthropic.TextBlock => b.type === "text");
-  const toolUse = response.content.find(
-    (b): b is Anthropic.ToolUseBlock => b.type === "tool_use" && b.name === "record_travel_movement"
-  );
-  const nameUse = response.content.find(
-    (b): b is Anthropic.ToolUseBlock => b.type === "tool_use" && b.name === "name_document"
-  );
-  const matchKeysUse = response.content.find(
-    (b): b is Anthropic.ToolUseBlock => b.type === "tool_use" && b.name === "record_match_keys"
-  );
+// Shared by every extraction path (image/PDF, and link text below) — calling name_document
+// "before writing your extraction" doesn't guarantee the model actually continues on to write it
+// in the same turn: a model that calls a tool can just as validly stop there (stop_reason
+// "tool_use") with no text at all, leaving the extraction empty even though the tool calls
+// themselves succeeded. A single non-looping call can't recover from that; feed the tool calls
+// back as normal tool_results and let the conversation continue, same as the main assistant loop
+// in ai/assistant.ts does, until the model actually produces the write-up.
+async function runExtraction(initialContent: Anthropic.ContentBlockParam[]): Promise<ExtractionResult> {
+  const messages: Anthropic.MessageParam[] = [{ role: "user", content: initialContent }];
+  let response: Anthropic.Message;
+  let textBlock: Anthropic.TextBlock | undefined;
+  let toolUse: Anthropic.ToolUseBlock | undefined;
+  let nameUse: Anthropic.ToolUseBlock | undefined;
+  let matchKeysUse: Anthropic.ToolUseBlock | undefined;
+  const purchases: unknown[] = [];
+  const bookings: unknown[] = [];
+
+  for (let turn = 0; turn < 3; turn++) {
+    response = await getClient().messages.create({
+      model: EXTRACTION_MODEL,
+      // 1024 was too tight for busier documents (e.g. a hotel booking confirmation with a full
+      // pricing breakdown) — the model would hit the cap mid-sentence and silently drop whatever
+      // it hadn't gotten to yet, which is exactly how dates/times went missing even though they
+      // were legible in the image. 4096 gives real headroom; this is a one-time cost per upload.
+      max_tokens: 4096,
+      tools: [NAME_DOCUMENT_TOOL, TRAVEL_MOVEMENT_TOOL, RECORD_MATCH_KEYS_TOOL, RECORD_PURCHASE_TOOL, RECORD_BOOKING_TOOL],
+      messages,
+    });
+
+    textBlock = response.content.find((b): b is Anthropic.TextBlock => b.type === "text");
+    const toolUses = response.content.filter(
+      (b): b is Anthropic.ToolUseBlock => b.type === "tool_use"
+    );
+    toolUse = toolUses.find((b) => b.name === "record_travel_movement") ?? toolUse;
+    nameUse = toolUses.find((b) => b.name === "name_document") ?? nameUse;
+    matchKeysUse = toolUses.find((b) => b.name === "record_match_keys") ?? matchKeysUse;
+    // Arrays, not single slots — one document can legitimately show several payments or
+    // reservations (an itinerary confirming a flight and a hotel is two bookings).
+    purchases.push(...toolUses.filter((b) => b.name === "record_purchase").map((b) => b.input));
+    bookings.push(...toolUses.filter((b) => b.name === "record_booking").map((b) => b.input));
+
+    if (textBlock || toolUses.length === 0) break;
+
+    messages.push({ role: "assistant", content: response.content });
+    messages.push({
+      role: "user",
+      content: toolUses.map((tu) => ({
+        type: "tool_result" as const,
+        tool_use_id: tu.id,
+        content: "Saved. Continue with the extraction as instructed.",
+      })),
+    });
+  }
 
   const nameInput = nameUse?.input as { title?: unknown; category?: unknown } | undefined;
   const rawTitle = nameInput?.title;
@@ -177,7 +307,10 @@ export function parseExtractionResponse(response: Anthropic.Message): Extraction
   const category = resolveDocumentCategory(nameInput?.category);
 
   let text = textBlock?.text ?? "(couldn't extract any text from this file)";
-  if (response.stop_reason === "max_tokens") {
+  if (response!.stop_reason === "max_tokens") {
+    // Surface truncation instead of silently returning a partial extraction — the model itself
+    // (and the user, if they ask to see the details) should know some facts may be missing
+    // rather than assuming the extraction was complete.
     console.warn("documents: extraction hit max_tokens — output may be truncated");
     text += "\n\n(Note: this extraction was cut off before finishing — some details, possibly including dates, may be missing.)";
   }
@@ -188,6 +321,8 @@ export function parseExtractionResponse(response: Anthropic.Message): Extraction
     category,
     movement: toolUse ? (toolUse.input as TravelMovement) : null,
     matchKeys: matchKeysUse ? (matchKeysUse.input as MatchKeys) : null,
+    purchases,
+    bookings,
   };
 }
 
@@ -227,6 +362,88 @@ function applyTravelValidation(
   return { finalText: extractedText, storableMovement: movement };
 }
 
+// Deterministic gate between the model's record_purchase/record_booking transcriptions and the
+// entities table — the expense/booking counterpart to applyTravelValidation. Pure on purpose
+// (no DB, no API) so the whole decision table is unit-testable offline: parse the printed
+// amount into minor units in code, run the hardcoded validators, and map ok→active,
+// warn→needs_review (finally putting that status to work), reject→dropped entirely.
+export function buildDerivedEntities(
+  purchases: unknown[],
+  bookings: unknown[],
+  uploadedAt: Date
+): Array<{ type: "expense" | "booking"; data: ExpenseData | BookingData; confidence: number; status: "active" | "needs_review" }> {
+  const out: Array<{ type: "expense" | "booking"; data: ExpenseData | BookingData; confidence: number; status: "active" | "needs_review" }> = [];
+
+  for (const raw of purchases) {
+    const p = raw as { vendor?: unknown; amount?: unknown; currency?: unknown; date?: unknown };
+    const currency = typeof p.currency === "string" ? p.currency.trim().toUpperCase() : "";
+    const amountPence = parseAmountToMinorUnits(p.amount, currency);
+    const data: ExpenseData = {
+      vendor: typeof p.vendor === "string" ? p.vendor.trim() : "",
+      amountPence: amountPence ?? -1,
+      currency,
+      date: typeof p.date === "string" ? p.date.trim() : "",
+    };
+    const validation = validateExpense(data, { uploadedAt });
+    if (validation.severity === "reject") {
+      console.warn("documents: dropping extracted purchase — failed validation", validation.issues);
+      continue;
+    }
+    out.push({
+      type: "expense",
+      data,
+      confidence: validation.confidence,
+      status: validation.severity === "warn" ? "needs_review" : "active",
+    });
+  }
+
+  for (const raw of bookings) {
+    const b = raw as { kind?: unknown; name?: unknown; reference?: unknown; startDate?: unknown; endDate?: unknown };
+    const data: BookingData = {
+      kind: b.kind as BookingData["kind"],
+      name: typeof b.name === "string" ? b.name.trim() : "",
+      reference: typeof b.reference === "string" && b.reference.trim() ? b.reference.trim() : null,
+      startDate: typeof b.startDate === "string" ? b.startDate.trim() : "",
+      endDate: typeof b.endDate === "string" && b.endDate.trim() ? b.endDate.trim() : null,
+    };
+    const validation = validateBooking(data, { uploadedAt });
+    if (validation.severity === "reject") {
+      console.warn("documents: dropping extracted booking — failed validation", validation.issues);
+      continue;
+    }
+    out.push({
+      type: "booking",
+      data,
+      confidence: validation.confidence,
+      status: validation.severity === "warn" ? "needs_review" : "active",
+    });
+  }
+
+  return out;
+}
+
+// The storage half: one entity row + one extracted_from link per validated item. Same shape as
+// the movementToCheckins/saveCheckin flow below it in the ingest functions.
+function storeDerivedEntities(
+  ownerId: number,
+  documentId: number,
+  derived: ReturnType<typeof buildDerivedEntities>
+): void {
+  for (const item of derived) {
+    const entity = saveEntity(ownerId, {
+      type: item.type,
+      data: item.data,
+      confidence: item.confidence,
+      status: item.status,
+    });
+    linkRecords(ownerId, {
+      relation: "extracted_from",
+      from: { type: "entity", id: entity.id },
+      to: { type: "document", id: documentId },
+    });
+  }
+}
+
 async function extractDocument(buffer: Buffer, mimeType: string): Promise<ExtractionResult> {
   const uploadedAt = new Date().toISOString();
   const prompt =
@@ -243,7 +460,14 @@ async function extractDocument(buffer: Buffer, mimeType: string): Promise<Extrac
     `This file was uploaded around ${uploadedAt}. If the document shows travel (e.g. a ` +
     "boarding pass) but a date has no year printed on it, infer the year from that upload " +
     "time — boarding passes are almost always saved on or near the day of travel — and call " +
-    "record_travel_movement with the departure/arrival details.";
+    "record_travel_movement with the departure/arrival details.\n\n" +
+    "Independently of which category you file it under: if the document shows money paid " +
+    "(a total amount charged), call record_purchase; if it shows a flight or hotel " +
+    "reservation, call record_booking. A document can warrant both (a hotel confirmation " +
+    "shows a reservation AND an amount paid) — call both. Transcribe only what is printed. " +
+    "Separately, if the document shows a booking/confirmation/reference code or a flight " +
+    "number, also call record_match_keys with it, so it can be cross-referenced against " +
+    "email later.";
 
   const pdfText = mimeType === "application/pdf" ? await extractPdfTextLayer(buffer) : null;
 
@@ -252,7 +476,7 @@ async function extractDocument(buffer: Buffer, mimeType: string): Promise<Extrac
     ? [
         {
           type: "text",
-          text: `Document text (extracted directly from the PDF's text layer — exact, not a transcription):\n\n${pdfText}\n\n${prompt}`,
+          text: `Document text (extracted directly from the PDF's text layer and screened for garbling — exact, not a transcription):\n\n${pdfText}\n\n${prompt}`,
         },
       ]
     : SUPPORTED_IMAGE_TYPES.has(mimeType)
@@ -271,25 +495,14 @@ async function extractDocument(buffer: Buffer, mimeType: string): Promise<Extrac
         { type: "text", text: prompt },
       ];
 
-  const response = await getClient().messages.create({
-    model: EXTRACTION_MODEL,
-    // 1024 was too tight for busier documents (e.g. a hotel booking confirmation with a full
-    // pricing breakdown) — the model would hit the cap mid-sentence and silently drop whatever
-    // it hadn't gotten to yet, which is exactly how dates/times went missing even though they
-    // were legible in the image. 4096 gives real headroom; this is a one-time cost per upload.
-    max_tokens: 4096,
-    tools: [NAME_DOCUMENT_TOOL, TRAVEL_MOVEMENT_TOOL, RECORD_MATCH_KEYS_TOOL],
-    messages: [{ role: "user", content }],
-  });
-
-  return parseExtractionResponse(response);
+  return runExtraction(content);
 }
 
 // Text-only counterpart to extractDocument — for content that arrives as plain text rather than
-// an image/PDF (today: a fetched web page's readable text). Reuses the same tool schemas and
-// response parsing so a saved link ends up in exactly the same shape as a saved photo/PDF, but
-// vision is structurally unreachable here: this function never sees a buffer or a media type,
-// only a string, so there's no way for it to accidentally spend image tokens.
+// an image/PDF (today: a fetched web page's readable text). Reuses the same continuation loop and
+// tool schemas so a saved link ends up in exactly the same shape as a saved photo/PDF, but vision
+// is structurally unreachable here: this function never sees a buffer or a media type, only a
+// string, so there's no way for it to accidentally spend image tokens.
 const MAX_LINK_TEXT_CHARS = 12_000;
 
 async function extractFactsFromLinkText(
@@ -313,18 +526,16 @@ async function extractFactsFromLinkText(
     `This link was opened around ${uploadedAt.toISOString()}. If the page shows travel dates ` +
     "without a year, infer the year from that time and call record_travel_movement with the " +
     "departure/arrival details, the same way you would for an uploaded boarding pass.\n\n" +
+    "Independently of what kind of page it is: if it shows money paid (a total amount " +
+    "charged), call record_purchase; if it shows a flight or hotel reservation, call " +
+    "record_booking. A page can warrant both — call both. Transcribe only what is printed. " +
+    "Separately, if the page shows a booking/confirmation/reference code or a flight number, " +
+    "also call record_match_keys with it, so it can be cross-referenced against email later.\n\n" +
     `Source URL: ${sourceUrl}` +
     (truncated ? `\n\n(Page text truncated to the first ${MAX_LINK_TEXT_CHARS} characters.)` : "") +
     `\n\nPage text:\n${bodyText}`;
 
-  const response = await getClient().messages.create({
-    model: EXTRACTION_MODEL,
-    max_tokens: 4096,
-    tools: [NAME_DOCUMENT_TOOL, TRAVEL_MOVEMENT_TOOL, RECORD_MATCH_KEYS_TOOL],
-    messages: [{ role: "user", content: [{ type: "text", text: prompt }] }],
-  });
-
-  return parseExtractionResponse(response);
+  return runExtraction([{ type: "text", text: prompt }]);
 }
 
 function movementToCheckins(
@@ -375,35 +586,54 @@ export async function ingestWhatsAppMedia(params: {
   const storedPath = path.join(uploadsDir, storedName);
   fs.writeFileSync(storedPath, encryptBuffer(buffer));
 
-  const canAnalyze = SUPPORTED_IMAGE_TYPES.has(mimeType) || mimeType === "application/pdf";
-  const {
-    text: extractedText,
-    title,
-    category,
-    movement,
-    matchKeys,
-  } = canAnalyze
-    ? await extractDocument(buffer, mimeType)
-    : {
-        text: `(file type ${mimeType} isn't supported for automatic analysis — stored for download only)`,
-        title: null,
-        category: null,
-        movement: null,
-        matchKeys: null,
-      };
+  let doc: DocumentRow;
+  let storableMovement: TravelMovement | null;
+  let derivedEntities: ReturnType<typeof buildDerivedEntities>;
+  let matchKeys: MatchKeys | null;
+  try {
+    const canAnalyze = SUPPORTED_IMAGE_TYPES.has(mimeType) || mimeType === "application/pdf";
+    const {
+      text: extractedText,
+      title,
+      category,
+      movement,
+      matchKeys: extractedMatchKeys,
+      purchases,
+      bookings,
+    } = canAnalyze
+      ? await extractDocument(buffer, mimeType)
+      : {
+          text: `(file type ${mimeType} isn't supported for automatic analysis — stored for download only)`,
+          title: null,
+          category: null,
+          movement: null,
+          matchKeys: null,
+          purchases: [] as unknown[],
+          bookings: [] as unknown[],
+        };
 
-  const { finalText, storableMovement } = applyTravelValidation(extractedText, movement, uploadedAt);
+    const validated = applyTravelValidation(extractedText, movement, uploadedAt);
+    storableMovement = validated.storableMovement;
+    derivedEntities = buildDerivedEntities(purchases, bookings, uploadedAt);
+    matchKeys = extractedMatchKeys;
 
-  const doc = saveDocument(params.ownerId, {
-    phone: params.phone,
-    filename: params.filename ?? null,
-    mimeType,
-    storedPath,
-    caption: params.caption ?? null,
-    title,
-    extractedText: finalText,
-    category,
-  });
+    doc = saveDocument(params.ownerId, {
+      phone: params.phone,
+      filename: params.filename ?? null,
+      mimeType,
+      storedPath,
+      caption: params.caption ?? null,
+      title,
+      extractedText: validated.finalText,
+      category,
+    });
+  } catch (err) {
+    // Extraction or the DB insert failed after the encrypted file already landed on disk —
+    // without this, that file would be orphaned (undeletable via the API, since there's no
+    // document row pointing at it).
+    fs.unlinkSync(storedPath);
+    throw err;
+  }
 
   if (storableMovement) {
     for (const c of movementToCheckins(storableMovement, doc.id)) {
@@ -416,6 +646,7 @@ export async function ingestWhatsAppMedia(params: {
       });
     }
   }
+  storeDerivedEntities(params.ownerId, doc.id, derivedEntities);
 
   if (matchKeys) {
     saveMatchKeys(params.ownerId, doc.id, matchKeys);
@@ -449,30 +680,46 @@ export async function ingestWhatsAppLink(params: {
     return { ok: false, reason: fetched.reason };
   }
 
-  const {
-    text: extractedText,
-    title,
-    category,
-    movement,
-    matchKeys,
-  } = await extractFactsFromLinkText(fetched.text, fetched.finalUrl, uploadedAt);
-
-  const { finalText, storableMovement } = applyTravelValidation(extractedText, movement, uploadedAt);
-
   const storedName = `${Date.now()}-${crypto.randomUUID()}.txt`;
   const storedPath = path.join(uploadsDir, storedName);
   fs.writeFileSync(storedPath, encryptBuffer(Buffer.from(fetched.text, "utf8")));
 
-  const doc = saveDocument(params.ownerId, {
-    phone: params.phone,
-    filename: null,
-    mimeType: "text/plain",
-    storedPath,
-    caption: fetched.finalUrl,
-    title,
-    extractedText: finalText,
-    category,
-  });
+  let doc: DocumentRow;
+  let storableMovement: TravelMovement | null;
+  let derivedEntities: ReturnType<typeof buildDerivedEntities>;
+  let matchKeys: MatchKeys | null;
+  try {
+    const {
+      text: extractedText,
+      title,
+      category,
+      movement,
+      matchKeys: extractedMatchKeys,
+      purchases,
+      bookings,
+    } = await extractFactsFromLinkText(fetched.text, fetched.finalUrl, uploadedAt);
+
+    const validated = applyTravelValidation(extractedText, movement, uploadedAt);
+    storableMovement = validated.storableMovement;
+    derivedEntities = buildDerivedEntities(purchases, bookings, uploadedAt);
+    matchKeys = extractedMatchKeys;
+
+    doc = saveDocument(params.ownerId, {
+      phone: params.phone,
+      filename: null,
+      mimeType: "text/plain",
+      storedPath,
+      caption: fetched.finalUrl,
+      title,
+      extractedText: validated.finalText,
+      category,
+    });
+  } catch (err) {
+    // Same orphaned-file risk as ingestWhatsAppMedia: the encrypted file is already on disk by
+    // the time extraction or the DB insert could fail.
+    fs.unlinkSync(storedPath);
+    throw err;
+  }
 
   if (storableMovement) {
     for (const c of movementToCheckins(storableMovement, doc.id)) {
@@ -485,6 +732,7 @@ export async function ingestWhatsAppLink(params: {
       });
     }
   }
+  storeDerivedEntities(params.ownerId, doc.id, derivedEntities);
 
   if (matchKeys) {
     saveMatchKeys(params.ownerId, doc.id, matchKeys);

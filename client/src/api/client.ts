@@ -195,14 +195,14 @@ export interface WhatsAppStatus {
   signatureConfigured: boolean;
 }
 
-export type DocumentCategory = "travel" | "id_legal" | "receipts_bookings" | "other";
+export type DocumentCategory = "travel" | "id_legal" | "receipts" | "other";
 
-export const DOCUMENT_CATEGORIES: DocumentCategory[] = ["travel", "id_legal", "receipts_bookings", "other"];
+export const DOCUMENT_CATEGORIES: DocumentCategory[] = ["travel", "id_legal", "receipts", "other"];
 
 export const DOCUMENT_CATEGORY_LABELS: Record<DocumentCategory, string> = {
   travel: "Travel",
   id_legal: "ID & Legal",
-  receipts_bookings: "Receipts & Bookings",
+  receipts: "Receipts",
   other: "Other",
 };
 
