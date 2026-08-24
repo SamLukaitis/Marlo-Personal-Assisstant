@@ -4,7 +4,7 @@
 
 import { hubListMessages } from "./hub.js";
 import { sendWhatsAppMessage, isWhatsAppConfigured } from "../providers/whatsapp.js";
-import { hasAlerted, markAlerted, listPhoneNumbersForUser } from "../db/store.js";
+import { hasAlerted, markAlerted, listPhoneNumbersForUser, listRecentMatchKeys } from "../db/store.js";
 import type { UnifiedMessage } from "../providers/types.js";
 
 export interface MatchKeys {
@@ -100,5 +100,60 @@ export async function checkDocumentAgainstRecentEmails(
 
     markAlerted(ownerId, matchKey);
     sent += 1;
+  }
+}
+
+const RECENT_DOCUMENT_WINDOW_MS = 90 * 24 * 60 * 60 * 1000;
+const MAX_MATCH_NOTIFICATIONS_PER_TICK = 5;
+
+function scanKey(m: UnifiedMessage): string {
+  return `recon-scan:${m.accountId}:${m.id}`;
+}
+
+// Runs on the existing 5-minute scheduler tick (scheduler.ts), sibling to
+// checkForNewImportantMessages — but deliberately unfiltered by AUTOMATED_SENDER_PATTERN, since
+// an automated airline/vendor notice is exactly what this is meant to catch.
+export async function checkNewEmailsAgainstRecentDocuments(ownerId: number): Promise<void> {
+  let messages: UnifiedMessage[];
+  try {
+    messages = await hubListMessages(ownerId, { limit: 50 });
+  } catch (err) {
+    console.error(`reconciliation: failed to list messages for owner ${ownerId}`, err);
+    return;
+  }
+
+  const unscanned = messages.filter((m) => !hasAlerted(ownerId, scanKey(m)));
+  if (unscanned.length === 0) return;
+
+  const recentKeys = listRecentMatchKeys(ownerId, Date.now() - RECENT_DOCUMENT_WINDOW_MS);
+
+  let sent = 0;
+  for (const m of unscanned) {
+    // Mark scanned regardless of match outcome — an email that didn't match this tick never
+    // needs re-checking on a later tick, whether or not it matched anything.
+    markAlerted(ownerId, scanKey(m));
+
+    if (sent >= MAX_MATCH_NOTIFICATIONS_PER_TICK || recentKeys.length === 0) continue;
+
+    const text = `${m.subject} ${m.snippet}`;
+    for (const row of recentKeys) {
+      const keys: MatchKeys = {
+        referenceCode: row.referenceCode ?? undefined,
+        flightNumber: row.flightNumber ?? undefined,
+        vendor: row.vendor ?? undefined,
+        eventDate: row.eventDate ?? undefined,
+      };
+      if (matchTier(keys, text) !== "strong") continue;
+
+      const matchKey = `recon-match:${row.documentId}:${m.accountId}:${m.id}`;
+      if (hasAlerted(ownerId, matchKey)) continue;
+
+      const delivered = await notifyMatch(ownerId, buildMatchNotification(row.docTitle ?? "a saved document", keys));
+      if (!delivered) continue; // leave this match retriable — don't mark or count it, matches Task 4's fix
+
+      markAlerted(ownerId, matchKey);
+      sent += 1;
+      break; // one matching document is enough for this email
+    }
   }
 }

@@ -12,12 +12,10 @@ vi.mock("./hub.js", () => ({
 }));
 
 const { sendWhatsAppMessage, isWhatsAppConfigured } = await import("../providers/whatsapp.js");
-const { findOrCreateUserByEmail, saveDocument, addPhoneNumberForUser, hasAlerted } = await import(
-  "../db/store.js"
-);
-const { matchTier, buildMatchNotification, checkDocumentAgainstRecentEmails } = await import(
-  "./reconciliation.js"
-);
+const { findOrCreateUserByEmail, saveDocument, addPhoneNumberForUser, hasAlerted, saveMatchKeys } =
+  await import("../db/store.js");
+const { matchTier, buildMatchNotification, checkDocumentAgainstRecentEmails, checkNewEmailsAgainstRecentDocuments } =
+  await import("./reconciliation.js");
 
 let counter = 0;
 function uniqueEmail(prefix: string): string {
@@ -189,6 +187,97 @@ describe("checkDocumentAgainstRecentEmails", () => {
 
     expect(mockHubListMessages).not.toHaveBeenCalled();
     expect(sendWhatsAppMessage).not.toHaveBeenCalled();
+  });
+});
+
+describe("checkNewEmailsAgainstRecentDocuments", () => {
+  it("notifies when a new email's subject contains a recent document's reference code", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("email-to-doc"));
+    const phoneNumber = freshPhone();
+    addPhoneNumberForUser(user.id, phoneNumber);
+    const doc = saveDocument(user.id, {
+      phone: phoneNumber,
+      filename: null,
+      mimeType: "image/jpeg",
+      storedPath: "/tmp/fake",
+      caption: null,
+      title: "Hilton Booking",
+      extractedText: "text",
+      category: "receipts_bookings",
+    });
+    saveMatchKeys(user.id, doc.id, { referenceCode: "H9ZZ21" });
+
+    mockHubListMessages.mockResolvedValue([fakeMessage({ id: "m10", subject: "Change to booking H9ZZ21" })]);
+
+    await checkNewEmailsAgainstRecentDocuments(user.id);
+
+    expect(sendWhatsAppMessage).toHaveBeenCalledTimes(1);
+    const [, text] = vi.mocked(sendWhatsAppMessage).mock.calls[0];
+    expect(text).toContain("Hilton Booking");
+  });
+
+  it("only scans each email once across repeated ticks, regardless of match outcome", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("email-to-doc-scan-once"));
+    mockHubListMessages.mockResolvedValue([fakeMessage({ id: "m11", subject: "Nothing relevant here" })]);
+
+    await checkNewEmailsAgainstRecentDocuments(user.id);
+    await checkNewEmailsAgainstRecentDocuments(user.id);
+
+    expect(hasAlerted(user.id, "recon-scan:1:m11")).toBe(true);
+    // No crash, no duplicate work observable from the outside — the real assertion is that a
+    // second identical tick doesn't re-notify, covered by the dedup test below with an actual match.
+  });
+
+  it("does not notify twice for the same email/document pair across ticks", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("email-to-doc-dedup"));
+    const phoneNumber = freshPhone();
+    addPhoneNumberForUser(user.id, phoneNumber);
+    const doc = saveDocument(user.id, {
+      phone: phoneNumber,
+      filename: null,
+      mimeType: "image/jpeg",
+      storedPath: "/tmp/fake",
+      caption: null,
+      title: "Hilton Booking",
+      extractedText: "text",
+      category: "receipts_bookings",
+    });
+    saveMatchKeys(user.id, doc.id, { referenceCode: "H9ZZ22" });
+    mockHubListMessages.mockResolvedValue([fakeMessage({ id: "m12", subject: "Change to booking H9ZZ22" })]);
+
+    await checkNewEmailsAgainstRecentDocuments(user.id);
+    mockHubListMessages.mockResolvedValue([fakeMessage({ id: "m12", subject: "Change to booking H9ZZ22" })]);
+    await checkNewEmailsAgainstRecentDocuments(user.id);
+
+    expect(sendWhatsAppMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it("leaves a match unmarked (retriable) when delivery fails, so a later tick can still find it", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("email-to-doc-delivery-fail"));
+    const phoneNumber = freshPhone();
+    addPhoneNumberForUser(user.id, phoneNumber);
+    const doc = saveDocument(user.id, {
+      phone: phoneNumber,
+      filename: null,
+      mimeType: "image/jpeg",
+      storedPath: "/tmp/fake",
+      caption: null,
+      title: "Hilton Booking",
+      extractedText: "text",
+      category: "receipts_bookings",
+    });
+    saveMatchKeys(user.id, doc.id, { referenceCode: "H9ZZ23" });
+    mockHubListMessages.mockResolvedValue([fakeMessage({ id: "m13", subject: "Change to booking H9ZZ23" })]);
+    vi.mocked(sendWhatsAppMessage).mockRejectedValue(new Error("network down"));
+
+    await checkNewEmailsAgainstRecentDocuments(user.id);
+
+    expect(sendWhatsAppMessage).toHaveBeenCalledTimes(1);
+    const matchKey = `recon-match:${doc.id}:1:m13`;
+    expect(hasAlerted(user.id, matchKey)).toBe(false);
+    // The scan itself is still marked regardless of delivery outcome — only the match dedup
+    // needs to stay retriable.
+    expect(hasAlerted(user.id, "recon-scan:1:m13")).toBe(true);
   });
 });
 

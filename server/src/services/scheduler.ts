@@ -10,6 +10,7 @@ import {
 import { sendWhatsAppMessage, isWhatsAppConfigured } from "../providers/whatsapp.js";
 import { countTravelDays } from "./travelDays.js";
 import { checkForNewImportantMessages } from "./alerts.js";
+import { checkNewEmailsAgainstRecentDocuments } from "./reconciliation.js";
 
 const CHECK_INTERVAL_MS = 5 * 60 * 1000;
 const SCHENGEN_WARN_AT = 80;
@@ -90,6 +91,14 @@ async function runAlertsCheckForUser(ownerId: number): Promise<void> {
   }
 }
 
+async function runReconciliationCheckForUser(ownerId: number): Promise<void> {
+  try {
+    await checkNewEmailsAgainstRecentDocuments(ownerId);
+  } catch (err) {
+    console.error(`scheduler: reconciliation check failed for user ${ownerId}`, err);
+  }
+}
+
 // Loops over every tenant rather than assuming a single global run — each user's iteration is
 // caught independently so one tenant's failure (a broken account, a transient API error) can't
 // block or crash another tenant's briefing/alerts.
@@ -100,6 +109,9 @@ async function tick(): Promise<void> {
     );
     await runAlertsCheckForUser(ownerId).catch((err) =>
       console.error(`scheduler: alerts check failed for user ${ownerId}`, err)
+    );
+    await runReconciliationCheckForUser(ownerId).catch((err) =>
+      console.error(`scheduler: reconciliation check failed for user ${ownerId}`, err)
     );
   }
 }
