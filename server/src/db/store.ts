@@ -984,7 +984,7 @@ export function listCheckins(ownerId: number, limit = 100): TravelCheckinRow[] {
 // Dedup ledger for real-time message alerts: "have we already pinged the user about this
 // message" — keyed by "accountId:messageId" since raw message IDs aren't guaranteed unique
 // across providers/accounts. Scoped by owner so one tenant's alert volume can't evict another
-// tenant's dedup entries out of the bounded 2000-row window.
+// tenant's dedup entries out of the bounded 5000-row window.
 export function hasAlerted(ownerId: number, key: string): boolean {
   return !!db.prepare(`SELECT 1 FROM alerted_messages WHERE owner_id = ? AND key = ?`).get(ownerId, key);
 }
@@ -995,7 +995,7 @@ export function markAlerted(ownerId: number, key: string): void {
   ).run(ownerId, key, Date.now());
   db.prepare(
     `DELETE FROM alerted_messages WHERE owner_id = ? AND key NOT IN (
-       SELECT key FROM alerted_messages WHERE owner_id = ? ORDER BY alerted_at DESC LIMIT 2000
+       SELECT key FROM alerted_messages WHERE owner_id = ? ORDER BY alerted_at DESC LIMIT 5000
      )`
   ).run(ownerId, ownerId);
 }

@@ -218,6 +218,22 @@ describe("checkNewEmailsAgainstRecentDocuments", () => {
 
   it("only scans each email once across repeated ticks, regardless of match outcome", async () => {
     const user = findOrCreateUserByEmail(uniqueEmail("email-to-doc-scan-once"));
+    const phoneNumber = freshPhone();
+    addPhoneNumberForUser(user.id, phoneNumber);
+    const doc = saveDocument(user.id, {
+      phone: phoneNumber,
+      filename: null,
+      mimeType: "image/jpeg",
+      storedPath: "/tmp/fake",
+      caption: null,
+      title: "Unrelated Doc",
+      extractedText: "text",
+      category: "receipts_bookings",
+    });
+    // A saved match key is required for the early-return-when-nothing-indexed check not to skip
+    // this user entirely — but this reference code deliberately doesn't appear in the message
+    // below, so the point of this test (a no-match email still gets its scan key marked) holds.
+    saveMatchKeys(user.id, doc.id, { referenceCode: "ZZNOMATCH1" });
     mockHubListMessages.mockResolvedValue([fakeMessage({ id: "m11", subject: "Nothing relevant here" })]);
 
     await checkNewEmailsAgainstRecentDocuments(user.id);
@@ -226,6 +242,15 @@ describe("checkNewEmailsAgainstRecentDocuments", () => {
     expect(hasAlerted(user.id, "recon-scan:1:m11")).toBe(true);
     // No crash, no duplicate work observable from the outside — the real assertion is that a
     // second identical tick doesn't re-notify, covered by the dedup test below with an actual match.
+  });
+
+  it("returns without calling hubListMessages when the user has no recent match keys at all", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("email-to-doc-no-keys"));
+
+    await checkNewEmailsAgainstRecentDocuments(user.id);
+
+    expect(mockHubListMessages).not.toHaveBeenCalled();
+    expect(sendWhatsAppMessage).not.toHaveBeenCalled();
   });
 
   it("does not notify twice for the same email/document pair across ticks", async () => {
@@ -252,7 +277,7 @@ describe("checkNewEmailsAgainstRecentDocuments", () => {
     expect(sendWhatsAppMessage).toHaveBeenCalledTimes(1);
   });
 
-  it("leaves a match unmarked (retriable) when delivery fails, so a later tick can still find it", async () => {
+  it("leaves both the match and the scan key unmarked when delivery fails, so a later tick re-examines and retries", async () => {
     const user = findOrCreateUserByEmail(uniqueEmail("email-to-doc-delivery-fail"));
     const phoneNumber = freshPhone();
     addPhoneNumberForUser(user.id, phoneNumber);
@@ -275,9 +300,55 @@ describe("checkNewEmailsAgainstRecentDocuments", () => {
     expect(sendWhatsAppMessage).toHaveBeenCalledTimes(1);
     const matchKey = `recon-match:${doc.id}:1:m13`;
     expect(hasAlerted(user.id, matchKey)).toBe(false);
-    // The scan itself is still marked regardless of delivery outcome — only the match dedup
-    // needs to stay retriable.
+    // This is the crux of the fix: if the scan key got marked here, the email would be filtered
+    // out of `unscanned` on every future tick (see the `messages.filter` at the top of the
+    // function) and this retriable-in-name-only match would never actually be retried.
+    expect(hasAlerted(user.id, "recon-scan:1:m13")).toBe(false);
+
+    // Prove the retriability is real, not just an unset flag: a later tick with delivery now
+    // succeeding must re-examine this same email and actually deliver the notification.
+    vi.mocked(sendWhatsAppMessage).mockReset().mockResolvedValue(undefined);
+    mockHubListMessages.mockResolvedValue([fakeMessage({ id: "m13", subject: "Change to booking H9ZZ23" })]);
+
+    await checkNewEmailsAgainstRecentDocuments(user.id);
+
+    expect(sendWhatsAppMessage).toHaveBeenCalledTimes(1);
+    expect(hasAlerted(user.id, matchKey)).toBe(true);
     expect(hasAlerted(user.id, "recon-scan:1:m13")).toBe(true);
+  });
+
+  it("leaves a message beyond the per-tick notification cap unscanned rather than marking it scanned unexamined", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("email-to-doc-cap-overflow"));
+    const phoneNumber = freshPhone();
+    addPhoneNumberForUser(user.id, phoneNumber);
+    const doc = saveDocument(user.id, {
+      phone: phoneNumber,
+      filename: null,
+      mimeType: "image/jpeg",
+      storedPath: "/tmp/fake",
+      caption: null,
+      title: "Cap Overflow Doc",
+      extractedText: "text",
+      category: "receipts_bookings",
+    });
+    saveMatchKeys(user.id, doc.id, { referenceCode: "OVERFLOWCODE1" });
+
+    // MAX_MATCH_NOTIFICATIONS_PER_TICK is 5 (see reconciliation.ts) — six matching messages
+    // means the sixth is beyond the cap and must never be examined at all this tick.
+    const messages = Array.from({ length: 6 }, (_, i) =>
+      fakeMessage({ id: `cap-${i}`, subject: `Change to booking OVERFLOWCODE1 (${i})` })
+    );
+    mockHubListMessages.mockResolvedValue(messages);
+
+    await checkNewEmailsAgainstRecentDocuments(user.id);
+
+    expect(sendWhatsAppMessage).toHaveBeenCalledTimes(5);
+    for (let i = 0; i < 5; i++) {
+      expect(hasAlerted(user.id, `recon-scan:1:cap-${i}`)).toBe(true);
+    }
+    // The sixth message was never reached by the loop (it `break`s once the cap is hit), so it
+    // must stay unscanned to get a fair chance on the next tick — not marked-and-dropped.
+    expect(hasAlerted(user.id, "recon-scan:1:cap-5")).toBe(false);
   });
 });
 

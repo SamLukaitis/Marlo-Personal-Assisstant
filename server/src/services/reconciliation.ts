@@ -43,11 +43,9 @@ export function buildMatchNotification(docTitle: string, keys: MatchKeys): strin
 
 const MAX_MATCH_NOTIFICATIONS_PER_RUN = 3;
 
-// Returns whether the notification was actually delivered to every registered number — the
-// caller (checkDocumentAgainstRecentEmails) must only mark a match as alerted when this is true,
-// since a match that failed to deliver needs to stay eligible to be found again rather than
-// being silently and permanently discarded. Same "all must succeed" bar as memoryReminders.ts
-// uses for the same reason.
+// Returns whether the notification was actually delivered to every registered number — callers
+// must only mark a match as alerted when this is true, since a match that failed to deliver
+// needs to stay eligible to be found again rather than being silently and permanently discarded.
 async function notifyMatch(ownerId: number, text: string): Promise<boolean> {
   if (!isWhatsAppConfigured()) return false;
   const numbers = listPhoneNumbersForUser(ownerId).map((r) => r.phone);
@@ -114,6 +112,13 @@ function scanKey(m: UnifiedMessage): string {
 // checkForNewImportantMessages — but deliberately unfiltered by AUTOMATED_SENDER_PATTERN, since
 // an automated airline/vendor notice is exactly what this is meant to catch.
 export async function checkNewEmailsAgainstRecentDocuments(ownerId: number): Promise<void> {
+  // Cheap early-return before paying for a mail-provider API call: a user with zero indexed
+  // documents in the window can never match anything. Deliberately no separate opt-out setting
+  // for this check (unlike the other two scheduler checks) — this is the intended low-blast-
+  // radius gate for now.
+  const recentKeys = listRecentMatchKeys(ownerId, Date.now() - RECENT_DOCUMENT_WINDOW_MS);
+  if (recentKeys.length === 0) return;
+
   let messages: UnifiedMessage[];
   try {
     messages = await hubListMessages(ownerId, { limit: 50 });
@@ -125,17 +130,19 @@ export async function checkNewEmailsAgainstRecentDocuments(ownerId: number): Pro
   const unscanned = messages.filter((m) => !hasAlerted(ownerId, scanKey(m)));
   if (unscanned.length === 0) return;
 
-  const recentKeys = listRecentMatchKeys(ownerId, Date.now() - RECENT_DOCUMENT_WINDOW_MS);
-
   let sent = 0;
   for (const m of unscanned) {
-    // Mark scanned regardless of match outcome — an email that didn't match this tick never
-    // needs re-checking on a later tick, whether or not it matched anything.
-    markAlerted(ownerId, scanKey(m));
-
-    if (sent >= MAX_MATCH_NOTIFICATIONS_PER_TICK || recentKeys.length === 0) continue;
+    // Once the per-tick cap is hit, stop entirely rather than continuing — the remaining
+    // messages haven't been examined at all, so they must stay unscanned to get a fair chance
+    // on the next tick instead of being silently marked-and-dropped.
+    if (sent >= MAX_MATCH_NOTIFICATIONS_PER_TICK) break;
 
     const text = `${m.subject} ${m.snippet}`;
+    // Tracks whether any candidate document matched this email but failed to deliver — if so,
+    // this email must stay unscanned so it's re-examined (and retried) on the next tick, even
+    // though other candidates for the same email may have matched and delivered fine.
+    let hadUndeliveredMatch = false;
+
     for (const row of recentKeys) {
       const keys: MatchKeys = {
         referenceCode: row.referenceCode ?? undefined,
@@ -149,11 +156,22 @@ export async function checkNewEmailsAgainstRecentDocuments(ownerId: number): Pro
       if (hasAlerted(ownerId, matchKey)) continue;
 
       const delivered = await notifyMatch(ownerId, buildMatchNotification(row.docTitle ?? "a saved document", keys));
-      if (!delivered) continue; // leave this match retriable — don't mark or count it, matches Task 4's fix
+      if (!delivered) {
+        hadUndeliveredMatch = true;
+        continue; // leave this match retriable — don't mark or count it, but still check other candidates
+      }
 
       markAlerted(ownerId, matchKey);
       sent += 1;
       break; // one matching document is enough for this email
+    }
+
+    // Mark scanned only once this email has been fully examined AND every match found for it
+    // (if any) was successfully delivered. A match that failed to deliver must keep the email
+    // eligible for re-examination on a later tick — otherwise the scan-key filter above would
+    // make that match permanently unreachable, defeating the retriable-match guarantee entirely.
+    if (!hadUndeliveredMatch) {
+      markAlerted(ownerId, scanKey(m));
     }
   }
 }
