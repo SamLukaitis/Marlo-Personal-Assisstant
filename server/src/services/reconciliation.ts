@@ -43,16 +43,26 @@ export function buildMatchNotification(docTitle: string, keys: MatchKeys): strin
 
 const MAX_MATCH_NOTIFICATIONS_PER_RUN = 3;
 
-async function notifyMatch(ownerId: number, text: string): Promise<void> {
-  if (!isWhatsAppConfigured()) return;
+// Returns whether the notification was actually delivered to every registered number — the
+// caller (checkDocumentAgainstRecentEmails) must only mark a match as alerted when this is true,
+// since a match that failed to deliver needs to stay eligible to be found again rather than
+// being silently and permanently discarded. Same "all must succeed" bar as memoryReminders.ts
+// uses for the same reason.
+async function notifyMatch(ownerId: number, text: string): Promise<boolean> {
+  if (!isWhatsAppConfigured()) return false;
   const numbers = listPhoneNumbersForUser(ownerId).map((r) => r.phone);
+  if (numbers.length === 0) return false;
+
+  let allSucceeded = true;
   for (const number of numbers) {
     try {
       await sendWhatsAppMessage(number, text);
     } catch (err) {
       console.error("reconciliation: failed to send match notification", err);
+      allSucceeded = false;
     }
   }
+  return allSucceeded;
 }
 
 // Runs synchronously right after a document saves (see documents.ts) — checks the new
@@ -85,7 +95,9 @@ export async function checkDocumentAgainstRecentEmails(
     const matchKey = `recon-match:${documentId}:${m.accountId}:${m.id}`;
     if (hasAlerted(ownerId, matchKey)) continue;
 
-    await notifyMatch(ownerId, buildMatchNotification(docTitle, keys));
+    const delivered = await notifyMatch(ownerId, buildMatchNotification(docTitle, keys));
+    if (!delivered) continue; // leave this match retriable — don't mark or count it
+
     markAlerted(ownerId, matchKey);
     sent += 1;
   }

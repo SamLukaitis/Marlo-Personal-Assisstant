@@ -11,8 +11,10 @@ vi.mock("./hub.js", () => ({
   hubListMessages: (...args: unknown[]) => mockHubListMessages(...args),
 }));
 
-const { sendWhatsAppMessage } = await import("../providers/whatsapp.js");
-const { findOrCreateUserByEmail, saveDocument, addPhoneNumberForUser } = await import("../db/store.js");
+const { sendWhatsAppMessage, isWhatsAppConfigured } = await import("../providers/whatsapp.js");
+const { findOrCreateUserByEmail, saveDocument, addPhoneNumberForUser, hasAlerted } = await import(
+  "../db/store.js"
+);
 const { matchTier, buildMatchNotification, checkDocumentAgainstRecentEmails } = await import(
   "./reconciliation.js"
 );
@@ -48,7 +50,8 @@ function fakeMessage(overrides: Partial<{ id: string; accountId: number; subject
 }
 
 beforeEach(() => {
-  vi.mocked(sendWhatsAppMessage).mockClear();
+  vi.mocked(sendWhatsAppMessage).mockReset();
+  vi.mocked(isWhatsAppConfigured).mockReset().mockReturnValue(true);
   mockHubListMessages.mockReset();
 });
 
@@ -98,6 +101,53 @@ describe("checkDocumentAgainstRecentEmails", () => {
     await checkDocumentAgainstRecentEmails(user.id, doc.id, doc.title!, { referenceCode: "K4X9QP" });
 
     expect(sendWhatsAppMessage).not.toHaveBeenCalled();
+  });
+
+  it("leaves a match unmarked (retriable) when delivery fails, so a later call can still find it", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("doc-to-email-delivery-fail"));
+    const phoneNumber = freshPhone();
+    addPhoneNumberForUser(user.id, phoneNumber);
+    const doc = saveDocument(user.id, {
+      phone: phoneNumber,
+      filename: null,
+      mimeType: "image/jpeg",
+      storedPath: "/tmp/fake",
+      caption: null,
+      title: "Delta Boarding Pass",
+      extractedText: "text",
+      category: "travel",
+    });
+    mockHubListMessages.mockResolvedValue([fakeMessage({ id: "m-fail", subject: "Update on ref K4X9QP" })]);
+    vi.mocked(sendWhatsAppMessage).mockRejectedValue(new Error("network down"));
+
+    await checkDocumentAgainstRecentEmails(user.id, doc.id, doc.title!, { referenceCode: "K4X9QP" });
+
+    const matchKey = `recon-match:${doc.id}:${1}:m-fail`;
+    expect(hasAlerted(user.id, matchKey)).toBe(false);
+  });
+
+  it("leaves a match unmarked (retriable) when WhatsApp isn't configured", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("doc-to-email-not-configured"));
+    const phoneNumber = freshPhone();
+    addPhoneNumberForUser(user.id, phoneNumber);
+    const doc = saveDocument(user.id, {
+      phone: phoneNumber,
+      filename: null,
+      mimeType: "image/jpeg",
+      storedPath: "/tmp/fake",
+      caption: null,
+      title: "Delta Boarding Pass",
+      extractedText: "text",
+      category: "travel",
+    });
+    mockHubListMessages.mockResolvedValue([fakeMessage({ id: "m-noconfig", subject: "Update on ref K4X9QP" })]);
+    vi.mocked(isWhatsAppConfigured).mockReturnValue(false);
+
+    await checkDocumentAgainstRecentEmails(user.id, doc.id, doc.title!, { referenceCode: "K4X9QP" });
+
+    expect(sendWhatsAppMessage).not.toHaveBeenCalled();
+    const matchKey = `recon-match:${doc.id}:${1}:m-noconfig`;
+    expect(hasAlerted(user.id, matchKey)).toBe(false);
   });
 
   it("does not notify twice for the same document/email pair", async () => {
