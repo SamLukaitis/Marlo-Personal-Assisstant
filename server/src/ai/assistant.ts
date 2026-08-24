@@ -21,6 +21,8 @@ import { fetchHeadlines, NEWS_TOPICS, type NewsTopic } from "../providers/news.j
 import { fetchWeather } from "../providers/weather.js";
 import { fetchQuotes, DEFAULT_SYMBOLS } from "../providers/markets.js";
 import { countTravelDays } from "../services/travelDays.js";
+import { findFreeSlots } from "../services/freeSlots.js";
+import { buildSpendingDigest } from "../services/spendingDigest.js";
 import { getBriefingSettings, saveBriefingSettings, hasBriefingSettings } from "../services/briefing.js";
 import {
   hubListMessages,
@@ -131,6 +133,20 @@ const ALWAYS_ON_TOOLS: Anthropic.Tool[] = [
     },
   },
   {
+    name: "find_free_time",
+    description:
+      "Find open gaps in the user's calendar across all connected accounts, within a working-hours window each day. Call this when the user asks to find time for something, e.g. 'find me an hour this week' or 'when am I free tomorrow'. Slots are computed deterministically from the actual calendar, not guessed.",
+    input_schema: {
+      type: "object",
+      properties: {
+        days: { type: "number", description: "How many days ahead to search, default 7" },
+        duration_minutes: { type: "number", description: "Minimum length of a usable gap, in minutes, default 30" },
+        earliest_hour: { type: "number", description: "Start of the working-hours window, 24h, default 9" },
+        latest_hour: { type: "number", description: "End of the working-hours window, 24h, default 18" },
+      },
+    },
+  },
+  {
     name: "search_files",
     description:
       "Search files by name across the user's connected Google Drive, OneDrive, and configured local computer folders. Call this when the user asks to find a document, invoice, spreadsheet, photo, or other file.",
@@ -162,6 +178,18 @@ const ALWAYS_ON_TOOLS: Anthropic.Tool[] = [
       properties: {
         limit: { type: "number", description: "Max bookings, default 50" },
         kind: { type: "string", enum: ["flight", "hotel"], description: "Only this kind" },
+      },
+    },
+  },
+  {
+    name: "get_spending_digest",
+    description:
+      "Summarize spending and bookings over a period: totals per currency, top vendors, the change vs the prior period of equal length, and how many upcoming bookings fall in range. Call this for questions like 'how much have I spent this month' or 'what's my spending trend'. Amounts flagged needs_review are excluded from totals and reported as a separate count so a low-confidence extraction can't silently skew the numbers.",
+    input_schema: {
+      type: "object",
+      properties: {
+        since_date: { type: "string", description: "YYYY-MM-DD, default 30 days ago" },
+        until_date: { type: "string", description: "YYYY-MM-DD, default today" },
       },
     },
   },
@@ -501,6 +529,16 @@ export async function runTool(ownerId: number, name: string, input: Record<strin
       return hubGetMessage(ownerId, input.account_id as number, input.message_id as string);
     case "list_upcoming_events":
       return hubListEvents(ownerId, (input.days as number | undefined) ?? 7);
+    case "find_free_time": {
+      const days = (input.days as number | undefined) ?? 7;
+      const events = await hubListEvents(ownerId, days);
+      return findFreeSlots(events, {
+        days,
+        durationMinutes: (input.duration_minutes as number | undefined) ?? 30,
+        earliestHour: (input.earliest_hour as number | undefined) ?? 9,
+        latestHour: (input.latest_hour as number | undefined) ?? 18,
+      });
+    }
     case "search_files":
       return hubSearchFiles(ownerId, input.query as string);
     case "list_recent_chats":
@@ -609,6 +647,17 @@ export async function runTool(ownerId: number, name: string, input: Record<strin
       return (kind ? rows.filter((e) => e.data.kind === kind) : rows)
         .slice(0, (input.limit as number | undefined) ?? 50)
         .map((e) => ({ id: e.id, ...e.data, status: e.status, confidence: e.confidence }));
+    }
+    case "get_spending_digest": {
+      const untilMs = input.until_date ? new Date(input.until_date as string).getTime() : Date.now();
+      const sinceMs = input.since_date
+        ? new Date(input.since_date as string).getTime()
+        : untilMs - 30 * 24 * 60 * 60 * 1000;
+      const priorUntilMs = sinceMs - 1;
+      const priorSinceMs = priorUntilMs - (untilMs - sinceMs);
+      const expenses = listEntities<ExpenseData>(ownerId, { type: "expense" });
+      const bookings = listEntities<BookingData>(ownerId, { type: "booking" });
+      return buildSpendingDigest(expenses, bookings, { sinceMs, untilMs, priorSinceMs, priorUntilMs });
     }
     case "list_travel_checkins":
       return listCheckins(ownerId, (input.limit as number | undefined) ?? 50);
