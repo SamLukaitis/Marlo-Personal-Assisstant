@@ -7,6 +7,7 @@ import { downloadWhatsAppMedia } from "../providers/whatsapp.js";
 import {
   saveDocument,
   saveCheckin,
+  saveMatchKeys,
   saveEntity,
   linkRecords,
   uploadsDir,
@@ -24,6 +25,7 @@ import {
   type BookingData,
 } from "./entityValidation.js";
 import { fetchPageText, type FetchFailureReason } from "./safeLinkFetcher.js";
+import { checkDocumentAgainstRecentEmails, type MatchKeys } from "./reconciliation.js";
 
 // Pure on purpose — the one bit of category logic worth its own unit test is "what happens when
 // the model's tool call doesn't give us a valid category," and that doesn't need an Anthropic
@@ -76,6 +78,28 @@ const TRAVEL_MOVEMENT_TOOL: Anthropic.Tool = {
       arrivalDateTime: { type: "string", description: "ISO 8601 datetime" },
     },
     required: ["arrivalCountry", "arrivalCity", "arrivalDateTime"],
+  },
+};
+
+// Optional — the model only calls this if the document contains an identifier actually worth
+// indexing for later cross-referencing against email. Folded into the same extraction call as
+// name_document/record_travel_movement, so this costs nothing extra — see
+// docs/superpowers/specs/2026-08-24-document-email-cross-referencing-design.md.
+const RECORD_MATCH_KEYS_TOOL: Anthropic.Tool = {
+  name: "record_match_keys",
+  description:
+    "Call this only if the document contains a machine-checkable identifier worth cross-" +
+    "referencing against email later — a booking/confirmation/reference code, a flight number, " +
+    "or a clear vendor name with a specific date. Skip it entirely if none of these are actually " +
+    "present and legible; never guess or invent one.",
+  input_schema: {
+    type: "object",
+    properties: {
+      referenceCode: { type: "string", description: "Booking/confirmation/reference code exactly as shown" },
+      flightNumber: { type: "string", description: "e.g. DL1234" },
+      vendor: { type: "string", description: "Airline/hotel/company name, e.g. Delta, Hilton" },
+      eventDate: { type: "string", description: "ISO 8601 date, e.g. 2026-09-12" },
+    },
   },
 };
 
@@ -209,6 +233,17 @@ async function extractPdfTextLayer(buffer: Buffer): Promise<string | null> {
   }
 }
 
+// Pure on purpose, exported for its own unit tests — same reasoning as resolveDocumentCategory.
+interface ExtractionResult {
+  text: string;
+  title: string | null;
+  category: DocumentCategory | null;
+  movement: TravelMovement | null;
+  matchKeys: MatchKeys | null;
+  purchases: unknown[];
+  bookings: unknown[];
+}
+
 // Shared by every extraction path (image/PDF, and link text below) — calling name_document
 // "before writing your extraction" doesn't guarantee the model actually continues on to write it
 // in the same turn: a model that calls a tool can just as validly stop there (stop_reason
@@ -216,21 +251,13 @@ async function extractPdfTextLayer(buffer: Buffer): Promise<string | null> {
 // themselves succeeded. A single non-looping call can't recover from that; feed the tool calls
 // back as normal tool_results and let the conversation continue, same as the main assistant loop
 // in ai/assistant.ts does, until the model actually produces the write-up.
-async function runExtraction(
-  initialContent: Anthropic.ContentBlockParam[]
-): Promise<{
-  text: string;
-  title: string | null;
-  category: DocumentCategory | null;
-  movement: TravelMovement | null;
-  purchases: unknown[];
-  bookings: unknown[];
-}> {
+async function runExtraction(initialContent: Anthropic.ContentBlockParam[]): Promise<ExtractionResult> {
   const messages: Anthropic.MessageParam[] = [{ role: "user", content: initialContent }];
   let response: Anthropic.Message;
   let textBlock: Anthropic.TextBlock | undefined;
   let toolUse: Anthropic.ToolUseBlock | undefined;
   let nameUse: Anthropic.ToolUseBlock | undefined;
+  let matchKeysUse: Anthropic.ToolUseBlock | undefined;
   const purchases: unknown[] = [];
   const bookings: unknown[] = [];
 
@@ -242,7 +269,7 @@ async function runExtraction(
       // it hadn't gotten to yet, which is exactly how dates/times went missing even though they
       // were legible in the image. 4096 gives real headroom; this is a one-time cost per upload.
       max_tokens: 4096,
-      tools: [NAME_DOCUMENT_TOOL, TRAVEL_MOVEMENT_TOOL, RECORD_PURCHASE_TOOL, RECORD_BOOKING_TOOL],
+      tools: [NAME_DOCUMENT_TOOL, TRAVEL_MOVEMENT_TOOL, RECORD_MATCH_KEYS_TOOL, RECORD_PURCHASE_TOOL, RECORD_BOOKING_TOOL],
       messages,
     });
 
@@ -252,6 +279,7 @@ async function runExtraction(
     );
     toolUse = toolUses.find((b) => b.name === "record_travel_movement") ?? toolUse;
     nameUse = toolUses.find((b) => b.name === "name_document") ?? nameUse;
+    matchKeysUse = toolUses.find((b) => b.name === "record_match_keys") ?? matchKeysUse;
     // Arrays, not single slots — one document can legitimately show several payments or
     // reservations (an itinerary confirming a flight and a hotel is two bookings).
     purchases.push(...toolUses.filter((b) => b.name === "record_purchase").map((b) => b.input));
@@ -292,6 +320,7 @@ async function runExtraction(
     title,
     category,
     movement: toolUse ? (toolUse.input as TravelMovement) : null,
+    matchKeys: matchKeysUse ? (matchKeysUse.input as MatchKeys) : null,
     purchases,
     bookings,
   };
@@ -415,17 +444,7 @@ function storeDerivedEntities(
   }
 }
 
-async function extractDocument(
-  buffer: Buffer,
-  mimeType: string
-): Promise<{
-  text: string;
-  title: string | null;
-  category: DocumentCategory | null;
-  movement: TravelMovement | null;
-  purchases: unknown[];
-  bookings: unknown[];
-}> {
+async function extractDocument(buffer: Buffer, mimeType: string): Promise<ExtractionResult> {
   const uploadedAt = new Date().toISOString();
   const prompt =
     "Call name_document first to title this file, then do the extraction below.\n\n" +
@@ -445,7 +464,10 @@ async function extractDocument(
     "Independently of which category you file it under: if the document shows money paid " +
     "(a total amount charged), call record_purchase; if it shows a flight or hotel " +
     "reservation, call record_booking. A document can warrant both (a hotel confirmation " +
-    "shows a reservation AND an amount paid) — call both. Transcribe only what is printed.";
+    "shows a reservation AND an amount paid) — call both. Transcribe only what is printed. " +
+    "Separately, if the document shows a booking/confirmation/reference code or a flight " +
+    "number, also call record_match_keys with it, so it can be cross-referenced against " +
+    "email later.";
 
   const pdfText = mimeType === "application/pdf" ? await extractPdfTextLayer(buffer) : null;
 
@@ -487,14 +509,7 @@ async function extractFactsFromLinkText(
   pageText: string,
   sourceUrl: string,
   uploadedAt: Date
-): Promise<{
-  text: string;
-  title: string | null;
-  category: DocumentCategory | null;
-  movement: TravelMovement | null;
-  purchases: unknown[];
-  bookings: unknown[];
-}> {
+): Promise<ExtractionResult> {
   const truncated = pageText.length > MAX_LINK_TEXT_CHARS;
   const bodyText = truncated ? pageText.slice(0, MAX_LINK_TEXT_CHARS) : pageText;
 
@@ -513,7 +528,9 @@ async function extractFactsFromLinkText(
     "departure/arrival details, the same way you would for an uploaded boarding pass.\n\n" +
     "Independently of what kind of page it is: if it shows money paid (a total amount " +
     "charged), call record_purchase; if it shows a flight or hotel reservation, call " +
-    "record_booking. A page can warrant both — call both. Transcribe only what is printed.\n\n" +
+    "record_booking. A page can warrant both — call both. Transcribe only what is printed. " +
+    "Separately, if the page shows a booking/confirmation/reference code or a flight number, " +
+    "also call record_match_keys with it, so it can be cross-referenced against email later.\n\n" +
     `Source URL: ${sourceUrl}` +
     (truncated ? `\n\n(Page text truncated to the first ${MAX_LINK_TEXT_CHARS} characters.)` : "") +
     `\n\nPage text:\n${bodyText}`;
@@ -572,6 +589,7 @@ export async function ingestWhatsAppMedia(params: {
   let doc: DocumentRow;
   let storableMovement: TravelMovement | null;
   let derivedEntities: ReturnType<typeof buildDerivedEntities>;
+  let matchKeys: MatchKeys | null;
   try {
     const canAnalyze = SUPPORTED_IMAGE_TYPES.has(mimeType) || mimeType === "application/pdf";
     const {
@@ -579,6 +597,7 @@ export async function ingestWhatsAppMedia(params: {
       title,
       category,
       movement,
+      matchKeys: extractedMatchKeys,
       purchases,
       bookings,
     } = canAnalyze
@@ -588,6 +607,7 @@ export async function ingestWhatsAppMedia(params: {
           title: null,
           category: null,
           movement: null,
+          matchKeys: null,
           purchases: [] as unknown[],
           bookings: [] as unknown[],
         };
@@ -595,6 +615,7 @@ export async function ingestWhatsAppMedia(params: {
     const validated = applyTravelValidation(extractedText, movement, uploadedAt);
     storableMovement = validated.storableMovement;
     derivedEntities = buildDerivedEntities(purchases, bookings, uploadedAt);
+    matchKeys = extractedMatchKeys;
 
     doc = saveDocument(params.ownerId, {
       phone: params.phone,
@@ -627,6 +648,15 @@ export async function ingestWhatsAppMedia(params: {
   }
   storeDerivedEntities(params.ownerId, doc.id, derivedEntities);
 
+  if (matchKeys) {
+    saveMatchKeys(params.ownerId, doc.id, matchKeys);
+    // Fire-and-forget: this must never delay the "document saved" confirmation the user is
+    // waiting on. Any match notification arrives as a separate follow-up message.
+    void checkDocumentAgainstRecentEmails(params.ownerId, doc.id, doc.title ?? "a saved document", matchKeys).catch(
+      (err) => console.error("documents: reconciliation check failed", err)
+    );
+  }
+
   return doc;
 }
 
@@ -657,12 +687,14 @@ export async function ingestWhatsAppLink(params: {
   let doc: DocumentRow;
   let storableMovement: TravelMovement | null;
   let derivedEntities: ReturnType<typeof buildDerivedEntities>;
+  let matchKeys: MatchKeys | null;
   try {
     const {
       text: extractedText,
       title,
       category,
       movement,
+      matchKeys: extractedMatchKeys,
       purchases,
       bookings,
     } = await extractFactsFromLinkText(fetched.text, fetched.finalUrl, uploadedAt);
@@ -670,6 +702,7 @@ export async function ingestWhatsAppLink(params: {
     const validated = applyTravelValidation(extractedText, movement, uploadedAt);
     storableMovement = validated.storableMovement;
     derivedEntities = buildDerivedEntities(purchases, bookings, uploadedAt);
+    matchKeys = extractedMatchKeys;
 
     doc = saveDocument(params.ownerId, {
       phone: params.phone,
@@ -700,6 +733,15 @@ export async function ingestWhatsAppLink(params: {
     }
   }
   storeDerivedEntities(params.ownerId, doc.id, derivedEntities);
+
+  if (matchKeys) {
+    saveMatchKeys(params.ownerId, doc.id, matchKeys);
+    // Fire-and-forget: this must never delay the "document saved" confirmation the user is
+    // waiting on. Any match notification arrives as a separate follow-up message.
+    void checkDocumentAgainstRecentEmails(params.ownerId, doc.id, doc.title ?? "a saved document", matchKeys).catch(
+      (err) => console.error("documents: reconciliation check failed", err)
+    );
+  }
 
   return { ok: true, doc };
 }

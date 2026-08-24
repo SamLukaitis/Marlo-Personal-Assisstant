@@ -32,6 +32,9 @@ Thumbs.db
 # Isolated git worktrees for subagent-driven development
 .worktrees/
 
+# Graphify knowledge graph build output
+graphify-out/
+
 # --- Internal planning docs (kept out of git until ready to share) ---
 # Drop anything internal-only in this folder and it stays untracked.
 docs/internal/
