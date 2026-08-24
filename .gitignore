@@ -31,3 +31,6 @@ Thumbs.db
 
 # Isolated git worktrees for subagent-driven development
 .worktrees/
+
+# Graphify knowledge graph build output
+graphify-out/
