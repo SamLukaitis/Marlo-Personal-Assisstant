@@ -13,6 +13,7 @@ import {
   type DocumentCategory,
 } from "../db/store.js";
 import { encryptBuffer } from "./crypto.js";
+import { validateTravelMovement, type TravelMovement } from "./travelValidation.js";
 
 // Pure on purpose — the one bit of category logic worth its own unit test is "what happens when
 // the model's tool call doesn't give us a valid category," and that doesn't need an Anthropic
@@ -96,15 +97,6 @@ const NAME_DOCUMENT_TOOL: Anthropic.Tool = {
 
 // Long enough to stay specific, short enough to sit on one line in the file list.
 const MAX_TITLE_LENGTH = 60;
-
-interface TravelMovement {
-  departureCountry?: string;
-  departureCity?: string;
-  departureDateTime?: string;
-  arrivalCountry: string;
-  arrivalCity: string;
-  arrivalDateTime: string;
-}
 
 // A real digital PDF (not a scan/photo saved as PDF) has an embedded text layer pdf-parse can
 // read exactly, for free, with zero risk of a misread digit — strictly better than vision for
@@ -261,6 +253,7 @@ export async function ingestWhatsAppMedia(params: {
   filename?: string;
   caption?: string;
 }): Promise<DocumentRow> {
+  const uploadedAt = new Date();
   const { buffer, mimeType: downloadedMimeType } = await downloadWhatsAppMedia(params.mediaId);
   const mimeType = params.mimeType || downloadedMimeType;
 
@@ -284,6 +277,29 @@ export async function ingestWhatsAppMedia(params: {
         movement: null,
       };
 
+  // Deterministic guardrail on the model's extracted travel facts before they're trusted enough
+  // to feed the day-count log — see travelValidation.ts for why (hallucinated/misread dates are
+  // the top complaint here, and a single bad date silently corrupts the count). A "reject" means
+  // the movement is dropped entirely (never stored as a checkin); "warn" still stores it (it's
+  // probably right) but the reasoning is appended to the document's text so it's visible to the
+  // user and to the assistant answering day-count questions, rather than hidden.
+  let finalText = extractedText;
+  let storableMovement = movement;
+  if (movement) {
+    const validation = validateTravelMovement(movement, uploadedAt);
+    if (validation.severity === "reject") {
+      console.warn("documents: dropping extracted travel movement — failed validation", validation.issues);
+      finalText +=
+        `\n\n(A travel date/place in this document looked wrong and was not recorded: ` +
+        `${validation.issues.join(" ")})`;
+      storableMovement = null;
+    } else if (validation.severity === "warn") {
+      finalText +=
+        `\n\n(Note: extracted travel details for this document are flagged for review — ` +
+        `confidence ${Math.round(validation.confidence * 100)}%. ${validation.issues.join(" ")})`;
+    }
+  }
+
   const doc = saveDocument(params.ownerId, {
     phone: params.phone,
     filename: params.filename ?? null,
@@ -291,12 +307,12 @@ export async function ingestWhatsAppMedia(params: {
     storedPath,
     caption: params.caption ?? null,
     title,
-    extractedText,
+    extractedText: finalText,
     category,
   });
 
-  if (movement) {
-    for (const c of movementToCheckins(movement, doc.id)) {
+  if (storableMovement) {
+    for (const c of movementToCheckins(storableMovement, doc.id)) {
       saveCheckin(params.ownerId, {
         country: c.country,
         city: c.city,
