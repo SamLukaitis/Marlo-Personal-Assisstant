@@ -176,6 +176,73 @@ export function validateExpense(data: unknown, ctx: { uploadedAt: Date }): Valid
 }
 
 // ---------------------------------------------------------------------------
+// trip — the shape stored in entities.data for type='trip' (guide §6): the grouping
+// entity that expenses/bookings/checkins attach to via a --belongs_to--> link. `label` is the
+// spatiotemporal id from JAKES_TODO.md — a place + time window, e.g. "London, 12–15 Jun 2026".
+// ---------------------------------------------------------------------------
+
+export interface TripData {
+  label: string;
+  startDate: string; // YYYY-MM-DD
+  endDate: string | null; // null while the trip is still open/ongoing
+}
+
+export function validateTrip(data: unknown, ctx: { uploadedAt: Date }): ValidationResult {
+  const issues: string[] = [];
+  let confidence = 1;
+  let reject = false;
+  const fail = (msg: string) => {
+    issues.push(msg);
+    reject = true;
+  };
+  const warn = (msg: string, weight: number) => {
+    issues.push(msg);
+    confidence -= weight;
+  };
+
+  const d = data as Partial<TripData> | null | undefined;
+
+  if (!d || typeof d.label !== "string" || d.label.trim() === "") {
+    fail("Missing or empty trip label.");
+  }
+
+  const startMs = parseStrictDate(d?.startDate);
+  if (startMs === null) {
+    fail(`startDate ${JSON.stringify(d?.startDate)} is not a valid YYYY-MM-DD calendar date.`);
+  }
+  let endMs: number | null = null;
+  if (d?.endDate != null) {
+    endMs = parseStrictDate(d.endDate);
+    if (endMs === null) {
+      fail(`endDate ${JSON.stringify(d.endDate)} is not a valid YYYY-MM-DD calendar date.`);
+    }
+  }
+
+  if (startMs !== null && endMs !== null && endMs < startMs) {
+    fail("endDate precedes startDate; fields are likely swapped or misread.");
+  }
+
+  if (startMs !== null) {
+    // Trips, like bookings, legitimately span past or future — no future-date rejection, only
+    // the same year-off distance erosion (catches a wrongly-inferred year, not a real trip).
+    const distDays = Math.abs(startMs - ctx.uploadedAt.getTime()) / DAY_MS;
+    if (distDays > NEAR_UPLOAD_DAYS && distDays <= MODERATE_DISTANCE_DAYS) {
+      warn(`Trip start is ${Math.round(distDays)} days from upload; plausible advance planning or late filing.`, WEIGHTS.moderateDistance);
+    } else if (distDays > MODERATE_DISTANCE_DAYS && distDays <= YEAR_OFF_DAYS) {
+      warn(
+        `Trip start is roughly a year (${Math.round(distDays)} days) from upload; the inferred year may be wrong.`,
+        WEIGHTS.yearOffDistance
+      );
+    } else if (distDays > YEAR_OFF_DAYS) {
+      warn(`Trip start is far (${Math.round(distDays)} days) from upload; verify the year.`, WEIGHTS.farDistance);
+    }
+  }
+
+  confidence = Math.max(0, Math.min(1, confidence));
+  return { severity: reject ? "reject" : issues.length > 0 ? "warn" : "ok", confidence, issues };
+}
+
+// ---------------------------------------------------------------------------
 // booking — the shape stored in entities.data for type='booking'
 // ---------------------------------------------------------------------------
 

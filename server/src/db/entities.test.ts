@@ -93,4 +93,42 @@ describe("generic entity + link store", () => {
     expect(getEntity(userB.id, entity.id)).toBeNull();
     expect(listEntities(userB.id, { type: "expense" })).toHaveLength(0);
   });
+
+  it("groups an expense, a booking, and a document under a trip via belongs_to/relates_to links", () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("entities-trip"));
+
+    const trip = saveEntity(user.id, {
+      type: "trip",
+      data: { label: "Lisbon, 12-15 Jun 2026", startDate: "2026-06-12", endDate: "2026-06-15" },
+    });
+    const expense = saveEntity(user.id, {
+      type: "expense",
+      data: { vendor: "Hotel Eva", amountPence: 1850, currency: "EUR", date: "2026-06-12" },
+    });
+    const document = saveDocument(user.id, {
+      phone: "447000000002",
+      filename: "boarding-pass.pdf",
+      mimeType: "application/pdf",
+      storedPath: "/tmp/fake",
+      caption: null,
+      title: "Boarding pass",
+      extractedText: "some text",
+      category: "travel",
+    });
+
+    linkRecords(user.id, {
+      relation: "belongs_to",
+      from: { type: "entity", id: expense.id },
+      to: { type: "entity", id: trip.id },
+    });
+    linkRecords(user.id, {
+      relation: "relates_to",
+      from: { type: "document", id: document.id },
+      to: { type: "entity", id: trip.id },
+    });
+
+    const related = getRelatedEntities(user.id, { type: "entity", id: trip.id });
+    expect(related).toHaveLength(1);
+    expect(related[0].id).toBe(expense.id);
+  });
 });

@@ -1,6 +1,13 @@
 import type Anthropic from "@anthropic-ai/sdk";
 import { validateTravelMovement, type TravelMovement, type ValidationResult } from "./travelValidation.js";
-import { validateExpense, validateBooking, type ExpenseData, type BookingData } from "./entityValidation.js";
+import {
+  validateExpense,
+  validateBooking,
+  validateTrip,
+  type ExpenseData,
+  type BookingData,
+  type TripData,
+} from "./entityValidation.js";
 
 // The "define a type once" registry (docs/entities-and-links-guide.md §4): each entity type
 // declares its own validator and the read tools it exposes to the assistant, in one place, so the
@@ -47,5 +54,14 @@ registerEntityType<ExpenseData>({
 registerEntityType<BookingData>({
   type: "booking",
   validate: (data, ctx) => validateBooking(data, ctx),
+  tools: [],
+});
+
+// The grouping entity (guide §6): expenses/bookings/checkins/documents attach to a trip via a
+// --belongs_to--> link (Phase D, guide §6 / todo item 13), not extracted from a single document
+// the way expense/booking are — nothing creates trip rows yet.
+registerEntityType<TripData>({
+  type: "trip",
+  validate: (data, ctx) => validateTrip(data, ctx),
   tools: [],
 });

@@ -9,13 +9,19 @@ import {
   listCheckins,
   listAllCheckinsAscending,
   listEntities,
+  getEntity,
+  saveEntity,
+  linkRecords,
+  getLinksTo,
+  getRelatedEntities,
+  getDocument,
   getEnabledTools,
   setToolEnabled,
   TOOL_KEYS,
   type ToolKey,
   type DocumentRow,
 } from "../db/store.js";
-import type { ExpenseData, BookingData } from "../services/entityValidation.js";
+import { validateTrip, type ExpenseData, type BookingData, type TripData } from "../services/entityValidation.js";
 import { listLocalFolders } from "../providers/local.js";
 import { fetchHeadlines, NEWS_TOPICS, type NewsTopic } from "../providers/news.js";
 import { fetchWeather } from "../providers/weather.js";
@@ -191,6 +197,52 @@ const ALWAYS_ON_TOOLS: Anthropic.Tool[] = [
         since_date: { type: "string", description: "YYYY-MM-DD, default 30 days ago" },
         until_date: { type: "string", description: "YYYY-MM-DD, default today" },
       },
+    },
+  },
+  {
+    name: "create_trip",
+    description:
+      "Create a trip — a grouping for everything belonging to one journey (bookings, expenses, check-ins, documents). Call this when the user wants to start tracking a trip by place and dates, then use link_to_trip to attach things to it.",
+    input_schema: {
+      type: "object",
+      properties: {
+        label: { type: "string", description: "Human-readable label, e.g. 'Lisbon, 12-15 Jun 2026'" },
+        start_date: { type: "string", description: "YYYY-MM-DD" },
+        end_date: { type: "string", description: "YYYY-MM-DD; omit if the trip is still open/ongoing" },
+      },
+      required: ["label", "start_date"],
+    },
+  },
+  {
+    name: "link_to_trip",
+    description:
+      "Attach an existing expense, booking, travel check-in, or document to a trip, so get_trip_contents can pull everything for that journey together in one call. Call this after create_trip, or when the user says something like 'that hotel booking was for the Lisbon trip'.",
+    input_schema: {
+      type: "object",
+      properties: {
+        trip_id: { type: "number", description: "The trip's id, from create_trip or get_trip_contents" },
+        entity_id: {
+          type: "number",
+          description: "id of an expense/booking/travel_checkin entity to attach (ids come from list_expenses/list_bookings/list_travel_checkins)",
+        },
+        document_id: {
+          type: "number",
+          description: "id of a document to attach directly, when there's no derived entity for it",
+        },
+      },
+      required: ["trip_id"],
+    },
+  },
+  {
+    name: "get_trip_contents",
+    description:
+      "Get everything linked to a trip — bookings, expenses, check-ins, and documents — in one call. Call this when the user asks about a specific trip, e.g. 'what do we have for the Lisbon trip'.",
+    input_schema: {
+      type: "object",
+      properties: {
+        trip_id: { type: "number" },
+      },
+      required: ["trip_id"],
     },
   },
   {
@@ -658,6 +710,66 @@ export async function runTool(ownerId: number, name: string, input: Record<strin
       const expenses = listEntities<ExpenseData>(ownerId, { type: "expense" });
       const bookings = listEntities<BookingData>(ownerId, { type: "booking" });
       return buildSpendingDigest(expenses, bookings, { sinceMs, untilMs, priorSinceMs, priorUntilMs });
+    }
+    case "create_trip": {
+      const data: TripData = {
+        label: String(input.label ?? "").trim(),
+        startDate: String(input.start_date ?? "").trim(),
+        endDate: input.end_date ? String(input.end_date).trim() : null,
+      };
+      const validation = validateTrip(data, { uploadedAt: new Date() });
+      if (validation.severity === "reject") {
+        return { error: `Could not create trip: ${validation.issues.join(" ")}` };
+      }
+      const entity = saveEntity<TripData>(ownerId, {
+        type: "trip",
+        data,
+        confidence: validation.confidence,
+        status: validation.severity === "warn" ? "needs_review" : "active",
+      });
+      return { id: entity.id, ...entity.data, status: entity.status, confidence: entity.confidence };
+    }
+    case "link_to_trip": {
+      const tripId = input.trip_id as number;
+      const trip = getEntity(ownerId, tripId);
+      if (!trip || trip.type !== "trip") return { error: `No trip with id ${tripId}.` };
+      const entityId = input.entity_id as number | undefined;
+      const documentId = input.document_id as number | undefined;
+      if (entityId == null && documentId == null) {
+        return { error: "Provide either entity_id or document_id to link." };
+      }
+      if (entityId != null) {
+        if (!getEntity(ownerId, entityId)) return { error: `No entity with id ${entityId}.` };
+        const link = linkRecords(ownerId, {
+          relation: "belongs_to",
+          from: { type: "entity", id: entityId },
+          to: { type: "entity", id: tripId },
+        });
+        return { ok: true, link };
+      }
+      if (!getDocument(ownerId, documentId!)) return { error: `No document with id ${documentId}.` };
+      const link = linkRecords(ownerId, {
+        relation: "relates_to",
+        from: { type: "document", id: documentId! },
+        to: { type: "entity", id: tripId },
+      });
+      return { ok: true, link };
+    }
+    case "get_trip_contents": {
+      const tripId = input.trip_id as number;
+      const trip = getEntity<TripData>(ownerId, tripId);
+      if (!trip || trip.type !== "trip") return { error: `No trip with id ${tripId}.` };
+      const entities = getRelatedEntities<Record<string, unknown>>(ownerId, { type: "entity", id: tripId });
+      const documents = getLinksTo(ownerId, "entity", tripId)
+        .filter((l) => l.fromType === "document")
+        .map((l) => getDocument(ownerId, l.fromId))
+        .filter((d): d is DocumentRow => !!d)
+        .map((d) => ({ id: d.id, title: d.title, filename: d.filename, category: d.category }));
+      return {
+        trip: { id: trip.id, ...trip.data, status: trip.status },
+        entities: entities.map((e) => ({ id: e.id, type: e.type, ...e.data, status: e.status })),
+        documents,
+      };
     }
     case "list_travel_checkins":
       return listCheckins(ownerId, (input.limit as number | undefined) ?? 50);

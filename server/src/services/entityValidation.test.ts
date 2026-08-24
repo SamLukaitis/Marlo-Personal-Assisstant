@@ -4,8 +4,10 @@ import {
   parseStrictDate,
   validateExpense,
   validateBooking,
+  validateTrip,
   type ExpenseData,
   type BookingData,
+  type TripData,
 } from "./entityValidation.js";
 
 const UPLOAD = new Date("2026-06-12T10:00:00Z");
@@ -23,6 +25,10 @@ function booking(overrides: Partial<BookingData> = {}): BookingData {
     endDate: "2026-06-15",
     ...overrides,
   };
+}
+
+function trip(overrides: Partial<TripData> = {}): TripData {
+  return { label: "Faro, 12–15 Jun 2026", startDate: "2026-06-12", endDate: "2026-06-15", ...overrides };
 }
 
 describe("parseAmountToMinorUnits", () => {
@@ -156,6 +162,39 @@ describe("validateBooking", () => {
 
   it("warns on a roughly-year-off start date", () => {
     const result = validateBooking(booking({ startDate: "2025-06-12", endDate: null }), { uploadedAt: UPLOAD });
+    expect(result.severity).toBe("warn");
+    expect(result.confidence).toBeLessThanOrEqual(0.6);
+  });
+});
+
+describe("validateTrip", () => {
+  it("passes a clean trip with a date range", () => {
+    const result = validateTrip(trip(), { uploadedAt: UPLOAD });
+    expect(result.severity).toBe("ok");
+  });
+
+  it("passes an open (still-ongoing) trip with no endDate", () => {
+    const result = validateTrip(trip({ endDate: null }), { uploadedAt: UPLOAD });
+    expect(result.severity).toBe("ok");
+  });
+
+  it("rejects a missing or empty label", () => {
+    expect(validateTrip(trip({ label: "" }), { uploadedAt: UPLOAD }).severity).toBe("reject");
+  });
+
+  it("rejects an end date before the start date", () => {
+    expect(
+      validateTrip(trip({ startDate: "2026-06-15", endDate: "2026-06-12" }), { uploadedAt: UPLOAD }).severity
+    ).toBe("reject");
+  });
+
+  it("does not penalize a legitimately future trip within the near window", () => {
+    const result = validateTrip(trip({ startDate: "2026-08-01", endDate: "2026-08-05" }), { uploadedAt: UPLOAD });
+    expect(result.severity).toBe("ok");
+  });
+
+  it("warns on a roughly-year-off start date", () => {
+    const result = validateTrip(trip({ startDate: "2025-06-12", endDate: null }), { uploadedAt: UPLOAD });
     expect(result.severity).toBe("warn");
     expect(result.confidence).toBeLessThanOrEqual(0.6);
   });
