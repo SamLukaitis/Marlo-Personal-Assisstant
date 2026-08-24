@@ -124,6 +124,16 @@ db.exec(`
     updated_at INTEGER NOT NULL
   );
   CREATE INDEX IF NOT EXISTS idx_pending_reg_token_hash ON pending_whatsapp_registrations(token_hash);
+  CREATE TABLE IF NOT EXISTS document_match_keys (
+    document_id INTEGER PRIMARY KEY REFERENCES documents(id),
+    owner_id INTEGER NOT NULL REFERENCES users(id),
+    reference_code TEXT,
+    flight_number TEXT,
+    vendor TEXT,
+    event_date TEXT,
+    created_at INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_document_match_keys_owner ON document_match_keys(owner_id, created_at);
 `);
 
 // Lightweight migration: CREATE TABLE IF NOT EXISTS doesn't add columns to a table that
@@ -852,6 +862,69 @@ export function deleteDocument(ownerId: number, id: number): void {
   db.prepare(`DELETE FROM documents WHERE id = ? AND owner_id = ?`).run(id, ownerId);
 }
 
+// Machine-checkable identifiers (reference code, flight number, vendor, event date) pulled from
+// a document's extraction call, used by reconciliation.ts to notice when a document and an email
+// refer to the same real-world thing. One row per document — a document can be re-extracted at
+// most once in practice, but ON CONFLICT keeps this safe if that ever changes.
+export interface DocumentMatchKeysRow {
+  documentId: number;
+  referenceCode: string | null;
+  flightNumber: string | null;
+  vendor: string | null;
+  eventDate: string | null;
+  docTitle: string | null;
+}
+
+// No-op when every field is absent — don't write an empty row that would never match anything
+// and would just be dead weight in listRecentMatchKeys's scan.
+export function saveMatchKeys(
+  ownerId: number,
+  documentId: number,
+  keys: {
+    referenceCode?: string | null;
+    flightNumber?: string | null;
+    vendor?: string | null;
+    eventDate?: string | null;
+  }
+): void {
+  const hasAny = keys.referenceCode || keys.flightNumber || keys.vendor || keys.eventDate;
+  if (!hasAny) return;
+
+  db.prepare(
+    `INSERT INTO document_match_keys (document_id, owner_id, reference_code, flight_number, vendor, event_date, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(document_id) DO UPDATE SET
+       reference_code = excluded.reference_code,
+       flight_number = excluded.flight_number,
+       vendor = excluded.vendor,
+       event_date = excluded.event_date,
+       created_at = excluded.created_at`
+  ).run(
+    documentId,
+    ownerId,
+    keys.referenceCode ?? null,
+    keys.flightNumber ?? null,
+    keys.vendor ?? null,
+    keys.eventDate ?? null,
+    Date.now()
+  );
+}
+
+// Joined with documents.title so callers (reconciliation.ts) have everything needed to compose a
+// notification without a second lookup.
+export function listRecentMatchKeys(ownerId: number, sinceMs: number): DocumentMatchKeysRow[] {
+  return db
+    .prepare(
+      `SELECT k.document_id AS documentId, k.reference_code AS referenceCode, k.flight_number AS flightNumber,
+              k.vendor AS vendor, k.event_date AS eventDate, d.title AS docTitle
+       FROM document_match_keys k
+       JOIN documents d ON d.id = k.document_id
+       WHERE k.owner_id = ? AND k.created_at >= ?
+       ORDER BY k.created_at DESC`
+    )
+    .all(ownerId, sinceMs) as DocumentMatchKeysRow[];
+}
+
 export type CheckinSource = "phone" | "document";
 
 export interface TravelCheckinRow {
@@ -1056,6 +1129,7 @@ export function deleteUserCompletely(ownerId: number): { deletedDocumentPaths: s
     db.prepare(`DELETE FROM memory_notes WHERE owner_id = ?`).run(ownerId);
     db.prepare(`DELETE FROM whatsapp_messages WHERE owner_id = ?`).run(ownerId);
     db.prepare(`DELETE FROM documents WHERE owner_id = ?`).run(ownerId);
+    db.prepare(`DELETE FROM document_match_keys WHERE owner_id = ?`).run(ownerId);
     db.prepare(`DELETE FROM travel_checkins WHERE owner_id = ?`).run(ownerId);
     db.prepare(`DELETE FROM alerted_messages WHERE owner_id = ?`).run(ownerId);
     db.prepare(`DELETE FROM user_enabled_tools WHERE owner_id = ?`).run(ownerId);
