@@ -8,12 +8,14 @@ import {
   listDocuments,
   listCheckins,
   listAllCheckinsAscending,
+  listEntities,
   getEnabledTools,
   setToolEnabled,
   TOOL_KEYS,
   type ToolKey,
   type DocumentRow,
 } from "../db/store.js";
+import type { ExpenseData, BookingData } from "../services/entityValidation.js";
 import { listLocalFolders } from "../providers/local.js";
 import { fetchHeadlines, NEWS_TOPICS, type NewsTopic } from "../providers/news.js";
 import { fetchWeather } from "../providers/weather.js";
@@ -138,6 +140,29 @@ const ALWAYS_ON_TOOLS: Anthropic.Tool[] = [
         query: { type: "string" },
       },
       required: ["query"],
+    },
+  },
+  {
+    name: "list_expenses",
+    description:
+      "List expenses automatically extracted from receipts and invoices the user sent in (vendor, amount in minor units like pence/cents, currency, date), newest first. Call this for questions like 'what have I spent' or 'find that taxi receipt'. Amounts were validated deterministically at extraction time; a status of needs_review means the extraction had a flagged doubt.",
+    input_schema: {
+      type: "object",
+      properties: {
+        limit: { type: "number", description: "Max expenses, default 50" },
+      },
+    },
+  },
+  {
+    name: "list_bookings",
+    description:
+      "List flight and hotel bookings automatically extracted from confirmations the user sent in (kind: flight|hotel, name, reference code, dates), newest first. Call this for questions like 'when is my flight' or 'what hotel did I book'. A status of needs_review means the extraction had a flagged doubt.",
+    input_schema: {
+      type: "object",
+      properties: {
+        limit: { type: "number", description: "Max bookings, default 50" },
+        kind: { type: "string", enum: ["flight", "hotel"], description: "Only this kind" },
+      },
     },
   },
   {
@@ -573,6 +598,17 @@ export async function runTool(ownerId: number, name: string, input: Record<strin
       }
       setToolEnabled(ownerId, tool as ToolKey, !!input.enabled);
       return { ok: true };
+    }
+    case "list_expenses":
+      return listEntities<ExpenseData>(ownerId, { type: "expense" })
+        .slice(0, (input.limit as number | undefined) ?? 50)
+        .map((e) => ({ id: e.id, ...e.data, status: e.status, confidence: e.confidence }));
+    case "list_bookings": {
+      const rows = listEntities<BookingData>(ownerId, { type: "booking" });
+      const kind = input.kind as string | undefined;
+      return (kind ? rows.filter((e) => e.data.kind === kind) : rows)
+        .slice(0, (input.limit as number | undefined) ?? 50)
+        .map((e) => ({ id: e.id, ...e.data, status: e.status, confidence: e.confidence }));
     }
     case "list_travel_checkins":
       return listCheckins(ownerId, (input.limit as number | undefined) ?? 50);

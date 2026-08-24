@@ -1,11 +1,11 @@
 import { describe, it, expect } from "vitest";
-import { resolveDocumentCategory } from "./documents.js";
+import { resolveDocumentCategory, buildDerivedEntities } from "./documents.js";
 
 describe("resolveDocumentCategory", () => {
   it("accepts each known category", () => {
     expect(resolveDocumentCategory("travel")).toBe("travel");
     expect(resolveDocumentCategory("id_legal")).toBe("id_legal");
-    expect(resolveDocumentCategory("receipts_bookings")).toBe("receipts_bookings");
+    expect(resolveDocumentCategory("receipts")).toBe("receipts");
     expect(resolveDocumentCategory("other")).toBe("other");
   });
 
@@ -15,5 +15,66 @@ describe("resolveDocumentCategory", () => {
 
   it("falls back to null when missing entirely", () => {
     expect(resolveDocumentCategory(undefined)).toBeNull();
+  });
+});
+
+// The deterministic gate between the model's record_purchase/record_booking transcriptions and
+// the entities table — pure, so the whole decision table runs offline with no API in the loop.
+describe("buildDerivedEntities", () => {
+  const UPLOAD = new Date("2026-06-12T10:00:00Z");
+
+  it("turns a clean printed purchase into an active expense with parsed minor units", () => {
+    const [entity] = buildDerivedEntities(
+      [{ vendor: "Hotel Eva", amount: "18,50", currency: "eur", date: "2026-06-12" }],
+      [],
+      UPLOAD
+    );
+    expect(entity.type).toBe("expense");
+    expect(entity.status).toBe("active");
+    expect(entity.data).toEqual({ vendor: "Hotel Eva", amountPence: 1850, currency: "EUR", date: "2026-06-12" });
+  });
+
+  it("drops a purchase whose amount can't be parsed", () => {
+    expect(
+      buildDerivedEntities([{ vendor: "X", amount: "unknown", currency: "EUR", date: "2026-06-12" }], [], UPLOAD)
+    ).toHaveLength(0);
+  });
+
+  it("drops a purchase with a hallucinated currency", () => {
+    expect(
+      buildDerivedEntities([{ vendor: "X", amount: "5.00", currency: "EURO", date: "2026-06-12" }], [], UPLOAD)
+    ).toHaveLength(0);
+  });
+
+  it("marks a doubtful-but-plausible extraction needs_review instead of dropping it", () => {
+    const [entity] = buildDerivedEntities(
+      [{ vendor: "X", amount: "5.00", currency: "EUR", date: "2025-06-12" }], // ~a year off upload
+      [],
+      UPLOAD
+    );
+    expect(entity.status).toBe("needs_review");
+    expect(entity.confidence).toBeLessThan(1);
+  });
+
+  it("handles one document yielding both a booking and an expense", () => {
+    const out = buildDerivedEntities(
+      [{ vendor: "Hotel Eva", amount: "300.00", currency: "EUR", date: "2026-06-12" }],
+      [{ kind: "hotel", name: "Hotel Eva, Faro", reference: "ABC123", startDate: "2026-06-12", endDate: "2026-06-15" }],
+      UPLOAD
+    );
+    expect(out.map((e) => e.type).sort()).toEqual(["booking", "expense"]);
+  });
+
+  it("drops a booking with swapped dates but keeps a valid sibling", () => {
+    const out = buildDerivedEntities(
+      [],
+      [
+        { kind: "hotel", name: "Bad Hotel", startDate: "2026-06-15", endDate: "2026-06-12" },
+        { kind: "flight", name: "FR1234 LIS→FAO", startDate: "2026-06-12" },
+      ],
+      UPLOAD
+    );
+    expect(out).toHaveLength(1);
+    expect(out[0].data).toMatchObject({ kind: "flight", reference: null, endDate: null });
   });
 });

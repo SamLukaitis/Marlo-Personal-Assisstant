@@ -7,6 +7,8 @@ import { downloadWhatsAppMedia } from "../providers/whatsapp.js";
 import {
   saveDocument,
   saveCheckin,
+  saveEntity,
+  linkRecords,
   uploadsDir,
   DOCUMENT_CATEGORIES,
   type DocumentRow,
@@ -14,6 +16,13 @@ import {
 } from "../db/store.js";
 import { encryptBuffer } from "./crypto.js";
 import { validateTravelMovement, type TravelMovement } from "./travelValidation.js";
+import {
+  validateExpense,
+  validateBooking,
+  parseAmountToMinorUnits,
+  type ExpenseData,
+  type BookingData,
+} from "./entityValidation.js";
 import { fetchPageText, type FetchFailureReason } from "./safeLinkFetcher.js";
 
 // Pure on purpose — the one bit of category logic worth its own unit test is "what happens when
@@ -70,6 +79,51 @@ const TRAVEL_MOVEMENT_TOOL: Anthropic.Tool = {
   },
 };
 
+// Like record_travel_movement, these ride the SAME single extraction call — no extra API cost.
+// Content-based on purpose: whether to record a purchase/booking is decided by what's actually
+// in the document, never by which category it was filed under (a hotel confirmation files under
+// 'travel' but still shows money spent — it should produce both a booking and an expense).
+// The model only transcribes what's printed; all arithmetic, currency, and date checking happens
+// deterministically in entityValidation.ts before anything is stored.
+const RECORD_PURCHASE_TOOL: Anthropic.Tool = {
+  name: "record_purchase",
+  description:
+    "Call this if the document clearly shows money paid to a specific vendor — a receipt, invoice, or a booking confirmation that shows the amount charged. Transcribe only what is printed; never infer or compute an amount. Skip it if no total amount is legible. Call once per distinct payment shown.",
+  input_schema: {
+    type: "object",
+    properties: {
+      vendor: { type: "string", description: "Who was paid, as printed (e.g. 'Ryanair', 'Hotel Eva')" },
+      amount: {
+        type: "string",
+        description: "The total amount exactly as printed, e.g. '18.50' or '1.234,56' — do not convert or reformat",
+      },
+      currency: { type: "string", description: "ISO 4217 code: GBP, EUR, USD… Infer from the printed symbol only if unambiguous." },
+      date: { type: "string", description: "Payment/receipt date as YYYY-MM-DD" },
+    },
+    required: ["vendor", "amount", "currency", "date"],
+  },
+};
+
+const RECORD_BOOKING_TOOL: Anthropic.Tool = {
+  name: "record_booking",
+  description:
+    "Call this if the document clearly shows a reservation — a flight or hotel booking confirmation with legible dates. Transcribe only what is printed; never guess dates. Call once per distinct reservation shown (a page confirming a flight AND a hotel is two calls).",
+  input_schema: {
+    type: "object",
+    properties: {
+      kind: { type: "string", enum: ["flight", "hotel"] },
+      name: {
+        type: "string",
+        description: "Short identifying label: flight number + route for flights ('FR1234 LIS→FAO'), property name + city for hotels ('Hotel Eva, Faro')",
+      },
+      reference: { type: "string", description: "Confirmation/PNR code if legible. Omit if not shown." },
+      startDate: { type: "string", description: "Flight date / hotel check-in, as YYYY-MM-DD" },
+      endDate: { type: "string", description: "Hotel check-out as YYYY-MM-DD. Omit for flights." },
+    },
+    required: ["kind", "name", "startDate"],
+  },
+};
+
 // Named by the same call that extracts the facts, so titling costs nothing extra. A tool rather
 // than a "start your reply with TITLE:" convention because the title has to survive intact —
 // parsing it back out of prose breaks the moment the model reformats its own output.
@@ -89,7 +143,7 @@ const NAME_DOCUMENT_TOOL: Anthropic.Tool = {
         type: "string",
         enum: DOCUMENT_CATEGORIES,
         description:
-          "Which bucket this document belongs in on the user's file list: 'travel' (boarding passes, tickets, itineraries), 'id_legal' (licenses, passports, IDs, official paperwork), 'receipts_bookings' (receipts, invoices, hotel/booking confirmations), or 'other' for anything that genuinely doesn't fit those.",
+          "Which bucket this document belongs in on the user's file list: 'travel' (boarding passes, tickets, itineraries, flight/hotel booking confirmations), 'id_legal' (licenses, passports, IDs, official paperwork), 'receipts' (receipts, invoices — purchases, not bookings), or 'other' for anything that genuinely doesn't fit those.",
       },
     },
     required: ["title", "category"],
@@ -169,12 +223,16 @@ async function runExtraction(
   title: string | null;
   category: DocumentCategory | null;
   movement: TravelMovement | null;
+  purchases: unknown[];
+  bookings: unknown[];
 }> {
   const messages: Anthropic.MessageParam[] = [{ role: "user", content: initialContent }];
   let response: Anthropic.Message;
   let textBlock: Anthropic.TextBlock | undefined;
   let toolUse: Anthropic.ToolUseBlock | undefined;
   let nameUse: Anthropic.ToolUseBlock | undefined;
+  const purchases: unknown[] = [];
+  const bookings: unknown[] = [];
 
   for (let turn = 0; turn < 3; turn++) {
     response = await getClient().messages.create({
@@ -184,7 +242,7 @@ async function runExtraction(
       // it hadn't gotten to yet, which is exactly how dates/times went missing even though they
       // were legible in the image. 4096 gives real headroom; this is a one-time cost per upload.
       max_tokens: 4096,
-      tools: [NAME_DOCUMENT_TOOL, TRAVEL_MOVEMENT_TOOL],
+      tools: [NAME_DOCUMENT_TOOL, TRAVEL_MOVEMENT_TOOL, RECORD_PURCHASE_TOOL, RECORD_BOOKING_TOOL],
       messages,
     });
 
@@ -194,6 +252,10 @@ async function runExtraction(
     );
     toolUse = toolUses.find((b) => b.name === "record_travel_movement") ?? toolUse;
     nameUse = toolUses.find((b) => b.name === "name_document") ?? nameUse;
+    // Arrays, not single slots — one document can legitimately show several payments or
+    // reservations (an itinerary confirming a flight and a hotel is two bookings).
+    purchases.push(...toolUses.filter((b) => b.name === "record_purchase").map((b) => b.input));
+    bookings.push(...toolUses.filter((b) => b.name === "record_booking").map((b) => b.input));
 
     if (textBlock || toolUses.length === 0) break;
 
@@ -230,6 +292,8 @@ async function runExtraction(
     title,
     category,
     movement: toolUse ? (toolUse.input as TravelMovement) : null,
+    purchases,
+    bookings,
   };
 }
 
@@ -269,6 +333,88 @@ function applyTravelValidation(
   return { finalText: extractedText, storableMovement: movement };
 }
 
+// Deterministic gate between the model's record_purchase/record_booking transcriptions and the
+// entities table — the expense/booking counterpart to applyTravelValidation. Pure on purpose
+// (no DB, no API) so the whole decision table is unit-testable offline: parse the printed
+// amount into minor units in code, run the hardcoded validators, and map ok→active,
+// warn→needs_review (finally putting that status to work), reject→dropped entirely.
+export function buildDerivedEntities(
+  purchases: unknown[],
+  bookings: unknown[],
+  uploadedAt: Date
+): Array<{ type: "expense" | "booking"; data: ExpenseData | BookingData; confidence: number; status: "active" | "needs_review" }> {
+  const out: Array<{ type: "expense" | "booking"; data: ExpenseData | BookingData; confidence: number; status: "active" | "needs_review" }> = [];
+
+  for (const raw of purchases) {
+    const p = raw as { vendor?: unknown; amount?: unknown; currency?: unknown; date?: unknown };
+    const currency = typeof p.currency === "string" ? p.currency.trim().toUpperCase() : "";
+    const amountPence = parseAmountToMinorUnits(p.amount, currency);
+    const data: ExpenseData = {
+      vendor: typeof p.vendor === "string" ? p.vendor.trim() : "",
+      amountPence: amountPence ?? -1,
+      currency,
+      date: typeof p.date === "string" ? p.date.trim() : "",
+    };
+    const validation = validateExpense(data, { uploadedAt });
+    if (validation.severity === "reject") {
+      console.warn("documents: dropping extracted purchase — failed validation", validation.issues);
+      continue;
+    }
+    out.push({
+      type: "expense",
+      data,
+      confidence: validation.confidence,
+      status: validation.severity === "warn" ? "needs_review" : "active",
+    });
+  }
+
+  for (const raw of bookings) {
+    const b = raw as { kind?: unknown; name?: unknown; reference?: unknown; startDate?: unknown; endDate?: unknown };
+    const data: BookingData = {
+      kind: b.kind as BookingData["kind"],
+      name: typeof b.name === "string" ? b.name.trim() : "",
+      reference: typeof b.reference === "string" && b.reference.trim() ? b.reference.trim() : null,
+      startDate: typeof b.startDate === "string" ? b.startDate.trim() : "",
+      endDate: typeof b.endDate === "string" && b.endDate.trim() ? b.endDate.trim() : null,
+    };
+    const validation = validateBooking(data, { uploadedAt });
+    if (validation.severity === "reject") {
+      console.warn("documents: dropping extracted booking — failed validation", validation.issues);
+      continue;
+    }
+    out.push({
+      type: "booking",
+      data,
+      confidence: validation.confidence,
+      status: validation.severity === "warn" ? "needs_review" : "active",
+    });
+  }
+
+  return out;
+}
+
+// The storage half: one entity row + one extracted_from link per validated item. Same shape as
+// the movementToCheckins/saveCheckin flow below it in the ingest functions.
+function storeDerivedEntities(
+  ownerId: number,
+  documentId: number,
+  derived: ReturnType<typeof buildDerivedEntities>
+): void {
+  for (const item of derived) {
+    const entity = saveEntity(ownerId, {
+      type: item.type,
+      data: item.data,
+      confidence: item.confidence,
+      status: item.status,
+    });
+    linkRecords(ownerId, {
+      relation: "extracted_from",
+      from: { type: "entity", id: entity.id },
+      to: { type: "document", id: documentId },
+    });
+  }
+}
+
 async function extractDocument(
   buffer: Buffer,
   mimeType: string
@@ -277,6 +423,8 @@ async function extractDocument(
   title: string | null;
   category: DocumentCategory | null;
   movement: TravelMovement | null;
+  purchases: unknown[];
+  bookings: unknown[];
 }> {
   const uploadedAt = new Date().toISOString();
   const prompt =
@@ -293,7 +441,11 @@ async function extractDocument(
     `This file was uploaded around ${uploadedAt}. If the document shows travel (e.g. a ` +
     "boarding pass) but a date has no year printed on it, infer the year from that upload " +
     "time — boarding passes are almost always saved on or near the day of travel — and call " +
-    "record_travel_movement with the departure/arrival details.";
+    "record_travel_movement with the departure/arrival details.\n\n" +
+    "Independently of which category you file it under: if the document shows money paid " +
+    "(a total amount charged), call record_purchase; if it shows a flight or hotel " +
+    "reservation, call record_booking. A document can warrant both (a hotel confirmation " +
+    "shows a reservation AND an amount paid) — call both. Transcribe only what is printed.";
 
   const pdfText = mimeType === "application/pdf" ? await extractPdfTextLayer(buffer) : null;
 
@@ -340,6 +492,8 @@ async function extractFactsFromLinkText(
   title: string | null;
   category: DocumentCategory | null;
   movement: TravelMovement | null;
+  purchases: unknown[];
+  bookings: unknown[];
 }> {
   const truncated = pageText.length > MAX_LINK_TEXT_CHARS;
   const bodyText = truncated ? pageText.slice(0, MAX_LINK_TEXT_CHARS) : pageText;
@@ -357,6 +511,9 @@ async function extractFactsFromLinkText(
     `This link was opened around ${uploadedAt.toISOString()}. If the page shows travel dates ` +
     "without a year, infer the year from that time and call record_travel_movement with the " +
     "departure/arrival details, the same way you would for an uploaded boarding pass.\n\n" +
+    "Independently of what kind of page it is: if it shows money paid (a total amount " +
+    "charged), call record_purchase; if it shows a flight or hotel reservation, call " +
+    "record_booking. A page can warrant both — call both. Transcribe only what is printed.\n\n" +
     `Source URL: ${sourceUrl}` +
     (truncated ? `\n\n(Page text truncated to the first ${MAX_LINK_TEXT_CHARS} characters.)` : "") +
     `\n\nPage text:\n${bodyText}`;
@@ -414,6 +571,7 @@ export async function ingestWhatsAppMedia(params: {
 
   let doc: DocumentRow;
   let storableMovement: TravelMovement | null;
+  let derivedEntities: ReturnType<typeof buildDerivedEntities>;
   try {
     const canAnalyze = SUPPORTED_IMAGE_TYPES.has(mimeType) || mimeType === "application/pdf";
     const {
@@ -421,6 +579,8 @@ export async function ingestWhatsAppMedia(params: {
       title,
       category,
       movement,
+      purchases,
+      bookings,
     } = canAnalyze
       ? await extractDocument(buffer, mimeType)
       : {
@@ -428,10 +588,13 @@ export async function ingestWhatsAppMedia(params: {
           title: null,
           category: null,
           movement: null,
+          purchases: [] as unknown[],
+          bookings: [] as unknown[],
         };
 
     const validated = applyTravelValidation(extractedText, movement, uploadedAt);
     storableMovement = validated.storableMovement;
+    derivedEntities = buildDerivedEntities(purchases, bookings, uploadedAt);
 
     doc = saveDocument(params.ownerId, {
       phone: params.phone,
@@ -462,6 +625,7 @@ export async function ingestWhatsAppMedia(params: {
       });
     }
   }
+  storeDerivedEntities(params.ownerId, doc.id, derivedEntities);
 
   return doc;
 }
@@ -492,16 +656,20 @@ export async function ingestWhatsAppLink(params: {
 
   let doc: DocumentRow;
   let storableMovement: TravelMovement | null;
+  let derivedEntities: ReturnType<typeof buildDerivedEntities>;
   try {
     const {
       text: extractedText,
       title,
       category,
       movement,
+      purchases,
+      bookings,
     } = await extractFactsFromLinkText(fetched.text, fetched.finalUrl, uploadedAt);
 
     const validated = applyTravelValidation(extractedText, movement, uploadedAt);
     storableMovement = validated.storableMovement;
+    derivedEntities = buildDerivedEntities(purchases, bookings, uploadedAt);
 
     doc = saveDocument(params.ownerId, {
       phone: params.phone,
@@ -531,6 +699,7 @@ export async function ingestWhatsAppLink(params: {
       });
     }
   }
+  storeDerivedEntities(params.ownerId, doc.id, derivedEntities);
 
   return { ok: true, doc };
 }
