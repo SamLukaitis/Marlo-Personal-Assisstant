@@ -31,3 +31,13 @@ Thumbs.db
 
 # Isolated git worktrees for subagent-driven development
 .worktrees/
+
+# --- Internal planning docs (kept out of git until ready to share) ---
+# Drop anything internal-only in this folder and it stays untracked.
+docs/internal/
+# These planning docs are ignored in place for now — the device workspace was offline when they
+# were created, so they couldn't be moved into docs/internal/ automatically. Move them there when
+# convenient (they're already covered by the rule above); these per-file lines can then be removed.
+docs/entities-and-links-guide.md
+docs/entities-and-links-todo.md
+docs/superpowers/specs/2026-08-24-ingestion-extraction-hardening-design.md

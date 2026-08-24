@@ -7,7 +7,7 @@ function uniqueEmail(prefix: string): string {
   return `${prefix}-${Date.now()}-${counter}@example.com`;
 }
 
-function saveTestDoc(ownerId: number, category: "travel" | "id_legal" | "receipts_bookings" | "other" | null) {
+function saveTestDoc(ownerId: number, category: "travel" | "id_legal" | "receipts" | "other" | null) {
   return saveDocument(ownerId, {
     phone: "447000000001",
     filename: null,
@@ -39,7 +39,7 @@ describe("documents category", () => {
   it("filters listDocuments by category when given", () => {
     const user = findOrCreateUserByEmail(uniqueEmail("cat-filter"));
     saveTestDoc(user.id, "travel");
-    saveTestDoc(user.id, "receipts_bookings");
+    saveTestDoc(user.id, "receipts");
     saveTestDoc(user.id, "travel");
 
     const travelOnly = listDocuments(user.id, 10, "travel");
