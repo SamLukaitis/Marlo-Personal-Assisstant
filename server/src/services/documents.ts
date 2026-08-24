@@ -7,6 +7,7 @@ import { downloadWhatsAppMedia } from "../providers/whatsapp.js";
 import {
   saveDocument,
   saveCheckin,
+  saveMatchKeys,
   uploadsDir,
   DOCUMENT_CATEGORIES,
   type DocumentRow,
@@ -15,7 +16,7 @@ import {
 import { encryptBuffer } from "./crypto.js";
 import { validateTravelMovement, type TravelMovement } from "./travelValidation.js";
 import { fetchPageText, type FetchFailureReason } from "./safeLinkFetcher.js";
-import { type MatchKeys } from "./reconciliation.js";
+import { checkDocumentAgainstRecentEmails, type MatchKeys } from "./reconciliation.js";
 
 // Pure on purpose — the one bit of category logic worth its own unit test is "what happens when
 // the model's tool call doesn't give us a valid category," and that doesn't need an Anthropic
@@ -380,6 +381,7 @@ export async function ingestWhatsAppMedia(params: {
     title,
     category,
     movement,
+    matchKeys,
   } = canAnalyze
     ? await extractDocument(buffer, mimeType)
     : {
@@ -387,6 +389,7 @@ export async function ingestWhatsAppMedia(params: {
         title: null,
         category: null,
         movement: null,
+        matchKeys: null,
       };
 
   const { finalText, storableMovement } = applyTravelValidation(extractedText, movement, uploadedAt);
@@ -412,6 +415,15 @@ export async function ingestWhatsAppMedia(params: {
         documentId: c.documentId,
       });
     }
+  }
+
+  if (matchKeys) {
+    saveMatchKeys(params.ownerId, doc.id, matchKeys);
+    // Fire-and-forget: this must never delay the "document saved" confirmation the user is
+    // waiting on. Any match notification arrives as a separate follow-up message.
+    void checkDocumentAgainstRecentEmails(params.ownerId, doc.id, doc.title ?? "a saved document", matchKeys).catch(
+      (err) => console.error("documents: reconciliation check failed", err)
+    );
   }
 
   return doc;
@@ -442,6 +454,7 @@ export async function ingestWhatsAppLink(params: {
     title,
     category,
     movement,
+    matchKeys,
   } = await extractFactsFromLinkText(fetched.text, fetched.finalUrl, uploadedAt);
 
   const { finalText, storableMovement } = applyTravelValidation(extractedText, movement, uploadedAt);
@@ -471,6 +484,15 @@ export async function ingestWhatsAppLink(params: {
         documentId: c.documentId,
       });
     }
+  }
+
+  if (matchKeys) {
+    saveMatchKeys(params.ownerId, doc.id, matchKeys);
+    // Fire-and-forget: this must never delay the "document saved" confirmation the user is
+    // waiting on. Any match notification arrives as a separate follow-up message.
+    void checkDocumentAgainstRecentEmails(params.ownerId, doc.id, doc.title ?? "a saved document", matchKeys).catch(
+      (err) => console.error("documents: reconciliation check failed", err)
+    );
   }
 
   return { ok: true, doc };

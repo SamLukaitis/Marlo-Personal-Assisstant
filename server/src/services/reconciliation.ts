@@ -2,6 +2,11 @@
 // docs/superpowers/specs/2026-08-24-document-email-cross-referencing-design.md for the full
 // design and why this stays entirely deterministic in v1 (no LLM call on the email side at all).
 
+import { hubListMessages } from "./hub.js";
+import { sendWhatsAppMessage, isWhatsAppConfigured } from "../providers/whatsapp.js";
+import { hasAlerted, markAlerted, listPhoneNumbersForUser } from "../db/store.js";
+import type { UnifiedMessage } from "../providers/types.js";
+
 export interface MatchKeys {
   referenceCode?: string;
   flightNumber?: string;
@@ -34,4 +39,54 @@ export function buildMatchNotification(docTitle: string, keys: MatchKeys): strin
   const identifier = keys.referenceCode ?? keys.flightNumber ?? "";
   const datePart = keys.eventDate ? `, ${keys.eventDate}` : "";
   return `📎 Heads up — an email about "${docTitle}" (${identifier}${datePart}) just came in. Worth a look?`;
+}
+
+const MAX_MATCH_NOTIFICATIONS_PER_RUN = 3;
+
+async function notifyMatch(ownerId: number, text: string): Promise<void> {
+  if (!isWhatsAppConfigured()) return;
+  const numbers = listPhoneNumbersForUser(ownerId).map((r) => r.phone);
+  for (const number of numbers) {
+    try {
+      await sendWhatsAppMessage(number, text);
+    } catch (err) {
+      console.error("reconciliation: failed to send match notification", err);
+    }
+  }
+}
+
+// Runs synchronously right after a document saves (see documents.ts) — checks the new
+// document's own identifiers against a bounded window of recent mail. No LLM call: a reference
+// code or flight number is specific enough that finding it verbatim in a subject/snippet is
+// already a strong match.
+export async function checkDocumentAgainstRecentEmails(
+  ownerId: number,
+  documentId: number,
+  docTitle: string,
+  keys: MatchKeys
+): Promise<void> {
+  if (!keys.referenceCode && !keys.flightNumber) return; // nothing strong-tier-checkable in v1
+
+  let messages: UnifiedMessage[];
+  try {
+    messages = await hubListMessages(ownerId, { limit: 50 });
+  } catch (err) {
+    console.error(`reconciliation: failed to list messages for owner ${ownerId}`, err);
+    return;
+  }
+
+  let sent = 0;
+  for (const m of messages) {
+    if (sent >= MAX_MATCH_NOTIFICATIONS_PER_RUN) break;
+
+    const text = `${m.subject} ${m.snippet}`;
+    if (matchTier(keys, text) !== "strong") continue;
+
+    const matchKey = `recon-match:${documentId}:${m.accountId}:${m.id}`;
+    if (hasAlerted(ownerId, matchKey)) continue;
+
+    await notifyMatch(ownerId, buildMatchNotification(docTitle, keys));
+    markAlerted(ownerId, matchKey);
+    sent += 1;
+  }
 }
