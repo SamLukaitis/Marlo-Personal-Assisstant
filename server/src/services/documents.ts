@@ -14,6 +14,7 @@ import {
 } from "../db/store.js";
 import { encryptBuffer } from "./crypto.js";
 import { validateTravelMovement, type TravelMovement } from "./travelValidation.js";
+import { fetchPageText, type FetchFailureReason } from "./safeLinkFetcher.js";
 
 // Pure on purpose — the one bit of category logic worth its own unit test is "what happens when
 // the model's tool call doesn't give us a valid category," and that doesn't need an Anthropic
@@ -118,6 +119,85 @@ async function extractPdfTextLayer(buffer: Buffer): Promise<string | null> {
   }
 }
 
+// Shared by every extraction path (image/PDF today; link/voice-transcript text below) — the
+// tool-call schemas and this response-parsing tail are the one part all of them have in common,
+// so it's factored out rather than copied. Everything upstream of this (how the content blocks
+// get built — vision, PDF text layer, plain text) stays specific to each source.
+function parseExtractionResponse(response: Anthropic.Message): {
+  text: string;
+  title: string | null;
+  category: DocumentCategory | null;
+  movement: TravelMovement | null;
+} {
+  const textBlock = response.content.find((b): b is Anthropic.TextBlock => b.type === "text");
+  const toolUse = response.content.find(
+    (b): b is Anthropic.ToolUseBlock => b.type === "tool_use" && b.name === "record_travel_movement"
+  );
+  const nameUse = response.content.find(
+    (b): b is Anthropic.ToolUseBlock => b.type === "tool_use" && b.name === "name_document"
+  );
+
+  const nameInput = nameUse?.input as { title?: unknown; category?: unknown } | undefined;
+  const rawTitle = nameInput?.title;
+  const title =
+    typeof rawTitle === "string" && rawTitle.trim()
+      ? rawTitle.trim().slice(0, MAX_TITLE_LENGTH)
+      : null;
+  const category = resolveDocumentCategory(nameInput?.category);
+
+  let text = textBlock?.text ?? "(couldn't extract any text from this file)";
+  if (response.stop_reason === "max_tokens") {
+    // Surface truncation instead of silently returning a partial extraction — the model itself
+    // (and the user, if they ask to see the details) should know some facts may be missing
+    // rather than assuming the extraction was complete.
+    console.warn("documents: extraction hit max_tokens — output may be truncated");
+    text += "\n\n(Note: this extraction was cut off before finishing — some details, possibly including dates, may be missing.)";
+  }
+
+  return {
+    text,
+    title,
+    category,
+    movement: toolUse ? (toolUse.input as TravelMovement) : null,
+  };
+}
+
+// Deterministic guardrail applied identically wherever an extraction call can surface a travel
+// movement (image/PDF, link) — see travelValidation.ts for why (hallucinated/misread dates are
+// the top complaint here, and a single bad date silently corrupts the day-count log). A "reject"
+// means the movement is dropped entirely (never stored as a checkin); "warn" still stores it
+// (it's probably right) but the reasoning is appended to the document's text so it's visible to
+// the user and to the assistant answering day-count questions, rather than hidden.
+function applyTravelValidation(
+  extractedText: string,
+  movement: TravelMovement | null,
+  uploadedAt: Date
+): { finalText: string; storableMovement: TravelMovement | null } {
+  if (!movement) return { finalText: extractedText, storableMovement: null };
+
+  const validation = validateTravelMovement(movement, uploadedAt);
+  if (validation.severity === "reject") {
+    console.warn("documents: dropping extracted travel movement — failed validation", validation.issues);
+    return {
+      finalText:
+        extractedText +
+        `\n\n(A travel date/place in this document looked wrong and was not recorded: ` +
+        `${validation.issues.join(" ")})`,
+      storableMovement: null,
+    };
+  }
+  if (validation.severity === "warn") {
+    return {
+      finalText:
+        extractedText +
+        `\n\n(Note: extracted travel details for this document are flagged for review — ` +
+        `confidence ${Math.round(validation.confidence * 100)}%. ${validation.issues.join(" ")})`,
+      storableMovement: movement,
+    };
+  }
+  return { finalText: extractedText, storableMovement: movement };
+}
+
 async function extractDocument(
   buffer: Buffer,
   mimeType: string
@@ -181,37 +261,54 @@ async function extractDocument(
     messages: [{ role: "user", content }],
   });
 
-  const textBlock = response.content.find((b): b is Anthropic.TextBlock => b.type === "text");
-  const toolUse = response.content.find(
-    (b): b is Anthropic.ToolUseBlock => b.type === "tool_use" && b.name === "record_travel_movement"
-  );
-  const nameUse = response.content.find(
-    (b): b is Anthropic.ToolUseBlock => b.type === "tool_use" && b.name === "name_document"
-  );
+  return parseExtractionResponse(response);
+}
 
-  const nameInput = nameUse?.input as { title?: unknown; category?: unknown } | undefined;
-  const rawTitle = nameInput?.title;
-  const title =
-    typeof rawTitle === "string" && rawTitle.trim()
-      ? rawTitle.trim().slice(0, MAX_TITLE_LENGTH)
-      : null;
-  const category = resolveDocumentCategory(nameInput?.category);
+// Text-only counterpart to extractDocument — for content that arrives as plain text rather than
+// an image/PDF (today: a fetched web page's readable text). Reuses the same tool schemas and
+// response parsing so a saved link ends up in exactly the same shape as a saved photo/PDF, but
+// vision is structurally unreachable here: this function never sees a buffer or a media type,
+// only a string, so there's no way for it to accidentally spend image tokens.
+const MAX_LINK_TEXT_CHARS = 12_000;
 
-  let text = textBlock?.text ?? "(couldn't extract any text from this file)";
-  if (response.stop_reason === "max_tokens") {
-    // Surface truncation instead of silently returning a partial extraction — the model itself
-    // (and the user, if they ask to see the details) should know some facts may be missing
-    // rather than assuming the extraction was complete.
-    console.warn("documents: extraction hit max_tokens — output may be truncated");
-    text += "\n\n(Note: this extraction was cut off before finishing — some details, possibly including dates, may be missing.)";
-  }
+async function extractFactsFromLinkText(
+  pageText: string,
+  sourceUrl: string,
+  uploadedAt: Date
+): Promise<{
+  text: string;
+  title: string | null;
+  category: DocumentCategory | null;
+  movement: TravelMovement | null;
+}> {
+  const truncated = pageText.length > MAX_LINK_TEXT_CHARS;
+  const bodyText = truncated ? pageText.slice(0, MAX_LINK_TEXT_CHARS) : pageText;
 
-  return {
-    text,
-    title,
-    category,
-    movement: toolUse ? (toolUse.input as TravelMovement) : null,
-  };
+  const prompt =
+    "Call name_document first to title this, then do the extraction below.\n\n" +
+    "This is the readable text of a web page the user sent a link to via WhatsApp (e.g. a " +
+    "flight/hotel booking confirmation, an event page, a receipt page). Extract: (1) what kind " +
+    "of page this is, (2) every important fact actually part of the page — dates, names, " +
+    "reference/confirmation codes, amounts, locations — transcribed exactly as shown, (3) a " +
+    "one-sentence plain-English summary. Be thorough and factual; never guess at anything not " +
+    "actually present in the text. Ignore navigation menus, cookie banners, ads, and other page " +
+    "chrome that isn't the actual page content — none of that is a page fact and none of it " +
+    "should appear in the extraction.\n\n" +
+    `This link was opened around ${uploadedAt.toISOString()}. If the page shows travel dates ` +
+    "without a year, infer the year from that time and call record_travel_movement with the " +
+    "departure/arrival details, the same way you would for an uploaded boarding pass.\n\n" +
+    `Source URL: ${sourceUrl}` +
+    (truncated ? `\n\n(Page text truncated to the first ${MAX_LINK_TEXT_CHARS} characters.)` : "") +
+    `\n\nPage text:\n${bodyText}`;
+
+  const response = await getClient().messages.create({
+    model: EXTRACTION_MODEL,
+    max_tokens: 4096,
+    tools: [NAME_DOCUMENT_TOOL, TRAVEL_MOVEMENT_TOOL],
+    messages: [{ role: "user", content: [{ type: "text", text: prompt }] }],
+  });
+
+  return parseExtractionResponse(response);
 }
 
 function movementToCheckins(
@@ -277,28 +374,7 @@ export async function ingestWhatsAppMedia(params: {
         movement: null,
       };
 
-  // Deterministic guardrail on the model's extracted travel facts before they're trusted enough
-  // to feed the day-count log — see travelValidation.ts for why (hallucinated/misread dates are
-  // the top complaint here, and a single bad date silently corrupts the count). A "reject" means
-  // the movement is dropped entirely (never stored as a checkin); "warn" still stores it (it's
-  // probably right) but the reasoning is appended to the document's text so it's visible to the
-  // user and to the assistant answering day-count questions, rather than hidden.
-  let finalText = extractedText;
-  let storableMovement = movement;
-  if (movement) {
-    const validation = validateTravelMovement(movement, uploadedAt);
-    if (validation.severity === "reject") {
-      console.warn("documents: dropping extracted travel movement — failed validation", validation.issues);
-      finalText +=
-        `\n\n(A travel date/place in this document looked wrong and was not recorded: ` +
-        `${validation.issues.join(" ")})`;
-      storableMovement = null;
-    } else if (validation.severity === "warn") {
-      finalText +=
-        `\n\n(Note: extracted travel details for this document are flagged for review — ` +
-        `confidence ${Math.round(validation.confidence * 100)}%. ${validation.issues.join(" ")})`;
-    }
-  }
+  const { finalText, storableMovement } = applyTravelValidation(extractedText, movement, uploadedAt);
 
   const doc = saveDocument(params.ownerId, {
     phone: params.phone,
@@ -324,4 +400,63 @@ export async function ingestWhatsAppMedia(params: {
   }
 
   return doc;
+}
+
+// "Save this link" path — a WhatsApp text message that's just a URL (see
+// safeLinkFetcher.findSaveableUrl for the detection heuristic). Mirrors ingestWhatsAppMedia's
+// shape (fetch/download -> extract -> validate travel facts -> store) but the "file" being
+// stored is the page's cleaned, readable text rather than the raw source bytes — smaller and
+// more directly useful if it's ever downloaded again than the original HTML would be, and it's
+// exactly the same text the extraction call itself saw, so there's no mismatch between what's
+// stored and what was analyzed.
+export async function ingestWhatsAppLink(params: {
+  ownerId: number;
+  phone: string;
+  url: string;
+}): Promise<{ ok: true; doc: DocumentRow } | { ok: false; reason: FetchFailureReason }> {
+  const uploadedAt = new Date();
+
+  const fetched = await fetchPageText(params.url);
+  if (!fetched.ok) {
+    console.warn(`documents: link fetch failed (${fetched.reason})`, fetched.detail);
+    return { ok: false, reason: fetched.reason };
+  }
+
+  const {
+    text: extractedText,
+    title,
+    category,
+    movement,
+  } = await extractFactsFromLinkText(fetched.text, fetched.finalUrl, uploadedAt);
+
+  const { finalText, storableMovement } = applyTravelValidation(extractedText, movement, uploadedAt);
+
+  const storedName = `${Date.now()}-${crypto.randomUUID()}.txt`;
+  const storedPath = path.join(uploadsDir, storedName);
+  fs.writeFileSync(storedPath, encryptBuffer(Buffer.from(fetched.text, "utf8")));
+
+  const doc = saveDocument(params.ownerId, {
+    phone: params.phone,
+    filename: null,
+    mimeType: "text/plain",
+    storedPath,
+    caption: fetched.finalUrl,
+    title,
+    extractedText: finalText,
+    category,
+  });
+
+  if (storableMovement) {
+    for (const c of movementToCheckins(storableMovement, doc.id)) {
+      saveCheckin(params.ownerId, {
+        country: c.country,
+        city: c.city,
+        checkedInAt: c.checkedInAt,
+        source: "document",
+        documentId: c.documentId,
+      });
+    }
+  }
+
+  return { ok: true, doc };
 }

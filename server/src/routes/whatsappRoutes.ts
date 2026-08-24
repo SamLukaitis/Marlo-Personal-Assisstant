@@ -10,7 +10,8 @@ import {
 } from "../providers/whatsapp.js";
 import { resolveOwnerByPhone, getWhatsAppHistory, appendWhatsAppMessage } from "../db/store.js";
 import { runAssistantChat, MAX_HISTORY_MESSAGES } from "../ai/assistant.js";
-import { ingestWhatsAppMedia } from "../services/documents.js";
+import { ingestWhatsAppMedia, ingestWhatsAppLink } from "../services/documents.js";
+import { findSaveableUrl, type FetchFailureReason } from "../services/safeLinkFetcher.js";
 import { handlePendingRegistration } from "../services/whatsappRegistration.js";
 
 export const whatsappRoutes = Router();
@@ -41,8 +42,72 @@ function alreadyProcessed(id: string): boolean {
   return false;
 }
 
+// Friendly, non-leaky wording per failure reason — never expose the raw fetch/DNS error detail
+// to the end user, just enough for them to know what to do next.
+function linkFailureMessage(reason: FetchFailureReason): string {
+  switch (reason) {
+    case "invalid_url":
+    case "unsupported_scheme":
+      return "That doesn't look like a regular web link I can open — send me a normal http/https address.";
+    case "blocked_host":
+    case "dns_error":
+      return "I couldn't reach that link — double check the address, or just tell me the details directly.";
+    case "timeout":
+      return "That page took too long to load, so I couldn't save it — you can try again or tell me the details directly.";
+    case "too_many_redirects":
+      return "That link redirected too many times for me to follow — try sending the direct page.";
+    case "non_html_content":
+      return "That link points to a file rather than a web page, so I can't read it directly — try sending the file itself.";
+    case "response_too_large":
+    case "network_error":
+      return "I ran into a problem trying to open that link, so I couldn't save it.";
+  }
+}
+
+async function handleLink(ownerId: number, from: string, url: string): Promise<void> {
+  const result = await ingestWhatsAppLink({ ownerId, phone: from, url });
+
+  if (!result.ok) {
+    const reply = linkFailureMessage(result.reason);
+    appendWhatsAppMessage(ownerId, from, "assistant", reply);
+    await sendWhatsAppMessage(from, reply);
+    return;
+  }
+
+  // Same pattern as handleMedia below: route through the normal assistant loop so the saved
+  // page's content can actually be acted on/confirmed, not just echoed back.
+  const history = getWhatsAppHistory(from, MAX_HISTORY_MESSAGES).map((m) => ({
+    role: m.role,
+    content: m.content,
+  }));
+  const docContext =
+    `[A link was just sent via WhatsApp, fetched, and saved — no need to save it again, just ` +
+    `confirm and/or act on it. Extracted content:\n${result.doc.extractedText}`;
+  if (history.length > 0) {
+    history[history.length - 1] = { role: "user", content: docContext };
+  } else {
+    history.push({ role: "user", content: docContext });
+  }
+
+  const reply = await runAssistantChat(ownerId, history);
+  appendWhatsAppMessage(ownerId, from, "assistant", reply);
+  await sendWhatsAppMessage(from, reply);
+}
+
 async function handleText(ownerId: number, from: string, text: string): Promise<void> {
   appendWhatsAppMessage(ownerId, from, "user", text);
+
+  // A message that's just a URL (with at most a short lead-in) is treated as "save this link"
+  // the same way a photo/PDF attachment already gets saved — see
+  // safeLinkFetcher.findSaveableUrl for the detection heuristic and why it's biased hard toward
+  // precision over recall (a false positive costs a fetch + an LLM call and pollutes the
+  // document store; a false negative just means the user re-sends the bare link).
+  const url = findSaveableUrl(text);
+  if (url) {
+    await handleLink(ownerId, from, url);
+    return;
+  }
+
   const history = getWhatsAppHistory(from, MAX_HISTORY_MESSAGES).map((m) => ({
     role: m.role,
     content: m.content,
