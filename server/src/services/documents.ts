@@ -13,6 +13,8 @@ import {
   type DocumentCategory,
 } from "../db/store.js";
 import { encryptBuffer } from "./crypto.js";
+import { validateTravelMovement, type TravelMovement } from "./travelValidation.js";
+import { fetchPageText, type FetchFailureReason } from "./safeLinkFetcher.js";
 
 // Pure on purpose — the one bit of category logic worth its own unit test is "what happens when
 // the model's tool call doesn't give us a valid category," and that doesn't need an Anthropic
@@ -97,15 +99,6 @@ const NAME_DOCUMENT_TOOL: Anthropic.Tool = {
 // Long enough to stay specific, short enough to sit on one line in the file list.
 const MAX_TITLE_LENGTH = 60;
 
-interface TravelMovement {
-  departureCountry?: string;
-  departureCity?: string;
-  departureDateTime?: string;
-  arrivalCountry: string;
-  arrivalCity: string;
-  arrivalDateTime: string;
-}
-
 // A real digital PDF (not a scan/photo saved as PDF) has an embedded text layer pdf-parse can
 // read exactly, for free, with zero risk of a misread digit — strictly better than vision for
 // that case: cheaper (no image tokens) and more accurate (guaranteed-correct source text).
@@ -162,65 +155,22 @@ async function extractPdfTextLayer(buffer: Buffer): Promise<string | null> {
   }
 }
 
-async function extractDocument(
-  buffer: Buffer,
-  mimeType: string
+// Shared by every extraction path (image/PDF, and link text below) — calling name_document
+// "before writing your extraction" doesn't guarantee the model actually continues on to write it
+// in the same turn: a model that calls a tool can just as validly stop there (stop_reason
+// "tool_use") with no text at all, leaving the extraction empty even though the tool calls
+// themselves succeeded. A single non-looping call can't recover from that; feed the tool calls
+// back as normal tool_results and let the conversation continue, same as the main assistant loop
+// in ai/assistant.ts does, until the model actually produces the write-up.
+async function runExtraction(
+  initialContent: Anthropic.ContentBlockParam[]
 ): Promise<{
   text: string;
   title: string | null;
   category: DocumentCategory | null;
   movement: TravelMovement | null;
 }> {
-  const uploadedAt = new Date().toISOString();
-  const prompt =
-    "Call name_document first to title this file, then do the extraction below.\n\n" +
-    "This is a photo or document the user saved for later reference (e.g. a boarding pass, " +
-    "license, ticket, receipt, booking confirmation, or ID). Extract: (1) what kind of " +
-    "document this is, (2) every important fact actually part of the document — dates, names, " +
-    "reference/confirmation/license codes, numbers, locations — transcribed exactly as shown, " +
-    "(3) a one-sentence plain-English summary. Be thorough and factual about the document " +
-    "itself; never guess at anything not actually visible. Ignore incidental phone/screenshot " +
-    "chrome that isn't part of the document — status bar clock, battery/signal icons, " +
-    "notification banners, browser or app UI — none of that is a document fact and none of it " +
-    "should appear in the extraction.\n\n" +
-    `This file was uploaded around ${uploadedAt}. If the document shows travel (e.g. a ` +
-    "boarding pass) but a date has no year printed on it, infer the year from that upload " +
-    "time — boarding passes are almost always saved on or near the day of travel — and call " +
-    "record_travel_movement with the departure/arrival details.";
-
-  const pdfText = mimeType === "application/pdf" ? await extractPdfTextLayer(buffer) : null;
-
-  const base64 = buffer.toString("base64");
-  const content: Anthropic.ContentBlockParam[] = pdfText
-    ? [
-        {
-          type: "text",
-          text: `Document text (extracted directly from the PDF's text layer and screened for garbling — exact, not a transcription):\n\n${pdfText}\n\n${prompt}`,
-        },
-      ]
-    : SUPPORTED_IMAGE_TYPES.has(mimeType)
-    ? [
-        {
-          type: "image",
-          source: { type: "base64", media_type: mimeType as "image/jpeg", data: base64 },
-        },
-        { type: "text", text: prompt },
-      ]
-    : [
-        {
-          type: "document",
-          source: { type: "base64", media_type: "application/pdf", data: base64 },
-        },
-        { type: "text", text: prompt },
-      ];
-
-  // Calling name_document "before writing your extraction" doesn't guarantee the model actually
-  // continues on to write it in the same turn — a model that calls a tool can just as validly stop
-  // there (stop_reason "tool_use") with no text at all, leaving the extraction empty even though
-  // the tool calls themselves succeeded. A single non-looping call can't recover from that; feed
-  // the tool call back as a normal tool_result and let the conversation continue, same as the main
-  // assistant loop in ai/assistant.ts does, until the model actually produces the write-up.
-  const messages: Anthropic.MessageParam[] = [{ role: "user", content }];
+  const messages: Anthropic.MessageParam[] = [{ role: "user", content: initialContent }];
   let response: Anthropic.Message;
   let textBlock: Anthropic.TextBlock | undefined;
   let toolUse: Anthropic.ToolUseBlock | undefined;
@@ -283,6 +233,137 @@ async function extractDocument(
   };
 }
 
+// Deterministic guardrail applied identically wherever an extraction call can surface a travel
+// movement (image/PDF, link) — see travelValidation.ts for why (hallucinated/misread dates are
+// the top complaint here, and a single bad date silently corrupts the day-count log). A "reject"
+// means the movement is dropped entirely (never stored as a checkin); "warn" still stores it
+// (it's probably right) but the reasoning is appended to the document's text so it's visible to
+// the user and to the assistant answering day-count questions, rather than hidden.
+function applyTravelValidation(
+  extractedText: string,
+  movement: TravelMovement | null,
+  uploadedAt: Date
+): { finalText: string; storableMovement: TravelMovement | null } {
+  if (!movement) return { finalText: extractedText, storableMovement: null };
+
+  const validation = validateTravelMovement(movement, uploadedAt);
+  if (validation.severity === "reject") {
+    console.warn("documents: dropping extracted travel movement — failed validation", validation.issues);
+    return {
+      finalText:
+        extractedText +
+        `\n\n(A travel date/place in this document looked wrong and was not recorded: ` +
+        `${validation.issues.join(" ")})`,
+      storableMovement: null,
+    };
+  }
+  if (validation.severity === "warn") {
+    return {
+      finalText:
+        extractedText +
+        `\n\n(Note: extracted travel details for this document are flagged for review — ` +
+        `confidence ${Math.round(validation.confidence * 100)}%. ${validation.issues.join(" ")})`,
+      storableMovement: movement,
+    };
+  }
+  return { finalText: extractedText, storableMovement: movement };
+}
+
+async function extractDocument(
+  buffer: Buffer,
+  mimeType: string
+): Promise<{
+  text: string;
+  title: string | null;
+  category: DocumentCategory | null;
+  movement: TravelMovement | null;
+}> {
+  const uploadedAt = new Date().toISOString();
+  const prompt =
+    "Call name_document first to title this file, then do the extraction below.\n\n" +
+    "This is a photo or document the user saved for later reference (e.g. a boarding pass, " +
+    "license, ticket, receipt, booking confirmation, or ID). Extract: (1) what kind of " +
+    "document this is, (2) every important fact actually part of the document — dates, names, " +
+    "reference/confirmation/license codes, numbers, locations — transcribed exactly as shown, " +
+    "(3) a one-sentence plain-English summary. Be thorough and factual about the document " +
+    "itself; never guess at anything not actually visible. Ignore incidental phone/screenshot " +
+    "chrome that isn't part of the document — status bar clock, battery/signal icons, " +
+    "notification banners, browser or app UI — none of that is a document fact and none of it " +
+    "should appear in the extraction.\n\n" +
+    `This file was uploaded around ${uploadedAt}. If the document shows travel (e.g. a ` +
+    "boarding pass) but a date has no year printed on it, infer the year from that upload " +
+    "time — boarding passes are almost always saved on or near the day of travel — and call " +
+    "record_travel_movement with the departure/arrival details.";
+
+  const pdfText = mimeType === "application/pdf" ? await extractPdfTextLayer(buffer) : null;
+
+  const base64 = buffer.toString("base64");
+  const content: Anthropic.ContentBlockParam[] = pdfText
+    ? [
+        {
+          type: "text",
+          text: `Document text (extracted directly from the PDF's text layer and screened for garbling — exact, not a transcription):\n\n${pdfText}\n\n${prompt}`,
+        },
+      ]
+    : SUPPORTED_IMAGE_TYPES.has(mimeType)
+    ? [
+        {
+          type: "image",
+          source: { type: "base64", media_type: mimeType as "image/jpeg", data: base64 },
+        },
+        { type: "text", text: prompt },
+      ]
+    : [
+        {
+          type: "document",
+          source: { type: "base64", media_type: "application/pdf", data: base64 },
+        },
+        { type: "text", text: prompt },
+      ];
+
+  return runExtraction(content);
+}
+
+// Text-only counterpart to extractDocument — for content that arrives as plain text rather than
+// an image/PDF (today: a fetched web page's readable text). Reuses the same continuation loop and
+// tool schemas so a saved link ends up in exactly the same shape as a saved photo/PDF, but vision
+// is structurally unreachable here: this function never sees a buffer or a media type, only a
+// string, so there's no way for it to accidentally spend image tokens.
+const MAX_LINK_TEXT_CHARS = 12_000;
+
+async function extractFactsFromLinkText(
+  pageText: string,
+  sourceUrl: string,
+  uploadedAt: Date
+): Promise<{
+  text: string;
+  title: string | null;
+  category: DocumentCategory | null;
+  movement: TravelMovement | null;
+}> {
+  const truncated = pageText.length > MAX_LINK_TEXT_CHARS;
+  const bodyText = truncated ? pageText.slice(0, MAX_LINK_TEXT_CHARS) : pageText;
+
+  const prompt =
+    "Call name_document first to title this, then do the extraction below.\n\n" +
+    "This is the readable text of a web page the user sent a link to via WhatsApp (e.g. a " +
+    "flight/hotel booking confirmation, an event page, a receipt page). Extract: (1) what kind " +
+    "of page this is, (2) every important fact actually part of the page — dates, names, " +
+    "reference/confirmation codes, amounts, locations — transcribed exactly as shown, (3) a " +
+    "one-sentence plain-English summary. Be thorough and factual; never guess at anything not " +
+    "actually present in the text. Ignore navigation menus, cookie banners, ads, and other page " +
+    "chrome that isn't the actual page content — none of that is a page fact and none of it " +
+    "should appear in the extraction.\n\n" +
+    `This link was opened around ${uploadedAt.toISOString()}. If the page shows travel dates ` +
+    "without a year, infer the year from that time and call record_travel_movement with the " +
+    "departure/arrival details, the same way you would for an uploaded boarding pass.\n\n" +
+    `Source URL: ${sourceUrl}` +
+    (truncated ? `\n\n(Page text truncated to the first ${MAX_LINK_TEXT_CHARS} characters.)` : "") +
+    `\n\nPage text:\n${bodyText}`;
+
+  return runExtraction([{ type: "text", text: prompt }]);
+}
+
 function movementToCheckins(
   movement: TravelMovement,
   documentId: number
@@ -322,6 +403,7 @@ export async function ingestWhatsAppMedia(params: {
   filename?: string;
   caption?: string;
 }): Promise<DocumentRow> {
+  const uploadedAt = new Date();
   const { buffer, mimeType: downloadedMimeType } = await downloadWhatsAppMedia(params.mediaId);
   const mimeType = params.mimeType || downloadedMimeType;
 
@@ -331,14 +413,14 @@ export async function ingestWhatsAppMedia(params: {
   fs.writeFileSync(storedPath, encryptBuffer(buffer));
 
   let doc: DocumentRow;
-  let movement: TravelMovement | null;
+  let storableMovement: TravelMovement | null;
   try {
     const canAnalyze = SUPPORTED_IMAGE_TYPES.has(mimeType) || mimeType === "application/pdf";
     const {
       text: extractedText,
       title,
       category,
-      movement: extractedMovement,
+      movement,
     } = canAnalyze
       ? await extractDocument(buffer, mimeType)
       : {
@@ -347,7 +429,9 @@ export async function ingestWhatsAppMedia(params: {
           category: null,
           movement: null,
         };
-    movement = extractedMovement;
+
+    const validated = applyTravelValidation(extractedText, movement, uploadedAt);
+    storableMovement = validated.storableMovement;
 
     doc = saveDocument(params.ownerId, {
       phone: params.phone,
@@ -356,7 +440,7 @@ export async function ingestWhatsAppMedia(params: {
       storedPath,
       caption: params.caption ?? null,
       title,
-      extractedText,
+      extractedText: validated.finalText,
       category,
     });
   } catch (err) {
@@ -367,8 +451,8 @@ export async function ingestWhatsAppMedia(params: {
     throw err;
   }
 
-  if (movement) {
-    for (const c of movementToCheckins(movement, doc.id)) {
+  if (storableMovement) {
+    for (const c of movementToCheckins(storableMovement, doc.id)) {
       saveCheckin(params.ownerId, {
         country: c.country,
         city: c.city,
@@ -380,4 +464,73 @@ export async function ingestWhatsAppMedia(params: {
   }
 
   return doc;
+}
+
+// "Save this link" path — a WhatsApp text message that's just a URL (see
+// safeLinkFetcher.findSaveableUrl for the detection heuristic). Mirrors ingestWhatsAppMedia's
+// shape (fetch/download -> extract -> validate travel facts -> store) but the "file" being
+// stored is the page's cleaned, readable text rather than the raw source bytes — smaller and
+// more directly useful if it's ever downloaded again than the original HTML would be, and it's
+// exactly the same text the extraction call itself saw, so there's no mismatch between what's
+// stored and what was analyzed.
+export async function ingestWhatsAppLink(params: {
+  ownerId: number;
+  phone: string;
+  url: string;
+}): Promise<{ ok: true; doc: DocumentRow } | { ok: false; reason: FetchFailureReason }> {
+  const uploadedAt = new Date();
+
+  const fetched = await fetchPageText(params.url);
+  if (!fetched.ok) {
+    console.warn(`documents: link fetch failed (${fetched.reason})`, fetched.detail);
+    return { ok: false, reason: fetched.reason };
+  }
+
+  const storedName = `${Date.now()}-${crypto.randomUUID()}.txt`;
+  const storedPath = path.join(uploadsDir, storedName);
+  fs.writeFileSync(storedPath, encryptBuffer(Buffer.from(fetched.text, "utf8")));
+
+  let doc: DocumentRow;
+  let storableMovement: TravelMovement | null;
+  try {
+    const {
+      text: extractedText,
+      title,
+      category,
+      movement,
+    } = await extractFactsFromLinkText(fetched.text, fetched.finalUrl, uploadedAt);
+
+    const validated = applyTravelValidation(extractedText, movement, uploadedAt);
+    storableMovement = validated.storableMovement;
+
+    doc = saveDocument(params.ownerId, {
+      phone: params.phone,
+      filename: null,
+      mimeType: "text/plain",
+      storedPath,
+      caption: fetched.finalUrl,
+      title,
+      extractedText: validated.finalText,
+      category,
+    });
+  } catch (err) {
+    // Same orphaned-file risk as ingestWhatsAppMedia: the encrypted file is already on disk by
+    // the time extraction or the DB insert could fail.
+    fs.unlinkSync(storedPath);
+    throw err;
+  }
+
+  if (storableMovement) {
+    for (const c of movementToCheckins(storableMovement, doc.id)) {
+      saveCheckin(params.ownerId, {
+        country: c.country,
+        city: c.city,
+        checkedInAt: c.checkedInAt,
+        source: "document",
+        documentId: c.documentId,
+      });
+    }
+  }
+
+  return { ok: true, doc };
 }
