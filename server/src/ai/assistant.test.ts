@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import { buildToolsForOwner, buildSystemPrompt, runTool } from "./assistant.js";
 import { findOrCreateUserByEmail, setToolEnabled, getEnabledTools } from "../db/store.js";
 import { getBriefingSettings, saveBriefingSettings, type BriefingSettings } from "../services/briefing.js";
+import { getXeroForwardingEmail } from "../services/xero.js";
 
 let counter = 0;
 function uniqueEmail(prefix: string): string {
@@ -197,6 +198,35 @@ describe("set_tool_enabled tool", () => {
     const user = findOrCreateUserByEmail(uniqueEmail("unknown-tool-key"));
     const result = await runTool(user.id, "set_tool_enabled", { tool: "finance", enabled: true });
     expect(result).toEqual({ error: "unknown tool: finance" });
+  });
+});
+
+describe("connect_xero tool", () => {
+  it("saves a valid forwarding address for the calling owner", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("connect-xero"));
+    const result = await runTool(user.id, "connect_xero", { forwarding_email: "abc123@bills.xero.com" });
+    expect(result).toEqual({ ok: true });
+    expect(getXeroForwardingEmail(user.id)).toBe("abc123@bills.xero.com");
+  });
+
+  it("returns an error object (not a throw) for a malformed address, and saves nothing", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("connect-xero-bad"));
+    const result = await runTool(user.id, "connect_xero", { forwarding_email: "not-an-email" });
+    expect(result).toEqual({ error: '"not-an-email" doesn\'t look like a valid email address.' });
+    expect(getXeroForwardingEmail(user.id)).toBeNull();
+  });
+});
+
+describe("buildSystemPrompt Xero status", () => {
+  it("reports not connected when no address is saved", () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("prompt-xero-off"));
+    expect(buildSystemPrompt(user.id)).toContain("Xero: not connected");
+  });
+
+  it("reports the saved address once connected", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("prompt-xero-on"));
+    await runTool(user.id, "connect_xero", { forwarding_email: "xyz789@bills.xero.com" });
+    expect(buildSystemPrompt(user.id)).toContain("xyz789@bills.xero.com");
   });
 });
 

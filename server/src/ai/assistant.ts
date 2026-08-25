@@ -30,6 +30,7 @@ import { countTravelDays } from "../services/travelDays.js";
 import { findFreeSlots } from "../services/freeSlots.js";
 import { buildSpendingDigest } from "../services/spendingDigest.js";
 import { getBriefingSettings, saveBriefingSettings, hasBriefingSettings } from "../services/briefing.js";
+import { getXeroForwardingEmail, setXeroForwardingEmail } from "../services/xero.js";
 import {
   hubListMessages,
   hubGetMessage,
@@ -473,6 +474,21 @@ const ALWAYS_ON_TOOLS: Anthropic.Tool[] = [
       required: ["tool", "enabled"],
     },
   },
+  {
+    name: "connect_xero",
+    description:
+      "Save the user's Xero forwarding email address, the first step toward auto-forwarding receipts to Xero (that forwarding itself isn't built yet — this only stores the address). Call this ONLY once the user has actually told you the address in this conversation — never guess or invent one. If they ask to 'connect Xero' / 'set up Xero' and haven't given the address yet, first explain that Xero gives every account its own unique forwarding email (in Xero: Business > Bills to pay, or Accounting > Bills, look for the 'email bills to this address' address) and ask them to paste it — then call this tool with exactly what they send.",
+    input_schema: {
+      type: "object",
+      properties: {
+        forwarding_email: {
+          type: "string",
+          description: "The Xero-provided forwarding email address, exactly as the user gave it.",
+        },
+      },
+      required: ["forwarding_email"],
+    },
+  },
 ];
 
 const CONDITIONAL_TOOLS: Record<ToolKey, Anthropic.Tool[]> = {
@@ -689,6 +705,14 @@ export async function runTool(ownerId: number, name: string, input: Record<strin
       setToolEnabled(ownerId, tool as ToolKey, !!input.enabled);
       return { ok: true };
     }
+    case "connect_xero": {
+      try {
+        setXeroForwardingEmail(ownerId, input.forwarding_email as string);
+        return { ok: true };
+      } catch (err) {
+        return { error: (err as Error).message };
+      }
+    }
     case "list_expenses":
       return listEntities<ExpenseData>(ownerId, { type: "expense" })
         .slice(0, (input.limit as number | undefined) ?? 50)
@@ -803,6 +827,7 @@ function buildRules(enabled: Set<ToolKey>): string {
     '- Use search_documents/list_recent_documents when the user asks about something they photographed or sent via WhatsApp (boarding passes, licenses, tickets, receipts) — e.g. "when did I fly to X" or "what\'s the code on my license".',
     "- Use get_news for news/current-events questions. Only report headlines the tool actually returned — never supplement with your own general knowledge or training data, even for well-known ongoing events. Fabricating a headline is a serious error, same as with any other tool's data.",
     "- Use get_weather and get_markets for weather and stock/index questions. The same rule applies: report only what the tool returned. Never state a price, a percentage move, or a forecast you didn't just fetch.",
+    "- If the user asks to connect/set up Xero: Xero gives each account a unique forwarding email (in Xero: Business > Bills to pay, or Accounting > Bills — the 'email bills to this address' address). Ask them to paste it, then call connect_xero with exactly what they send — never guess or fill in an address yourself. Receipts aren't actually forwarded to Xero yet even once connected; say so if asked.",
   ];
   const travel = [
     "- Use list_travel_checkins for questions about where the user has physically been or when they arrived somewhere — this is automatic location history, separate from documents.",
@@ -836,6 +861,11 @@ export function buildSystemPrompt(ownerId: number): string {
     ? memories.map((m) => `- ${m.content}`).join("\n")
     : "(nothing remembered yet)";
 
+  const xeroEmail = getXeroForwardingEmail(ownerId);
+  const xeroStatus = xeroEmail
+    ? `Xero forwarding address on file: ${xeroEmail} (receipt auto-forwarding isn't built yet, only the address is stored).`
+    : "Xero: not connected — no forwarding address saved yet.";
+
   // This user has never saved briefing settings — they're mid-onboarding (just connected their
   // account via WhatsApp). Settle briefing content first, then pivot to the open-ended tools
   // question in the same reply, so it reads as one continuous conversation rather than two
@@ -856,6 +886,7 @@ export function buildSystemPrompt(ownerId: number): string {
     `Connected accounts:\n${accountList}`,
     `Local computer folders searchable by file name:\n${folderList}`,
     `Things you've learned about the user over past conversations:\n${memoryList}`,
+    xeroStatus,
     onboardingNote,
     buildRules(getEnabledTools(ownerId)),
   ]

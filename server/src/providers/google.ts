@@ -11,6 +11,8 @@ import type {
   DraftResult,
   ContactHit,
   EventInput,
+  EmailAttachment,
+  SendResult,
 } from "./types.js";
 
 const SCOPES = [
@@ -396,5 +398,64 @@ export async function googleCreateDraft(
     provider: "google",
     accountEmail: account.email,
     reviewNote: `Draft created in Gmail (${account.email}). Review and send it from Gmail — nothing has been sent.`,
+  };
+}
+
+// Exported (rather than kept private) so the MIME construction — the part actually worth
+// getting right, e.g. the attachment being real multipart rather than inline base64 text —
+// can be unit-tested without a live Gmail client.
+export function buildRawEmail(
+  to: string,
+  subject: string,
+  body: string,
+  attachment?: EmailAttachment
+): string {
+  if (!attachment) {
+    return Buffer.from(
+      `To: ${to}\r\nSubject: ${subject}\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n${body}`
+    ).toString("base64url");
+  }
+  const boundary = `marlowe_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+  const message = [
+    `To: ${to}`,
+    `Subject: ${subject}`,
+    `MIME-Version: 1.0`,
+    `Content-Type: multipart/mixed; boundary="${boundary}"`,
+    ``,
+    `--${boundary}`,
+    `Content-Type: text/plain; charset=utf-8`,
+    ``,
+    body,
+    ``,
+    `--${boundary}`,
+    `Content-Type: ${attachment.mimeType}; name="${attachment.filename}"`,
+    `Content-Disposition: attachment; filename="${attachment.filename}"`,
+    `Content-Transfer-Encoding: base64`,
+    ``,
+    attachment.data.toString("base64"),
+    ``,
+    `--${boundary}--`,
+  ].join("\r\n");
+  return Buffer.from(message).toString("base64url");
+}
+
+/** Actually sends (as opposed to googleCreateDraft, which only stages an unsent draft). */
+export async function googleSendMessage(
+  account: AccountRow,
+  to: string,
+  subject: string,
+  body: string,
+  attachment?: EmailAttachment
+): Promise<SendResult> {
+  const gmail = google.gmail({ version: "v1", auth: authFor(account) });
+  const raw = buildRawEmail(to, subject, body, attachment);
+  const res = await gmail.users.messages.send({
+    userId: "me",
+    requestBody: { raw },
+  });
+  return {
+    messageId: res.data.id ?? "",
+    provider: "google",
+    accountEmail: account.email,
   };
 }

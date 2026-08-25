@@ -16,6 +16,8 @@ import type {
   ChatThread,
   ContactHit,
   EventInput,
+  EmailAttachment,
+  SendResult,
 } from "../providers/types.js";
 
 // Both providers throw differently (Google's gaxios errors carry structured
@@ -148,6 +150,26 @@ export async function hubCreateDraft(
   return account.provider === "google"
     ? g.googleCreateDraft(account, to, subject, body)
     : ms.microsoftCreateDraft(account, to, subject, body);
+}
+
+// Google only for now — Outlook can't send yet because the connected Microsoft accounts were
+// authorized with Mail.Read/Mail.ReadWrite only, not Mail.Send; adding that needs a scope change
+// and a one-time reconnect (tracked in feature-to-do/xero-receipt-forwarding.md step 1).
+export async function hubSendMessage(
+  ownerId: number,
+  accountId: number,
+  to: string,
+  subject: string,
+  body: string,
+  attachment?: EmailAttachment
+): Promise<SendResult> {
+  const account = requireAccount(ownerId, accountId);
+  if (account.provider !== "google") {
+    throw new Error(
+      `Sending email isn't set up yet for Microsoft accounts (${account.email}) — only Gmail accounts can send right now.`
+    );
+  }
+  return g.googleSendMessage(account, to, subject, body, attachment);
 }
 
 export async function hubCreateEvent(

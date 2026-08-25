@@ -44,6 +44,18 @@ export interface DraftResult {
   reviewNote: string;
 }
 
+export interface EmailAttachment {
+  filename: string;
+  mimeType: string;
+  data: Buffer;
+}
+
+export interface SendResult {
+  messageId: string;
+  provider: Provider;
+  accountEmail: string;
+}
+
 export interface ChatThread {
   id: string;
   accountId: number;
