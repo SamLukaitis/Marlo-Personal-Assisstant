@@ -13,6 +13,7 @@ import { runAssistantChat, MAX_HISTORY_MESSAGES } from "../ai/assistant.js";
 import { ingestWhatsAppMedia, ingestWhatsAppLink } from "../services/documents.js";
 import { findSaveableUrl, type FetchFailureReason } from "../services/safeLinkFetcher.js";
 import { handlePendingRegistration, isHelpTrigger, MARLOWE_HELP_TEXT } from "../services/whatsappRegistration.js";
+import { isVersionTrigger, buildVersionText } from "../services/version.js";
 
 export const whatsappRoutes = Router();
 
@@ -103,6 +104,15 @@ async function handleText(ownerId: number, from: string, text: string): Promise<
   if (isHelpTrigger(text)) {
     appendWhatsAppMessage(ownerId, from, "assistant", MARLOWE_HELP_TEXT);
     await sendWhatsAppMessage(from, MARLOWE_HELP_TEXT);
+    return;
+  }
+
+  // Same short-circuit shape as help, above — bypasses the model entirely so it works (and
+  // tells the truth) even if the assistant/tool layer itself is what's broken or stale.
+  if (isVersionTrigger(text)) {
+    const versionText = buildVersionText();
+    appendWhatsAppMessage(ownerId, from, "assistant", versionText);
+    await sendWhatsAppMessage(from, versionText);
     return;
   }
 

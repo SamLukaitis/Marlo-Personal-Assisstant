@@ -62,3 +62,13 @@ describe("handleIncoming — help trigger for already-registered users", () => {
     expect(runAssistantChat).toHaveBeenCalledTimes(1);
   });
 });
+
+describe("handleIncoming — version trigger", () => {
+  it("replies with build info and never calls the assistant, even if the model layer would be broken", async () => {
+    await handleIncoming({ kind: "text", from: "447900000002", text: "version", messageId: "m3" });
+
+    expect(runAssistantChat).not.toHaveBeenCalled();
+    expect(sendWhatsAppMessage).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(sendWhatsAppMessage).mock.calls[0][0]).toBe("447900000002");
+  });
+});
