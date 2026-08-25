@@ -14,3 +14,4 @@ the feature is actually picked up.
 - [save-for-later-photo-capture.md](save-for-later-photo-capture.md)
 - [xero-receipt-forwarding.md](xero-receipt-forwarding.md)
 - [marlowe-capabilities-ui.md](marlowe-capabilities-ui.md)
+- [document-deduplication.md](document-deduplication.md)

@@ -51,10 +51,9 @@ switch. Here's what's actually involved, in plain terms:
    emailed to Xero, set the moment it has. `forwardReceiptToXero` checks it first and refuses to
    re-send a document that's already marked. This protects against the same *document row* ever
    going out twice (e.g. a future "resend" tool). It does **not** protect against the same photo
-   being ingested as two separate document rows in the first place — that's the pre-existing gap
-   noted in `changelog/2026-08-24-entities-and-links.md` ("no dedup for the same document sent
-   twice", e.g. a WhatsApp webhook redelivery) — a bigger, separate fix (content-hash dedup on
-   `documents`), not something this step attempts.
+   being ingested as two separate document rows in the first place, or two different photos of the
+   same receipt — see `feature-to-do/document-deduplication.md` for why that's deliberately not
+   being solved here.
 
 7. **Test it against a real Xero forwarding address.** Automated tests cover the forwarding logic
    itself (`server/src/services/xeroForwarding.test.ts`) and the live `connect_xero` chat flow was
