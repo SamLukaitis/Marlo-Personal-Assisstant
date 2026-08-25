@@ -25,11 +25,45 @@ import {
 import { sendWhatsAppMessage } from "../providers/whatsapp.js";
 import { hubListMessages, hubListEvents } from "./hub.js";
 import { SERVER_URL } from "../config.js";
+import { getRegistrationAssistReply } from "../ai/assistant.js";
 import type { IncomingWhatsAppMessage } from "../providers/whatsapp.js";
 
 const IDLE_RESET_MS = 24 * 60 * 60 * 1000; // a week-old half-finished conversation starts over
 const RESEND_COOLDOWN_MS = 60 * 1000; // advisory UX throttle, not the security boundary
 const lastTokenIssuedAt = new Map<string, number>();
+
+// Short, plain-language rundown aimed at someone who isn't very tech-savvy — this doubles as
+// both the very first message a new number ever sees and the answer to "help"/"menu" at any
+// point later (pre- or post-registration), so there's exactly one copy of it to keep accurate.
+export const MARLOWE_HELP_TEXT =
+  "Hi! I'm Marlowe, your personal assistant. Here's what I do:\n\n" +
+  "• Read your email & calendar, help you reply and schedule\n" +
+  "• Send a morning update each day\n" +
+  "• Answer questions like \"what's on today?\"\n" +
+  "• Save photos of tickets/receipts/documents\n" +
+  "• Text \"help\" anytime for this list again\n\n" +
+  "What should I call you?";
+
+const HELP_TRIGGERS = new Set(["help", "menu", "what can you do"]);
+export function isHelpTrigger(text: string): boolean {
+  return HELP_TRIGGERS.has(text.trim().toLowerCase());
+}
+
+// What to say again after a help interruption, so the person lands back where they were
+// instead of getting stuck. `awaiting_name` reuses the tail of the first-contact message since
+// that's the only place the name question is asked.
+function currentStepPrompt(row: PendingRegistrationRow): string {
+  switch (row.step) {
+    case "awaiting_name":
+      return "What should I call you?";
+    case "awaiting_email":
+      return "Which email do you use?";
+    case "awaiting_link_tap":
+      return "Tap the link above to connect your email — I'll message you the moment it's done. Reply \"resend\" if it expired.";
+    case "completed":
+      return "";
+  }
+}
 
 function withinCooldown(phone: string): boolean {
   const last = lastTokenIssuedAt.get(phone);
@@ -100,7 +134,13 @@ async function handleAwaitingName(row: PendingRegistrationRow, text: string): Pr
 async function handleAwaitingEmail(row: PendingRegistrationRow, text: string): Promise<void> {
   const email = text.trim();
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-    await reply(row.phone, "That doesn't look like an email address — what's the one you use for Gmail or Outlook?");
+    // Not a help trigger either (already intercepted earlier) — this is genuinely confused or
+    // open-ended free text ("I have two, which one?"), so hand it to the assistant for a real
+    // reply instead of repeating the same canned rejection. The assistant only converses here;
+    // it has no say in whether an email is ultimately accepted (see the isEmailInvited check
+    // below, unchanged and still 100% code).
+    const helpReply = await getRegistrationAssistReply(text, "email");
+    await reply(row.phone, helpReply);
     return;
   }
 
@@ -132,7 +172,10 @@ async function handleAwaitingLinkTap(row: PendingRegistrationRow, text: string):
     await sendLinks(row);
     return;
   }
-  await reply(row.phone, "Tap the link above to connect your email — I'll message you the moment it's done. Reply \"resend\" if it expired.");
+  // Anything else (a question, "did it work?", confusion) gets a real conversational reply
+  // instead of the same static reminder every time — same treatment as the email step above.
+  const helpReply = await getRegistrationAssistReply(text, "link");
+  await reply(row.phone, helpReply);
 }
 
 // The entry point whatsappRoutes.ts calls when resolveOwnerByPhone finds no owner for an
@@ -154,10 +197,13 @@ export async function handlePendingRegistration(message: IncomingWhatsAppMessage
 
   if (!row) {
     row = upsertPendingRegistration(phone, { step: "awaiting_name" });
-    await reply(
-      phone,
-      "Hello — I'm Marlowe. I help with email, appointments and paperwork, all from here. What should I call you?"
-    );
+    await reply(phone, MARLOWE_HELP_TEXT);
+    return;
+  }
+
+  if (row.step !== "completed" && isHelpTrigger(message.text)) {
+    await reply(phone, MARLOWE_HELP_TEXT);
+    await reply(phone, currentStepPrompt(row));
     return;
   }
 

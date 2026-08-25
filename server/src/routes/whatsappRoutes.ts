@@ -12,7 +12,7 @@ import { resolveOwnerByPhone, getWhatsAppHistory, appendWhatsAppMessage } from "
 import { runAssistantChat, MAX_HISTORY_MESSAGES } from "../ai/assistant.js";
 import { ingestWhatsAppMedia, ingestWhatsAppLink } from "../services/documents.js";
 import { findSaveableUrl, type FetchFailureReason } from "../services/safeLinkFetcher.js";
-import { handlePendingRegistration } from "../services/whatsappRegistration.js";
+import { handlePendingRegistration, isHelpTrigger, MARLOWE_HELP_TEXT } from "../services/whatsappRegistration.js";
 
 export const whatsappRoutes = Router();
 
@@ -97,6 +97,15 @@ async function handleLink(ownerId: number, from: string, url: string): Promise<v
 async function handleText(ownerId: number, from: string, text: string): Promise<void> {
   appendWhatsAppMessage(ownerId, from, "user", text);
 
+  // "help"/"menu" short-circuits straight to the same canned overview used at first contact —
+  // instant, free, and worded consistently regardless of how the model might otherwise phrase
+  // "what can you do", instead of spending an assistant turn on it.
+  if (isHelpTrigger(text)) {
+    appendWhatsAppMessage(ownerId, from, "assistant", MARLOWE_HELP_TEXT);
+    await sendWhatsAppMessage(from, MARLOWE_HELP_TEXT);
+    return;
+  }
+
   // A message that's just a URL (with at most a short lead-in) is treated as "save this link"
   // the same way a photo/PDF attachment already gets saved — see
   // safeLinkFetcher.findSaveableUrl for the detection heuristic and why it's biased hard toward
@@ -159,7 +168,7 @@ async function handleMedia(
   await sendWhatsAppMessage(from, reply);
 }
 
-async function handleIncoming(message: IncomingWhatsAppMessage): Promise<void> {
+export async function handleIncoming(message: IncomingWhatsAppMessage): Promise<void> {
   // The core of multi-tenant WhatsApp routing: which hub does this phone number belong to?
   // Replaces the old single global allow-list boolean — a number not registered to any user is
   // treated the same way an unlisted number was before (silently ignored), it's just resolved
