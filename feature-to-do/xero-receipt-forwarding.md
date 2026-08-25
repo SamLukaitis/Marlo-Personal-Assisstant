@@ -33,19 +33,33 @@ switch. Here's what's actually involved, in plain terms:
    address you actually typed in that conversation — the AI can't fill one in on its own. Doesn't
    forward anything yet; that's step 4.
 
-4. **Decide what gets forwarded.** Every receipt Marlowe files, or should you get a say per-item
-   ("forward this one?")? Default: forward automatically, but only things filed as receipts (not
-   boarding passes etc.), and tell you it did it.
+4. **Decide what gets forwarded, and build the actual forward. ✅ Done (2026-08-25).** Went with
+   the default: forward automatically, no per-item confirmation, but only things Marlowe actually
+   filed under the `receipts` category *and* where it successfully pulled a real amount out of it
+   (not e.g. a hotel confirmation filed under `travel`, even though those can carry a payment too)
+   — and tell you it did it. Built in `server/src/services/xeroForwarding.ts`, triggered right
+   after a WhatsApp receipt is saved (`server/src/services/documents.ts`). Doesn't block or delay
+   the normal "receipt saved" confirmation — forwarding happens in the background and its own
+   outcome (sent, or couldn't) arrives as a separate WhatsApp follow-up message.
 
-5. **Unlock the stored file to attach it.** Marlowe stores your receipt files locked (encrypted)
-   on the server. Before emailing one to Xero, it needs to unlock it first — small technical step,
-   not a design decision.
+5. **Unlock the stored file to attach it. ✅ Done (2026-08-25) — turned out to be free.** The file
+   is already unlocked in memory at the exact moment of extraction (before it gets re-encrypted for
+   storage), so the forwarder reuses that same in-memory copy — no extra decrypt step needed.
 
-6. **Avoid double-sending.** Mark each receipt as "already sent to Xero" so it doesn't get
-   forwarded twice if something reruns.
+6. **Avoid double-sending.** Not separately built. Today the forward only ever fires once, inline,
+   right when a receipt is first saved — there's no code path that re-runs it for the same receipt.
+   The one real way this could double-fire is the same pre-existing gap noted in
+   `changelog/2026-08-24-entities-and-links.md` ("no dedup for the same document sent twice" — e.g.
+   a WhatsApp webhook redelivery reprocessing one photo) — not something new this feature
+   introduced, and not fixed here; worth revisiting together with that gap, not separately.
 
-7. **Test it against a real Xero forwarding address.** Confirm Xero actually accepts and reads
-   what we send it before trusting it for real spending.
+7. **Test it against a real Xero forwarding address.** Automated tests cover the forwarding logic
+   itself (`server/src/services/xeroForwarding.test.ts`) and the live `connect_xero` chat flow was
+   tested end-to-end. Not yet tested: sending a real WhatsApp receipt through to see a real email
+   land in a real Xero inbox — needs your actual Xero forwarding address and, since it goes via
+   WhatsApp, touches the same production number your family uses (see
+   `feature-to-do/dev-whatsapp-number.md`). Do this once you're ready to point it at a real Xero
+   trial/account.
 
 8. **Later: scan email for invoices automatically, no forwarding needed from you.** Right now
    Marlowe only picks up a receipt when you send it a photo/PDF via WhatsApp. The next step up:

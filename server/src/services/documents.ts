@@ -26,6 +26,7 @@ import {
 } from "./entityValidation.js";
 import { fetchPageText, type FetchFailureReason } from "./safeLinkFetcher.js";
 import { checkDocumentAgainstRecentEmails, type MatchKeys } from "./reconciliation.js";
+import { forwardReceiptToXero } from "./xeroForwarding.js";
 
 // Pure on purpose — the one bit of category logic worth its own unit test is "what happens when
 // the model's tool call doesn't give us a valid category," and that doesn't need an Anthropic
@@ -647,6 +648,20 @@ export async function ingestWhatsAppMedia(params: {
     }
   }
   storeDerivedEntities(params.ownerId, doc.id, derivedEntities);
+
+  // Gate on the document's filed category, not just "did an expense come out of it" — a hotel
+  // booking confirmation filed under `travel` can also produce an expense (Phase C), but Jake's
+  // call (feature-to-do/xero-receipt-forwarding.md step 4) was: only things actually filed as
+  // receipts go to Xero, not travel bookings that happen to show a payment. Media only for now —
+  // ingestWhatsAppLink's "file" is scraped page text, not something worth sending to Xero.
+  if (doc.category === "receipts" && derivedEntities.some((e) => e.type === "expense" && e.status === "active")) {
+    // Fire-and-forget, same posture as the reconciliation check below — must never delay the
+    // "document saved" confirmation the user is waiting on. Success/failure arrives as its own
+    // separate WhatsApp follow-up (see xeroForwarding.ts).
+    void forwardReceiptToXero(params.ownerId, doc, buffer).catch((err) =>
+      console.error("documents: xero forwarding failed", err)
+    );
+  }
 
   if (matchKeys) {
     saveMatchKeys(params.ownerId, doc.id, matchKeys);
