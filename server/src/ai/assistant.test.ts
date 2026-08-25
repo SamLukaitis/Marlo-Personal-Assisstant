@@ -87,6 +87,15 @@ describe("buildToolsForOwner", () => {
   });
 });
 
+describe("buildSystemPrompt anti-hallucination rule", () => {
+  it("forbids asserting absence of data without a fresh tool call this turn", () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("prompt-no-hallucinate"));
+    const prompt = buildSystemPrompt(user.id);
+    expect(prompt).toContain("does NOT exist");
+    expect(prompt).toContain("not verification");
+  });
+});
+
 describe("buildSystemPrompt", () => {
   it("omits travel-specific rules when travel is disabled", () => {
     const user = findOrCreateUserByEmail(uniqueEmail("prompt-no-travel"));
