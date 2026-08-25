@@ -785,14 +785,26 @@ export function removeMemoryNote(ownerId: number, id: number): void {
 
 // Indexed lookup (idx_memory_notes_trigger, see the migration above), not a scan — cost stays
 // proportional to how many reminders are actually due, not how many memories exist in total.
+//
+// Only reminders whose trigger_at falls within the last 24 hours are returned. Without this
+// window, a reminder whose WhatsApp send keeps permanently failing (e.g. the customer-service
+// window has closed, or the note exceeds WhatsApp's body limit) would stay "due" forever and be
+// retried every scheduler tick — and because callers order by trigger_at ASC and only take the
+// oldest few, a handful of permanently-stuck reminders could starve every later reminder
+// indefinitely. Time-boxing the give-up window to 24h means a reminder that fails for that long
+// silently drops out of this query — it stops blocking others, at the cost of never being
+// retried again itself. That's an accepted tradeoff (see final-review fix notes).
+const MEMORY_REMINDER_GIVE_UP_WINDOW_MS = 24 * 60 * 60 * 1000;
+
 export function listDueMemoryReminders(ownerId: number, nowMs: number): MemoryNoteRow[] {
   return db
     .prepare(
       `SELECT ${MEMORY_NOTE_COLUMNS} FROM memory_notes
-       WHERE owner_id = ? AND trigger_at IS NOT NULL AND trigger_at <= ? AND last_surfaced_at IS NULL
+       WHERE owner_id = ? AND trigger_at IS NOT NULL AND trigger_at <= ? AND trigger_at > ?
+         AND last_surfaced_at IS NULL
        ORDER BY trigger_at ASC`
     )
-    .all(ownerId, nowMs) as MemoryNoteRow[];
+    .all(ownerId, nowMs, nowMs - MEMORY_REMINDER_GIVE_UP_WINDOW_MS) as MemoryNoteRow[];
 }
 
 export function markMemorySurfaced(ownerId: number, id: number): void {

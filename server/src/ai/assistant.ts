@@ -361,7 +361,9 @@ const ALWAYS_ON_TOOLS: Anthropic.Tool[] = [
           description:
             "Optional ISO 8601 date/datetime. Set this only if what the user shared has a natural " +
             "future trigger point — a deadline, a recurring commitment, a stated future plan. Leave " +
-            "unset for ordinary facts or preferences with no time dimension.",
+            "unset for ordinary facts or preferences with no time dimension. Setting this will send " +
+            "the user a WhatsApp message at that time, so only set it when they'd genuinely want to " +
+            "be reminded — and mention to them that you've set a reminder.",
         },
       },
       required: ["note"],
@@ -839,7 +841,18 @@ export function buildSystemPrompt(ownerId: number): string {
 
   const memories = listRecentMemoryNotes(ownerId).reverse();
   const memoryList = memories.length
-    ? memories.map((m) => `- ${m.content}`).join("\n")
+    ? memories
+        .map(
+          (m) =>
+            `- ${m.content}${
+              m.triggerAt
+                ? ` (reminder set for ${new Date(m.triggerAt).toDateString()}${
+                    m.lastSurfacedAt ? ", already sent" : ""
+                  })`
+                : ""
+            }`
+        )
+        .join("\n")
     : "(nothing remembered yet)";
 
   // This user has never saved briefing settings — they're mid-onboarding (just connected their

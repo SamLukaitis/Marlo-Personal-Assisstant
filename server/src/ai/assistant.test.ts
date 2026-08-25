@@ -1,6 +1,13 @@
 import { describe, it, expect } from "vitest";
 import { buildToolsForOwner, buildSystemPrompt, runTool } from "./assistant.js";
-import { findOrCreateUserByEmail, setToolEnabled, getEnabledTools, listMemoryNotes } from "../db/store.js";
+import {
+  findOrCreateUserByEmail,
+  setToolEnabled,
+  getEnabledTools,
+  listMemoryNotes,
+  addMemoryNote,
+  markMemorySurfaced,
+} from "../db/store.js";
 import { getBriefingSettings, saveBriefingSettings, type BriefingSettings } from "../services/briefing.js";
 
 let counter = 0;
@@ -106,6 +113,34 @@ describe("buildSystemPrompt", () => {
     const prompt = buildSystemPrompt(user.id);
     expect(prompt).toContain("may naturally bring up");
     expect(prompt).not.toContain("Things you've learned about the user over past conversations");
+  });
+
+  it("annotates a memory note that has an armed (not-yet-sent) trigger", () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("prompt-memory-armed"));
+    addMemoryNote(user.id, "Visa renewal is due", "2026-09-12T00:00:00Z");
+    const prompt = buildSystemPrompt(user.id);
+    expect(prompt).toContain("Visa renewal is due");
+    expect(prompt).toContain("reminder set for");
+    expect(prompt).not.toContain("already sent");
+  });
+
+  it("annotates a memory note whose trigger already fired as already sent", () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("prompt-memory-sent"));
+    const past = new Date(Date.now() - 60_000).toISOString();
+    const note = addMemoryNote(user.id, "Overdue reminder", past);
+    markMemorySurfaced(user.id, note.id);
+    const prompt = buildSystemPrompt(user.id);
+    expect(prompt).toContain("Overdue reminder");
+    expect(prompt).toContain("reminder set for");
+    expect(prompt).toContain("already sent");
+  });
+
+  it("renders an ordinary note with no triggerAt as a plain line with no annotation", () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("prompt-memory-plain"));
+    addMemoryNote(user.id, "The Acme account is my priority business");
+    const prompt = buildSystemPrompt(user.id);
+    expect(prompt).toContain("- The Acme account is my priority business");
+    expect(prompt).not.toContain("reminder set for");
   });
 });
 
