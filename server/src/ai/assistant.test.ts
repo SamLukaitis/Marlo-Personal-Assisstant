@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { buildToolsForOwner, buildSystemPrompt, runTool } from "./assistant.js";
-import { findOrCreateUserByEmail, setToolEnabled, getEnabledTools } from "../db/store.js";
+import { findOrCreateUserByEmail, setToolEnabled, getEnabledTools, listMemoryNotes } from "../db/store.js";
 import { getBriefingSettings, saveBriefingSettings, type BriefingSettings } from "../services/briefing.js";
 
 let counter = 0;
@@ -188,6 +188,30 @@ describe("set_tool_enabled tool", () => {
     const user = findOrCreateUserByEmail(uniqueEmail("unknown-tool-key"));
     const result = await runTool(user.id, "set_tool_enabled", { tool: "finance", enabled: true });
     expect(result).toEqual({ error: "unknown tool: finance" });
+  });
+});
+
+describe("remember tool — triggerAt", () => {
+  it("stores a parsed triggerAt when the model provides one", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("remember-trigger"));
+    const result = await runTool(user.id, "remember", {
+      note: "Visa renewal is due",
+      triggerAt: "2026-09-12T00:00:00Z",
+    });
+    expect(result).toEqual({ ok: true });
+
+    const [saved] = listMemoryNotes(user.id);
+    expect(saved.content).toBe("Visa renewal is due");
+    expect(saved.triggerAt).toBe(new Date("2026-09-12T00:00:00Z").getTime());
+  });
+
+  it("stores no trigger when the model omits triggerAt, same as before", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("remember-notrigger"));
+    const result = await runTool(user.id, "remember", { note: "Ordinary preference" });
+    expect(result).toEqual({ ok: true });
+
+    const [saved] = listMemoryNotes(user.id);
+    expect(saved.triggerAt).toBeNull();
   });
 });
 

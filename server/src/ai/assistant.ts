@@ -356,6 +356,13 @@ const ALWAYS_ON_TOOLS: Anthropic.Tool[] = [
       type: "object",
       properties: {
         note: { type: "string", description: "One clear sentence to remember" },
+        triggerAt: {
+          type: "string",
+          description:
+            "Optional ISO 8601 date/datetime. Set this only if what the user shared has a natural " +
+            "future trigger point — a deadline, a recurring commitment, a stated future plan. Leave " +
+            "unset for ordinary facts or preferences with no time dimension.",
+        },
       },
       required: ["note"],
     },
@@ -639,7 +646,7 @@ export async function runTool(ownerId: number, name: string, input: Record<strin
       await hubAddLabel(ownerId, input.account_id as number, input.message_id as string, input.label as string);
       return { ok: true };
     case "remember":
-      addMemoryNote(ownerId, input.note as string);
+      addMemoryNote(ownerId, input.note as string, input.triggerAt as string | undefined);
       return { ok: true };
     case "list_needs_attention":
       return hubFlaggedMessages(ownerId);
