@@ -46,12 +46,15 @@ switch. Here's what's actually involved, in plain terms:
    is already unlocked in memory at the exact moment of extraction (before it gets re-encrypted for
    storage), so the forwarder reuses that same in-memory copy — no extra decrypt step needed.
 
-6. **Avoid double-sending.** Not separately built. Today the forward only ever fires once, inline,
-   right when a receipt is first saved — there's no code path that re-runs it for the same receipt.
-   The one real way this could double-fire is the same pre-existing gap noted in
-   `changelog/2026-08-24-entities-and-links.md` ("no dedup for the same document sent twice" — e.g.
-   a WhatsApp webhook redelivery reprocessing one photo) — not something new this feature
-   introduced, and not fixed here; worth revisiting together with that gap, not separately.
+6. **Avoid double-sending. ✅ Done (2026-08-25).** Every document now carries a
+   `xero_forwarded_at` timestamp (`server/src/db/store.ts`) — null until it's actually been
+   emailed to Xero, set the moment it has. `forwardReceiptToXero` checks it first and refuses to
+   re-send a document that's already marked. This protects against the same *document row* ever
+   going out twice (e.g. a future "resend" tool). It does **not** protect against the same photo
+   being ingested as two separate document rows in the first place — that's the pre-existing gap
+   noted in `changelog/2026-08-24-entities-and-links.md` ("no dedup for the same document sent
+   twice", e.g. a WhatsApp webhook redelivery) — a bigger, separate fix (content-hash dedup on
+   `documents`), not something this step attempts.
 
 7. **Test it against a real Xero forwarding address.** Automated tests cover the forwarding logic
    itself (`server/src/services/xeroForwarding.test.ts`) and the live `connect_xero` chat flow was

@@ -465,6 +465,14 @@ if (!documentColumns.includes("category")) {
   db.exec(`ALTER TABLE documents ADD COLUMN category TEXT`);
 }
 
+// Set once a receipt has actually been emailed to the owner's Xero forwarding address (see
+// xeroForwarding.ts) — null means "never forwarded" (predates the feature, wasn't a receipt, or
+// forwarding hasn't run yet). Exists so a future retry/resend path can tell what's already gone
+// out instead of re-sending it.
+if (!documentColumns.includes("xero_forwarded_at")) {
+  db.exec(`ALTER TABLE documents ADD COLUMN xero_forwarded_at INTEGER`);
+}
+
 // One-time relabel: 'receipts_bookings' was split into 'receipts' (booking confirmations moved
 // under 'travel', where they arguably always belonged — see JAKES_TODO.md 2026-08-24). Plain
 // UPDATE rather than a guarded block since it's naturally idempotent: once no row has the old
@@ -886,10 +894,12 @@ export interface DocumentRow {
   extractedText: string;
   category: DocumentCategory | null;
   createdAt: number;
+  xeroForwardedAt: number | null;
 }
 
 const DOCUMENT_COLUMNS = `id, phone, filename, mime_type AS mimeType, stored_path AS storedPath,
-  caption, title, extracted_text AS extractedText, category, created_at AS createdAt`;
+  caption, title, extracted_text AS extractedText, category, created_at AS createdAt,
+  xero_forwarded_at AS xeroForwardedAt`;
 
 export function saveDocument(
   ownerId: number,
@@ -958,6 +968,14 @@ export function getDocument(ownerId: number, id: number): DocumentRow | undefine
 
 export function deleteDocument(ownerId: number, id: number): void {
   db.prepare(`DELETE FROM documents WHERE id = ? AND owner_id = ?`).run(id, ownerId);
+}
+
+export function markDocumentXeroForwarded(ownerId: number, id: number, forwardedAt: number): void {
+  db.prepare(`UPDATE documents SET xero_forwarded_at = ? WHERE id = ? AND owner_id = ?`).run(
+    forwardedAt,
+    id,
+    ownerId
+  );
 }
 
 // Machine-checkable identifiers (reference code, flight number, vendor, event date) pulled from
