@@ -100,6 +100,13 @@ describe("buildSystemPrompt", () => {
     const prompt = buildSystemPrompt(user.id);
     expect(prompt).toContain("count_travel_days");
   });
+
+  it("frames memory as something the assistant may proactively volunteer", () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("prompt-proactive-memory"));
+    const prompt = buildSystemPrompt(user.id);
+    expect(prompt).toContain("may naturally bring up");
+    expect(prompt).not.toContain("Things you've learned about the user over past conversations");
+  });
 });
 
 describe("runTool defense-in-depth", () => {

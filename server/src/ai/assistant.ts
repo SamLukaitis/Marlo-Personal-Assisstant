@@ -861,7 +861,10 @@ export function buildSystemPrompt(ownerId: number): string {
     persona ? `The user described how they want you to behave:\n${persona}` : "",
     `Connected accounts:\n${accountList}`,
     `Local computer folders searchable by file name:\n${folderList}`,
-    `Things you've learned about the user over past conversations:\n${memoryList}`,
+    `Things you remember about the user. You may naturally bring up one of these when it's ` +
+      `genuinely relevant to what's being discussed — the way someone who was actually paying ` +
+      `attention would — without forcing it or repeating something you've already brought up ` +
+      `this conversation:\n${memoryList}`,
     onboardingNote,
     buildRules(getEnabledTools(ownerId)),
   ]
