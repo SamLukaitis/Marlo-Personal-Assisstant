@@ -2,23 +2,26 @@
    Marlowe — public marketing page.
 
    Scoped under .home so none of this leaks into the app shell, which keeps its
-   own lighter, more utilitarian system. The palette extends the app's forest
-   accent onto warm paper rather than inventing a second identity: someone who
-   signs up should recognise where they've landed.
+   own separate system (forest green, see index.css). The marketing site was
+   deliberately allowed its own identity here (paper/ink/terracotta, editorial
+   serif) rather than reusing the in-app forest accent — see
+   .superdesign/design-system.md's "fully open" homepage note.
 
    Signature: the page is one continuous conversation. Every section is another
    exchange in the same thread, because a thread is what the product actually
-   is. Scrolling advances the conversation.
+   is. Scrolling advances the conversation — including, in the "Workflow Logic"
+   section, a literal horizontal filmstrip driven by scroll position.
    ========================================================================== */
 
 .home {
-  --ink: #12211d;
-  --paper: #f7f5f0;
-  --paper-deep: #ece7dd;
-  --forest: #1e3a34;
-  --sage: #6f8378;
-  --ember: #b6552b;
-  --rule: #ddd6c9;
+  --ink: #101514;
+  --paper: #f9f7f2;
+  --paper-deep: #f0ede6;
+  --accent: #c25e34;
+  --accent-muted: #e5d7c4;
+  --rule: #e5e0d5;
+  --muted: #55635c;
+  --muted-2: #777f78;
 
   flex: 1;
   min-width: 0;
@@ -26,11 +29,15 @@
   color: var(--ink);
   font-size: 16px;
   line-height: 1.6;
-  overflow-x: hidden;
+  /* NOT overflow-x: hidden — an ancestor with any overflow other than visible breaks
+     position: sticky for descendants (it can no longer pin to the real viewport). The
+     filmstrip's horizontally-overflowing track already clips locally via
+     .filmstrip-sticky's own `overflow: hidden`, which is enough to keep the page itself
+     from gaining a horizontal scrollbar — this rule doesn't need to also do it. */
 }
 
 .home ::selection {
-  background: var(--forest);
+  background: var(--accent);
   color: var(--paper);
 }
 
@@ -64,7 +71,7 @@
   position: sticky;
   top: 0;
   z-index: 30;
-  background: rgba(247, 245, 240, 0.85);
+  background: rgba(249, 247, 242, 0.85);
   backdrop-filter: blur(10px);
   border-bottom: 1px solid transparent;
   transition: border-color 0.3s;
@@ -97,7 +104,7 @@
   width: 30px;
   height: 30px;
   border-radius: 8px;
-  background: var(--forest);
+  background: var(--ink);
   color: var(--paper);
   display: flex;
   align-items: center;
@@ -119,11 +126,13 @@
   justify-content: center;
   gap: 8px;
   border: 1px solid transparent;
-  border-radius: 8px;
-  padding: 11px 18px;
+  border-radius: 999px;
+  padding: 11px 20px;
   font-family: inherit;
-  font-size: 14px;
+  font-size: 13px;
   font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
   cursor: pointer;
   text-align: center;
   /* These are <a> elements so they carry the app's global link underline — a button that looks
@@ -133,11 +142,11 @@
 }
 
 .home-btn-primary {
-  background: var(--forest);
-  color: #f2f7f4;
+  background: var(--accent);
+  color: #fff;
 }
 
-.home-btn-primary:hover { background: #16302a; }
+.home-btn-primary:hover { background: #a8502c; }
 
 .home-btn-ghost {
   background: transparent;
@@ -145,15 +154,17 @@
   border-color: var(--rule);
 }
 
-.home-btn-ghost:hover { border-color: var(--sage); background: rgba(255, 255, 255, 0.6); }
+.home-btn-ghost:hover { border-color: var(--ink); background: rgba(255, 255, 255, 0.6); }
 
 .home-btn-quiet {
   background: transparent;
   color: var(--ink);
   padding: 11px 12px;
+  text-transform: none;
+  letter-spacing: normal;
 }
 
-.home-btn-quiet:hover { color: var(--forest); }
+.home-btn-quiet:hover { color: var(--accent); }
 
 /* ---------- Reveal on scroll ---------- */
 .reveal {
@@ -188,7 +199,7 @@
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.16em;
-  color: var(--sage);
+  color: var(--accent);
   margin-bottom: 18px;
 }
 
@@ -205,7 +216,7 @@
 .home-lede {
   font-size: clamp(16px, 1.6vw, 18px);
   line-height: 1.65;
-  color: #3d4b45;
+  color: var(--muted);
   max-width: 54ch;
   margin: 0;
 }
@@ -235,17 +246,16 @@
   max-width: 14ch;
 }
 
-/* The one place the ember accent is spent: the verb the whole product turns on. */
 .home-h1 em {
   font-style: italic;
   font-weight: 400;
-  color: var(--ember);
+  color: var(--accent);
 }
 
 .home-hero-sub {
   font-size: clamp(16px, 1.8vw, 19px);
   line-height: 1.6;
-  color: #3d4b45;
+  color: var(--muted);
   max-width: 46ch;
   margin: 0 0 32px;
 }
@@ -259,7 +269,7 @@
 
 .home-hero-note {
   font-size: 13px;
-  color: var(--sage);
+  color: var(--muted-2);
   margin: 0;
 }
 
@@ -278,9 +288,10 @@
   gap: 14px;
   background: #fff;
   border: 1px solid var(--rule);
-  border-radius: 16px;
+  border-left: 3px solid var(--accent);
+  border-radius: 4px;
   padding: 20px;
-  box-shadow: 0 18px 50px -28px rgba(18, 33, 29, 0.4);
+  box-shadow: 0 18px 50px -28px rgba(16, 21, 20, 0.35);
 }
 
 .thread-head {
@@ -288,10 +299,12 @@
   align-items: center;
   gap: 9px;
   padding-bottom: 14px;
-  border-bottom: 1px solid #f0ece4;
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--sage);
+  border-bottom: 1px solid var(--paper-deep);
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--muted-2);
 }
 
 .thread-head-dot {
@@ -305,23 +318,21 @@
 .bubble {
   max-width: 86%;
   padding: 11px 15px;
-  border-radius: 14px;
+  border-radius: 4px;
   font-size: 14.5px;
   line-height: 1.5;
 }
 
 .bubble-user {
   align-self: flex-end;
-  background: var(--forest);
-  color: #eef5f1;
-  border-bottom-right-radius: 4px;
+  background: var(--ink);
+  color: var(--paper);
 }
 
 .bubble-marlowe {
   align-self: flex-start;
   background: var(--paper-deep);
   color: var(--ink);
-  border-bottom-left-radius: 4px;
 }
 
 /* Blinking caret while the hero message types itself out. */
@@ -349,15 +360,14 @@
   gap: 4px;
   padding: 13px 15px;
   background: var(--paper-deep);
-  border-radius: 14px;
-  border-bottom-left-radius: 4px;
+  border-radius: 4px;
 }
 
 .typing span {
   width: 6px;
   height: 6px;
   border-radius: 50%;
-  background: var(--sage);
+  background: var(--muted-2);
   animation: bounce 1.2s infinite;
 }
 
@@ -375,18 +385,18 @@
   width: 100%;
   background: #fff;
   border: 1px solid var(--rule);
-  border-radius: 12px;
+  border-radius: 4px;
   overflow: hidden;
 }
 
 .result-card-head {
   padding: 11px 15px;
-  border-bottom: 1px solid #f0ece4;
+  border-bottom: 1px solid var(--paper-deep);
   font-size: 10.5px;
-  font-weight: 600;
+  font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.12em;
-  color: var(--sage);
+  color: var(--accent);
 }
 
 .result-row {
@@ -396,13 +406,13 @@
   gap: 14px;
   padding: 11px 15px;
   font-size: 14px;
-  border-bottom: 1px solid #f6f3ed;
+  border-bottom: 1px solid var(--paper-deep);
 }
 
 .result-row:last-child { border-bottom: none; }
 
 .result-row-key {
-  color: var(--sage);
+  color: var(--muted-2);
   flex-shrink: 0;
   font-size: 13px;
 }
@@ -427,7 +437,7 @@
 .result-meter-fill {
   height: 100%;
   border-radius: 3px;
-  background: var(--forest);
+  background: var(--accent);
   width: 0;
   transition: width 1.1s cubic-bezier(0.2, 0.7, 0.3, 1);
 }
@@ -440,7 +450,7 @@
 
 .result-meter-label {
   font-size: 12.5px;
-  color: var(--sage);
+  color: var(--muted-2);
 }
 
 /* ---------- Exchange sections (text beside thread) ---------- */
@@ -467,7 +477,7 @@
   gap: 1px;
   background: var(--rule);
   border: 1px solid var(--rule);
-  border-radius: 12px;
+  border-radius: 4px;
   overflow: hidden;
   margin-top: 40px;
 }
@@ -486,7 +496,7 @@
   text-align: center;
   font-size: 13px;
   font-weight: 600;
-  color: #3d4b45;
+  color: var(--muted);
 }
 
 /* ---------- Tool cards ---------- */
@@ -504,7 +514,7 @@
 .tool-card {
   background: #fff;
   border: 1px solid var(--rule);
-  border-radius: 12px;
+  border-radius: 4px;
   padding: 24px;
 }
 
@@ -520,7 +530,7 @@
   margin: 0;
   font-size: 14px;
   line-height: 1.6;
-  color: #55635c;
+  color: var(--muted);
 }
 
 .tool-card-tag {
@@ -529,7 +539,7 @@
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.1em;
-  color: var(--sage);
+  color: var(--accent);
   margin-bottom: 12px;
 }
 
@@ -559,14 +569,224 @@
   margin: 0;
   font-size: 14px;
   line-height: 1.6;
-  color: #55635c;
+  color: var(--muted);
+}
+
+/* ---------- Workflow Logic: horizontal scroll-jacked filmstrip ---------- */
+/* Height of the scroll-jack track is set inline from JS once the track's actual content width is
+   measured (viewport height + the exact horizontal distance the track needs to travel), so the
+   scroll range always matches the reveal exactly — no leftover "dead scroll" after the last card
+   is already fully in view. This value is only the pre-measurement fallback (first paint / JS
+   disabled). */
+.filmstrip-section {
+  height: 250vh;
+  position: relative;
+}
+
+.filmstrip-sticky {
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  overflow: hidden;
+  background: var(--paper-deep);
+  border-top: 1px solid var(--rule);
+  border-bottom: 1px solid var(--rule);
+}
+
+.filmstrip-heading {
+  flex-shrink: 0;
+  margin-bottom: 12px;
+}
+
+.filmstrip-track {
+  display: flex;
+  gap: 28px;
+  flex-shrink: 0;
+  will-change: transform;
+}
+
+.filmstrip-card {
+  /* Wide enough that roughly one card is in focus at a time on common desktop widths (with a peek
+     of the next), not 3-4 cards sitting side by side already visible before any scrolling — the
+     old 440px cap barely exceeded typical viewport widths, so the "reveal" never had anywhere to
+     go and mostly showed everything at once. */
+  flex-shrink: 0;
+  width: min(70vw, 640px);
+  height: min(58vh, 460px);
+  background: #fff;
+  border: 1px solid var(--rule);
+  border-radius: 4px;
+  padding: 28px;
+  display: flex;
+  flex-direction: column;
+  transition: transform 0.25s ease, box-shadow 0.25s ease;
+}
+
+.filmstrip-card:hover {
+  transform: translateY(-4px);
+  box-shadow: 0 24px 48px -28px rgba(16, 21, 20, 0.35);
+}
+
+.filmstrip-card-eyebrow {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.2em;
+  color: var(--accent);
+  margin-bottom: 28px;
+  display: block;
+}
+
+.filmstrip-card-body {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  text-align: center;
+}
+
+.filmstrip-card-note {
+  font-size: 14px;
+  color: var(--muted);
+  margin: 20px 0 0;
+}
+
+.filmstrip-doc {
+  border: 2px dashed var(--rule);
+  border-radius: 4px;
+  padding: 28px;
+  width: 100%;
+}
+
+.filmstrip-doc svg { color: var(--accent); margin-bottom: 12px; }
+
+.filmstrip-doc-name {
+  font-family: 'Zodiak', serif;
+  font-weight: 700;
+  font-size: 18px;
+}
+
+.filmstrip-doc-meta {
+  font-size: 11px;
+  text-transform: uppercase;
+  font-weight: 600;
+  color: var(--muted-2);
+  margin-top: 6px;
+}
+
+.filmstrip-doc-ref {
+  font-family: monospace;
+  font-size: 10px;
+  margin-top: 14px;
+  padding: 3px 8px;
+  background: var(--paper-deep);
+  display: inline-block;
+}
+
+.filmstrip-folder {
+  position: relative;
+  color: var(--ink);
+}
+
+.filmstrip-folder-plane {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding-top: 6px;
+  color: #fff;
+}
+
+.filmstrip-folder-title {
+  font-family: 'Zodiak', serif;
+  font-weight: 700;
+  font-size: 20px;
+  margin-top: 18px;
+}
+
+.filmstrip-folder-sub {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--muted-2);
+  margin-top: 6px;
+}
+
+.filmstrip-confirm { width: 100%; display: flex; flex-direction: column; gap: 12px; }
+
+.filmstrip-entry-log {
+  padding: 10px 13px;
+  border: 1px solid var(--rule);
+  background: var(--paper-deep);
+  font-family: monospace;
+  font-size: 11px;
+}
+
+.filmstrip-meter {
+  position: relative;
+  width: 160px;
+  height: 160px;
+}
+
+.filmstrip-meter svg { transform: rotate(-90deg); }
+
+.filmstrip-meter-value {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+}
+
+.filmstrip-meter-count {
+  font-family: 'Zodiak', serif;
+  font-weight: 700;
+  font-size: 34px;
+}
+
+.filmstrip-meter-label {
+  font-size: 8px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.15em;
+}
+
+.progress-rail {
+  flex-shrink: 0;
+  height: 3px;
+  background: var(--rule);
+  margin-top: 32px;
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.progress-bar {
+  height: 100%;
+  background: var(--accent);
+  width: 0%;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  /* A fully scroll-jacked track is disorienting for anyone who's asked for less motion — fall
+     back to a normal-height section with the cards laid out for horizontal scrolling by hand
+     instead of hijacking the page's vertical scroll at all. */
+  .filmstrip-section { height: auto; }
+  .filmstrip-sticky { position: static; height: auto; padding: 88px 0; }
+  .filmstrip-track { overflow-x: auto; transform: none !important; padding-bottom: 8px; }
+  .progress-rail { display: none; }
 }
 
 /* ---------- Closing CTA ---------- */
 .home-cta {
   background: var(--ink);
   color: var(--paper);
-  border-radius: 18px;
+  border-radius: 4px;
   padding: 56px 28px;
   text-align: center;
   margin: 88px 0;
@@ -588,27 +808,27 @@
 }
 
 .home-cta p {
-  color: #a9bab2;
+  color: #b9beb9;
   max-width: 46ch;
   margin: 0 auto 30px;
   font-size: 16px;
 }
 
 .home-cta .home-btn-primary {
-  background: var(--paper);
-  color: var(--ink);
+  background: var(--accent);
+  color: #fff;
 }
 
-.home-cta .home-btn-primary:hover { background: #fff; }
+.home-cta .home-btn-primary:hover { background: #d9713f; }
 
 .home-cta .home-btn-ghost {
   color: var(--paper);
-  border-color: rgba(247, 245, 240, 0.28);
+  border-color: rgba(249, 247, 242, 0.28);
 }
 
 .home-cta .home-btn-ghost:hover {
-  border-color: rgba(247, 245, 240, 0.6);
-  background: rgba(247, 245, 240, 0.06);
+  border-color: rgba(249, 247, 242, 0.6);
+  background: rgba(249, 247, 242, 0.06);
 }
 
 .home-cta-actions {
@@ -622,6 +842,7 @@
 .home-footer {
   border-top: 1px solid var(--rule);
   padding: 56px 0 40px;
+  background: var(--paper-deep);
 }
 
 .home-footer-grid {
@@ -638,7 +859,7 @@
 .home-footer-brand p {
   margin: 14px 0 0;
   font-size: 13.5px;
-  color: var(--sage);
+  color: var(--muted-2);
   max-width: 30ch;
   line-height: 1.6;
 }
@@ -648,7 +869,7 @@
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.12em;
-  color: var(--sage);
+  color: var(--muted-2);
   margin: 0 0 14px;
 }
 
@@ -663,12 +884,12 @@
 
 .home-footer a {
   font-size: 14px;
-  color: #3d4b45;
+  color: var(--muted);
   text-decoration: none;
 }
 
 .home-footer a:hover {
-  color: var(--forest);
+  color: var(--accent);
   text-decoration: underline;
   text-underline-offset: 3px;
 }
@@ -682,12 +903,12 @@
   padding-top: 26px;
   border-top: 1px solid var(--rule);
   font-size: 13px;
-  color: var(--sage);
+  color: var(--muted-2);
 }
 
 /* ---------- Sign-in banners ---------- */
 .home-banner {
-  border-radius: 10px;
+  border-radius: 4px;
   padding: 14px 16px;
   font-size: 14px;
   line-height: 1.55;
@@ -703,7 +924,7 @@
 
 .home a:focus-visible,
 .home button:focus-visible {
-  outline: 2px solid var(--forest);
+  outline: 2px solid var(--accent);
   outline-offset: 3px;
-  border-radius: 6px;
+  border-radius: 4px;
 }

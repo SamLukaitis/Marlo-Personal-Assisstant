@@ -312,6 +312,28 @@ export function loginUrl(loginPath: string): string {
   return `${API_BASE}${loginPath}`;
 }
 
+// Public marketing-site help widget — reachable by logged-out visitors, so deliberately doesn't
+// use withCredentials()/session cookies (there's nothing to authenticate; the endpoint has no
+// access to real user data by design, see server/src/ai/assistant.ts's getHelpChatReply).
+export interface HelpChatTurn {
+  role: "user" | "assistant";
+  text: string;
+}
+
+export async function sendHelpChatMessage(message: string, history: HelpChatTurn[]): Promise<string> {
+  const res = await fetch(`${API_BASE}/api/help-chat`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ message, history }),
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.error ?? `request failed (${res.status})`);
+  }
+  const data = await res.json();
+  return data.reply as string;
+}
+
 export async function disconnectAccount(id: number): Promise<void> {
   await fetch(`${API_BASE}/api/accounts/${id}`, withCredentials({ method: "DELETE" }));
 }

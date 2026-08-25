@@ -1,17 +1,14 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { Navigate, useSearchParams } from "react-router-dom";
+import { motion, useScroll, useTransform, useMotionValueEvent } from "motion/react";
+import { FileText, Folder, Plane } from "lucide-react";
 import { useAuth } from "../context/AuthContext";
 import { loginUrl } from "../api/client";
+import { prefersReducedMotion } from "../lib/motionPrefs";
+import { HelpWidget } from "../components/HelpWidget";
 import "./home.css";
 
 const CONTACT_EMAIL = "hello@marlowe.app";
-
-function prefersReducedMotion(): boolean {
-  return (
-    typeof window !== "undefined" &&
-    window.matchMedia?.("(prefers-reduced-motion: reduce)").matches === true
-  );
-}
 
 /** Adds `is-visible` the first time an element scrolls into view, and then stops watching. */
 function useReveal<T extends HTMLElement>() {
@@ -172,6 +169,174 @@ function Exchange({ eyebrow, title, body, ask, reply, card, flip }: ExchangeProp
   );
 }
 
+/** Donut ring driving a scroll-linked stroke-dashoffset + a synced counting number, both bound
+ *  directly to the same scroll-progress MotionValue slice — no separate animation timeline. */
+function SchengenMeter({ progress }: { progress: import("motion/react").MotionValue<number> }) {
+  const radius = 70;
+  const circumference = 2 * Math.PI * radius;
+  const target = 61;
+  const total = 90;
+
+  const dashOffset = useTransform(progress, [0.7, 0.92], [circumference, circumference * (1 - target / total)], {
+    clamp: true,
+  });
+  const countRaw = useTransform(progress, [0.7, 0.92], [0, target], { clamp: true });
+  // Written straight to the DOM instead of through React state — a scroll-driven value changes
+  // every animation frame, and routing that through setState would re-render this (and its
+  // parents) 60x/sec for the whole scroll gesture. This is Motion's own recommended pattern for
+  // exactly this case (see "animate a number" in their docs).
+  const countRef = useRef<HTMLSpanElement>(null);
+  useMotionValueEvent(countRaw, "change", (v) => {
+    if (countRef.current) countRef.current.textContent = String(Math.round(v));
+  });
+
+  return (
+    <div className="filmstrip-meter">
+      <svg width="160" height="160" viewBox="0 0 160 160">
+        <circle cx="80" cy="80" r={radius} stroke="var(--rule)" strokeWidth="10" fill="none" />
+        <motion.circle
+          cx="80"
+          cy="80"
+          r={radius}
+          stroke="var(--accent)"
+          strokeWidth="10"
+          fill="none"
+          strokeLinecap="round"
+          strokeDasharray={circumference}
+          style={{ strokeDashoffset: dashOffset }}
+        />
+      </svg>
+      <div className="filmstrip-meter-value">
+        <span className="filmstrip-meter-count" ref={countRef}>0</span>
+        <span className="filmstrip-meter-label">Days Used</span>
+      </div>
+    </div>
+  );
+}
+
+/** "One forward, infinite recall." — a scroll-jacked horizontal filmstrip: vertical scroll
+ *  through a tall pinned section drives a horizontal card track, same narrative the mockup told
+ *  (a forwarded boarding pass, auto-filed, confirmed, then reflected in the Schengen tracker) but
+ *  as one continuous scroll-linked animation instead of separate static sections. Falls back to a
+ *  plain horizontally-scrollable, non-pinned section under prefers-reduced-motion (see home.css). */
+function TravelFilmstrip() {
+  const sectionRef = useRef<HTMLDivElement>(null);
+  const trackRef = useRef<HTMLDivElement>(null);
+  const [maxMove, setMaxMove] = useState(0);
+  const [sectionHeight, setSectionHeight] = useState<number | null>(null);
+
+  // Runs before paint (not after) so the section's scroll-jack height is correct on first frame
+  // rather than jumping once measurement catches up. The section's height is derived FROM maxMove
+  // (viewport + exact travel distance) rather than a fixed vh guess, so the scroll range always
+  // matches the reveal exactly — no dead scroll once the last card is already fully in view, and
+  // no scrolling past the whole thing before the cards have had room to move.
+  useLayoutEffect(() => {
+    function measure() {
+      if (!trackRef.current) return;
+      if (prefersReducedMotion()) {
+        setMaxMove(0);
+        setSectionHeight(null); // let the reduced-motion CSS's `height: auto` take over
+        return;
+      }
+      const trackWidth = trackRef.current.scrollWidth;
+      const viewport = window.innerWidth;
+      const move = Math.max(0, trackWidth - viewport + 32); // 32px breathing room past the last card, not 10% of the viewport
+      setMaxMove(move);
+      setSectionHeight(window.innerHeight + move);
+    }
+    measure();
+    window.addEventListener("resize", measure);
+    return () => window.removeEventListener("resize", measure);
+  }, []);
+
+  const { scrollYProgress } = useScroll({ target: sectionRef, offset: ["start start", "end end"] });
+  const x = useTransform(scrollYProgress, [0, 1], [0, -maxMove]);
+  const progressWidth = useTransform(scrollYProgress, [0, 1], ["0%", "100%"]);
+
+  return (
+    <section
+      className="filmstrip-section"
+      ref={sectionRef}
+      style={sectionHeight != null ? { height: sectionHeight } : undefined}
+    >
+      <div className="filmstrip-sticky">
+        <div className="home-shell filmstrip-heading">
+          <span className="home-eyebrow">Workflow Logic</span>
+          <h2 className="home-h2">One forward, infinite recall.</h2>
+        </div>
+
+        <motion.div className="filmstrip-track home-shell" ref={trackRef} style={{ x }}>
+          <article className="filmstrip-card">
+            <span className="filmstrip-card-eyebrow">01 Reception</span>
+            <div className="filmstrip-card-body">
+              <div className="filmstrip-doc">
+                <FileText size={40} />
+                <div className="filmstrip-doc-name">boarding-pass.pdf</div>
+                <div className="filmstrip-doc-meta">Ryanair · Faro · 12 Sept</div>
+                <div className="filmstrip-doc-ref">REF: QK4T2P</div>
+              </div>
+            </div>
+            <p className="filmstrip-card-note">
+              Forward any attachment directly to your dedicated Marlowe inbox or WhatsApp thread.
+            </p>
+          </article>
+
+          <article className="filmstrip-card">
+            <span className="filmstrip-card-eyebrow">02 Organization</span>
+            <div className="filmstrip-card-body filmstrip-folder">
+              <Folder size={120} strokeWidth={1.4} />
+              <div className="filmstrip-folder-plane">
+                <Plane size={22} />
+              </div>
+              <div className="filmstrip-folder-title">Travel Documents</div>
+              <div className="filmstrip-folder-sub">Auto-Sorted Folder</div>
+            </div>
+            <p className="filmstrip-card-note">
+              Marlowe extracts data points and files the document into your linked cloud storage
+              automatically.
+            </p>
+          </article>
+
+          <article className="filmstrip-card">
+            <span className="filmstrip-card-eyebrow">03 Confirmation</span>
+            <div className="filmstrip-card-body">
+              <div className="filmstrip-confirm">
+                <div className="bubble bubble-marlowe">
+                  Filed as Ryanair Boarding Pass, Faro — 12 Sept. Trip logged in travel log.
+                </div>
+                <div className="filmstrip-entry-log">&gt;&gt; ENTRY CREATED: TRIP_FARO_SEP_12</div>
+              </div>
+            </div>
+            <p className="filmstrip-card-note">
+              Immediate confirmation via chat keeps you informed of exactly where your data
+              landed.
+            </p>
+          </article>
+
+          <article className="filmstrip-card">
+            <span className="filmstrip-card-eyebrow">04 Intelligence</span>
+            <div className="filmstrip-card-body">
+              <SchengenMeter progress={scrollYProgress} />
+              <div className="filmstrip-folder-title" style={{ marginTop: 24 }}>
+                Schengen Meter
+              </div>
+              <div className="filmstrip-folder-sub">Rolling 180d window</div>
+            </div>
+            <p className="filmstrip-card-note">
+              Marlowe synthesizes your data into real-time answers for travel limits and visa
+              requirements.
+            </p>
+          </article>
+        </motion.div>
+
+        <div className="home-shell progress-rail">
+          <motion.div className="progress-bar" style={{ width: progressWidth }} />
+        </div>
+      </div>
+    </section>
+  );
+}
+
 export function HomePage() {
   const { user, loading, refresh } = useAuth();
   const [params] = useSearchParams();
@@ -278,26 +443,7 @@ export function HomePage() {
           </div>
         </section>
 
-        <Exchange
-          eyebrow="Send it anything"
-          title="Forward a document. Forget about it."
-          body="Photograph a boarding pass, a receipt, a licence — anything. Marlowe reads it, names it, and files it, so months later you can just ask what was on it."
-          ask="📎 boarding-pass.pdf"
-          reply="Filed as Ryanair Boarding Pass, Faro — 12 Sept, 14:05. I've logged the trip too."
-          card={
-            <div className="result-card">
-              <div className="result-card-head">Saved to your files</div>
-              <div className="result-row">
-                <span className="result-row-key">Document</span>
-                <span className="result-row-value">Ryanair Boarding Pass, Faro</span>
-              </div>
-              <div className="result-row">
-                <span className="result-row-key">Reference</span>
-                <span className="result-row-value">QK4T2P</span>
-              </div>
-            </div>
-          }
-        />
+        <TravelFilmstrip />
 
         <Exchange
           flip
@@ -346,25 +492,6 @@ export function HomePage() {
             </Reveal>
           </div>
         </section>
-
-        <Exchange
-          eyebrow="It keeps count"
-          title="The answer to questions you'd have to work out."
-          body="Because Marlowe files your tickets as they arrive, it already knows where you've been. Day counts, limits, and how close you are to them."
-          ask="How many days have I got left in the EU?"
-          reply="29. You've used 61 of your 90 across the last 180 days."
-          card={
-            <div className="result-card">
-              <div className="result-card-head">Schengen, rolling 180 days</div>
-              <div className="result-meter">
-                <div className="result-meter-track">
-                  <div className="result-meter-fill" style={{ ["--fill" as string]: "68%" }} />
-                </div>
-                <span className="result-meter-label">61 of 90 days used · 29 remaining</span>
-              </div>
-            </div>
-          }
-        />
 
         <section className="home-section">
           <div className="home-shell">
@@ -462,6 +589,8 @@ export function HomePage() {
           </div>
         </div>
       </footer>
+
+      <HelpWidget />
     </div>
   );
 }
