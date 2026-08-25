@@ -171,6 +171,12 @@ describe("buildSystemPrompt anti-hallucination rule", () => {
     const prompt = buildSystemPrompt(user.id);
     expect(prompt).toContain("multiple times with different concrete sub-terms");
   });
+
+  it("warns that list_needs_attention alone misses automated confirmations", () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("prompt-broad-sweep"));
+    const prompt = buildSystemPrompt(user.id);
+    expect(prompt).toContain("list_needs_attention alone is not enough");
+  });
 });
 
 describe("buildSystemPrompt", () => {
