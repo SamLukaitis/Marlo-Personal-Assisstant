@@ -529,6 +529,20 @@ if (!hasMigratedCheckins) {
   }
 }
 
+// Powers proactive memory surfacing: an optional point in time a memory becomes worth mentioning
+// unprompted (a stated deadline, a recurring commitment), and when it was last pushed so it never
+// repeats. Both nullable — an ordinary fact/preference leaves both null, unchanged from before.
+const memoryNoteColumns = (
+  db.prepare(`PRAGMA table_info(memory_notes)`).all() as { name: string }[]
+).map((c) => c.name);
+if (!memoryNoteColumns.includes("trigger_at")) {
+  db.exec(`ALTER TABLE memory_notes ADD COLUMN trigger_at INTEGER`);
+}
+if (!memoryNoteColumns.includes("last_surfaced_at")) {
+  db.exec(`ALTER TABLE memory_notes ADD COLUMN last_surfaced_at INTEGER`);
+}
+db.exec(`CREATE INDEX IF NOT EXISTS idx_memory_notes_trigger ON memory_notes (owner_id, trigger_at)`);
+
 export const uploadsDir = path.join(dataDir, "uploads");
 if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
 
@@ -727,11 +741,15 @@ export interface MemoryNoteRow {
   id: number;
   content: string;
   createdAt: number;
+  triggerAt: number | null;
+  lastSurfacedAt: number | null;
 }
+
+const MEMORY_NOTE_COLUMNS = `id, content, created_at AS createdAt, trigger_at AS triggerAt, last_surfaced_at AS lastSurfacedAt`;
 
 export function listMemoryNotes(ownerId: number): MemoryNoteRow[] {
   return db
-    .prepare(`SELECT id, content, created_at AS createdAt FROM memory_notes WHERE owner_id = ? ORDER BY id DESC`)
+    .prepare(`SELECT ${MEMORY_NOTE_COLUMNS} FROM memory_notes WHERE owner_id = ? ORDER BY id DESC`)
     .all(ownerId) as MemoryNoteRow[];
 }
 
@@ -740,23 +758,49 @@ export function listMemoryNotes(ownerId: number): MemoryNoteRow[] {
 // call so the prompt doesn't grow forever as the vault accumulates facts over months of use.
 export function listRecentMemoryNotes(ownerId: number, limit = 40): MemoryNoteRow[] {
   return db
-    .prepare(
-      `SELECT id, content, created_at AS createdAt FROM memory_notes WHERE owner_id = ? ORDER BY id DESC LIMIT ?`
-    )
+    .prepare(`SELECT ${MEMORY_NOTE_COLUMNS} FROM memory_notes WHERE owner_id = ? ORDER BY id DESC LIMIT ?`)
     .all(ownerId, limit) as MemoryNoteRow[];
 }
 
-export function addMemoryNote(ownerId: number, content: string): MemoryNoteRow {
+// triggerAt comes from the model as an ISO 8601 string (see the remember tool in assistant.ts) —
+// parsed here rather than trusted as-is, since a malformed or hallucinated date string should
+// never crash a save or silently store garbage. Invalid/unparseable dates are treated exactly
+// like "no trigger" (same fault-tolerant spirit as record_travel_movement elsewhere), not an
+// error — the note itself still saves.
+export function addMemoryNote(ownerId: number, content: string, triggerAt?: string | null): MemoryNoteRow {
+  const parsedMs = triggerAt ? new Date(triggerAt).getTime() : NaN;
+  const triggerAtMs = Number.isFinite(parsedMs) ? parsedMs : null;
+
   const info = db
-    .prepare(`INSERT INTO memory_notes (owner_id, content, created_at) VALUES (?, ?, ?)`)
-    .run(ownerId, content, Date.now());
+    .prepare(`INSERT INTO memory_notes (owner_id, content, created_at, trigger_at) VALUES (?, ?, ?, ?)`)
+    .run(ownerId, content, Date.now(), triggerAtMs);
   return db
-    .prepare(`SELECT id, content, created_at AS createdAt FROM memory_notes WHERE id = ?`)
+    .prepare(`SELECT ${MEMORY_NOTE_COLUMNS} FROM memory_notes WHERE id = ?`)
     .get(info.lastInsertRowid) as MemoryNoteRow;
 }
 
 export function removeMemoryNote(ownerId: number, id: number): void {
   db.prepare(`DELETE FROM memory_notes WHERE id = ? AND owner_id = ?`).run(id, ownerId);
+}
+
+// Indexed lookup (idx_memory_notes_trigger, see the migration above), not a scan — cost stays
+// proportional to how many reminders are actually due, not how many memories exist in total.
+export function listDueMemoryReminders(ownerId: number, nowMs: number): MemoryNoteRow[] {
+  return db
+    .prepare(
+      `SELECT ${MEMORY_NOTE_COLUMNS} FROM memory_notes
+       WHERE owner_id = ? AND trigger_at IS NOT NULL AND trigger_at <= ? AND last_surfaced_at IS NULL
+       ORDER BY trigger_at ASC`
+    )
+    .all(ownerId, nowMs) as MemoryNoteRow[];
+}
+
+export function markMemorySurfaced(ownerId: number, id: number): void {
+  db.prepare(`UPDATE memory_notes SET last_surfaced_at = ? WHERE id = ? AND owner_id = ?`).run(
+    Date.now(),
+    id,
+    ownerId
+  );
 }
 
 export interface WhatsAppMessageRow {
