@@ -15,3 +15,4 @@ the feature is actually picked up.
 - [xero-receipt-forwarding.md](xero-receipt-forwarding.md)
 - [marlowe-capabilities-ui.md](marlowe-capabilities-ui.md)
 - [document-deduplication.md](document-deduplication.md)
+- [admin-version-check.md](admin-version-check.md)
