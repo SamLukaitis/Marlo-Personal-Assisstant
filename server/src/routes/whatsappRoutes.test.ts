@@ -1,0 +1,64 @@
+import { describe, it, expect, vi, beforeEach } from "vitest";
+
+vi.mock("../providers/whatsapp.js", () => ({
+  sendWhatsAppMessage: vi.fn(),
+  isWhatsAppConfigured: vi.fn(),
+  isWhatsAppSignatureConfigured: vi.fn(),
+  verifyWebhookChallenge: vi.fn(),
+  verifyWebhookSignature: vi.fn(),
+  extractIncomingMessages: vi.fn(),
+}));
+vi.mock("../db/store.js", () => ({
+  resolveOwnerByPhone: vi.fn(),
+  getWhatsAppHistory: vi.fn().mockReturnValue([]),
+  appendWhatsAppMessage: vi.fn(),
+}));
+vi.mock("../ai/assistant.js", () => ({
+  runAssistantChat: vi.fn(),
+  MAX_HISTORY_MESSAGES: 12,
+}));
+vi.mock("../services/documents.js", () => ({
+  ingestWhatsAppMedia: vi.fn(),
+  ingestWhatsAppLink: vi.fn(),
+}));
+vi.mock("../services/safeLinkFetcher.js", () => ({
+  findSaveableUrl: vi.fn().mockReturnValue(null),
+}));
+vi.mock("../services/whatsappRegistration.js", async () => {
+  const actual = await vi.importActual<typeof import("../services/whatsappRegistration.js")>(
+    "../services/whatsappRegistration.js"
+  );
+  return {
+    ...actual,
+    handlePendingRegistration: vi.fn(),
+  };
+});
+
+const { sendWhatsAppMessage } = await import("../providers/whatsapp.js");
+const { resolveOwnerByPhone } = await import("../db/store.js");
+const { runAssistantChat } = await import("../ai/assistant.js");
+const { handleIncoming } = await import("./whatsappRoutes.js");
+
+beforeEach(() => {
+  vi.mocked(sendWhatsAppMessage).mockClear();
+  vi.mocked(runAssistantChat).mockClear();
+  vi.mocked(resolveOwnerByPhone).mockReturnValue(42);
+});
+
+describe("handleIncoming — help trigger for already-registered users", () => {
+  it("replies with the overview and never calls the assistant", async () => {
+    await handleIncoming({ kind: "text", from: "447900000000", text: "help", messageId: "m1" });
+
+    expect(runAssistantChat).not.toHaveBeenCalled();
+    expect(sendWhatsAppMessage).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(sendWhatsAppMessage).mock.calls[0][0]).toBe("447900000000");
+  });
+
+  it("still routes an ordinary message to the real assistant", async () => {
+    vi.mocked(runAssistantChat).mockResolvedValue("a real reply");
+
+    await handleIncoming({ kind: "text", from: "447900000001", text: "what's on my calendar today?", messageId: "m2" });
+
+    expect(runAssistantChat).toHaveBeenCalledTimes(1);
+  });
+});

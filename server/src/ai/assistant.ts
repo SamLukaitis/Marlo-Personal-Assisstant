@@ -927,3 +927,49 @@ export async function runAssistantChat(ownerId: number, history: ChatMessage[]):
 
   return "I wasn't able to finish that within my tool-call limit — try a more specific request.";
 }
+
+// Narrow, tool-free assistant call used by the WhatsApp registration state machine
+// (whatsappRegistration.ts) when a reply doesn't match what a rigid step expects (not a valid
+// email, not "resend"). It only converses — it has no tools and no authority over whether an
+// email is ultimately accepted; that stays a hardcoded regex + isEmailInvited check in the
+// caller, same "the model interprets, code decides" split the rest of the app uses.
+const REGISTRATION_ASSIST_SYSTEM_PROMPTS: Record<"email" | "link", string> = {
+  email:
+    "You are Marlowe, helping someone finish signing up for a personal WhatsApp assistant. " +
+    "They're supposed to reply with the email address they use for Gmail or Outlook so it can " +
+    "be connected. Respond briefly — one or two short sentences, plain language, suited to " +
+    "someone who isn't very tech-savvy — to what they said, then end by asking again for their " +
+    "email address. You have no authority over whether an email address is valid or accepted — " +
+    "never claim it is or isn't, that's decided elsewhere. If they say they have more than one " +
+    "email, tell them any address works and they can connect others later.",
+  link:
+    "You are Marlowe, helping someone finish signing up for a personal WhatsApp assistant. A " +
+    "one-time link to connect their Gmail/Outlook was already sent to them and they're supposed " +
+    "to tap it. Respond briefly — one or two short sentences, plain language — to what they " +
+    "said, then remind them to tap the link above, or reply \"resend\" if it expired.",
+};
+
+const REGISTRATION_ASSIST_FALLBACK: Record<"email" | "link", string> = {
+  email: "Sorry, what's the email address you'd like to use?",
+  link: "Tap the link above to connect your email, or reply \"resend\" if it expired.",
+};
+
+export async function getRegistrationAssistReply(
+  userText: string,
+  context: "email" | "link"
+): Promise<string> {
+  try {
+    const anthropic = getClient();
+    const response = await anthropic.messages.create({
+      model: MODEL_SIMPLE,
+      max_tokens: 200,
+      system: REGISTRATION_ASSIST_SYSTEM_PROMPTS[context],
+      messages: [{ role: "user", content: userText }],
+    });
+    const text = response.content.find((b): b is Anthropic.TextBlock => b.type === "text");
+    return text?.text ?? REGISTRATION_ASSIST_FALLBACK[context];
+  } catch (err) {
+    console.error("registration assist reply failed", err);
+    return REGISTRATION_ASSIST_FALLBACK[context];
+  }
+}
