@@ -794,6 +794,7 @@ export interface ChatMessage {
 function buildRules(enabled: Set<ToolKey>): string {
   const base = [
     "- Always look up real data with your tools before answering questions about email, calendar, or files — never invent contents.",
+    "- Never state that something does NOT exist (no booking, no email, nothing on file, calendar is empty, etc.) without calling the relevant tool in THIS turn first. You do not retain tool results from earlier turns — only your own past reply text — so a memory of having checked before is not verification. If a user pushes back on something you said, that is a signal to re-run the tool, not to just apologize or reverse yourself from reasoning alone.",
     "- You can create email drafts but can never send email. After creating a draft, tell the user to review and send it from their mailbox.",
     "- You can create, edit, and delete calendar events directly on the user's own calendar — these are low-risk and reversible. You can never invite other people to an event; calendar events you create are personal-only.",
     '- You can archive emails and apply labels/categories directly — archiving is fully reversible (the email is just removed from the inbox, never deleted) so you don\'t need to ask permission first, but do confirm if the query is broad or ambiguous (e.g. "archive everything" with no filter).',
@@ -953,6 +954,56 @@ const REGISTRATION_ASSIST_FALLBACK: Record<"email" | "link", string> = {
   email: "Sorry, what's the email address you'd like to use?",
   link: "Tap the link above to connect your email, or reply \"resend\" if it expired.",
 };
+
+// Tool-free assistant call for the public marketing site's help widget (helpChatRoutes.ts).
+// Unlike getRegistrationAssistReply below, this one carries real multi-turn history since it's a
+// standalone conversation, not a single interruption of a rigid state machine. It only ever talks
+// about the product in general terms — it has no tools, no database access, and no way to look up
+// any real user's account, so it must say so rather than imply otherwise if asked anything
+// account-specific.
+export interface HelpChatTurn {
+  role: "user" | "assistant";
+  text: string;
+}
+
+const HELP_CHAT_SYSTEM_PROMPT =
+  "You are Marlowe, answering questions on Marlowe's public marketing website for a visitor " +
+  "who has not signed in. Marlowe is a personal AI assistant that connects to someone's Gmail " +
+  "or Outlook, calendar, Google Drive or OneDrive, and Microsoft Teams, plus a dedicated " +
+  "WhatsApp number — one conversation instead of switching between apps. It gives a daily " +
+  "briefing, answers questions about mail/calendar/files, drafts email replies (it never sends " +
+  "mail as the user — drafts always wait in their own mailbox for them to send), helps move " +
+  "meetings, and files forwarded documents like boarding passes or receipts, including tracking " +
+  "Schengen 90/180-day limits automatically from tickets already forwarded. Sign-in is with a " +
+  "Google or Microsoft account, no separate password. Marlowe is currently in a closed preview — " +
+  "only invited email addresses can sign in. " +
+  "Answer briefly and helpfully, in plain language, and nudge toward signing in with Google or " +
+  "Microsoft when it's a natural next step. You have no access to any real user's account, " +
+  "inbox, or data from this widget — if asked anything account-specific (\"what's in my inbox\", " +
+  "\"did my trip get logged\", etc.), say plainly that you can't see their account from here and " +
+  "that they should sign in and ask there instead. Never claim to take an action (you cannot " +
+  "send anything from this chat). If asked something you don't know, say so rather than " +
+  "guessing, and suggest hello@marlowe.app.";
+
+const HELP_CHAT_FALLBACK =
+  "Sorry, I'm having trouble answering right now — try again in a moment, or email hello@marlowe.app.";
+
+export async function getHelpChatReply(history: HelpChatTurn[]): Promise<string> {
+  try {
+    const anthropic = getClient();
+    const response = await anthropic.messages.create({
+      model: MODEL_SIMPLE,
+      max_tokens: 300,
+      system: HELP_CHAT_SYSTEM_PROMPT,
+      messages: history.map((turn) => ({ role: turn.role, content: turn.text })),
+    });
+    const text = response.content.find((b): b is Anthropic.TextBlock => b.type === "text");
+    return text?.text ?? HELP_CHAT_FALLBACK;
+  } catch (err) {
+    console.error("help chat reply failed", err);
+    return HELP_CHAT_FALLBACK;
+  }
+}
 
 export async function getRegistrationAssistReply(
   userText: string,

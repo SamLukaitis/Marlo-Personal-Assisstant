@@ -23,6 +23,7 @@ import { alertRoutes } from "./routes/alertRoutes.js";
 import { toolsRoutes } from "./routes/toolsRoutes.js";
 import { newsRoutes } from "./routes/newsRoutes.js";
 import { adminRoutes } from "./routes/adminRoutes.js";
+import { helpChatRoutes } from "./routes/helpChatRoutes.js";
 import { requireAuth } from "./middleware/auth.js";
 import { startScheduler } from "./services/scheduler.js";
 
@@ -70,6 +71,12 @@ app.use(whatsappRoutes);
 // Public: the one route a phone automation (iOS Shortcuts / Android Tasker) hits without any
 // interactive login — gated by its own shared-secret header, resolved to an owner internally.
 app.use(checkinRoutes);
+
+// Public: the marketing homepage's help widget, for visitors who haven't signed in yet — must be
+// registered before the blanket /api requireAuth below, or the site's own logged-out visitors
+// would get 401s from it. Gated only by its own per-IP rate limit (helpChatRoutes.ts), not a
+// session — it has no access to real user data by design.
+app.use(helpChatRoutes);
 
 // Everything else under /api/* requires a logged-in session.
 app.use("/api", requireAuth);

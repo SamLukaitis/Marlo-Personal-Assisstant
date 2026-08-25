@@ -1,0 +1,212 @@
+{
+  "schemaVersion": 1,
+  "targets": {
+    "/": {
+      "targetKind": "existing-ui",
+      "projectId": "e729ccf4-96b0-474c-bc1f-69b517f81672",
+      "baselineDraftId": "d6dfcc31-5882-4408-b723-4fa01c25f6d9",
+      "activeDraftId": "d8834691-6ad8-44ce-8ce1-de553e07dfb0",
+      "designSystemPath": ".superdesign/design-system.md",
+      "contextFiles": [
+        ".superdesign/design-system.md",
+        "client/src/pages/HomePage.tsx",
+        "client/src/pages/home.css",
+        "client/src/index.css:1:83"
+      ],
+      "fingerprints": {
+        ".superdesign/design-system.md": "a77ad64358285a9e5e202a5680733e10da5c6b66cacf904cd66131204d8ba0f8",
+        "client/src/pages/HomePage.tsx": "8ec660ba090b39161764b2ca25e74b5e73c00c305b55d391d6b9955e2aa62d55",
+        "client/src/pages/home.css": "7f46df3b6fcc7ba0259f408a728c83d83a2f033d693ae0560604e2565042476d",
+        "client/src/index.css": "68b67a08a4eacac4c6fa878f4afe48ebbd795f18f67d50e27016d1cd19a39d7d"
+      },
+      "drafts": {
+        "d6dfcc31-5882-4408-b723-4fa01c25f6d9": {
+          "title": "Marlowe Marketing Reproduction",
+          "visualDirection": "baseline / pixel-perfect current state",
+          "currentVersion": 1
+        },
+        "d8834691-6ad8-44ce-8ce1-de553e07dfb0": {
+          "title": "Marlowe — Editorial Motion",
+          "visualDirection": "SELECTED direction: editorial & premium — warm off-white/near-black ink, single warm accent (amber/terracotta), serif display + grotesk sans, hairline borders, magazine-like rhythm. v2 adds an interaction/motion layer: staggered scroll-triggered fade+slide reveals per section, hover-lift + accent-color transitions on exchange/tool/connector cards, Schengen meter reimagined as an animated radial/donut chart with count-up, polished hero WhatsApp thread entrance + idle pulse, backdrop-blur topbar on scroll. Production mapping: Motion for animation, kokonutui/bklit component patterns for hover cards + chart primitives.",
+          "parentDraftId": "d6dfcc31-5882-4408-b723-4fa01c25f6d9",
+          "currentVersion": 2
+        },
+        "4b28e91f-a05d-49cf-9faa-9878185728fb": {
+          "title": "Marlowe — Dark Technical Exploration",
+          "visualDirection": "fully open (not brand-locked): dark & technical/product-forward — near-black dark-mode-first, single bright accent (electric green/cyan), technical sans + monospace data values, sharp 2-4px radius, dashboard-preview feel",
+          "parentDraftId": "d6dfcc31-5882-4408-b723-4fa01c25f6d9",
+          "currentVersion": 1
+        },
+        "768c333a-82d4-4605-9aed-bbbf6c9ab311": {
+          "title": "Marlowe — Geographically Accurate Cartography",
+          "visualDirection": "branch off Editorial Motion v2, NOT yet selected (kept as a reversible alternative): the Schengen exchange section's donut chart is replaced with an interactive editorial-style Western Europe map (UK/Ireland/France/Iberia/Italy) — pulsing dots at 5 sample past-trip cities (London/Paris/Milan/Lisbon/Faro), dashed amber flight-arc lines from London (hub) to each, hover reveals a boarding-pass/trip-detail card; always-visible '61 of 90 days' summary stays for no-hover legibility. v1-v3 attempts (AI-hand-drawn SVG paths from a text prompt, even with a reference image) all produced unrecognizable blob shapes — LLMs cannot reliably vectorize/trace real geography from a prompt. v4 fixes this deterministically: built outside the AI generator using real Natural Earth land data (world-atlas npm package) through d3-geo (Mercator projection, clipped to a Western Europe bounding box), city dot positions computed from real lat/lon coordinates, then spliced into the draft HTML and imported via `import-design-draft --into`. Verified in-browser (Chrome) before import: real coastlines, correct city placement, working hover tooltips. This is the same stack the production plan calls for (@bklit/choropleth-chart also uses d3-geo + real geo data), so the mockup and the eventual React implementation now agree on approach.",
+          "parentDraftId": "d8834691-6ad8-44ce-8ce1-de553e07dfb0",
+          "currentVersion": 4
+        },
+        "ea75f296-ad6d-403e-84cd-a39aa109774a": {
+          "title": "Marlowe - Scroll Pinned Stepper",
+          "visualDirection": "branch off Editorial Motion v2, NOT yet selected. Replaces the travel-map idea (parked, not deleted) with a scroll-driven document-filing sequence: section pins (position: sticky) while one continuous scroll range drives 4 stages via scroll progress — boarding pass (Ryanair/Faro/12 Sept/QK4T2P) appears, shrinks into a pulsing 'Travel Documents' folder, an assistant chat bubble confirms filing, a Schengen meter counts up to 61 of 90 days.",
+          "parentDraftId": "d8834691-6ad8-44ce-8ce1-de553e07dfb0",
+          "currentVersion": 1
+        },
+        "ddd2a21f-0355-4634-821f-d7458e500f15": {
+          "title": "Marlowe — Travel Filmstrip Redesign",
+          "visualDirection": "branch off Editorial Motion v2, NOT yet selected. Same 4-stage document-filing narrative (boarding pass → folder → chat confirmation → Schengen meter) as the Pinned Stepper, but scroll-jacked horizontally: vertical scroll drives a horizontal card track sliding left (Apple product-page style) with a progress rail beneath.",
+          "parentDraftId": "d8834691-6ad8-44ce-8ce1-de553e07dfb0",
+          "currentVersion": 1
+        },
+        "5d3900b4-13f9-4788-a92c-65f25cf00681": {
+          "title": "Marlowe — Travel Automation Workflow",
+          "visualDirection": "branch off Editorial Motion v2, NOT yet selected. Same 4-stage document-filing narrative but as a lighter-weight staggered reveal-on-scroll (not pinned/scroll-jacked): boarding pass drops down a chute into a bouncing/pulsing folder, chat bubble pops in beside it, Schengen counter does an odometer roll-up to 61 of 90 days. Intended as the easiest of the 3 to feel production-ready.",
+          "parentDraftId": "d8834691-6ad8-44ce-8ce1-de553e07dfb0",
+          "currentVersion": 1
+        }
+      },
+      "updatedAt": "2026-08-25T17:05:00Z"
+    },
+    "/assistant": {
+      "targetKind": "existing-ui",
+      "projectId": "e729ccf4-96b0-474c-bc1f-69b517f81672",
+      "baselineDraftId": "7bb344f5-a9df-434f-941f-d6a76301d5cb",
+      "activeDraftId": "caa494c3-425a-4028-a3ec-450dd005a806",
+      "designSystemPath": ".superdesign/design-system.md",
+      "contextFiles": [
+        ".superdesign/design-system.md",
+        "client/src/components/AuthedLayout.tsx",
+        "client/src/components/Sidebar.tsx",
+        "client/src/components/icons.tsx",
+        "client/src/components/BriefingCard.tsx",
+        "client/src/pages/AssistantPage.tsx",
+        "client/src/index.css"
+      ],
+      "fingerprints": {
+        ".superdesign/design-system.md": "fcf298af18a32aad3bd44c1d0ea75134bc383f2778e37a78334f6af57685be64",
+        "client/src/components/AuthedLayout.tsx": "50cfacaf43be7001ef7816d36e9b01da0acea9335742429fe2b56eff400b1d07",
+        "client/src/components/Sidebar.tsx": "e7edefbfb8b5086c2c0f0e82d06fdc33d8565a9eef5a4c50a2a10c3c62ce42f5",
+        "client/src/components/icons.tsx": "96a8f648ccd0794357460b026e5801cbd5f87f0d67ae947674fb743b64d16a3e",
+        "client/src/components/BriefingCard.tsx": "f40a2e413f98137bb2450212a5d3103ada1c244a364c2895510865b956a61698",
+        "client/src/pages/AssistantPage.tsx": "5d01b9e84f2de2129bb835ab054087d3edaa1e0825fa53625ab131a57ea66d30",
+        "client/src/index.css": "23ee0985275d8a42f65b5572b8959c6be01273e56a40f007d818fb2af8064342"
+      },
+      "drafts": {
+        "7bb344f5-a9df-434f-941f-d6a76301d5cb": {
+          "title": "Assistant Hub Reproduction",
+          "visualDirection": "baseline / pixel-perfect current state",
+          "currentVersion": 1
+        },
+        "caa494c3-425a-4028-a3ec-450dd005a806": {
+          "title": "Responsive Responsive Assistant Hub",
+          "visualDirection": "bold & modern, de-templated (forest green accent, General Sans + Zodiak serif, no decorative icons, no-scroll viewport-fit layout); briefing split into Unread/Calendar/Updates segments with working expand-on-click + auto-collapse-on-type JS interaction; responsive: 188px labeled sidebar >=1024px, 68px icon rail 768-1023px, hidden + bottom tab bar <768px; nav simplified to 5 items (Assistant/Chats/Calendar/Files/Setup, Search removed and merged into Files+Assistant per user's IA decision)",
+          "parentDraftId": "7bb344f5-a9df-434f-941f-d6a76301d5cb",
+          "currentVersion": 7
+        },
+        "3db4eb51-1fca-4b7c-bfb0-60881cff0571": {
+          "title": "Minimal & Refined Assistant Hub",
+          "visualDirection": "clean & minimal",
+          "parentDraftId": "7bb344f5-a9df-434f-941f-d6a76301d5cb",
+          "currentVersion": 1
+        },
+        "d6fd9099-ac5f-437e-a1f4-90656cfb4759": {
+          "title": "Warm & Approachable Assistant Hub",
+          "visualDirection": "warm & approachable",
+          "parentDraftId": "7bb344f5-a9df-434f-941f-d6a76301d5cb",
+          "currentVersion": 1
+        }
+      },
+      "updatedAt": "2026-08-17T15:56:00Z"
+    },
+    "/chats": {
+      "targetKind": "existing-ui",
+      "projectId": "e729ccf4-96b0-474c-bc1f-69b517f81672",
+      "activeDraftId": "6aeb2790-1473-4365-ba83-b019f06e6e9a",
+      "sourceTarget": "/assistant",
+      "sourceDraftId": "caa494c3-425a-4028-a3ec-450dd005a806",
+      "designSystemPath": ".superdesign/design-system.md",
+      "contextFiles": [
+        ".superdesign/design-system.md",
+        "client/src/components/Sidebar.tsx",
+        "client/src/components/icons.tsx",
+        "client/src/pages/ChatsPage.tsx",
+        "client/src/index.css"
+      ],
+      "drafts": {
+        "6aeb2790-1473-4365-ba83-b019f06e6e9a": {
+          "title": "Chats",
+          "visualDirection": "same system as /assistant, applied via execute-flow-pages; 5-item nav, Teams chat list",
+          "currentVersion": 1
+        }
+      },
+      "updatedAt": "2026-08-17T15:56:00Z"
+    },
+    "/calendar": {
+      "targetKind": "existing-ui",
+      "projectId": "e729ccf4-96b0-474c-bc1f-69b517f81672",
+      "activeDraftId": "55f2ee00-308a-4684-b10e-0a8ab563393e",
+      "sourceTarget": "/assistant",
+      "sourceDraftId": "caa494c3-425a-4028-a3ec-450dd005a806",
+      "designSystemPath": ".superdesign/design-system.md",
+      "contextFiles": [
+        ".superdesign/design-system.md",
+        "client/src/components/Sidebar.tsx",
+        "client/src/components/icons.tsx",
+        "client/src/pages/CalendarPage.tsx",
+        "client/src/index.css"
+      ],
+      "drafts": {
+        "55f2ee00-308a-4684-b10e-0a8ab563393e": {
+          "title": "Calendar",
+          "visualDirection": "same system as /assistant, applied via execute-flow-pages; 5-item nav, day-range selector + event list",
+          "currentVersion": 1
+        }
+      },
+      "updatedAt": "2026-08-17T15:56:00Z"
+    },
+    "/files": {
+      "targetKind": "existing-ui",
+      "projectId": "e729ccf4-96b0-474c-bc1f-69b517f81672",
+      "activeDraftId": "12b3a01f-cb35-4a2b-9d42-4a51ed1070d0",
+      "sourceTarget": "/assistant",
+      "sourceDraftId": "caa494c3-425a-4028-a3ec-450dd005a806",
+      "designSystemPath": ".superdesign/design-system.md",
+      "contextFiles": [
+        ".superdesign/design-system.md",
+        "client/src/components/Sidebar.tsx",
+        "client/src/components/icons.tsx",
+        "client/src/pages/FilesPage.tsx",
+        "client/src/pages/SearchPage.tsx",
+        "client/src/index.css"
+      ],
+      "drafts": {
+        "12b3a01f-cb35-4a2b-9d42-4a51ed1070d0": {
+          "title": "Files",
+          "visualDirection": "same system as /assistant, applied via execute-flow-pages; absorbs old Search page scoped to files/documents only (mail/Teams search now via Assistant chat); All/Files/Documents filter chips, unified search bar, two sections",
+          "currentVersion": 1
+        }
+      },
+      "updatedAt": "2026-08-17T15:56:00Z"
+    },
+    "/setup": {
+      "targetKind": "existing-ui",
+      "projectId": "e729ccf4-96b0-474c-bc1f-69b517f81672",
+      "activeDraftId": "a2369bab-2f28-43c0-8878-c533ed23500f",
+      "sourceTarget": "/assistant",
+      "sourceDraftId": "caa494c3-425a-4028-a3ec-450dd005a806",
+      "designSystemPath": ".superdesign/design-system.md",
+      "contextFiles": [
+        ".superdesign/design-system.md",
+        "client/src/components/Sidebar.tsx",
+        "client/src/components/icons.tsx",
+        "client/src/pages/SetupPage.tsx",
+        "client/src/index.css"
+      ],
+      "drafts": {
+        "a2369bab-2f28-43c0-8878-c533ed23500f": {
+          "title": "Setup",
+          "visualDirection": "same system as /assistant, applied via execute-flow-pages; restyle only, same 9 sections/order/content, normal page scroll (not the no-scroll shell)",
+          "currentVersion": 1
+        }
+      },
+      "updatedAt": "2026-08-17T15:56:00Z"
+    }
+  }
+}
