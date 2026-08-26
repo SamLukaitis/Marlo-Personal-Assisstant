@@ -126,7 +126,7 @@ const ALWAYS_ON_TOOLS: Anthropic.Tool[] = [
   {
     name: "get_message",
     description:
-      "Fetch the full body of one email. Call this after list/search when the user needs details, a summary of the content, or before drafting a reply.",
+      "Fetch the full body of one email, including metadata (filename, size) for any attachments — see the `attachments` field on the result. Call this after list/search when the user needs details, a summary of the content, or before drafting a reply. If the user is asking about a booking/ticket/receipt and the email has an attachment, use extract_email_attachment on it rather than only reading the body text.",
     input_schema: {
       type: "object",
       properties: {
