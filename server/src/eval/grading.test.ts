@@ -121,6 +121,15 @@ describe("dateAppearsInReply", () => {
   it("does not match an unrelated date", () => {
     expect(dateAppearsInReply("2026-09-05", "October 3rd, 2026")).toBe(false);
   });
+
+  it("matches an ISO date written with a non-breaking hyphen (U+2011)", () => {
+    // Found by the grounding eval: a real reply rendered "2026‑09‑12" with U+2011 instead of "-".
+    expect(dateAppearsInReply("2026-09-12", "rescheduled to depart on 2026‑09‑12")).toBe(true);
+  });
+
+  it("matches an ISO date written with an en dash", () => {
+    expect(dateAppearsInReply("2026-11-14", "pickup scheduled for 2026–11–14")).toBe(true);
+  });
 });
 
 describe("containsDenial", () => {
@@ -186,6 +195,26 @@ describe("gradeReply", () => {
     const reply = "Your flight DL1234 (ref K4X9QP) departs September 12, 2026.";
     const result = gradeReply(groundTruth, reply);
     expect(result.pass).toBe(true);
+  });
+
+  it("matches an ISO date rendered with a non-breaking hyphen instead of a plain one", () => {
+    // Found by the grounding eval: a real reply rendered "2026‑09‑12" with U+2011 (non-breaking
+    // hyphen) instead of "-", which ISO_DATE_RE's literal hyphen silently failed to match.
+    const reply = "Your flight DL1234 (ref K4X9QP) departs on 2026‑09‑12.";
+    const result = gradeReply(groundTruth, reply);
+    expect(result.pass).toBe(true);
+    expect(result.missingFacts).toEqual([]);
+  });
+
+  it("does not fail on a denial phrase that's an aside about something else, when every expected fact is present", () => {
+    // Found by the grounding eval: "I don't see any OTHER trip-related changes" (a true, harmless
+    // aside after correctly stating the queried flight change) tripped containsDenial and failed
+    // an otherwise-fully-grounded reply. A denial should only count against the scenario when it
+    // actually leaves an expected fact unstated.
+    const reply = "Your flight DL1234 (ref K4X9QP) departs 2026-09-12. I don't see any other trip changes.";
+    const result = gradeReply(groundTruth, reply);
+    expect(result.pass).toBe(true);
+    expect(result.deniedFacts).toBe(true);
   });
 
   it("passes with no missing facts when ground truth has no identifiers to check", () => {

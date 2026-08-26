@@ -12,6 +12,13 @@ const FLIGHT_NUMBER_RE = /\b[A-Z]{2}\d{2,4}\b/g;
 // English word (all letters) or a plain number (all digits) doesn't count as a reference code.
 const REFERENCE_CODE_RE = /\b(?=[A-Z0-9]{5,7}\b)(?=[A-Z0-9]*[A-Z])(?=[A-Z0-9]*[0-9])[A-Z0-9]{5,7}\b/g;
 
+// Models sometimes render date separators with a non-ASCII dash instead of a plain hyphen (e.g.
+// U+2011 "non-breaking hyphen": "2026‑09‑12"). Normalize before any date regex runs so these
+// aren't silently treated as missing.
+function normalizeDashes(text: string): string {
+  return text.replace(/[‐‑‒–—]/g, "-");
+}
+
 const ISO_DATE_RE = /\b\d{4}-\d{2}-\d{2}\b/g;
 
 // $ or £ followed by a number, tolerating thousands separators and a stray space after the
@@ -106,6 +113,7 @@ const DASH = "[-–—]";
 // A year IS required to match if the reply states one — "September 5, 2027" must not satisfy
 // "2026-09-05" just because the month/day happen to line up.
 export function dateAppearsInReply(iso: string, reply: string): boolean {
+  reply = normalizeDashes(reply);
   if (extractDates(reply).includes(iso)) return true;
 
   const [year, month, dayStr] = iso.split("-");
@@ -131,6 +139,7 @@ export function dateAppearsInReply(iso: string, reply: string): boolean {
 }
 
 export function extractDates(text: string): string[] {
+  text = normalizeDashes(text);
   const iso = extractAll(text, ISO_DATE_RE);
 
   const mdMatches = [...text.matchAll(PROSE_DATE_MD_RE)].map(
@@ -181,12 +190,16 @@ export function gradeReply(groundTruth: GroundTruth, reply: string): GradeResult
   ];
 
   // A denial ("I don't see any booking on file") is only a grounding failure when there was
-  // something to deny. For a negative-control fixture (empty ground truth, nothing seeded in
-  // the mocked email/calendar), a denial is the *correct* answer — see report.ts/fixtures.ts for
-  // the "no-such-booking" fixture this exists for.
+  // something to deny AND the reply doesn't actually state it. For a negative-control fixture
+  // (empty ground truth, nothing seeded in the mocked email/calendar), a denial is the *correct*
+  // answer — see report.ts/fixtures.ts for the "no-such-booking" fixture this exists for. And a
+  // denial phrase can legitimately be a harmless aside about something *other* than the queried
+  // fact ("I don't see any OTHER trip changes") right after correctly stating that fact — found by
+  // the grounding eval failing an otherwise fully-grounded reply on exactly this pattern. So only
+  // treat a denial as a real failure when the expected facts are also missing from the reply.
   const hasExpectedFacts = expected.length > 0;
   const deniedFacts = containsDenial(reply);
-  const failsForDenial = deniedFacts && hasExpectedFacts;
+  const failsForDenial = deniedFacts && hasExpectedFacts && missingFacts.length > 0;
 
   const foundFlights = extractFlightNumbers(reply);
   const foundCodes = extractReferenceCodes(reply);
