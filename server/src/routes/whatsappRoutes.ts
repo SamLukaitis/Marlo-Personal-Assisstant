@@ -14,6 +14,7 @@ import { runAssistantChat, MAX_HISTORY_MESSAGES } from "../ai/assistant.js";
 import { ingestWhatsAppMedia, ingestWhatsAppLink } from "../services/documents.js";
 import { findSaveableUrl, type FetchFailureReason } from "../services/safeLinkFetcher.js";
 import { handlePendingRegistration, isHelpTrigger, MARLOWE_HELP_TEXT } from "../services/whatsappRegistration.js";
+import { handlePostConnectSetupReply } from "../services/postConnectSetup.js";
 import { isVersionTrigger, buildVersionText } from "../services/version.js";
 
 export const whatsappRoutes = Router();
@@ -206,11 +207,25 @@ export async function handleIncoming(message: IncomingWhatsAppMessage): Promise<
   // to decide whether a later proactive push can go out as free-form text or needs a template.
   recordInboundMessage(message.from);
 
+  // A tap answering one of postConnectSetup's yes/no button questions (daily briefing, Teams,
+  // Schengen tracking) — handled entirely there and never reaches the assistant. Returns false for
+  // everything else (nothing pending, a stray/late tap, or ordinary text/media), which falls
+  // through to normal handling below exactly as before.
+  if (await handlePostConnectSetupReply(ownerId, message)) return;
+
   try {
     if (message.kind === "text") {
       await handleText(ownerId, message.from, message.text);
-    } else {
+    } else if (message.kind === "media") {
       await handleMedia(ownerId, message.from, message.mediaId, message.mimeType, message.filename, message.caption);
+    } else {
+      // A button tap with nothing pending for this owner — nothing sends buttons outside
+      // registration/post-connect setup today, so this is always a stray/late tap. Log and ignore
+      // rather than routing it into handleText/handleMedia, which don't expect this shape.
+      console.error("whatsapp: unexpected interactive message with no pending setup step", {
+        ownerId,
+        buttonId: message.buttonId,
+      });
     }
   } catch (err) {
     console.error("whatsapp: failed to handle message", err);

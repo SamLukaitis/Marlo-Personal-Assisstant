@@ -582,6 +582,29 @@ if (!userPhoneNumberColumns.includes("last_inbound_at")) {
   db.exec(`ALTER TABLE user_phone_numbers ADD COLUMN last_inbound_at INTEGER`);
 }
 
+// Which OAuth provider the person picked at the "Gmail or Outlook?" button step of registration
+// — see services/whatsappRegistration.ts. Needed so a later "resend" only re-sends that one link
+// instead of going back to asking.
+const pendingRegColumns = (
+  db.prepare(`PRAGMA table_info(pending_whatsapp_registrations)`).all() as { name: string }[]
+).map((c) => c.name);
+if (!pendingRegColumns.includes("provider")) {
+  db.exec(`ALTER TABLE pending_whatsapp_registrations ADD COLUMN provider TEXT`);
+}
+
+// Tracks the one outstanding yes/no button question in the post-OAuth-connect setup chain (daily
+// briefing, then Teams search, then Schengen tracking) — see services/postConnectSetup.ts. A
+// registered number is routed straight to the real assistant (handleIncoming), not the
+// registration state machine, so this is what lets a button tap answering one of those questions
+// be recognized instead of falling through as an unrecognized interactive message. One row per
+// owner; deleted once the chain finishes (or never created if the chain wasn't started).
+db.exec(`
+  CREATE TABLE IF NOT EXISTS pending_setup (
+    owner_id INTEGER PRIMARY KEY REFERENCES users(id),
+    step TEXT NOT NULL
+  );
+`);
+
 export const uploadsDir = path.join(dataDir, "uploads");
 if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
 
@@ -1627,21 +1650,25 @@ export function deleteSession(raw: string): void {
 export type PendingRegistrationStep =
   | "awaiting_name"
   | "awaiting_email"
+  | "awaiting_provider"
   | "awaiting_link_tap"
   | "completed";
+
+export type RegistrationProvider = "google" | "microsoft";
 
 export interface PendingRegistrationRow {
   phone: string;
   step: PendingRegistrationStep;
   name: string | null;
   typedEmail: string | null;
+  provider: RegistrationProvider | null;
   tokenHash: string | null;
   tokenExpiresAt: number | null;
   createdAt: number;
   updatedAt: number;
 }
 
-const PENDING_REG_SELECT = `phone, step, name, typed_email AS typedEmail, token_hash AS tokenHash,
+const PENDING_REG_SELECT = `phone, step, name, typed_email AS typedEmail, provider, token_hash AS tokenHash,
   token_expires_at AS tokenExpiresAt, created_at AS createdAt, updated_at AS updatedAt`;
 
 export function getPendingRegistration(phone: string): PendingRegistrationRow | null {
@@ -1653,26 +1680,40 @@ export function getPendingRegistration(phone: string): PendingRegistrationRow | 
 
 export function upsertPendingRegistration(
   phone: string,
-  patch: Partial<{ step: PendingRegistrationStep; name: string; typedEmail: string }>
+  patch: Partial<{
+    step: PendingRegistrationStep;
+    name: string;
+    typedEmail: string;
+    provider: RegistrationProvider;
+  }>
 ): PendingRegistrationRow {
   const normalized = normalizePhone(phone);
   const now = Date.now();
   const existing = getPendingRegistration(normalized);
   if (!existing) {
     db.prepare(
-      `INSERT INTO pending_whatsapp_registrations (phone, step, name, typed_email, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?)`
-    ).run(normalized, patch.step ?? "awaiting_name", patch.name ?? null, patch.typedEmail ?? null, now, now);
+      `INSERT INTO pending_whatsapp_registrations (phone, step, name, typed_email, provider, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`
+    ).run(
+      normalized,
+      patch.step ?? "awaiting_name",
+      patch.name ?? null,
+      patch.typedEmail ?? null,
+      patch.provider ?? null,
+      now,
+      now
+    );
   } else {
     db.prepare(
       `UPDATE pending_whatsapp_registrations SET
-         step = @step, name = @name, typed_email = @typedEmail, updated_at = @updatedAt
+         step = @step, name = @name, typed_email = @typedEmail, provider = @provider, updated_at = @updatedAt
        WHERE phone = @phone`
     ).run({
       phone: normalized,
       step: patch.step ?? existing.step,
       name: patch.name ?? existing.name,
       typedEmail: patch.typedEmail ?? existing.typedEmail,
+      provider: patch.provider ?? existing.provider,
       updatedAt: now,
     });
   }
@@ -1734,4 +1775,29 @@ export function completePendingRegistration(phone: string): void {
 
 export function deletePendingRegistration(phone: string): void {
   db.prepare(`DELETE FROM pending_whatsapp_registrations WHERE phone = ?`).run(normalizePhone(phone));
+}
+
+// ---------------------------------------------------------------------------
+// Post-connect setup — the yes/no button chain (daily briefing, Teams, Schengen
+// tracking) run right after OAuth connects. See services/postConnectSetup.ts.
+// ---------------------------------------------------------------------------
+
+export type PostConnectSetupStep = "ask_briefing" | "ask_teams" | "ask_travel";
+
+export function getPendingSetup(ownerId: number): PostConnectSetupStep | null {
+  const row = db.prepare(`SELECT step FROM pending_setup WHERE owner_id = ?`).get(ownerId) as
+    | { step: PostConnectSetupStep }
+    | undefined;
+  return row?.step ?? null;
+}
+
+export function setPendingSetup(ownerId: number, step: PostConnectSetupStep): void {
+  db.prepare(
+    `INSERT INTO pending_setup (owner_id, step) VALUES (?, ?)
+     ON CONFLICT(owner_id) DO UPDATE SET step = excluded.step`
+  ).run(ownerId, step);
+}
+
+export function clearPendingSetup(ownerId: number): void {
+  db.prepare(`DELETE FROM pending_setup WHERE owner_id = ?`).run(ownerId);
 }

@@ -1108,7 +1108,7 @@ export async function runAssistantChat(ownerId: number, history: ChatMessage[]):
 // email, not "resend"). It only converses — it has no tools and no authority over whether an
 // email is ultimately accepted; that stays a hardcoded regex + isEmailInvited check in the
 // caller, same "the model interprets, code decides" split the rest of the app uses.
-const REGISTRATION_ASSIST_SYSTEM_PROMPTS: Record<"email" | "link", string> = {
+const REGISTRATION_ASSIST_SYSTEM_PROMPTS: Record<"email" | "link" | "provider", string> = {
   email:
     "You are Marlowe, helping someone finish signing up for a personal WhatsApp assistant. " +
     "They're supposed to reply with the email address they use for Gmail or Outlook so it can " +
@@ -1122,11 +1122,18 @@ const REGISTRATION_ASSIST_SYSTEM_PROMPTS: Record<"email" | "link", string> = {
     "one-time link to connect their Gmail/Outlook was already sent to them and they're supposed " +
     "to tap it. Respond briefly — one or two short sentences, plain language — to what they " +
     "said, then remind them to tap the link above, or reply \"resend\" if it expired.",
+  provider:
+    "You are Marlowe, helping someone finish signing up for a personal WhatsApp assistant. " +
+    "They were just shown two tappable buttons asking whether they use Gmail or Outlook/Hotmail, " +
+    "but typed a reply instead of tapping one. Respond briefly — one or two short sentences, " +
+    "plain language — to what they said, then ask them to tap Gmail or Outlook above (or say " +
+    "which one they use).",
 };
 
-const REGISTRATION_ASSIST_FALLBACK: Record<"email" | "link", string> = {
+const REGISTRATION_ASSIST_FALLBACK: Record<"email" | "link" | "provider", string> = {
   email: "Sorry, what's the email address you'd like to use?",
   link: "Tap the link above to connect your email, or reply \"resend\" if it expired.",
+  provider: "Do you use Gmail or Outlook/Hotmail? Tap one of the buttons above, or just tell me which.",
 };
 
 // Tool-free assistant call for the public marketing site's help widget (helpChatRoutes.ts).
@@ -1181,7 +1188,7 @@ export async function getHelpChatReply(history: HelpChatTurn[]): Promise<string>
 
 export async function getRegistrationAssistReply(
   userText: string,
-  context: "email" | "link"
+  context: "email" | "link" | "provider"
 ): Promise<string> {
   try {
     const anthropic = getClient();
