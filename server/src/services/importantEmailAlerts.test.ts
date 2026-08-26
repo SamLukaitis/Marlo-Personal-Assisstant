@@ -28,13 +28,19 @@ vi.mock("./importantEmailClassifier.js", async (importOriginal) => {
   return { ...actual, classifyImportantEmails: (...args: unknown[]) => mockClassify(...args) };
 });
 
+const mockIngestEmailAttachment = vi.fn();
+const mockIngestEmailBodyReceipt = vi.fn();
+vi.mock("./documents.js", () => ({
+  ingestEmailAttachment: (...args: unknown[]) => mockIngestEmailAttachment(...args),
+  ingestEmailBodyReceipt: (...args: unknown[]) => mockIngestEmailBodyReceipt(...args),
+}));
+
 const { sendWhatsAppMessage, sendWhatsAppTemplate, isWhatsAppConfigured } = await import("../providers/whatsapp.js");
 const { findOrCreateUserByEmail, addPhoneNumberForUser, recordInboundMessage, hasAlerted } = await import(
   "../db/store.js"
 );
 const { checkForImportantEmails, formatImportantEmailAlert } = await import("./importantEmailAlerts.js");
 const { setXeroForwardingEmail } = await import("./xero.js");
-const { getPendingInvoiceForward } = await import("./xeroInvoiceConfirmation.js");
 
 let counter = 0;
 function uniqueEmail(prefix: string): string {
@@ -98,6 +104,8 @@ beforeEach(() => {
   mockHubListMessages.mockReset();
   mockHubGetMessage.mockReset();
   mockClassify.mockReset().mockResolvedValue(new Map());
+  mockIngestEmailAttachment.mockReset().mockResolvedValue({ ok: true, alreadyExtracted: false, doc: { id: 1 } });
+  mockIngestEmailBodyReceipt.mockReset().mockResolvedValue({ ok: true, doc: { id: 1 } });
 });
 
 describe("checkForImportantEmails", () => {
@@ -262,10 +270,10 @@ describe("checkForImportantEmails", () => {
   });
 });
 
-describe("checkForImportantEmails — invoice forward offer", () => {
-  it("offers to forward and sets pending state when Xero is connected and the email has an attachment", async () => {
-    const user = findOrCreateUserByEmail(uniqueEmail("invoice-offer"));
-    const phone = registerActivePhone(user.id);
+describe("checkForImportantEmails — automatic invoice forwarding", () => {
+  it("forwards an attachment automatically when Xero is connected, no confirmation needed", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("invoice-auto-attachment"));
+    registerActivePhone(user.id);
     setXeroForwardingEmail(user.id, "abc123@bills.xero.com");
     await baseline(user.id);
 
@@ -279,16 +287,42 @@ describe("checkForImportantEmails — invoice forward offer", () => {
 
     await checkForImportantEmails(user.id);
 
-    const [, text] = vi.mocked(sendWhatsAppMessage).mock.calls[0];
-    expect(text).toContain('Reply "yes"');
-    expect(getPendingInvoiceForward(user.id)).toMatchObject({
+    expect(mockIngestEmailAttachment).toHaveBeenCalledWith({
+      ownerId: user.id,
       accountId: 1,
       messageId: "inv-1",
-      subject: "Invoice from Acme",
+      attachmentIndex: 1,
     });
+    expect(mockIngestEmailBodyReceipt).not.toHaveBeenCalled();
+    const [, text] = vi.mocked(sendWhatsAppMessage).mock.calls[0];
+    expect(text).toContain("Forwarding to Xero");
   });
 
-  it("does not offer to forward when Xero isn't connected", async () => {
+  it("forwards a plain-text receipt email automatically when there's no attachment but a real body", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("invoice-auto-body"));
+    registerActivePhone(user.id);
+    setXeroForwardingEmail(user.id, "abc123@bills.xero.com");
+    await baseline(user.id);
+
+    mockHubListMessages.mockResolvedValueOnce([fakeMessage({ id: "inv-text", subject: "Your receipt" })]);
+    mockClassify.mockResolvedValueOnce(new Map([[0, "invoice_due"]]));
+    mockHubGetMessage.mockResolvedValueOnce({ attachments: [], body: "Thanks for your payment of £22.80." });
+
+    await checkForImportantEmails(user.id);
+
+    expect(mockIngestEmailAttachment).not.toHaveBeenCalled();
+    expect(mockIngestEmailBodyReceipt).toHaveBeenCalledWith({
+      ownerId: user.id,
+      accountId: 1,
+      messageId: "inv-text",
+      subject: "Your receipt",
+      bodyText: "Thanks for your payment of £22.80.",
+    });
+    const [, text] = vi.mocked(sendWhatsAppMessage).mock.calls[0];
+    expect(text).toContain("Forwarding to Xero");
+  });
+
+  it("does not forward when Xero isn't connected", async () => {
     const user = findOrCreateUserByEmail(uniqueEmail("invoice-no-xero"));
     registerActivePhone(user.id);
     await baseline(user.id);
@@ -299,12 +333,13 @@ describe("checkForImportantEmails — invoice forward offer", () => {
     await checkForImportantEmails(user.id);
 
     expect(mockHubGetMessage).not.toHaveBeenCalled();
+    expect(mockIngestEmailAttachment).not.toHaveBeenCalled();
+    expect(mockIngestEmailBodyReceipt).not.toHaveBeenCalled();
     const [, text] = vi.mocked(sendWhatsAppMessage).mock.calls[0];
-    expect(text).not.toContain("Reply");
-    expect(getPendingInvoiceForward(user.id)).toBeNull();
+    expect(text).not.toContain("Forwarding");
   });
 
-  it("does not offer to forward when the email has neither an attachment nor a body", async () => {
+  it("does not forward when the email has neither an attachment nor a body", async () => {
     const user = findOrCreateUserByEmail(uniqueEmail("invoice-no-attachment"));
     registerActivePhone(user.id);
     setXeroForwardingEmail(user.id, "abc123@bills.xero.com");
@@ -316,32 +351,16 @@ describe("checkForImportantEmails — invoice forward offer", () => {
 
     await checkForImportantEmails(user.id);
 
+    expect(mockIngestEmailAttachment).not.toHaveBeenCalled();
+    expect(mockIngestEmailBodyReceipt).not.toHaveBeenCalled();
     const [, text] = vi.mocked(sendWhatsAppMessage).mock.calls[0];
-    expect(text).not.toContain("Reply");
-    expect(getPendingInvoiceForward(user.id)).toBeNull();
+    expect(text).not.toContain("Forwarding");
   });
 
-  it("offers to forward a plain-text receipt email (no attachment, but a real body)", async () => {
-    // e.g. a subscription renewal notice where the whole receipt is in the email text itself —
-    // handled by ingestEmailBodyReceipt on confirm, not ingestEmailAttachment.
-    const user = findOrCreateUserByEmail(uniqueEmail("invoice-body-only"));
-    registerActivePhone(user.id);
-    setXeroForwardingEmail(user.id, "abc123@bills.xero.com");
-    await baseline(user.id);
-
-    mockHubListMessages.mockResolvedValueOnce([fakeMessage({ id: "inv-text", subject: "Your receipt" })]);
-    mockClassify.mockResolvedValueOnce(new Map([[0, "invoice_due"]]));
-    mockHubGetMessage.mockResolvedValueOnce({ attachments: [], body: "Thanks for your payment of £22.80." });
-
-    await checkForImportantEmails(user.id);
-
-    const [, text] = vi.mocked(sendWhatsAppMessage).mock.calls[0];
-    expect(text).toContain('Reply "yes"');
-    expect(getPendingInvoiceForward(user.id)).toMatchObject({ messageId: "inv-text" });
-  });
-
-  it("only offers the CTA once per tick even with multiple invoice_due matches", async () => {
-    const user = findOrCreateUserByEmail(uniqueEmail("invoice-single-slot"));
+  it("forwards every invoice_due match independently in the same tick — no single-slot limit", async () => {
+    // Unlike the old confirm-based design, there's no pending-state bottleneck anymore: each
+    // match can trigger its own forward.
+    const user = findOrCreateUserByEmail(uniqueEmail("invoice-multi"));
     registerActivePhone(user.id);
     setXeroForwardingEmail(user.id, "abc123@bills.xero.com");
     await baseline(user.id);
@@ -357,28 +376,15 @@ describe("checkForImportantEmails — invoice forward offer", () => {
 
     await checkForImportantEmails(user.id);
 
-    expect(mockHubGetMessage).toHaveBeenCalledTimes(1);
+    expect(mockHubGetMessage).toHaveBeenCalledTimes(2);
+    expect(mockIngestEmailAttachment).toHaveBeenCalledWith(
+      expect.objectContaining({ messageId: "inv-a" })
+    );
+    expect(mockIngestEmailAttachment).toHaveBeenCalledWith(
+      expect.objectContaining({ messageId: "inv-b" })
+    );
     const secondText = vi.mocked(sendWhatsAppMessage).mock.calls[1][1];
-    expect(secondText).not.toContain("Reply");
-    expect(getPendingInvoiceForward(user.id)).toMatchObject({ messageId: "inv-a" });
-  });
-
-  it("does not set pending state when delivery of the offer fails", async () => {
-    const user = findOrCreateUserByEmail(uniqueEmail("invoice-deliver-fail"));
-    registerActivePhone(user.id);
-    setXeroForwardingEmail(user.id, "abc123@bills.xero.com");
-    await baseline(user.id);
-
-    mockHubListMessages.mockResolvedValueOnce([fakeMessage({ id: "inv-4" })]);
-    mockClassify.mockResolvedValueOnce(new Map([[0, "invoice_due"]]));
-    mockHubGetMessage.mockResolvedValueOnce({
-      attachments: [{ id: "att-1", filename: "invoice.pdf", mimeType: "application/pdf", size: 100 }],
-    });
-    vi.mocked(sendWhatsAppMessage).mockRejectedValueOnce(new Error("network down"));
-
-    await checkForImportantEmails(user.id);
-
-    expect(getPendingInvoiceForward(user.id)).toBeNull();
+    expect(secondText).toContain("Forwarding to Xero");
   });
 });
 

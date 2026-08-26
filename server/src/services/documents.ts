@@ -801,12 +801,12 @@ export async function ingestEmailAttachment(params: {
 }
 
 // Sibling to ingestEmailAttachment for a receipt/invoice email with no PDF/image attachment —
-// only reachable from the invoice_due confirm flow (respond_to_invoice_forward_prompt), never
-// called speculatively on arbitrary email. Unlike ingestWhatsAppLink (which always saves a
-// document regardless of what it finds, since the user explicitly asked to save that link), this
-// only saves anything at all if extraction actually finds a real expense — the user just said
-// "yes, forward this to Xero," so an email that turns out not to contain one should say so
-// plainly rather than leave behind a pointless empty document.
+// only triggered automatically once importantEmailAlerts.ts's invoice_due classifier flags a
+// candidate, never called speculatively on arbitrary email. Unlike ingestWhatsAppLink (which
+// always saves a document regardless of what it finds, since the user explicitly asked to save
+// that link), this only saves anything at all if extraction actually finds a real expense —
+// there's no human confirming first, so a false-positive classification should quietly find
+// nothing to forward rather than leave behind a pointless empty document.
 export async function ingestEmailBodyReceipt(params: {
   ownerId: number;
   accountId: number;
