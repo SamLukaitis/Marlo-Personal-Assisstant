@@ -1,0 +1,86 @@
+import { describe, it, expect } from "vitest";
+import {
+  IMPORTANT_EMAIL_CATEGORIES,
+  CATEGORY_INFO,
+  buildClassifyPrompt,
+  parseClassifyMatches,
+} from "./importantEmailClassifier.js";
+
+describe("IMPORTANT_EMAIL_CATEGORIES / CATEGORY_INFO", () => {
+  it("has exactly the 8 categories from the spec, in order", () => {
+    expect(IMPORTANT_EMAIL_CATEGORIES).toEqual([
+      "flight_change",
+      "reservation_confirmed",
+      "invoice_due",
+      "government_mail",
+      "delivery_notification",
+      "security_alert",
+      "subscription_renewal",
+      "refund_dispute",
+    ]);
+  });
+
+  it("has a complete, non-empty emoji/label/description for every category", () => {
+    for (const category of IMPORTANT_EMAIL_CATEGORIES) {
+      const info = CATEGORY_INFO[category as keyof typeof CATEGORY_INFO];
+      expect(info).toBeDefined();
+      expect(info.emoji.length).toBeGreaterThan(0);
+      expect(info.label.length).toBeGreaterThan(0);
+      expect(info.description.length).toBeGreaterThan(0);
+    }
+  });
+});
+
+describe("buildClassifyPrompt", () => {
+  it("includes every category key and description", () => {
+    const prompt = buildClassifyPrompt([]);
+    for (const category of IMPORTANT_EMAIL_CATEGORIES) {
+      expect(prompt).toContain(category);
+      expect(prompt).toContain(CATEGORY_INFO[category as keyof typeof CATEGORY_INFO].description);
+    }
+  });
+
+  it("includes each candidate's index, subject, and snippet", () => {
+    const prompt = buildClassifyPrompt([
+      { index: 0, subject: "Your flight changed", snippet: "Gate moved to B12" },
+      { index: 1, subject: "Invoice #4471", snippet: "£120 due 1 Sep" },
+    ]);
+    expect(prompt).toContain("[0]");
+    expect(prompt).toContain("Your flight changed");
+    expect(prompt).toContain("Gate moved to B12");
+    expect(prompt).toContain("[1]");
+    expect(prompt).toContain("Invoice #4471");
+    expect(prompt).toContain("£120 due 1 Sep");
+  });
+});
+
+describe("parseClassifyMatches", () => {
+  it("returns a Map of index to category for well-formed matches", () => {
+    const result = parseClassifyMatches([
+      { index: 0, category: "flight_change" },
+      { index: 2, category: "invoice_due" },
+    ]);
+    expect(result).toEqual(
+      new Map([
+        [0, "flight_change"],
+        [2, "invoice_due"],
+      ])
+    );
+  });
+
+  it("skips entries with an unknown category", () => {
+    const result = parseClassifyMatches([{ index: 0, category: "not_a_real_category" }]);
+    expect(result.size).toBe(0);
+  });
+
+  it("skips entries with a non-numeric index", () => {
+    const result = parseClassifyMatches([{ index: "zero", category: "flight_change" }]);
+    expect(result.size).toBe(0);
+  });
+
+  it("returns an empty Map for non-array input", () => {
+    expect(parseClassifyMatches(undefined).size).toBe(0);
+    expect(parseClassifyMatches(null).size).toBe(0);
+    expect(parseClassifyMatches("nope").size).toBe(0);
+  });
+});
