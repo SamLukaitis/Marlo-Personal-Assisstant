@@ -640,6 +640,7 @@ async function finalizeIngestedFile(
   } catch (err) {
     // Extraction or the DB insert failed after the encrypted file already landed on disk —
     // without this, that file would be orphaned.
+    console.error("documents: extraction/save failed after download succeeded", err);
     fs.unlinkSync(storedPath);
     throw err;
   }
@@ -719,7 +720,15 @@ export async function ingestEmailAttachment(params: {
     return { ok: true, doc: existing, alreadyExtracted: true };
   }
 
-  const fetched = await hubGetAttachment(params.ownerId, params.accountId, params.messageId, params.attachmentId);
+  let fetched: Awaited<ReturnType<typeof hubGetAttachment>>;
+  try {
+    fetched = await hubGetAttachment(params.ownerId, params.accountId, params.messageId, params.attachmentId);
+  } catch (err) {
+    // Distinguish "the provider call itself threw" (network/auth/scope) from the extraction
+    // failure below — without this both look identical by the time they reach the model.
+    console.error("documents: hubGetAttachment threw", err);
+    return { ok: false, reason: "unavailable" };
+  }
   if (!fetched) return { ok: false, reason: "unavailable" };
 
   const ext = EXTENSIONS[fetched.mimeType] ?? "bin";
