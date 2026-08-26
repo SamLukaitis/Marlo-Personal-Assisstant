@@ -4,6 +4,7 @@ import crypto from "node:crypto";
 import Anthropic from "@anthropic-ai/sdk";
 import { PDFParse } from "pdf-parse";
 import { downloadWhatsAppMedia } from "../providers/whatsapp.js";
+import { hubGetAttachment } from "./hub.js";
 import {
   saveDocument,
   saveCheckin,
@@ -12,8 +13,10 @@ import {
   linkRecords,
   uploadsDir,
   DOCUMENT_CATEGORIES,
+  findDocumentByEmailAttachment,
   type DocumentRow,
   type DocumentCategory,
+  type DocumentSource,
 } from "../db/store.js";
 import { encryptBuffer } from "./crypto.js";
 import { validateTravelMovement, type TravelMovement } from "./travelValidation.js";
@@ -570,23 +573,25 @@ function movementToCheckins(
   return checkins;
 }
 
-export async function ingestWhatsAppMedia(params: {
-  ownerId: number;
-  phone: string;
-  mediaId: string;
-  mimeType: string;
-  filename?: string;
-  caption?: string;
-}): Promise<DocumentRow> {
+// Shared by every "raw bytes → saved document" path (WhatsApp media, and now email attachments).
+// ingestWhatsAppLink (below) has its own near-identical version because its "file" is page text,
+// not a buffer — see that function's own comment for why it isn't folded in here too.
+async function finalizeIngestedFile(
+  ownerId: number,
+  buffer: Buffer,
+  mimeType: string,
+  storedPath: string,
+  saveMeta: {
+    phone: string;
+    filename: string | null;
+    caption: string | null;
+    source: DocumentSource;
+    emailAccountId?: number | null;
+    emailMessageId?: string | null;
+    emailAttachmentId?: string | null;
+  }
+): Promise<DocumentRow> {
   const uploadedAt = new Date();
-  const { buffer, mimeType: downloadedMimeType } = await downloadWhatsAppMedia(params.mediaId);
-  const mimeType = params.mimeType || downloadedMimeType;
-
-  const ext = EXTENSIONS[mimeType] ?? "bin";
-  const storedName = `${Date.now()}-${crypto.randomUUID()}.${ext}`;
-  const storedPath = path.join(uploadsDir, storedName);
-  fs.writeFileSync(storedPath, encryptBuffer(buffer));
-
   let doc: DocumentRow;
   let storableMovement: TravelMovement | null;
   let derivedEntities: ReturnType<typeof buildDerivedEntities>;
@@ -618,27 +623,30 @@ export async function ingestWhatsAppMedia(params: {
     derivedEntities = buildDerivedEntities(purchases, bookings, uploadedAt);
     matchKeys = extractedMatchKeys;
 
-    doc = saveDocument(params.ownerId, {
-      phone: params.phone,
-      filename: params.filename ?? null,
+    doc = saveDocument(ownerId, {
+      phone: saveMeta.phone,
+      filename: saveMeta.filename,
       mimeType,
       storedPath,
-      caption: params.caption ?? null,
+      caption: saveMeta.caption,
       title,
       extractedText: validated.finalText,
       category,
+      source: saveMeta.source,
+      emailAccountId: saveMeta.emailAccountId ?? null,
+      emailMessageId: saveMeta.emailMessageId ?? null,
+      emailAttachmentId: saveMeta.emailAttachmentId ?? null,
     });
   } catch (err) {
     // Extraction or the DB insert failed after the encrypted file already landed on disk —
-    // without this, that file would be orphaned (undeletable via the API, since there's no
-    // document row pointing at it).
+    // without this, that file would be orphaned.
     fs.unlinkSync(storedPath);
     throw err;
   }
 
   if (storableMovement) {
     for (const c of movementToCheckins(storableMovement, doc.id)) {
-      saveCheckin(params.ownerId, {
+      saveCheckin(ownerId, {
         country: c.country,
         city: c.city,
         checkedInAt: c.checkedInAt,
@@ -647,32 +655,89 @@ export async function ingestWhatsAppMedia(params: {
       });
     }
   }
-  storeDerivedEntities(params.ownerId, doc.id, derivedEntities);
+  storeDerivedEntities(ownerId, doc.id, derivedEntities);
 
-  // Gate on the document's filed category, not just "did an expense come out of it" — a hotel
-  // booking confirmation filed under `travel` can also produce an expense (Phase C), but Jake's
-  // call (feature-to-do/xero-receipt-forwarding.md step 4) was: only things actually filed as
-  // receipts go to Xero, not travel bookings that happen to show a payment. Media only for now —
-  // ingestWhatsAppLink's "file" is scraped page text, not something worth sending to Xero.
   if (doc.category === "receipts" && derivedEntities.some((e) => e.type === "expense" && e.status === "active")) {
-    // Fire-and-forget, same posture as the reconciliation check below — must never delay the
-    // "document saved" confirmation the user is waiting on. Success/failure arrives as its own
-    // separate WhatsApp follow-up (see xeroForwarding.ts).
-    void forwardReceiptToXero(params.ownerId, doc, buffer).catch((err) =>
+    void forwardReceiptToXero(ownerId, doc, buffer).catch((err) =>
       console.error("documents: xero forwarding failed", err)
     );
   }
 
   if (matchKeys) {
-    saveMatchKeys(params.ownerId, doc.id, matchKeys);
-    // Fire-and-forget: this must never delay the "document saved" confirmation the user is
-    // waiting on. Any match notification arrives as a separate follow-up message.
-    void checkDocumentAgainstRecentEmails(params.ownerId, doc.id, doc.title ?? "a saved document", matchKeys).catch(
+    saveMatchKeys(ownerId, doc.id, matchKeys);
+    void checkDocumentAgainstRecentEmails(ownerId, doc.id, doc.title ?? "a saved document", matchKeys).catch(
       (err) => console.error("documents: reconciliation check failed", err)
     );
   }
 
   return doc;
+}
+
+export async function ingestWhatsAppMedia(params: {
+  ownerId: number;
+  phone: string;
+  mediaId: string;
+  mimeType: string;
+  filename?: string;
+  caption?: string;
+}): Promise<DocumentRow> {
+  const { buffer, mimeType: downloadedMimeType } = await downloadWhatsAppMedia(params.mediaId);
+  const mimeType = params.mimeType || downloadedMimeType;
+
+  const ext = EXTENSIONS[mimeType] ?? "bin";
+  const storedName = `${Date.now()}-${crypto.randomUUID()}.${ext}`;
+  const storedPath = path.join(uploadsDir, storedName);
+  fs.writeFileSync(storedPath, encryptBuffer(buffer));
+
+  return finalizeIngestedFile(params.ownerId, buffer, mimeType, storedPath, {
+    phone: params.phone,
+    filename: params.filename ?? null,
+    caption: params.caption ?? null,
+    source: "whatsapp",
+  });
+}
+
+// New: extraction from an email attachment, reusing the exact same extract→validate→store
+// pipeline as a WhatsApp upload. Dedups against a previously-extracted copy of the same
+// attachment before paying for a download or an extraction call at all.
+export async function ingestEmailAttachment(params: {
+  ownerId: number;
+  accountId: number;
+  messageId: string;
+  attachmentId: string;
+}): Promise<
+  | { ok: true; doc: DocumentRow; alreadyExtracted: boolean }
+  | { ok: false; reason: "unavailable" }
+> {
+  const existing = findDocumentByEmailAttachment(
+    params.ownerId,
+    params.accountId,
+    params.messageId,
+    params.attachmentId
+  );
+  if (existing) {
+    return { ok: true, doc: existing, alreadyExtracted: true };
+  }
+
+  const fetched = await hubGetAttachment(params.ownerId, params.accountId, params.messageId, params.attachmentId);
+  if (!fetched) return { ok: false, reason: "unavailable" };
+
+  const ext = EXTENSIONS[fetched.mimeType] ?? "bin";
+  const storedName = `${Date.now()}-${crypto.randomUUID()}.${ext}`;
+  const storedPath = path.join(uploadsDir, storedName);
+  fs.writeFileSync(storedPath, encryptBuffer(fetched.data));
+
+  const doc = await finalizeIngestedFile(params.ownerId, fetched.data, fetched.mimeType, storedPath, {
+    phone: `email:${params.accountId}`,
+    filename: fetched.filename,
+    caption: null,
+    source: "email",
+    emailAccountId: params.accountId,
+    emailMessageId: params.messageId,
+    emailAttachmentId: params.attachmentId,
+  });
+
+  return { ok: true, doc, alreadyExtracted: false };
 }
 
 // "Save this link" path — a WhatsApp text message that's just a URL (see

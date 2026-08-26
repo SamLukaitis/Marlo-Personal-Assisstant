@@ -473,6 +473,24 @@ if (!documentColumns.includes("xero_forwarded_at")) {
   db.exec(`ALTER TABLE documents ADD COLUMN xero_forwarded_at INTEGER`);
 }
 
+// Origin of a saved document — every row before this shipped is implicitly 'whatsapp'. The three
+// email_* columns are only set for source='email' rows, populated by ingestEmailAttachment
+// (documents.ts) and used by findDocumentByEmailAttachment to dedup re-extraction of the same
+// attachment. See docs/superpowers/specs/2026-08-26-email-search-depth-and-attachment-extraction-design.md
+// for why this is three additive columns rather than a `phone` rebuild.
+if (!documentColumns.includes("source")) {
+  db.exec(`ALTER TABLE documents ADD COLUMN source TEXT NOT NULL DEFAULT 'whatsapp'`);
+}
+if (!documentColumns.includes("email_account_id")) {
+  db.exec(`ALTER TABLE documents ADD COLUMN email_account_id INTEGER`);
+}
+if (!documentColumns.includes("email_message_id")) {
+  db.exec(`ALTER TABLE documents ADD COLUMN email_message_id TEXT`);
+}
+if (!documentColumns.includes("email_attachment_id")) {
+  db.exec(`ALTER TABLE documents ADD COLUMN email_attachment_id TEXT`);
+}
+
 // One-time relabel: 'receipts_bookings' was split into 'receipts' (booking confirmations moved
 // under 'travel', where they arguably always belonged — see JAKES_TODO.md 2026-08-24). Plain
 // UPDATE rather than a guarded block since it's naturally idempotent: once no row has the old
@@ -939,6 +957,8 @@ export function resolveOwnerByPhone(phone: string): number | null {
 export type DocumentCategory = "travel" | "id_legal" | "receipts" | "other";
 export const DOCUMENT_CATEGORIES: DocumentCategory[] = ["travel", "id_legal", "receipts", "other"];
 
+export type DocumentSource = "whatsapp" | "email";
+
 export interface DocumentRow {
   id: number;
   phone: string;
@@ -951,11 +971,16 @@ export interface DocumentRow {
   category: DocumentCategory | null;
   createdAt: number;
   xeroForwardedAt: number | null;
+  source: DocumentSource;
+  emailAccountId: number | null;
+  emailMessageId: string | null;
+  emailAttachmentId: string | null;
 }
 
 const DOCUMENT_COLUMNS = `id, phone, filename, mime_type AS mimeType, stored_path AS storedPath,
   caption, title, extracted_text AS extractedText, category, created_at AS createdAt,
-  xero_forwarded_at AS xeroForwardedAt`;
+  xero_forwarded_at AS xeroForwardedAt, source, email_account_id AS emailAccountId,
+  email_message_id AS emailMessageId, email_attachment_id AS emailAttachmentId`;
 
 export function saveDocument(
   ownerId: number,
@@ -968,12 +993,16 @@ export function saveDocument(
     title: string | null;
     extractedText: string;
     category: DocumentCategory | null;
+    source?: DocumentSource;
+    emailAccountId?: number | null;
+    emailMessageId?: string | null;
+    emailAttachmentId?: string | null;
   }
 ): DocumentRow {
   const info = db
     .prepare(
-      `INSERT INTO documents (owner_id, phone, filename, mime_type, stored_path, caption, title, extracted_text, category, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO documents (owner_id, phone, filename, mime_type, stored_path, caption, title, extracted_text, category, created_at, source, email_account_id, email_message_id, email_attachment_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
       ownerId,
@@ -985,7 +1014,11 @@ export function saveDocument(
       doc.title,
       doc.extractedText,
       doc.category,
-      Date.now()
+      Date.now(),
+      doc.source ?? "whatsapp",
+      doc.emailAccountId ?? null,
+      doc.emailMessageId ?? null,
+      doc.emailAttachmentId ?? null
     );
   return db
     .prepare(`SELECT ${DOCUMENT_COLUMNS} FROM documents WHERE id = ?`)
@@ -1020,6 +1053,20 @@ export function getDocument(ownerId: number, id: number): DocumentRow | undefine
   return db
     .prepare(`SELECT ${DOCUMENT_COLUMNS} FROM documents WHERE id = ? AND owner_id = ?`)
     .get(id, ownerId) as DocumentRow | undefined;
+}
+
+export function findDocumentByEmailAttachment(
+  ownerId: number,
+  emailAccountId: number,
+  emailMessageId: string,
+  emailAttachmentId: string
+): DocumentRow | undefined {
+  return db
+    .prepare(
+      `SELECT ${DOCUMENT_COLUMNS} FROM documents
+       WHERE owner_id = ? AND email_account_id = ? AND email_message_id = ? AND email_attachment_id = ?`
+    )
+    .get(ownerId, emailAccountId, emailMessageId, emailAttachmentId) as DocumentRow | undefined;
 }
 
 export function deleteDocument(ownerId: number, id: number): void {

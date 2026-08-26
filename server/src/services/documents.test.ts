@@ -1,5 +1,12 @@
-import { describe, it, expect } from "vitest";
-import { resolveDocumentCategory, buildDerivedEntities } from "./documents.js";
+import { describe, it, expect, vi, beforeEach } from "vitest";
+
+const mockHubGetAttachment = vi.fn();
+vi.mock("../services/hub.js", () => ({
+  hubGetAttachment: (...args: unknown[]) => mockHubGetAttachment(...args),
+}));
+
+const { findOrCreateUserByEmail, saveDocument } = await import("../db/store.js");
+const { resolveDocumentCategory, buildDerivedEntities, ingestEmailAttachment } = await import("./documents.js");
 
 describe("resolveDocumentCategory", () => {
   it("accepts each known category", () => {
@@ -76,5 +83,59 @@ describe("buildDerivedEntities", () => {
     );
     expect(out).toHaveLength(1);
     expect(out[0].data).toMatchObject({ kind: "flight", reference: null, endDate: null });
+  });
+});
+
+let counter = 0;
+function uniqueEmail(prefix: string): string {
+  counter += 1;
+  return `${prefix}-${Date.now()}-${counter}@example.com`;
+}
+
+beforeEach(() => {
+  mockHubGetAttachment.mockReset();
+});
+
+describe("ingestEmailAttachment", () => {
+  it("short-circuits on a previously-extracted attachment without calling hubGetAttachment", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("ingest-dedup"));
+    const existing = saveDocument(user.id, {
+      phone: "email:3",
+      filename: "receipt.pdf",
+      mimeType: "application/pdf",
+      storedPath: "/tmp/fake-existing",
+      caption: null,
+      title: "Existing Receipt",
+      extractedText: "text",
+      category: "receipts",
+      source: "email",
+      emailAccountId: 3,
+      emailMessageId: "msg-1",
+      emailAttachmentId: "att-1",
+    });
+
+    const result = await ingestEmailAttachment({
+      ownerId: user.id,
+      accountId: 3,
+      messageId: "msg-1",
+      attachmentId: "att-1",
+    });
+
+    expect(result).toEqual({ ok: true, doc: existing, alreadyExtracted: true });
+    expect(mockHubGetAttachment).not.toHaveBeenCalled();
+  });
+
+  it("reports 'unavailable' when the attachment can't be downloaded", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("ingest-unavailable"));
+    mockHubGetAttachment.mockResolvedValue(null);
+
+    const result = await ingestEmailAttachment({
+      ownerId: user.id,
+      accountId: 4,
+      messageId: "msg-2",
+      attachmentId: "att-2",
+    });
+
+    expect(result).toEqual({ ok: false, reason: "unavailable" });
   });
 });
