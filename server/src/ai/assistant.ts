@@ -486,7 +486,7 @@ const ALWAYS_ON_TOOLS: Anthropic.Tool[] = [
   {
     name: "connect_xero",
     description:
-      "Save the user's Xero forwarding email address, the first step toward auto-forwarding receipts to Xero (that forwarding itself isn't built yet — this only stores the address). Call this ONLY once the user has actually told you the address in this conversation — never guess or invent one. If they ask to 'connect Xero' / 'set up Xero' and haven't given the address yet, first explain that Xero gives every account its own unique forwarding email (in Xero: Business > Bills to pay, or Accounting > Bills, look for the 'email bills to this address' address) and ask them to paste it — then call this tool with exactly what they send.",
+      "Save the user's Xero forwarding email address. Once this is saved, receipts they send that get filed under the 'receipts' category and yield a recognized expense are automatically emailed to this address in the background (via their connected Gmail) — no further action needed from them or from you. Call this ONLY once the user has actually told you the address in this conversation — never guess or invent one. If they ask to 'connect Xero' / 'set up Xero' and haven't given the address yet, first explain that Xero gives every account its own unique forwarding email (in Xero: Business > Bills to pay, or Accounting > Bills, look for the 'email bills to this address' address) and ask them to paste it — then call this tool with exactly what they send.",
     input_schema: {
       type: "object",
       properties: {
@@ -837,7 +837,7 @@ function buildRules(enabled: Set<ToolKey>): string {
     '- Use search_documents/list_recent_documents when the user asks about something they photographed or sent via WhatsApp (boarding passes, licenses, tickets, receipts) — e.g. "when did I fly to X" or "what\'s the code on my license".',
     "- Use get_news for news/current-events questions. Only report headlines the tool actually returned — never supplement with your own general knowledge or training data, even for well-known ongoing events. Fabricating a headline is a serious error, same as with any other tool's data.",
     "- Use get_weather and get_markets for weather and stock/index questions. The same rule applies: report only what the tool returned. Never state a price, a percentage move, or a forecast you didn't just fetch.",
-    "- If the user asks to connect/set up Xero: Xero gives each account a unique forwarding email (in Xero: Business > Bills to pay, or Accounting > Bills — the 'email bills to this address' address). Ask them to paste it, then call connect_xero with exactly what they send — never guess or fill in an address yourself. Receipts aren't actually forwarded to Xero yet even once connected; say so if asked.",
+    "- If the user asks to connect/set up Xero: Xero gives each account a unique forwarding email (in Xero: Business > Bills to pay, or Accounting > Bills — the 'email bills to this address' address). Ask them to paste it, then call connect_xero with exactly what they send — never guess or fill in an address yourself. Once connected, receipts they send that are filed under 'receipts' and yield a recognized expense are forwarded to Xero automatically in the background — this already works, don't tell the user it's unbuilt or manual.",
   ];
   const travel = [
     "- Use list_travel_checkins for questions about where the user has physically been or when they arrived somewhere — this is automatic location history, separate from documents.",
@@ -884,7 +884,7 @@ export function buildSystemPrompt(ownerId: number): string {
 
   const xeroEmail = getXeroForwardingEmail(ownerId);
   const xeroStatus = xeroEmail
-    ? `Xero forwarding address on file: ${xeroEmail} (receipt auto-forwarding isn't built yet, only the address is stored).`
+    ? `Xero forwarding address on file: ${xeroEmail}. Receipts filed under 'receipts' that yield a recognized expense are already being forwarded there automatically (via connected Gmail) — this is live, not a future feature.`
     : "Xero: not connected — no forwarding address saved yet.";
 
   // This user has never saved briefing settings — they're mid-onboarding (just connected their
