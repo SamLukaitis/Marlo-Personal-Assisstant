@@ -12,6 +12,7 @@ import type {
   ContactHit,
   EventInput,
   EmailAttachment,
+  EmailAttachmentMeta,
   SendResult,
 } from "./types.js";
 
@@ -150,6 +151,28 @@ function extractBody(payload: gmail_v1.Schema$MessagePart | undefined): string {
   return "";
 }
 
+/** Walk MIME parts for every part that's a real attachment (has both a filename and an id). */
+export function extractAttachmentMetas(
+  payload: gmail_v1.Schema$MessagePart | undefined
+): EmailAttachmentMeta[] {
+  if (!payload) return [];
+  const parts: gmail_v1.Schema$MessagePart[] = [];
+  const walk = (p: gmail_v1.Schema$MessagePart) => {
+    parts.push(p);
+    p.parts?.forEach(walk);
+  };
+  walk(payload);
+
+  return parts
+    .filter((p) => p.body?.attachmentId && p.filename)
+    .map((p) => ({
+      id: p.body!.attachmentId!,
+      filename: p.filename!,
+      mimeType: p.mimeType ?? "application/octet-stream",
+      size: p.body?.size ?? 0,
+    }));
+}
+
 export async function googleListMessages(
   account: AccountRow,
   opts: { query?: string; limit?: number } = {}
@@ -185,10 +208,26 @@ export async function googleGetMessage(
     const full = await gmail.users.messages.get({ userId: "me", id: messageId, format: "full" });
     const unified = toUnified(account, full.data);
     unified.body = extractBody(full.data.payload).slice(0, 20000);
+    unified.attachments = extractAttachmentMetas(full.data.payload);
     return unified;
   } catch {
     return null;
   }
+}
+
+export async function googleGetAttachment(
+  account: AccountRow,
+  messageId: string,
+  attachmentId: string
+): Promise<{ data: Buffer; mimeType: string; filename: string } | null> {
+  const gmail = google.gmail({ version: "v1", auth: authFor(account) });
+  const message = await gmail.users.messages.get({ userId: "me", id: messageId, format: "full" });
+  const meta = extractAttachmentMetas(message.data.payload).find((a) => a.id === attachmentId);
+  if (!meta) return null;
+
+  const res = await gmail.users.messages.attachments.get({ userId: "me", messageId, id: attachmentId });
+  if (!res.data.data) return null;
+  return { data: Buffer.from(res.data.data, "base64url"), mimeType: meta.mimeType, filename: meta.filename };
 }
 
 export async function googleListEvents(

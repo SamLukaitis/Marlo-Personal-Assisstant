@@ -12,6 +12,7 @@ export interface UnifiedMessage {
   unread: boolean;
   link?: string;
   body?: string; // only populated by getMessage
+  attachments?: EmailAttachmentMeta[]; // only populated by getMessage
 }
 
 export interface CalendarEvent {
@@ -48,6 +49,13 @@ export interface EmailAttachment {
   filename: string;
   mimeType: string;
   data: Buffer;
+}
+
+export interface EmailAttachmentMeta {
+  id: string; // provider-specific attachment id, opaque outside its own provider
+  filename: string;
+  mimeType: string;
+  size: number;
 }
 
 export interface SendResult {

@@ -31,6 +31,7 @@ import { findFreeSlots } from "../services/freeSlots.js";
 import { buildSpendingDigest } from "../services/spendingDigest.js";
 import { getBriefingSettings, saveBriefingSettings, hasBriefingSettings } from "../services/briefing.js";
 import { getXeroForwardingEmail, setXeroForwardingEmail } from "../services/xero.js";
+import { ingestEmailAttachment } from "../services/documents.js";
 import {
   hubListMessages,
   hubGetMessage,
@@ -77,6 +78,14 @@ function chooseModel(latestUserMessage: string): string {
 // this just bounds per-call token cost rather than trying to preserve everything forever.
 export const MAX_HISTORY_MESSAGES = 12;
 
+// search_messages is a targeted query, not a recent-inbox dump — 10 was too shallow (a single
+// broad topic search routinely needs to scan past newsletters/automated mail to find the actual
+// confirmation email). list_recent_messages is also raised, from 10 to 20 — still deliberately
+// narrower than search's 30 since an unfiltered "what's new" ask has less reason to go deep. See
+// docs/superpowers/specs/2026-08-26-email-search-depth-and-attachment-extraction-design.md.
+export const SEARCH_MESSAGES_DEFAULT_LIMIT = 30;
+export const LIST_RECENT_MESSAGES_DEFAULT_LIMIT = 20;
+
 let client: Anthropic | null = null;
 function getClient(): Anthropic {
   if (!client) {
@@ -97,7 +106,7 @@ const ALWAYS_ON_TOOLS: Anthropic.Tool[] = [
       type: "object",
       properties: {
         account_id: { type: "number", description: "Restrict to one connected account" },
-        limit: { type: "number", description: "Max messages, default 10" },
+        limit: { type: "number", description: "Max messages, default 20" },
       },
     },
   },
@@ -110,7 +119,7 @@ const ALWAYS_ON_TOOLS: Anthropic.Tool[] = [
       properties: {
         query: { type: "string" },
         account_id: { type: "number" },
-        limit: { type: "number" },
+        limit: { type: "number", description: "Max messages, default 30" },
       },
       required: ["query"],
     },
@@ -118,7 +127,7 @@ const ALWAYS_ON_TOOLS: Anthropic.Tool[] = [
   {
     name: "get_message",
     description:
-      "Fetch the full body of one email. Call this after list/search when the user needs details, a summary of the content, or before drafting a reply.",
+      "Fetch the full body of one email, including metadata (filename, size) for any attachments — see the `attachments` field on the result. Call this after list/search when the user needs details, a summary of the content, or before drafting a reply. If the user is asking about a booking/ticket/receipt and the email has an attachment, use extract_email_attachment on it rather than only reading the body text.",
     input_schema: {
       type: "object",
       properties: {
@@ -400,6 +409,20 @@ const ALWAYS_ON_TOOLS: Anthropic.Tool[] = [
     },
   },
   {
+    name: "extract_email_attachment",
+    description:
+      "Download one attachment from an email and run it through the same extraction pipeline as a WhatsApp photo/PDF — saves it as a document and, if it's a flight/hotel booking or a receipt, adds a structured record to list_bookings/list_expenses. Call this when the user asks about a booking, ticket, or receipt that's attached to an email you found via get_message, rather than just reading the email body — an email attachment is never extracted automatically. Use the attachment's id and the email's account_id/message_id from get_message's attachments field.",
+    input_schema: {
+      type: "object",
+      properties: {
+        account_id: { type: "number" },
+        message_id: { type: "string" },
+        attachment_id: { type: "string", description: "From get_message's attachments[].id" },
+      },
+      required: ["account_id", "message_id", "attachment_id"],
+    },
+  },
+  {
     name: "get_news",
     description:
       "Fetch current news headlines from free public RSS feeds. Call this when the user asks what's happening in the news, for a news summary, or about current events in a specific area (e.g. 'any tech news today'). This is a direct, on-demand fetch — it works regardless of whether the user has news turned on for their morning briefing, since asking here is an explicit request.",
@@ -594,13 +617,13 @@ export async function runTool(ownerId: number, name: string, input: Record<strin
     case "list_recent_messages":
       return hubListMessages(ownerId, {
         accountId: input.account_id as number | undefined,
-        limit: (input.limit as number | undefined) ?? 10,
+        limit: (input.limit as number | undefined) ?? LIST_RECENT_MESSAGES_DEFAULT_LIMIT,
       });
     case "search_messages":
       return hubListMessages(ownerId, {
         query: input.query as string,
         accountId: input.account_id as number | undefined,
-        limit: (input.limit as number | undefined) ?? 10,
+        limit: (input.limit as number | undefined) ?? SEARCH_MESSAGES_DEFAULT_LIMIT,
       });
     case "get_message":
       return hubGetMessage(ownerId, input.account_id as number, input.message_id as string);
@@ -672,6 +695,18 @@ export async function runTool(ownerId: number, name: string, input: Record<strin
       return searchDocuments(ownerId, input.query as string).map(forModel);
     case "list_recent_documents":
       return listDocuments(ownerId, (input.limit as number | undefined) ?? 10).map(forModel);
+    case "extract_email_attachment": {
+      const result = await ingestEmailAttachment({
+        ownerId,
+        accountId: input.account_id as number,
+        messageId: input.message_id as string,
+        attachmentId: input.attachment_id as string,
+      });
+      if (!result.ok) {
+        return { error: "Couldn't download that attachment — it may be too large for direct download, or the id is no longer valid." };
+      }
+      return { ...forModel(result.doc), alreadyExtracted: result.alreadyExtracted };
+    }
     case "get_news": {
       const requested = (input.topics as string[] | undefined)?.filter((t): t is NewsTopic =>
         Object.prototype.hasOwnProperty.call(NEWS_TOPICS, t)
@@ -829,12 +864,14 @@ function buildRules(enabled: Set<ToolKey>): string {
     "- Always look up real data with your tools before answering questions about email, calendar, or files — never invent contents.",
     "- Never state that something does NOT exist (no booking, no email, nothing on file, calendar is empty, etc.) without calling the relevant tool in THIS turn first. You do not retain tool results from earlier turns — only your own past reply text — so a memory of having checked before is not verification. If a user pushes back on something you said, that is a signal to re-run the tool, not to just apologize or reverse yourself from reasoning alone.",
     "- list_bookings/list_expenses only cover confirmations and receipts that were already saved as a document AND successfully extracted into a structured record — they do NOT search email. Before telling the user there's no hotel, flight, car rental, invoice, or payment due, also check search_messages/list_recent_messages: the confirmation or invoice email may exist even though nothing has been extracted into list_bookings/list_expenses yet. An empty list_bookings/list_expenses result on its own is not enough to say something doesn't exist.",
+    "- For a broad or topic-level search (a country, region, or trip name — e.g. \"South America\", \"my Lisbon trip\"), call search_messages multiple times with different concrete sub-terms — city/place names, likely vendor names (airlines, hotels, booking sites), reference codes you already know — before concluding nothing was found. A single broad query is not sufficient; a broad topic phrase rarely appears verbatim in a real subject line.",
     "- You can create email drafts but can never send email. After creating a draft, tell the user to review and send it from their mailbox.",
     "- You can create, edit, and delete calendar events directly on the user's own calendar — these are low-risk and reversible. You can never invite other people to an event; calendar events you create are personal-only.",
     '- You can archive emails and apply labels/categories directly — archiving is fully reversible (the email is just removed from the inbox, never deleted) so you don\'t need to ask permission first, but do confirm if the query is broad or ambiguous (e.g. "archive everything" with no filter).',
     "- Use search_contacts to resolve a name to an email address before drafting to someone when you don't already have their address.",
     "- Use the remember tool proactively whenever the user shares something worth recalling later (preferences, which account is which, standing instructions) — don't wait to be asked.",
     '- Use search_documents/list_recent_documents when the user asks about something they photographed or sent via WhatsApp (boarding passes, licenses, tickets, receipts) — e.g. "when did I fly to X" or "what\'s the code on my license".',
+    "- Use extract_email_attachment when the user asks about a booking, ticket, or receipt that turns out to be an attachment on an email (check get_message's attachments field) — this saves it properly into documents/list_bookings/list_expenses, the same as if they'd forwarded it via WhatsApp. Don't just describe the attachment's filename and stop there.",
     "- Use get_news for news/current-events questions. Only report headlines the tool actually returned — never supplement with your own general knowledge or training data, even for well-known ongoing events. Fabricating a headline is a serious error, same as with any other tool's data.",
     "- Use get_weather and get_markets for weather and stock/index questions. The same rule applies: report only what the tool returned. Never state a price, a percentage move, or a forecast you didn't just fetch.",
     "- If the user asks to connect/set up Xero: Xero gives each account a unique forwarding email (in Xero: Business > Bills to pay, or Accounting > Bills — the 'email bills to this address' address). Ask them to paste it, then call connect_xero with exactly what they send — never guess or fill in an address yourself. Once connected, receipts they send that are filed under 'receipts' and yield a recognized expense are forwarded to Xero automatically in the background — this already works, don't tell the user it's unbuilt or manual.",

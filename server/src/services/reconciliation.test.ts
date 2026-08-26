@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import type { MatchKeys } from "./reconciliation.js";
+import { type MatchKeys, RECONCILIATION_SCAN_LIMIT } from "./reconciliation.js";
 
 vi.mock("../providers/whatsapp.js", () => ({
   sendWhatsAppMessage: vi.fn(),
@@ -400,5 +400,51 @@ describe("buildMatchNotification", () => {
   it("omits a stray date segment when eventDate is absent", () => {
     const msg = buildMatchNotification("Hotel Booking", { referenceCode: "K4X9QP" });
     expect(msg).not.toContain("undefined");
+  });
+});
+
+describe("reconciliation scan depth", () => {
+  it("checkDocumentAgainstRecentEmails asks for RECONCILIATION_SCAN_LIMIT messages, not 50", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("scan-depth-doc"));
+    const phoneNumber = freshPhone();
+    addPhoneNumberForUser(user.id, phoneNumber);
+    const doc = saveDocument(user.id, {
+      phone: phoneNumber,
+      filename: null,
+      mimeType: "image/jpeg",
+      storedPath: "/tmp/fake",
+      caption: null,
+      title: "Some Booking",
+      extractedText: "text",
+      category: "travel",
+    });
+    mockHubListMessages.mockResolvedValue([]);
+
+    await checkDocumentAgainstRecentEmails(user.id, doc.id, doc.title!, { referenceCode: "ABCD1234" });
+
+    expect(mockHubListMessages).toHaveBeenCalledWith(user.id, { limit: RECONCILIATION_SCAN_LIMIT });
+    expect(RECONCILIATION_SCAN_LIMIT).toBe(150);
+  });
+
+  it("checkNewEmailsAgainstRecentDocuments asks for the same limit", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("scan-depth-email"));
+    const phoneNumber = freshPhone();
+    addPhoneNumberForUser(user.id, phoneNumber);
+    const doc = saveDocument(user.id, {
+      phone: phoneNumber,
+      filename: null,
+      mimeType: "image/jpeg",
+      storedPath: "/tmp/fake",
+      caption: null,
+      title: "Some Booking",
+      extractedText: "text",
+      category: "travel",
+    });
+    saveMatchKeys(user.id, doc.id, { referenceCode: "EFGH5678" });
+    mockHubListMessages.mockResolvedValue([]);
+
+    await checkNewEmailsAgainstRecentDocuments(user.id);
+
+    expect(mockHubListMessages).toHaveBeenCalledWith(user.id, { limit: RECONCILIATION_SCAN_LIMIT });
   });
 });

@@ -103,6 +103,18 @@ export async function hubGetMessage(
     : ms.microsoftGetMessage(account, messageId);
 }
 
+export async function hubGetAttachment(
+  ownerId: number,
+  accountId: number,
+  messageId: string,
+  attachmentId: string
+): Promise<{ data: Buffer; mimeType: string; filename: string } | null> {
+  const account = requireAccount(ownerId, accountId);
+  return account.provider === "google"
+    ? g.googleGetAttachment(account, messageId, attachmentId)
+    : ms.microsoftGetAttachment(account, messageId, attachmentId);
+}
+
 export async function hubListEvents(ownerId: number, days = 7): Promise<CalendarEvent[]> {
   const accounts = listAccounts(ownerId);
   const results = await Promise.allSettled(

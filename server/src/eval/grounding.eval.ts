@@ -42,6 +42,7 @@ const fixtureDataByOwner = new Map<number, { messages: unknown[]; events: unknow
 vi.mock("../services/hub.js", () => ({
   hubListMessages: vi.fn(async (ownerId: number) => fixtureDataByOwner.get(ownerId)?.messages ?? []),
   hubGetMessage: vi.fn(),
+  hubGetAttachment: vi.fn(),
   hubListEvents: vi.fn(async (ownerId: number) => fixtureDataByOwner.get(ownerId)?.events ?? []),
   hubSearchFiles: vi.fn().mockResolvedValue([]),
   hubCreateDraft: vi.fn(),

@@ -1,4 +1,10 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
+
+const mockIngestEmailAttachment = vi.fn();
+vi.mock("../services/documents.js", () => ({
+  ingestEmailAttachment: (...args: unknown[]) => mockIngestEmailAttachment(...args),
+}));
+
 import { buildToolsForOwner, buildSystemPrompt, runTool } from "./assistant.js";
 import {
   findOrCreateUserByEmail,
@@ -112,6 +118,16 @@ describe("buildSystemPrompt anti-hallucination rule", () => {
     const prompt = buildSystemPrompt(user.id);
     expect(prompt).toContain("list_bookings/list_expenses");
     expect(prompt).toContain("do NOT search email");
+  });
+
+  it("tells the model to search multiple concrete sub-terms for a broad/topic-level ask", () => {
+    // Found reviewing a real conversation: asking about "bookings for South America" took several
+    // manual pushes to find a Brazil flight, and never found Ipanema/Copacabana bookings at all —
+    // search_messages was only ever called with the broad topic phrase itself, which rarely
+    // appears verbatim in a real subject line.
+    const user = findOrCreateUserByEmail(uniqueEmail("prompt-broad-search"));
+    const prompt = buildSystemPrompt(user.id);
+    expect(prompt).toContain("multiple times with different concrete sub-terms");
   });
 });
 
@@ -329,5 +345,55 @@ describe("buildSystemPrompt onboarding paragraph", () => {
     });
     const prompt = buildSystemPrompt(user.id);
     expect(prompt).not.toContain("set_briefing_preferences");
+  });
+});
+
+describe("extract_email_attachment dispatch", () => {
+  beforeEach(() => {
+    mockIngestEmailAttachment.mockReset();
+  });
+
+  it("passes account_id/message_id/attachment_id through and forwards a success result", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("extract-attachment-ok"));
+    mockIngestEmailAttachment.mockResolvedValue({
+      ok: true,
+      alreadyExtracted: false,
+      doc: { id: 1, title: "Ipanema Hostel Booking", storedPath: "/tmp/x" },
+    });
+
+    const result = await runTool(user.id, "extract_email_attachment", {
+      account_id: 2,
+      message_id: "msg-1",
+      attachment_id: "att-1",
+    });
+
+    expect(mockIngestEmailAttachment).toHaveBeenCalledWith({
+      ownerId: user.id,
+      accountId: 2,
+      messageId: "msg-1",
+      attachmentId: "att-1",
+    });
+    expect(result).toEqual({ id: 1, title: "Ipanema Hostel Booking", alreadyExtracted: false });
+  });
+
+  it("surfaces a clear error when the attachment can't be downloaded", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("extract-attachment-fail"));
+    mockIngestEmailAttachment.mockResolvedValue({ ok: false, reason: "unavailable" });
+
+    const result = await runTool(user.id, "extract_email_attachment", {
+      account_id: 2,
+      message_id: "msg-1",
+      attachment_id: "att-2",
+    });
+
+    expect(result).toEqual({ error: expect.stringContaining("Couldn't download") });
+  });
+});
+
+describe("buildSystemPrompt extract_email_attachment rule", () => {
+  it("tells the model to use extract_email_attachment for a booking/receipt found as an email attachment", () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("prompt-extract-attachment"));
+    const prompt = buildSystemPrompt(user.id);
+    expect(prompt).toContain("extract_email_attachment");
   });
 });

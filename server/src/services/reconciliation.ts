@@ -19,6 +19,13 @@ export interface MatchKeys {
 // accepting some missed short-identifier matches in exchange for far fewer false positives.
 const MIN_IDENTIFIER_LENGTH = 4;
 
+// Raised from 50 → 150 (2026-08-26): 50 was too shallow to catch older confirmation emails (e.g.
+// a hostel booking from weeks before a trip actually starts) — see
+// docs/superpowers/specs/2026-08-26-email-search-depth-and-attachment-extraction-design.md. This
+// runs unattended on scheduler.ts's 5-minute tick, so the number is picked to bound the added
+// Gmail/Graph API load per tick, not just to match search_messages' one-off cost.
+export const RECONCILIATION_SCAN_LIMIT = 150;
+
 // v1 ships strong-tier matching only (see the design doc) — this only ever compares a document's
 // structured keys against a raw text blob (an email's subject + snippet), never two structured
 // MatchKeys objects against each other, since email never gets its own LLM extraction call in
@@ -77,7 +84,7 @@ export async function checkDocumentAgainstRecentEmails(
 
   let messages: UnifiedMessage[];
   try {
-    messages = await hubListMessages(ownerId, { limit: 50 });
+    messages = await hubListMessages(ownerId, { limit: RECONCILIATION_SCAN_LIMIT });
   } catch (err) {
     console.error(`reconciliation: failed to list messages for owner ${ownerId}`, err);
     return;
@@ -121,7 +128,7 @@ export async function checkNewEmailsAgainstRecentDocuments(ownerId: number): Pro
 
   let messages: UnifiedMessage[];
   try {
-    messages = await hubListMessages(ownerId, { limit: 50 });
+    messages = await hubListMessages(ownerId, { limit: RECONCILIATION_SCAN_LIMIT });
   } catch (err) {
     console.error(`reconciliation: failed to list messages for owner ${ownerId}`, err);
     return;

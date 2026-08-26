@@ -178,6 +178,14 @@ interface GraphMessage {
   isRead?: boolean;
   webLink?: string;
   body?: { content?: string; contentType?: string };
+  hasAttachments?: boolean;
+}
+
+interface GraphAttachment {
+  id: string;
+  name?: string;
+  contentType?: string;
+  size?: number;
 }
 
 function toUnified(account: AccountRow, m: GraphMessage): UnifiedMessage {
@@ -219,7 +227,7 @@ export async function microsoftGetMessage(
   try {
     const m = await graphGet<GraphMessage>(
       account,
-      `/me/messages/${encodeURIComponent(messageId)}?${MSG_SELECT},body`
+      `/me/messages/${encodeURIComponent(messageId)}?${MSG_SELECT},body,hasAttachments`
     );
     const unified = toUnified(account, m);
     const raw = m.body?.content ?? "";
@@ -227,10 +235,41 @@ export async function microsoftGetMessage(
       0,
       20000
     );
+    if (m.hasAttachments) {
+      const attachmentData = await graphGet<{ value: GraphAttachment[] }>(
+        account,
+        `/me/messages/${encodeURIComponent(messageId)}/attachments?$select=id,name,contentType,size`
+      );
+      unified.attachments = attachmentData.value
+        .filter((a) => a.name)
+        .map((a) => ({
+          id: a.id,
+          filename: a.name!,
+          mimeType: a.contentType ?? "application/octet-stream",
+          size: a.size ?? 0,
+        }));
+    }
     return unified;
   } catch {
     return null;
   }
+}
+
+export async function microsoftGetAttachment(
+  account: AccountRow,
+  messageId: string,
+  attachmentId: string
+): Promise<{ data: Buffer; mimeType: string; filename: string } | null> {
+  const data = await graphGet<{ name?: string; contentType?: string; contentBytes?: string }>(
+    account,
+    `/me/messages/${encodeURIComponent(messageId)}/attachments/${encodeURIComponent(attachmentId)}`
+  );
+  if (!data.contentBytes) return null;
+  return {
+    data: Buffer.from(data.contentBytes, "base64"),
+    mimeType: data.contentType ?? "application/octet-stream",
+    filename: data.name ?? "attachment",
+  };
 }
 
 export async function microsoftListEvents(
