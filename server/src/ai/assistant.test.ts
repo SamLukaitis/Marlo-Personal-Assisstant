@@ -113,6 +113,16 @@ describe("buildSystemPrompt anti-hallucination rule", () => {
     expect(prompt).toContain("list_bookings/list_expenses");
     expect(prompt).toContain("do NOT search email");
   });
+
+  it("tells the model to search multiple concrete sub-terms for a broad/topic-level ask", () => {
+    // Found reviewing a real conversation: asking about "bookings for South America" took several
+    // manual pushes to find a Brazil flight, and never found Ipanema/Copacabana bookings at all —
+    // search_messages was only ever called with the broad topic phrase itself, which rarely
+    // appears verbatim in a real subject line.
+    const user = findOrCreateUserByEmail(uniqueEmail("prompt-broad-search"));
+    const prompt = buildSystemPrompt(user.id);
+    expect(prompt).toContain("multiple times with different concrete sub-terms");
+  });
 });
 
 describe("buildSystemPrompt", () => {
