@@ -11,7 +11,8 @@ vi.mock("../services/hub.js", async (importOriginal) => {
   return { ...actual, hubGetMessage: (...args: unknown[]) => mockHubGetMessage(...args) };
 });
 
-import { buildToolsForOwner, buildSystemPrompt, runTool } from "./assistant.js";
+import { buildToolsForOwner, buildSystemPrompt, runTool, messageForModel } from "./assistant.js";
+import type { UnifiedMessage } from "../providers/types.js";
 import {
   findOrCreateUserByEmail,
   setToolEnabled,
@@ -355,12 +356,51 @@ describe("buildSystemPrompt onboarding paragraph", () => {
   });
 });
 
+describe("messageForModel", () => {
+  const BASE: UnifiedMessage = {
+    id: "m1",
+    accountId: 2,
+    accountEmail: "a@example.com",
+    provider: "google",
+    subject: "Your ticket",
+    from: "airline@example.com",
+    snippet: "...",
+    receivedAt: "2026-08-01T00:00:00.000Z",
+    unread: false,
+    link: "https://mail.example.com/m1",
+  };
+
+  it("replaces each attachment's raw id with a 1-based index and drops other id-adjacent fields", () => {
+    const out = messageForModel({
+      ...BASE,
+      attachments: [
+        { id: "a-very-long-opaque-provider-token-1", filename: "ticket.pdf", mimeType: "application/pdf", size: 1234 },
+        { id: "a-very-long-opaque-provider-token-2", filename: "receipt.pdf", mimeType: "application/pdf", size: 456 },
+      ],
+    }) as { attachments: Array<Record<string, unknown>> };
+
+    expect(out.attachments).toEqual([
+      { index: 1, filename: "ticket.pdf", mimeType: "application/pdf", size: 1234 },
+      { index: 2, filename: "receipt.pdf", mimeType: "application/pdf", size: 456 },
+    ]);
+    expect(JSON.stringify(out)).not.toContain("a-very-long-opaque-provider-token");
+  });
+
+  it("passes a message with no attachments through untouched", () => {
+    expect(messageForModel({ ...BASE })).toEqual(BASE);
+  });
+
+  it("passes null through untouched", () => {
+    expect(messageForModel(null)).toBeNull();
+  });
+});
+
 describe("extract_email_attachment dispatch", () => {
   beforeEach(() => {
     mockIngestEmailAttachment.mockReset();
   });
 
-  it("passes account_id/message_id/attachment_id through and forwards a success result", async () => {
+  it("passes account_id/message_id/attachment_index through and forwards a success result", async () => {
     const user = findOrCreateUserByEmail(uniqueEmail("extract-attachment-ok"));
     mockIngestEmailAttachment.mockResolvedValue({
       ok: true,
@@ -371,14 +411,14 @@ describe("extract_email_attachment dispatch", () => {
     const result = await runTool(user.id, "extract_email_attachment", {
       account_id: 2,
       message_id: "msg-1",
-      attachment_id: "att-1",
+      attachment_index: 1,
     });
 
     expect(mockIngestEmailAttachment).toHaveBeenCalledWith({
       ownerId: user.id,
       accountId: 2,
       messageId: "msg-1",
-      attachmentId: "att-1",
+      attachmentIndex: 1,
     });
     expect(result).toEqual({ id: 1, title: "Ipanema Hostel Booking", alreadyExtracted: false });
   });
@@ -390,10 +430,23 @@ describe("extract_email_attachment dispatch", () => {
     const result = await runTool(user.id, "extract_email_attachment", {
       account_id: 2,
       message_id: "msg-1",
-      attachment_id: "att-2",
+      attachment_index: 2,
     });
 
     expect(result).toEqual({ error: expect.stringContaining("Couldn't download") });
+  });
+
+  it("surfaces a specific error when the attachment index doesn't match the message", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("extract-attachment-bad-index"));
+    mockIngestEmailAttachment.mockResolvedValue({ ok: false, reason: "invalid_index" });
+
+    const result = await runTool(user.id, "extract_email_attachment", {
+      account_id: 2,
+      message_id: "msg-1",
+      attachment_index: 9,
+    });
+
+    expect(result).toEqual({ error: expect.stringContaining("index") });
   });
 });
 
@@ -440,7 +493,7 @@ describe("respond_to_invoice_forward_prompt tool", () => {
       ownerId: user.id,
       accountId: 5,
       messageId: "m1",
-      attachmentId: "att-1",
+      attachmentIndex: 1,
     });
     expect(result).toEqual({ ok: true, forwarded: true, attachmentsProcessed: 2 });
     expect(getPendingInvoiceForward(user.id)).toBeNull();

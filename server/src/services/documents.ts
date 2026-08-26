@@ -4,7 +4,7 @@ import crypto from "node:crypto";
 import Anthropic from "@anthropic-ai/sdk";
 import { PDFParse } from "pdf-parse";
 import { downloadWhatsAppMedia } from "../providers/whatsapp.js";
-import { hubGetAttachment } from "./hub.js";
+import { hubGetAttachment, hubGetMessage } from "./hub.js";
 import {
   saveDocument,
   saveCheckin,
@@ -701,20 +701,37 @@ export async function ingestWhatsAppMedia(params: {
 // New: extraction from an email attachment, reusing the exact same extract→validate→store
 // pipeline as a WhatsApp upload. Dedups against a previously-extracted copy of the same
 // attachment before paying for a download or an extraction call at all.
+//
+// Takes a 1-based index into the message's attachments (matching the order the model was shown
+// via get_message) rather than the provider's raw attachment id. Real Gmail/Graph attachment ids
+// are ~200-300 character opaque tokens; models reliably fail to copy one back verbatim in a
+// later tool call, drifting into a fabricated-but-plausible-looking string after the first few
+// characters. An index is a single digit — nothing to mistype. We re-fetch the message here to
+// resolve it to the real id server-side, rather than trusting anything the model echoes back.
 export async function ingestEmailAttachment(params: {
   ownerId: number;
   accountId: number;
   messageId: string;
-  attachmentId: string;
+  attachmentIndex: number;
 }): Promise<
   | { ok: true; doc: DocumentRow; alreadyExtracted: boolean }
-  | { ok: false; reason: "unavailable" }
+  | { ok: false; reason: "unavailable" | "invalid_index" }
 > {
+  const message = await hubGetMessage(params.ownerId, params.accountId, params.messageId);
+  const meta = message?.attachments?.[params.attachmentIndex - 1];
+  if (!meta) {
+    console.error(
+      `documents: attachment index ${params.attachmentIndex} out of range for message ` +
+        `${params.messageId} (${message?.attachments?.length ?? 0} attachments)`
+    );
+    return { ok: false, reason: "invalid_index" };
+  }
+
   const existing = findDocumentByEmailAttachment(
     params.ownerId,
     params.accountId,
     params.messageId,
-    params.attachmentId
+    meta.id
   );
   if (existing) {
     return { ok: true, doc: existing, alreadyExtracted: true };
@@ -722,7 +739,7 @@ export async function ingestEmailAttachment(params: {
 
   let fetched: Awaited<ReturnType<typeof hubGetAttachment>>;
   try {
-    fetched = await hubGetAttachment(params.ownerId, params.accountId, params.messageId, params.attachmentId);
+    fetched = await hubGetAttachment(params.ownerId, params.accountId, params.messageId, meta.id);
   } catch (err) {
     // Distinguish "the provider call itself threw" (network/auth/scope) from the extraction
     // failure below — without this both look identical by the time they reach the model.
@@ -743,7 +760,7 @@ export async function ingestEmailAttachment(params: {
     source: "email",
     emailAccountId: params.accountId,
     emailMessageId: params.messageId,
-    emailAttachmentId: params.attachmentId,
+    emailAttachmentId: meta.id,
   });
 
   return { ok: true, doc, alreadyExtracted: false };

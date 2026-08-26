@@ -1,8 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
 const mockHubGetAttachment = vi.fn();
+const mockHubGetMessage = vi.fn();
 vi.mock("../services/hub.js", () => ({
   hubGetAttachment: (...args: unknown[]) => mockHubGetAttachment(...args),
+  hubGetMessage: (...args: unknown[]) => mockHubGetMessage(...args),
 }));
 
 const { findOrCreateUserByEmail, saveDocument } = await import("../db/store.js");
@@ -94,6 +96,7 @@ function uniqueEmail(prefix: string): string {
 
 beforeEach(() => {
   mockHubGetAttachment.mockReset();
+  mockHubGetMessage.mockReset();
 });
 
 describe("ingestEmailAttachment", () => {
@@ -113,12 +116,15 @@ describe("ingestEmailAttachment", () => {
       emailMessageId: "msg-1",
       emailAttachmentId: "att-1",
     });
+    mockHubGetMessage.mockResolvedValue({
+      attachments: [{ id: "att-1", filename: "receipt.pdf", mimeType: "application/pdf", size: 100 }],
+    });
 
     const result = await ingestEmailAttachment({
       ownerId: user.id,
       accountId: 3,
       messageId: "msg-1",
-      attachmentId: "att-1",
+      attachmentIndex: 1,
     });
 
     expect(result).toEqual({ ok: true, doc: existing, alreadyExtracted: true });
@@ -127,15 +133,36 @@ describe("ingestEmailAttachment", () => {
 
   it("reports 'unavailable' when the attachment can't be downloaded", async () => {
     const user = findOrCreateUserByEmail(uniqueEmail("ingest-unavailable"));
+    mockHubGetMessage.mockResolvedValue({
+      attachments: [{ id: "att-2", filename: "ticket.pdf", mimeType: "application/pdf", size: 100 }],
+    });
     mockHubGetAttachment.mockResolvedValue(null);
 
     const result = await ingestEmailAttachment({
       ownerId: user.id,
       accountId: 4,
       messageId: "msg-2",
-      attachmentId: "att-2",
+      attachmentIndex: 1,
     });
 
     expect(result).toEqual({ ok: false, reason: "unavailable" });
+    expect(mockHubGetAttachment).toHaveBeenCalledWith(user.id, 4, "msg-2", "att-2");
+  });
+
+  it("reports 'invalid_index' without calling hubGetAttachment when the index is out of range", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("ingest-bad-index"));
+    mockHubGetMessage.mockResolvedValue({
+      attachments: [{ id: "att-3", filename: "ticket.pdf", mimeType: "application/pdf", size: 100 }],
+    });
+
+    const result = await ingestEmailAttachment({
+      ownerId: user.id,
+      accountId: 5,
+      messageId: "msg-3",
+      attachmentIndex: 2,
+    });
+
+    expect(result).toEqual({ ok: false, reason: "invalid_index" });
+    expect(mockHubGetAttachment).not.toHaveBeenCalled();
   });
 });
