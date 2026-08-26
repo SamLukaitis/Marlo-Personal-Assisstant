@@ -77,6 +77,14 @@ function chooseModel(latestUserMessage: string): string {
 // this just bounds per-call token cost rather than trying to preserve everything forever.
 export const MAX_HISTORY_MESSAGES = 12;
 
+// search_messages is a targeted query, not a recent-inbox dump — 10 was too shallow (a single
+// broad topic search routinely needs to scan past newsletters/automated mail to find the actual
+// confirmation email). list_recent_messages is also raised, from 10 to 20 — still deliberately
+// narrower than search's 30 since an unfiltered "what's new" ask has less reason to go deep. See
+// docs/superpowers/specs/2026-08-26-email-search-depth-and-attachment-extraction-design.md.
+export const SEARCH_MESSAGES_DEFAULT_LIMIT = 30;
+export const LIST_RECENT_MESSAGES_DEFAULT_LIMIT = 20;
+
 let client: Anthropic | null = null;
 function getClient(): Anthropic {
   if (!client) {
@@ -97,7 +105,7 @@ const ALWAYS_ON_TOOLS: Anthropic.Tool[] = [
       type: "object",
       properties: {
         account_id: { type: "number", description: "Restrict to one connected account" },
-        limit: { type: "number", description: "Max messages, default 10" },
+        limit: { type: "number", description: "Max messages, default 20" },
       },
     },
   },
@@ -110,7 +118,7 @@ const ALWAYS_ON_TOOLS: Anthropic.Tool[] = [
       properties: {
         query: { type: "string" },
         account_id: { type: "number" },
-        limit: { type: "number" },
+        limit: { type: "number", description: "Max messages, default 30" },
       },
       required: ["query"],
     },
@@ -594,13 +602,13 @@ export async function runTool(ownerId: number, name: string, input: Record<strin
     case "list_recent_messages":
       return hubListMessages(ownerId, {
         accountId: input.account_id as number | undefined,
-        limit: (input.limit as number | undefined) ?? 10,
+        limit: (input.limit as number | undefined) ?? LIST_RECENT_MESSAGES_DEFAULT_LIMIT,
       });
     case "search_messages":
       return hubListMessages(ownerId, {
         query: input.query as string,
         accountId: input.account_id as number | undefined,
-        limit: (input.limit as number | undefined) ?? 10,
+        limit: (input.limit as number | undefined) ?? SEARCH_MESSAGES_DEFAULT_LIMIT,
       });
     case "get_message":
       return hubGetMessage(ownerId, input.account_id as number, input.message_id as string);
