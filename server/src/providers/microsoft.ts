@@ -264,7 +264,13 @@ export async function microsoftGetAttachment(
     account,
     `/me/messages/${encodeURIComponent(messageId)}/attachments/${encodeURIComponent(attachmentId)}`
   );
-  if (!data.contentBytes) return null;
+  if (!data.contentBytes) {
+    console.error(
+      `microsoft: attachments/${attachmentId} returned no contentBytes for message ${messageId} ` +
+        `(name: ${data.name ?? "?"}, contentType: ${data.contentType ?? "?"})`
+    );
+    return null;
+  }
   return {
     data: Buffer.from(data.contentBytes, "base64"),
     mimeType: data.contentType ?? "application/octet-stream",
