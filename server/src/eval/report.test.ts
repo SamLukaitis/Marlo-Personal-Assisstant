@@ -56,4 +56,45 @@ describe("buildHtmlReport", () => {
   it("handles an empty result set without throwing", () => {
     expect(() => buildHtmlReport([])).not.toThrow();
   });
+
+  it("renders the full multi-turn transcript when provided, not just the last prompt/reply", () => {
+    const html = buildHtmlReport([
+      scenario({
+        turns: [
+          { role: "user", content: "Is there a flight change in my email?" },
+          { role: "assistant", content: "Yes, DL1234 on 2026-09-12." },
+          { role: "user", content: "Are you sure?" },
+          { role: "assistant", content: "Yes, confirmed." },
+        ],
+      }),
+    ]);
+    expect(html).toContain("Is there a flight change in my email?");
+    expect(html).toContain("Are you sure?");
+  });
+
+  it("falls back to prompt/reply as a two-turn transcript when turns isn't provided", () => {
+    const html = buildHtmlReport([scenario({ prompt: "Do I have a flight?", reply: "Yes, DL1234." })]);
+    expect(html).toContain("Do I have a flight?");
+  });
+
+  it("includes filter controls for passed/failed scenarios", () => {
+    const html = buildHtmlReport([scenario({ pass: true }), scenario({ pass: false, variant: "pushback" })]);
+    expect(html).toContain('data-filter="fail"');
+    expect(html).toContain('data-filter="pass"');
+  });
+
+  it("includes run metadata and history when passed", () => {
+    const html = buildHtmlReport([scenario({})], {
+      timestamp: "2026-08-26T10:00:00.000Z",
+      durationMs: 12345,
+      history: [{ timestamp: "2026-08-25T10:00:00.000Z", passed: 8, total: 12 }],
+    });
+    expect(html).toContain("2026-08-26T10:00:00.000Z");
+    expect(html).toContain("2026-08-25T10:00:00.000Z");
+  });
+
+  it("omits the history section when no history is passed", () => {
+    const html = buildHtmlReport([scenario({})]);
+    expect(html).not.toContain("Run history");
+  });
 });

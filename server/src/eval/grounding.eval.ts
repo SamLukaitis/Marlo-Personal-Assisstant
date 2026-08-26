@@ -11,7 +11,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { describe, it, expect, vi, afterAll } from "vitest";
 import type { ChatMessage } from "../ai/assistant.js";
-import type { ScenarioReport } from "./report.js";
+import type { RunHistoryEntry, ScenarioReport } from "./report.js";
 import type { Fixture, VariantName } from "./fixtures.js";
 
 vi.mock("../services/hub.js", () => ({
@@ -73,10 +73,11 @@ async function runScenario(fixture: Fixture, variantName: VariantName, ownerId: 
   vi.mocked(hubListMessages).mockResolvedValue(fixture.messages);
   vi.mocked(hubListEvents).mockResolvedValue(fixture.events);
 
-  const turns = fixture.variants[variantName];
+  const startedAt = Date.now();
+  const userTurns = fixture.variants[variantName];
   let history: ChatMessage[] = [];
   let lastReply = "";
-  for (const turnText of turns) {
+  for (const turnText of userTurns) {
     history.push({ role: "user", content: turnText });
     lastReply = await runAssistantChat(ownerId, history);
     history.push({ role: "assistant", content: lastReply });
@@ -86,14 +87,17 @@ async function runScenario(fixture: Fixture, variantName: VariantName, ownerId: 
   return {
     fixtureId: fixture.id,
     variant: variantName,
-    prompt: turns[turns.length - 1],
+    prompt: userTurns[userTurns.length - 1],
     reply: lastReply,
+    turns: history,
+    durationMs: Date.now() - startedAt,
     ...grade,
   };
 }
 
 const results: ScenarioReport[] = [];
 let userCounter = 0;
+const runStartedAt = Date.now();
 
 describe("grounding eval", () => {
   for (const fixture of FIXTURES) {
@@ -120,9 +124,29 @@ describe("grounding eval", () => {
     fs.mkdirSync(outDir, { recursive: true });
     const jsonPath = path.join(outDir, "grounding-report.json");
     const htmlPath = path.join(outDir, "grounding-report.html");
-    fs.writeFileSync(jsonPath, JSON.stringify(results, null, 2));
-    fs.writeFileSync(htmlPath, buildHtmlReport(results));
+    const historyPath = path.join(outDir, "history.json");
+
     const passed = results.filter((r) => r.pass).length;
+    const timestamp = new Date().toISOString();
+
+    // Trend across runs — so "run the tests and see what's happening" after adding a feature
+    // means seeing whether the pass rate moved, not just this run's snapshot. Capped so the
+    // file (and the report's history table) doesn't grow unbounded.
+    let history: RunHistoryEntry[] = [];
+    try {
+      history = JSON.parse(fs.readFileSync(historyPath, "utf8"));
+    } catch {
+      // No history yet (first run) — start fresh.
+    }
+    history.push({ timestamp, passed, total: results.length });
+    history = history.slice(-20);
+    fs.writeFileSync(historyPath, JSON.stringify(history, null, 2));
+
+    fs.writeFileSync(jsonPath, JSON.stringify(results, null, 2));
+    fs.writeFileSync(
+      htmlPath,
+      buildHtmlReport(results, { timestamp, durationMs: Date.now() - runStartedAt, history })
+    );
     // eslint-disable-next-line no-console
     console.log(`\nGrounding eval: ${passed}/${results.length} passed.\nReport: ${htmlPath}`);
   });

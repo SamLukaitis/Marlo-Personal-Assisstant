@@ -3,6 +3,7 @@ import {
   extractFlightNumbers,
   extractReferenceCodes,
   extractDates,
+  extractAmounts,
   containsDenial,
   dateAppearsInReply,
   gradeReply,
@@ -55,6 +56,24 @@ describe("extractDates", () => {
 
   it("returns an empty array when there is no date", () => {
     expect(extractDates("Departing soon from JFK")).toEqual([]);
+  });
+});
+
+describe("extractAmounts", () => {
+  it("finds a dollar amount", () => {
+    expect(extractAmounts("Payment of $482.50 is due")).toEqual(["$482.50"]);
+  });
+
+  it("finds a pound amount and normalizes a stray inner space", () => {
+    expect(extractAmounts("Total: £ 120.00")).toEqual(["£120.00"]);
+  });
+
+  it("finds an amount with thousands separators", () => {
+    expect(extractAmounts("Invoice total $1,482.50")).toEqual(["$1,482.50"]);
+  });
+
+  it("returns an empty array when there is no currency amount", () => {
+    expect(extractAmounts("Your order shipped")).toEqual([]);
   });
 });
 
@@ -156,5 +175,27 @@ describe("gradeReply", () => {
   it("passes with no missing facts when ground truth has no identifiers to check", () => {
     const result = gradeReply({}, "Sure, here's the weather for London.");
     expect(result.pass).toBe(true);
+  });
+
+  it("checks an expected amount the same way as an identifier", () => {
+    const result = gradeReply({ amounts: ["$482.50"] }, "Your invoice for $482.50 is due Friday.");
+    expect(result.pass).toBe(true);
+  });
+
+  it("fails when an invented amount doesn't match the expected one", () => {
+    const result = gradeReply({ amounts: ["$482.50"] }, "Your invoice for $999.00 is due Friday.");
+    expect(result.pass).toBe(false);
+    expect(result.missingFacts).toContain("$482.50");
+  });
+
+  it("does NOT fail on a denial when ground truth is empty (negative-control fixtures: correctly reporting nothing exists is the right answer)", () => {
+    const result = gradeReply({}, "I don't see any hotel booking on file for you.");
+    expect(result.pass).toBe(true);
+    expect(result.deniedFacts).toBe(true);
+  });
+
+  it("still fails a denial when ground truth has facts to deny", () => {
+    const result = gradeReply(groundTruth, "I don't see any booking with those details on file.");
+    expect(result.pass).toBe(false);
   });
 });

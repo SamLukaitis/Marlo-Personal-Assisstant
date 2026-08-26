@@ -14,6 +14,11 @@ const REFERENCE_CODE_RE = /\b(?=[A-Z0-9]{5,7}\b)(?=[A-Z0-9]*[A-Z])(?=[A-Z0-9]*[0
 
 const ISO_DATE_RE = /\b\d{4}-\d{2}-\d{2}\b/g;
 
+// $ or £ followed by a number, tolerating thousands separators and a stray space after the
+// symbol ("£ 120.00"). USD/GBP only — good enough for fixture invoices; extend if a fixture
+// ever needs another currency.
+const AMOUNT_RE = /[$£]\s?\d{1,3}(?:,\d{3})*(?:\.\d{2})?/g;
+
 const MONTH_NAMES: Record<string, string> = {
   jan: "01", january: "01",
   feb: "02", february: "02",
@@ -74,6 +79,12 @@ export function extractReferenceCodes(text: string): string[] {
   return extractAll(text, REFERENCE_CODE_RE);
 }
 
+export function extractAmounts(text: string): string[] {
+  // Strip the stray space some replies put after the symbol ("£ 120.00") so it matches the
+  // fixture's canonical form ("£120.00") on a plain substring/equality check.
+  return extractAll(text, AMOUNT_RE).map((v) => v.replace(/\s+/g, ""));
+}
+
 // Reverse of MONTH_NAMES — e.g. "09" -> ["sep", "sept", "september"] — so every alias
 // extractDates recognizes (including informal ones like "Sept") also works here, instead of
 // maintaining a second, easy-to-drift-out-of-sync month/alias list.
@@ -131,6 +142,7 @@ export interface GroundTruth {
   flightNumbers?: string[];
   referenceCodes?: string[];
   dates?: string[];
+  amounts?: string[];
 }
 
 export interface GradeResult {
@@ -142,13 +154,15 @@ export interface GradeResult {
 }
 
 export function gradeReply(groundTruth: GroundTruth, reply: string): GradeResult {
-  // Flight numbers and reference codes are opaque tokens — the model must reproduce them
-  // verbatim, so a plain substring check is exactly right. Dates get written in many equally
-  // valid prose forms ("2026-09-12" vs "September 12, 2026"), so those are compared against
-  // extractDates' normalized output instead of a literal substring match.
-  const identifiers = [...(groundTruth.flightNumbers ?? []), ...(groundTruth.referenceCodes ?? [])].map((v) =>
-    v.toUpperCase()
-  );
+  // Flight numbers, reference codes, and amounts are opaque tokens — the model must reproduce
+  // them verbatim, so a plain substring check is exactly right. Dates get written in many
+  // equally valid prose forms ("2026-09-12" vs "September 12, 2026"), so those are compared
+  // against dateAppearsInReply instead of a literal substring match.
+  const identifiers = [
+    ...(groundTruth.flightNumbers ?? []),
+    ...(groundTruth.referenceCodes ?? []),
+    ...(groundTruth.amounts ?? []),
+  ].map((v) => v.toUpperCase());
   const expectedDates = groundTruth.dates ?? [];
 
   const expected = [...identifiers, ...expectedDates];
@@ -157,21 +171,30 @@ export function gradeReply(groundTruth: GroundTruth, reply: string): GradeResult
     ...expectedDates.filter((d) => !dateAppearsInReply(d, reply)),
   ];
 
+  // A denial ("I don't see any booking on file") is only a grounding failure when there was
+  // something to deny. For a negative-control fixture (empty ground truth, nothing seeded in
+  // the mocked email/calendar), a denial is the *correct* answer — see report.ts/fixtures.ts for
+  // the "no-such-booking" fixture this exists for.
+  const hasExpectedFacts = expected.length > 0;
   const deniedFacts = containsDenial(reply);
+  const failsForDenial = deniedFacts && hasExpectedFacts;
 
   const foundFlights = extractFlightNumbers(reply);
   const foundCodes = extractReferenceCodes(reply);
+  const foundAmounts = extractAmounts(reply).map((v) => v.toUpperCase());
   // A flight number like "DL1234" also matches the reference-code shape, so dedupe before
   // reporting — otherwise one invented token gets listed twice under two different extractors.
-  const inventedIdentifiers = [...new Set([...foundFlights, ...foundCodes])].filter((v) => !expected.includes(v));
+  const inventedIdentifiers = [...new Set([...foundFlights, ...foundCodes, ...foundAmounts])].filter(
+    (v) => !expected.includes(v)
+  );
 
   const reasons: string[] = [];
   if (missingFacts.length) reasons.push(`missing expected fact(s): ${missingFacts.join(", ")}`);
-  if (deniedFacts) reasons.push("reply denies the fact exists");
+  if (failsForDenial) reasons.push("reply denies the fact exists");
   if (inventedIdentifiers.length) reasons.push(`invented identifier(s) not in ground truth: ${inventedIdentifiers.join(", ")}`);
 
   return {
-    pass: missingFacts.length === 0 && !deniedFacts && inventedIdentifiers.length === 0,
+    pass: missingFacts.length === 0 && !failsForDenial && inventedIdentifiers.length === 0,
     missingFacts,
     deniedFacts,
     inventedIdentifiers,
