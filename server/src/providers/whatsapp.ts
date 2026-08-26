@@ -79,6 +79,84 @@ export async function sendWhatsAppMessage(to: string, text: string): Promise<voi
   }
 }
 
+// Up to 3 tappable quick-reply buttons under a text prompt — used for closed-set questions
+// (provider choice, yes/no preference questions) instead of asking the person to type a reply.
+// Each button's title is capped at 20 characters by WhatsApp; longer titles are silently
+// truncated by Meta, so keep them short. A tap comes back as an IncomingInteractiveMessage
+// (extractIncomingMessages above) carrying the same id given here.
+export async function sendWhatsAppReplyButtons(
+  to: string,
+  bodyText: string,
+  buttons: { id: string; title: string }[]
+): Promise<void> {
+  const phoneNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID;
+  const token = process.env.WHATSAPP_TOKEN;
+  const res = await fetch(
+    `https://graph.facebook.com/${GRAPH_VERSION}/${phoneNumberId}/messages`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        messaging_product: "whatsapp",
+        to,
+        type: "interactive",
+        interactive: {
+          type: "button",
+          body: { text: bodyText },
+          action: {
+            buttons: buttons.map((b) => ({ type: "reply", reply: { id: b.id, title: b.title } })),
+          },
+        },
+      }),
+    }
+  );
+  if (!res.ok) {
+    throw await buildSendError("WhatsApp reply-buttons send failed", res);
+  }
+}
+
+// A single tappable link button under a text prompt — used instead of a plain "here's a link"
+// message. Unlike a reply button, tapping this opens the URL directly and never produces an
+// inbound webhook event of its own.
+export async function sendWhatsAppCtaUrl(
+  to: string,
+  bodyText: string,
+  buttonText: string,
+  url: string
+): Promise<void> {
+  const phoneNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID;
+  const token = process.env.WHATSAPP_TOKEN;
+  const res = await fetch(
+    `https://graph.facebook.com/${GRAPH_VERSION}/${phoneNumberId}/messages`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        messaging_product: "whatsapp",
+        to,
+        type: "interactive",
+        interactive: {
+          type: "cta_url",
+          body: { text: bodyText },
+          action: {
+            name: "cta_url",
+            parameters: { display_text: buttonText, url },
+          },
+        },
+      }),
+    }
+  );
+  if (!res.ok) {
+    throw await buildSendError("WhatsApp CTA-url send failed", res);
+  }
+}
+
 // The two pre-approved utility templates outbound.ts falls back to once the 24h customer-service
 // window has closed (see recordInboundMessage/getLastInboundAt in db/store.ts) — Meta rejects a
 // free-form send past that window with error 131047, but a template always goes through.
@@ -190,7 +268,20 @@ export interface IncomingMediaMessage {
   caption?: string;
 }
 
-export type IncomingWhatsAppMessage = IncomingTextMessage | IncomingMediaMessage;
+// A tap on a reply-button message sent by sendWhatsAppReplyButtons — buttonId is whatever id we
+// gave that button when sending it (e.g. "briefing_yes"). WhatsApp's "cta_url" button (used by
+// sendWhatsAppCtaUrl) is a plain link tap, not a webhook event, so it never produces one of these.
+export interface IncomingInteractiveMessage {
+  kind: "interactive";
+  from: string;
+  messageId: string;
+  buttonId: string;
+}
+
+export type IncomingWhatsAppMessage =
+  | IncomingTextMessage
+  | IncomingMediaMessage
+  | IncomingInteractiveMessage;
 
 interface WebhookPayload {
   entry?: Array<{
@@ -203,6 +294,7 @@ interface WebhookPayload {
           text?: { body?: string };
           image?: { id?: string; mime_type?: string; caption?: string };
           document?: { id?: string; mime_type?: string; filename?: string; caption?: string };
+          interactive?: { type?: string; button_reply?: { id?: string; title?: string } };
         }>;
       };
     }>;
@@ -234,6 +326,19 @@ export function extractIncomingMessages(payload: WebhookPayload): IncomingWhatsA
             mimeType: m.document.mime_type,
             filename: m.document.filename,
             caption: m.document.caption,
+          });
+        } else if (
+          m.type === "interactive" &&
+          m.from &&
+          m.id &&
+          m.interactive?.type === "button_reply" &&
+          m.interactive.button_reply?.id
+        ) {
+          messages.push({
+            kind: "interactive",
+            from: m.from,
+            messageId: m.id,
+            buttonId: m.interactive.button_reply.id,
           });
         }
       }

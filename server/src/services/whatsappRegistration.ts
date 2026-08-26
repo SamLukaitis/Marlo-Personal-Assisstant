@@ -4,14 +4,16 @@
 // the OAuth consent screen itself — Google/Microsoft don't allow sign-in inside an embedded
 // webview, so a one-time link is sent instead (see authRoutes.ts's "whatsapp_register" intent).
 //
-// v1 is plain conversational text throughout. One explicit future upgrade, not built here: Meta
-// WhatsApp Flows (native in-chat forms) for the name/email capture — would reduce typing further,
-// not required for the flow to work.
+// Name/email capture stays plain conversational text. Provider choice (Gmail vs. Outlook) is
+// tappable buttons instead of two links in one message, since WhatsApp only allows one URL
+// button per message — see sendWhatsAppReplyButtons/sendWhatsAppCtaUrl in providers/whatsapp.ts.
+// One explicit future upgrade, not built here: Meta WhatsApp Flows (native in-chat forms) for the
+// name/email capture too.
 //
-// Everything past OAuth (briefing content, optional tools like Teams/travel tracking) is
-// deliberately NOT a scripted step here — it's handled by the real, tool-calling assistant
-// (assistant.ts's set_briefing_preferences / set_tool_enabled tools) once the person has a
-// working hub. See docs/superpowers/specs/2026-08-20-whatsapp-onboarding-expansion-design.md.
+// Everything past OAuth (briefing content, optional tools like Teams/travel tracking) is handled
+// by services/postConnectSetup.ts's own button chain, then handed off to the real, tool-calling
+// assistant (assistant.ts's set_briefing_preferences / set_tool_enabled tools) once the person has
+// a working hub. See docs/superpowers/specs/2026-08-20-whatsapp-onboarding-expansion-design.md.
 import {
   getPendingRegistration,
   upsertPendingRegistration,
@@ -21,9 +23,10 @@ import {
   isEmailInvited,
   getUserByEmail,
   type PendingRegistrationRow,
+  type RegistrationProvider,
 } from "../db/store.js";
-import { sendWhatsAppMessage } from "../providers/whatsapp.js";
-import { hubListMessages, hubListEvents } from "./hub.js";
+import { sendWhatsAppMessage, sendWhatsAppReplyButtons, sendWhatsAppCtaUrl } from "../providers/whatsapp.js";
+import { startPostConnectSetup } from "./postConnectSetup.js";
 import { SERVER_URL } from "../config.js";
 import { getRegistrationAssistReply } from "../ai/assistant.js";
 import type { IncomingWhatsAppMessage } from "../providers/whatsapp.js";
@@ -49,6 +52,16 @@ export function isHelpTrigger(text: string): boolean {
   return HELP_TRIGGERS.has(text.trim().toLowerCase());
 }
 
+const PROVIDER_BUTTON_IDS: Record<RegistrationProvider, string> = {
+  google: "register_google",
+  microsoft: "register_microsoft",
+};
+
+const PROVIDER_LABEL: Record<RegistrationProvider, string> = {
+  google: "Gmail",
+  microsoft: "Outlook",
+};
+
 // What to say again after a help interruption, so the person lands back where they were
 // instead of getting stuck. `awaiting_name` reuses the tail of the first-contact message since
 // that's the only place the name question is asked.
@@ -58,6 +71,8 @@ function currentStepPrompt(row: PendingRegistrationRow): string {
       return "What should I call you?";
     case "awaiting_email":
       return "Which email do you use?";
+    case "awaiting_provider":
+      return "Do you use Gmail or Outlook/Hotmail? Tap one of the buttons above.";
     case "awaiting_link_tap":
       return "Tap the link above to connect your email — I'll message you the moment it's done. Reply \"resend\" if it expired.";
     case "completed":
@@ -74,20 +89,35 @@ async function reply(phone: string, text: string): Promise<void> {
   await sendWhatsAppMessage(phone, text);
 }
 
-async function sendLinks(row: PendingRegistrationRow): Promise<void> {
+async function askProvider(row: PendingRegistrationRow): Promise<void> {
+  await sendWhatsAppReplyButtons(row.phone, "Do you use Gmail or Outlook/Hotmail?", [
+    { id: PROVIDER_BUTTON_IDS.google, title: "Gmail" },
+    { id: PROVIDER_BUTTON_IDS.microsoft, title: "Outlook" },
+  ]);
+  upsertPendingRegistration(row.phone, { step: "awaiting_provider" });
+}
+
+async function sendProviderLink(row: PendingRegistrationRow): Promise<void> {
+  const provider = row.provider;
+  if (!provider) {
+    // Shouldn't happen — awaiting_link_tap is only reached via sendProviderLink itself, always
+    // called right after provider is set. Guard anyway rather than sending a broken link.
+    await askProvider(row);
+    return;
+  }
   if (withinCooldown(row.phone)) {
     await reply(row.phone, "Still working on it — give it a few seconds and try again if the link doesn't work.");
     return;
   }
   const token = setPendingRegistrationToken(row.phone);
   lastTokenIssuedAt.set(row.phone, Date.now());
-  const googleLink = `${SERVER_URL}/auth/google/register?token=${token}`;
-  const microsoftLink = `${SERVER_URL}/auth/microsoft/register?token=${token}`;
-  await reply(
+  const path = provider === "google" ? "/auth/google/register" : "/auth/microsoft/register";
+  const link = `${SERVER_URL}${path}?token=${token}`;
+  await sendWhatsAppCtaUrl(
     row.phone,
-    `Tap here to let me in — Google will ask if I can read your mail and write drafts, I can never send anything:\n\n` +
-      `If you use Gmail: ${googleLink}\n\nIf you use Outlook/Hotmail: ${microsoftLink}\n\n` +
-      `This link works for ten minutes.`
+    `Tap here to let me in — ${PROVIDER_LABEL[provider]} will ask if I can read your mail and write drafts, I can never send anything. This link works for ten minutes.`,
+    `Connect ${PROVIDER_LABEL[provider]}`,
+    link
   );
   upsertPendingRegistration(row.phone, { step: "awaiting_link_tap" });
 }
@@ -99,30 +129,11 @@ async function sendLinks(row: PendingRegistrationRow): Promise<void> {
 // Marks the pending-registration row completed right away: there's nothing left to await
 // server-side. The user's reply is their first ordinary chat message — addPhoneNumberForUser
 // already ran before this is called, so resolveOwnerByPhone resolves it and it's routed straight
-// to the real assistant (runAssistantChat), not back into handlePendingRegistration.
+// to the real assistant (runAssistantChat), not back into handlePendingRegistration. Hands off
+// immediately to postConnectSetup's own button chain (daily briefing, Teams, Schengen tracking).
 export async function sendFirstValueAndBriefingPrompt(ownerId: number, phone: string): Promise<void> {
-  let fact = "";
-  try {
-    const [messages, events] = await Promise.all([
-      hubListMessages(ownerId, { limit: 20 }).catch(() => []),
-      hubListEvents(ownerId, 1).catch(() => []),
-    ]);
-    const unread = messages.filter((m) => m.unread).length;
-    const parts: string[] = [];
-    if (unread > 0) parts.push(`${unread} unread email${unread === 1 ? "" : "s"}`);
-    if (events.length > 0) parts.push(`${events.length} thing${events.length === 1 ? "" : "s"} on today's calendar`);
-    fact = parts.length ? ` I can already see ${parts.join(" and ")}.` : "";
-  } catch {
-    // best-effort — a missing first-value fact shouldn't block the confirmation message itself
-  }
-
-  await reply(phone, `Connected — I can see your inbox and your calendar.${fact}`);
-  await reply(
-    phone,
-    "Each morning I'll send you an update on your email, calendar, and anything that looks like " +
-      "it needs a reply. Want me to also include news, business headlines, or weather?"
-  );
   completePendingRegistration(phone);
+  await startPostConnectSetup(ownerId, phone);
 }
 
 async function handleAwaitingName(row: PendingRegistrationRow, text: string): Promise<void> {
@@ -164,12 +175,46 @@ async function handleAwaitingEmail(row: PendingRegistrationRow, text: string): P
   }
 
   const updated = upsertPendingRegistration(row.phone, { typedEmail: email });
-  await sendLinks(updated);
+  await askProvider(updated);
+}
+
+// buttonId comes straight from an IncomingInteractiveMessage tap on the buttons askProvider sent.
+async function handleAwaitingProviderTap(row: PendingRegistrationRow, buttonId: string): Promise<void> {
+  const provider: RegistrationProvider | null =
+    buttonId === PROVIDER_BUTTON_IDS.google
+      ? "google"
+      : buttonId === PROVIDER_BUTTON_IDS.microsoft
+        ? "microsoft"
+        : null;
+  if (!provider) {
+    // Stray/unexpected button id — re-show the choice rather than silently drop it.
+    await askProvider(row);
+    return;
+  }
+  const updated = upsertPendingRegistration(row.phone, { provider });
+  await sendProviderLink(updated);
+}
+
+// Fallback for someone who types "gmail"/"outlook" instead of tapping a button.
+async function handleAwaitingProviderText(row: PendingRegistrationRow, text: string): Promise<void> {
+  const normalized = text.trim().toLowerCase();
+  const provider: RegistrationProvider | null = /gmail|google/.test(normalized)
+    ? "google"
+    : /outlook|hotmail|microsoft/.test(normalized)
+      ? "microsoft"
+      : null;
+  if (!provider) {
+    const helpReply = await getRegistrationAssistReply(text, "provider");
+    await reply(row.phone, helpReply);
+    return;
+  }
+  const updated = upsertPendingRegistration(row.phone, { provider });
+  await sendProviderLink(updated);
 }
 
 async function handleAwaitingLinkTap(row: PendingRegistrationRow, text: string): Promise<void> {
   if (/resend|new link|link again/i.test(text)) {
-    await sendLinks(row);
+    await sendProviderLink(row);
     return;
   }
   // Anything else (a question, "did it work?", confusion) gets a real conversational reply
@@ -178,21 +223,38 @@ async function handleAwaitingLinkTap(row: PendingRegistrationRow, text: string):
   await reply(row.phone, helpReply);
 }
 
-// The entry point whatsappRoutes.ts calls when resolveOwnerByPhone finds no owner for an
-// incoming text message. Media messages during registration get a short redirect instead —
-// ingestWhatsAppMedia requires a resolved ownerId, which doesn't exist yet at this point.
-export async function handlePendingRegistration(message: IncomingWhatsAppMessage): Promise<void> {
-  if (message.kind !== "text") {
-    await reply(message.from, "Let's finish setting you up first — what should I call you?").catch(() => {});
-    return;
-  }
+// The redirect a mistimed message (a button tap or media that doesn't match the current step)
+// gets — kept as one copy since it's used from a couple of places below.
+async function redirectToSetup(phone: string): Promise<void> {
+  await reply(phone, "Let's finish setting you up first — what should I call you?").catch(() => {});
+}
 
+// The entry point whatsappRoutes.ts calls when resolveOwnerByPhone finds no owner for an
+// incoming message. Media messages during registration get a short redirect — ingestWhatsAppMedia
+// requires a resolved ownerId, which doesn't exist yet at this point. Interactive (button tap)
+// messages are only meaningful at the awaiting_provider step; anywhere else they get the same
+// redirect as a mistimed media message.
+export async function handlePendingRegistration(message: IncomingWhatsAppMessage): Promise<void> {
   const phone = message.from;
   let row = getPendingRegistration(phone);
 
   if (row && row.step !== "completed" && Date.now() - row.updatedAt > IDLE_RESET_MS) {
     deletePendingRegistration(phone);
     row = null;
+  }
+
+  if (message.kind === "interactive") {
+    if (row && row.step === "awaiting_provider") {
+      await handleAwaitingProviderTap(row, message.buttonId);
+      return;
+    }
+    await redirectToSetup(phone);
+    return;
+  }
+
+  if (message.kind === "media") {
+    await redirectToSetup(phone);
+    return;
   }
 
   if (!row) {
@@ -213,6 +275,9 @@ export async function handlePendingRegistration(message: IncomingWhatsAppMessage
       return;
     case "awaiting_email":
       await handleAwaitingEmail(row, message.text);
+      return;
+    case "awaiting_provider":
+      await handleAwaitingProviderText(row, message.text);
       return;
     case "awaiting_link_tap":
       await handleAwaitingLinkTap(row, message.text);

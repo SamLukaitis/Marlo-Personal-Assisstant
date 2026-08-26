@@ -37,16 +37,21 @@ vi.mock("../services/whatsappRegistration.js", async () => {
     handlePendingRegistration: vi.fn(),
   };
 });
+vi.mock("../services/postConnectSetup.js", () => ({
+  handlePostConnectSetupReply: vi.fn().mockResolvedValue(false),
+}));
 
 const { sendWhatsAppMessage } = await import("../providers/whatsapp.js");
 const { resolveOwnerByPhone } = await import("../db/store.js");
 const { runAssistantChat } = await import("../ai/assistant.js");
+const { handlePostConnectSetupReply } = await import("../services/postConnectSetup.js");
 const { handleIncoming } = await import("./whatsappRoutes.js");
 
 beforeEach(() => {
   vi.mocked(sendWhatsAppMessage).mockClear();
   vi.mocked(runAssistantChat).mockClear();
   vi.mocked(resolveOwnerByPhone).mockReturnValue(42);
+  vi.mocked(handlePostConnectSetupReply).mockReset().mockResolvedValue(false);
 });
 
 describe("handleIncoming — help trigger for already-registered users", () => {
@@ -74,5 +79,28 @@ describe("handleIncoming — version trigger", () => {
     expect(runAssistantChat).not.toHaveBeenCalled();
     expect(sendWhatsAppMessage).toHaveBeenCalledTimes(1);
     expect(vi.mocked(sendWhatsAppMessage).mock.calls[0][0]).toBe("447900000002");
+  });
+});
+
+describe("handleIncoming — post-connect setup button taps", () => {
+  it("short-circuits entirely when handlePostConnectSetupReply consumes the message", async () => {
+    vi.mocked(handlePostConnectSetupReply).mockResolvedValue(true);
+
+    await handleIncoming({ kind: "interactive", from: "447900000003", buttonId: "briefing_yes", messageId: "m4" });
+
+    expect(handlePostConnectSetupReply).toHaveBeenCalledWith(42, expect.objectContaining({ buttonId: "briefing_yes" }));
+    expect(runAssistantChat).not.toHaveBeenCalled();
+    expect(sendWhatsAppMessage).not.toHaveBeenCalled();
+  });
+
+  it("logs and ignores a stray button tap with nothing pending, instead of routing it to media handling", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    await handleIncoming({ kind: "interactive", from: "447900000004", buttonId: "old_button", messageId: "m5" });
+
+    expect(runAssistantChat).not.toHaveBeenCalled();
+    expect(sendWhatsAppMessage).not.toHaveBeenCalled();
+    expect(errorSpy).toHaveBeenCalled();
+    errorSpy.mockRestore();
   });
 });
