@@ -5,10 +5,12 @@
 // match against) can catch. See
 // docs/superpowers/specs/2026-08-26-important-email-alerts-design.md.
 
-import { hubListMessages, AUTOMATED_SENDER_PATTERN } from "./hub.js";
+import { hubListMessages, hubGetMessage, AUTOMATED_SENDER_PATTERN } from "./hub.js";
 import { hasAlerted, markAlerted, getSetting, setSetting, listPhoneNumbersForUser } from "../db/store.js";
 import { sendWhatsAppMessage, isWhatsAppConfigured } from "../providers/whatsapp.js";
 import { classifyImportantEmails, CATEGORY_INFO, type ImportantEmailCategory } from "./importantEmailClassifier.js";
+import { getXeroForwardingEmail } from "./xero.js";
+import { setPendingInvoiceForward } from "./xeroInvoiceConfirmation.js";
 import type { UnifiedMessage } from "../providers/types.js";
 
 const MAX_ALERTS_PER_CHECK = 5;
@@ -98,9 +100,29 @@ export async function checkForImportantEmails(ownerId: number): Promise<void> {
   if (matches.length === 0) return;
 
   const toSend = matches.slice(0, MAX_ALERTS_PER_CHECK);
+  // At most one invoice_due match per tick gets the "reply yes" offer — there's only one pending
+  // confirmation slot per owner (see xeroInvoiceConfirmation.ts), by design, not an oversight.
+  let offeredInvoiceConfirm = false;
   for (const { m, category } of toSend) {
-    const delivered = await notifyAll(numbers, formatImportantEmailAlert(m, category));
-    if (delivered) markAlerted(ownerId, messageKey(m));
+    let text = formatImportantEmailAlert(m, category);
+    let confirmable: { accountId: number; messageId: string; subject: string } | null = null;
+
+    if (category === "invoice_due" && !offeredInvoiceConfirm && getXeroForwardingEmail(ownerId)) {
+      const full = await hubGetMessage(ownerId, m.accountId, m.id).catch(() => null);
+      if (full?.attachments?.length) {
+        confirmable = { accountId: m.accountId, messageId: m.id, subject: m.subject };
+        text += `\n\nReply "yes" and I'll forward it to Xero.`;
+      }
+    }
+
+    const delivered = await notifyAll(numbers, text);
+    if (delivered) {
+      markAlerted(ownerId, messageKey(m));
+      if (confirmable) {
+        setPendingInvoiceForward(ownerId, confirmable);
+        offeredInvoiceConfirm = true;
+      }
+    }
   }
 
   const rest = matches.slice(MAX_ALERTS_PER_CHECK);
