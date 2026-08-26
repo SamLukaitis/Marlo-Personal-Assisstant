@@ -5,6 +5,7 @@ import {
   verifyWebhookChallenge,
   verifyWebhookSignature,
   sendWhatsAppMessage,
+  sendWhatsAppTypingIndicator,
   extractIncomingMessages,
   type IncomingWhatsAppMessage,
 } from "../providers/whatsapp.js";
@@ -179,6 +180,13 @@ async function handleMedia(
 }
 
 export async function handleIncoming(message: IncomingWhatsAppMessage): Promise<void> {
+  // Fire-and-forget — shows the native "..." typing indicator while the assistant/tool-call
+  // round trip below runs, so the user knows a reply is coming rather than wondering if the
+  // message went through. Never let this block or fail message handling itself.
+  sendWhatsAppTypingIndicator(message.messageId).catch((err) =>
+    console.error("whatsapp: typing indicator failed", err)
+  );
+
   // The core of multi-tenant WhatsApp routing: which hub does this phone number belong to?
   // Replaces the old single global allow-list boolean — a number not registered to any user is
   // treated the same way an unlisted number was before (silently ignored), it's just resolved
