@@ -13,6 +13,9 @@ dist-ssr/
 # Server runtime data (SQLite DB with OAuth tokens)
 server/data/
 
+# Grounding eval output (generated report, re-created on every run)
+server/eval-results/
+
 # Logs
 *.log
 npm-debug.log*
