@@ -255,27 +255,23 @@ export async function microsoftGetMessage(
   }
 }
 
+// Returns only the bytes — see googleGetAttachment's comment for why: the caller already has
+// filename/mimeType from whichever single fetch it used to resolve this attachment id, so this
+// stays consistent with Google's path rather than trusting a second, independently-fetched copy.
 export async function microsoftGetAttachment(
   account: AccountRow,
   messageId: string,
   attachmentId: string
-): Promise<{ data: Buffer; mimeType: string; filename: string } | null> {
-  const data = await graphGet<{ name?: string; contentType?: string; contentBytes?: string }>(
+): Promise<{ data: Buffer } | null> {
+  const data = await graphGet<{ contentBytes?: string }>(
     account,
     `/me/messages/${encodeURIComponent(messageId)}/attachments/${encodeURIComponent(attachmentId)}`
   );
   if (!data.contentBytes) {
-    console.error(
-      `microsoft: attachments/${attachmentId} returned no contentBytes for message ${messageId} ` +
-        `(name: ${data.name ?? "?"}, contentType: ${data.contentType ?? "?"})`
-    );
+    console.error(`microsoft: attachments/${attachmentId} returned no contentBytes for message ${messageId}`);
     return null;
   }
-  return {
-    data: Buffer.from(data.contentBytes, "base64"),
-    mimeType: data.contentType ?? "application/octet-stream",
-    filename: data.name ?? "attachment",
-  };
+  return { data: Buffer.from(data.contentBytes, "base64") };
 }
 
 export async function microsoftListEvents(

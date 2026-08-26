@@ -215,32 +215,27 @@ export async function googleGetMessage(
   }
 }
 
+// Deliberately does NOT re-fetch the message to re-derive/verify the attachment id against a
+// fresh extractAttachmentMetas() call, the way this used to. Real incident (2026-08-26): Gmail's
+// per-attachment id is not guaranteed stable across two separate messages.get calls for the same
+// message — a caller that resolved an id from one fetch (e.g. ingestEmailAttachment, resolving a
+// model-shown index) would then have this function's own internal re-fetch mint a *different*
+// id for the same physical attachment and reject it as "not found", even though nothing was
+// actually wrong. The caller already has the filename/mimeType from whichever single fetch it
+// used to resolve this id — passing the id straight through here removes the second fetch (and
+// the mismatch it caused) entirely.
 export async function googleGetAttachment(
   account: AccountRow,
   messageId: string,
   attachmentId: string
-): Promise<{ data: Buffer; mimeType: string; filename: string } | null> {
+): Promise<{ data: Buffer } | null> {
   const gmail = google.gmail({ version: "v1", auth: authFor(account) });
-  const message = await gmail.users.messages.get({ userId: "me", id: messageId, format: "full" });
-  const metas = extractAttachmentMetas(message.data.payload);
-  const meta = metas.find((a) => a.id === attachmentId);
-  if (!meta) {
-    console.error(
-      `google: attachment id ${attachmentId} not found on message ${messageId} — known ids: ` +
-        JSON.stringify(metas.map((m) => ({ id: m.id, filename: m.filename })))
-    );
-    return null;
-  }
-
   const res = await gmail.users.messages.attachments.get({ userId: "me", messageId, id: attachmentId });
   if (!res.data.data) {
-    console.error(
-      `google: attachments.get returned no data for ${meta.filename} (message ${messageId}, ` +
-        `attachment ${attachmentId}, reported size ${meta.size})`
-    );
+    console.error(`google: attachments.get returned no data (message ${messageId}, attachment ${attachmentId})`);
     return null;
   }
-  return { data: Buffer.from(res.data.data, "base64url"), mimeType: meta.mimeType, filename: meta.filename };
+  return { data: Buffer.from(res.data.data, "base64url") };
 }
 
 export async function googleListEvents(

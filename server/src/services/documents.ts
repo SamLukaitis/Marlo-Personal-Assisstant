@@ -748,14 +748,14 @@ export async function ingestEmailAttachment(params: {
   }
   if (!fetched) return { ok: false, reason: "unavailable" };
 
-  const ext = EXTENSIONS[fetched.mimeType] ?? "bin";
+  const ext = EXTENSIONS[meta.mimeType] ?? "bin";
   const storedName = `${Date.now()}-${crypto.randomUUID()}.${ext}`;
   const storedPath = path.join(uploadsDir, storedName);
   fs.writeFileSync(storedPath, encryptBuffer(fetched.data));
 
-  const doc = await finalizeIngestedFile(params.ownerId, fetched.data, fetched.mimeType, storedPath, {
+  const doc = await finalizeIngestedFile(params.ownerId, fetched.data, meta.mimeType, storedPath, {
     phone: `email:${params.accountId}`,
-    filename: fetched.filename,
+    filename: meta.filename,
     caption: null,
     source: "email",
     emailAccountId: params.accountId,

@@ -108,7 +108,7 @@ export async function hubGetAttachment(
   accountId: number,
   messageId: string,
   attachmentId: string
-): Promise<{ data: Buffer; mimeType: string; filename: string } | null> {
+): Promise<{ data: Buffer } | null> {
   const account = requireAccount(ownerId, accountId);
   return account.provider === "google"
     ? g.googleGetAttachment(account, messageId, attachmentId)
