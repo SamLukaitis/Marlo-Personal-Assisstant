@@ -95,6 +95,17 @@ describe("buildSystemPrompt anti-hallucination rule", () => {
     expect(prompt).toContain("does NOT exist");
     expect(prompt).toContain("not verification");
   });
+
+  it("tells the model to fall back to email search when list_bookings/list_expenses is empty", () => {
+    // Found by the grounding eval (server/src/eval/): the model was checking list_bookings/
+    // list_expenses for "do I have a hotel booking" style questions and stopping there, never
+    // falling back to search_messages when a confirmation/invoice email existed but nothing had
+    // been extracted into a structured record yet.
+    const user = findOrCreateUserByEmail(uniqueEmail("prompt-bookings-fallback"));
+    const prompt = buildSystemPrompt(user.id);
+    expect(prompt).toContain("list_bookings/list_expenses");
+    expect(prompt).toContain("do NOT search email");
+  });
 });
 
 describe("buildSystemPrompt", () => {
