@@ -48,6 +48,7 @@ import {
   hubSearchContacts,
   hubFlaggedMessages,
 } from "../services/hub.js";
+import type { UnifiedMessage } from "../providers/types.js";
 
 // Cheap tier for lookups/summaries, richer tier for anything needing judgment or drafting.
 // No classifier call to pick between them — that would add an extra API round-trip for a
@@ -411,15 +412,18 @@ const ALWAYS_ON_TOOLS: Anthropic.Tool[] = [
   {
     name: "extract_email_attachment",
     description:
-      "Download one attachment from an email and run it through the same extraction pipeline as a WhatsApp photo/PDF — saves it as a document and, if it's a flight/hotel booking or a receipt, adds a structured record to list_bookings/list_expenses. Call this when the user asks about a booking, ticket, or receipt that's attached to an email you found via get_message, rather than just reading the email body — an email attachment is never extracted automatically. Use the attachment's id and the email's account_id/message_id from get_message's attachments field.",
+      "Download one attachment from an email and run it through the same extraction pipeline as a WhatsApp photo/PDF — saves it as a document and, if it's a flight/hotel booking or a receipt, adds a structured record to list_bookings/list_expenses. Call this when the user asks about a booking, ticket, or receipt that's attached to an email you found via get_message, rather than just reading the email body — an email attachment is never extracted automatically. Use the email's account_id/message_id and the attachment's position from get_message's attachments field.",
     input_schema: {
       type: "object",
       properties: {
         account_id: { type: "number" },
         message_id: { type: "string" },
-        attachment_id: { type: "string", description: "From get_message's attachments[].id" },
+        attachment_index: {
+          type: "number",
+          description: "The attachment's `index` from get_message's attachments field (1 for the first attachment listed, 2 for the second, etc.) — not a filename or id.",
+        },
       },
-      required: ["account_id", "message_id", "attachment_id"],
+      required: ["account_id", "message_id", "attachment_index"],
     },
   },
   {
@@ -601,6 +605,30 @@ function forModel(doc: DocumentRow) {
   return rest;
 }
 
+// Real Gmail/Graph attachment ids are ~200-300 character opaque tokens. Models reliably fail to
+// copy a token that long back verbatim in a later tool call — they reproduce the first several
+// characters correctly and then drift/fabricate the rest, which is exactly what was causing
+// every real extract_email_attachment call to fail with "invalid id" even though the id had been
+// right there in the previous tool result. Hiding the raw id and giving the model a 1-based
+// index instead (matching display order) sidesteps the problem entirely — a single digit can't
+// be mistyped the same way, and extract_email_attachment resolves the index back to the real id
+// server-side.
+// Exported for its own unit test — same reasoning as forModel/resolveDocumentCategory
+// elsewhere: this is the one bit of pure logic worth testing directly, without needing a live
+// hub/provider call in the loop.
+export function messageForModel(message: UnifiedMessage | null): unknown {
+  if (!message?.attachments) return message;
+  return {
+    ...message,
+    attachments: message.attachments.map((a, i) => ({
+      index: i + 1,
+      filename: a.filename,
+      mimeType: a.mimeType,
+      size: a.size,
+    })),
+  };
+}
+
 const TOOL_NAME_TO_KEY: Record<string, ToolKey> = {
   list_recent_chats: "teams",
   search_chats: "teams",
@@ -626,7 +654,9 @@ export async function runTool(ownerId: number, name: string, input: Record<strin
         limit: (input.limit as number | undefined) ?? SEARCH_MESSAGES_DEFAULT_LIMIT,
       });
     case "get_message":
-      return hubGetMessage(ownerId, input.account_id as number, input.message_id as string);
+      return messageForModel(
+        await hubGetMessage(ownerId, input.account_id as number, input.message_id as string)
+      );
     case "list_upcoming_events":
       return hubListEvents(ownerId, (input.days as number | undefined) ?? 7);
     case "find_free_time": {
@@ -700,10 +730,12 @@ export async function runTool(ownerId: number, name: string, input: Record<strin
         ownerId,
         accountId: input.account_id as number,
         messageId: input.message_id as string,
-        attachmentId: input.attachment_id as string,
+        attachmentIndex: input.attachment_index as number,
       });
       if (!result.ok) {
-        return { error: "Couldn't download that attachment — it may be too large for direct download, or the id is no longer valid." };
+        return result.reason === "invalid_index"
+          ? { error: "That attachment index doesn't match any attachment on this email — call get_message again and use the `index` shown for the attachment you want." }
+          : { error: "Couldn't download that attachment — it may be too large for direct download, or the account's access may have expired." };
       }
       return { ...forModel(result.doc), alreadyExtracted: result.alreadyExtracted };
     }
