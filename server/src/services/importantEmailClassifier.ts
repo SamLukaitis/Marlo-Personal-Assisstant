@@ -153,11 +153,15 @@ export async function classifyImportantEmails(
 
   const response = await getClient().messages.create({
     model: CLASSIFY_MODEL,
-    max_tokens: 1024,
+    max_tokens: 4096,
     tools: [CLASSIFY_TOOL],
     tool_choice: { type: "tool", name: "classify_messages" },
     messages: [{ role: "user", content: buildClassifyPrompt(candidates) }],
   });
+
+  if (response.stop_reason === "max_tokens") {
+    throw new Error("classification response was truncated (max_tokens)");
+  }
 
   const toolUse = response.content.find(
     (b): b is Anthropic.ToolUseBlock => b.type === "tool_use" && b.name === "classify_messages"

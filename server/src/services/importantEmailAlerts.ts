@@ -47,6 +47,10 @@ async function notifyAll(numbers: string[], text: string): Promise<boolean> {
 // Runs on the existing 5-minute scheduler tick, sibling to checkForNewImportantMessages and
 // checkNewEmailsAgainstRecentDocuments — but targets automated senders specifically (the inverse
 // of checkForNewImportantMessages's filter), since that's exactly the mail those two miss.
+//
+// Known overlap: an email that both matches a saved document (reconciliation.ts) and a fixed
+// category here can trigger two separate WhatsApp messages. Accepted for v1 — the two mechanisms
+// are deliberately decoupled; revisit only if this proves annoying in practice.
 export async function checkForImportantEmails(ownerId: number): Promise<void> {
   const messages = await hubListMessages(ownerId, { limit: 50 });
   const candidates = messages.filter((m) => m.unread && m.from && AUTOMATED_SENDER_PATTERN.test(m.from));
@@ -62,6 +66,15 @@ export async function checkForImportantEmails(ownerId: number): Promise<void> {
 
   const unscanned = candidates.filter((m) => !hasAlerted(ownerId, messageKey(m)));
   if (unscanned.length === 0) return;
+
+  // Cheap deliverability gates before the paid classification call, same precedent as alerts.ts
+  // and reconciliation.ts — this feature is on by default, so every deployment without WhatsApp
+  // configured (or every user with no registered numbers) must not pay for classification on
+  // every tick, forever, for a message that can never be delivered. `unscanned` candidates are
+  // left unmarked/retriable, same as today.
+  if (!isWhatsAppConfigured()) return;
+  const numbers = listPhoneNumbersForUser(ownerId).map((r) => r.phone);
+  if (numbers.length === 0) return;
 
   let classified: Map<number, ImportantEmailCategory>;
   try {
@@ -83,10 +96,6 @@ export async function checkForImportantEmails(ownerId: number): Promise<void> {
     .map((m, index) => ({ m, category: classified.get(index) }))
     .filter((x): x is { m: UnifiedMessage; category: ImportantEmailCategory } => !!x.category);
   if (matches.length === 0) return;
-
-  if (!isWhatsAppConfigured()) return; // matches stay unscanned, retried next tick
-  const numbers = listPhoneNumbersForUser(ownerId).map((r) => r.phone);
-  if (numbers.length === 0) return; // matches stay unscanned, retried next tick
 
   const toSend = matches.slice(0, MAX_ALERTS_PER_CHECK);
   for (const { m, category } of toSend) {

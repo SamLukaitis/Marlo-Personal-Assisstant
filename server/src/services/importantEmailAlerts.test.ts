@@ -7,27 +7,16 @@ vi.mock("../providers/whatsapp.js", () => ({
 }));
 
 const mockHubListMessages = vi.fn();
-vi.mock("./hub.js", () => ({
-  hubListMessages: (...args: unknown[]) => mockHubListMessages(...args),
-  // Real pattern, copied from hub.ts — the filter under test relies on it matching for real.
-  AUTOMATED_SENDER_PATTERN:
-    /no-?reply|notifications?@|newsletter|updates?@|do-?not-?reply|automated|mailer-daemon/i,
-}));
+vi.mock("./hub.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./hub.js")>();
+  return { ...actual, hubListMessages: (...args: unknown[]) => mockHubListMessages(...args) };
+});
 
 const mockClassify = vi.fn();
-vi.mock("./importantEmailClassifier.js", () => ({
-  classifyImportantEmails: (...args: unknown[]) => mockClassify(...args),
-  CATEGORY_INFO: {
-    flight_change: { emoji: "✈️", label: "Flight change" },
-    reservation_confirmed: { emoji: "✅", label: "Reservation confirmed" },
-    invoice_due: { emoji: "💳", label: "Invoice/payment due" },
-    government_mail: { emoji: "🏛️", label: "Government correspondence" },
-    delivery_notification: { emoji: "📦", label: "Delivery notice" },
-    security_alert: { emoji: "🔐", label: "Security alert" },
-    subscription_renewal: { emoji: "🔁", label: "Subscription renewal" },
-    refund_dispute: { emoji: "💰", label: "Refund/dispute update" },
-  },
-}));
+vi.mock("./importantEmailClassifier.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./importantEmailClassifier.js")>();
+  return { ...actual, classifyImportantEmails: (...args: unknown[]) => mockClassify(...args) };
+});
 
 const { sendWhatsAppMessage, isWhatsAppConfigured } = await import("../providers/whatsapp.js");
 const { findOrCreateUserByEmail, addPhoneNumberForUser, hasAlerted } = await import("../db/store.js");
@@ -98,6 +87,7 @@ describe("checkForImportantEmails", () => {
 
   it("filters to unread automated-sender mail only, ignoring read mail and mail from real people", async () => {
     const user = findOrCreateUserByEmail(uniqueEmail("filter"));
+    addPhoneNumberForUser(user.id, freshPhone());
     await baseline(user.id);
 
     mockHubListMessages.mockResolvedValueOnce([
@@ -152,6 +142,7 @@ describe("checkForImportantEmails", () => {
 
   it("marks a non-matching candidate scanned so it isn't reclassified next tick", async () => {
     const user = findOrCreateUserByEmail(uniqueEmail("nonmatch"));
+    addPhoneNumberForUser(user.id, freshPhone());
     await baseline(user.id);
 
     mockHubListMessages.mockResolvedValue([fakeMessage({ id: "boring-1" })]);
@@ -166,6 +157,7 @@ describe("checkForImportantEmails", () => {
 
   it("leaves everything unscanned when classification itself fails", async () => {
     const user = findOrCreateUserByEmail(uniqueEmail("classify-fail"));
+    addPhoneNumberForUser(user.id, freshPhone());
     await baseline(user.id);
 
     mockHubListMessages.mockResolvedValueOnce([fakeMessage({ id: "err-1" })]);
@@ -173,6 +165,7 @@ describe("checkForImportantEmails", () => {
 
     await checkForImportantEmails(user.id);
 
+    expect(mockClassify).toHaveBeenCalledTimes(1);
     expect(hasAlerted(user.id, "important-email:1:err-1")).toBe(false);
     expect(sendWhatsAppMessage).not.toHaveBeenCalled();
   });
