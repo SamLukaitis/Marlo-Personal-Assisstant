@@ -389,6 +389,25 @@ export async function saveAlertSettings(settings: AlertSettings): Promise<void> 
   if (!res.ok) throw new Error("failed to save alert settings");
 }
 
+export interface ImportantEmailAlertSettings {
+  enabled: boolean;
+}
+
+export const fetchImportantEmailAlertSettings = () =>
+  getJson<ImportantEmailAlertSettings>("/api/important-email-alerts/settings");
+
+export async function saveImportantEmailAlertSettings(settings: ImportantEmailAlertSettings): Promise<void> {
+  const res = await fetch(
+    `${API_BASE}/api/important-email-alerts/settings`,
+    withCredentials({
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(settings),
+    })
+  );
+  if (!res.ok) throw new Error("failed to save important-email alert settings");
+}
+
 export interface Tool {
   key: "teams" | "travel";
   label: string;
