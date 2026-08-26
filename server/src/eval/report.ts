@@ -9,18 +9,36 @@ export interface ConversationTurn {
   content: string;
 }
 
+export interface RepeatRun {
+  pass: boolean;
+  reasons: string[];
+  turns: ConversationTurn[];
+  durationMs?: number;
+}
+
 export interface ScenarioReport {
   fixtureId: string;
   variant: string;
   prompt: string;
   reply: string;
+  // Rigid, aggregate verdict: true only when every repeat passed (see repeats below). A
+  // scenario that passes on some repeats and fails on others is never reported as passing —
+  // it's reported as flaky instead, so a real regression can't hide behind a lucky run.
   pass: boolean;
+  // True when repeats disagree (some passed, some failed) — a distinct status from a
+  // consistent failure, since it needs a different response ("this is noisy, look closer")
+  // rather than "this definitely broke."
+  flaky: boolean;
   missingFacts: string[];
   deniedFacts: boolean;
   inventedIdentifiers: string[];
   reasons: string[];
   turns?: ConversationTurn[];
   durationMs?: number;
+  // One entry per repeat (EVAL_REPEAT, default 1). Always at least length 1 when set by the
+  // harness; optional here only so existing hand-built ScenarioReport objects (tests) don't
+  // need to supply it — buildHtmlReport falls back to the top-level turns/reply for those.
+  repeats?: RepeatRun[];
 }
 
 export interface RunHistoryEntry {
@@ -52,10 +70,18 @@ function cardId(fixtureId: string, variant: string): string {
   return `s-${slug(fixtureId)}-${slug(variant)}`;
 }
 
+function status(r: ScenarioReport): "pass" | "fail" | "flaky" {
+  return r.flaky ? "flaky" : r.pass ? "pass" : "fail";
+}
+
+const STATUS_SYMBOL: Record<string, string> = { pass: "✓", fail: "✗", flaky: "≈" };
+const STATUS_LABEL: Record<string, string> = { pass: "PASS", fail: "FAIL", flaky: "FLAKY" };
+
 export function buildHtmlReport(results: ScenarioReport[], meta?: RunMeta): string {
   const total = results.length;
-  const passed = results.filter((r) => r.pass).length;
-  const failed = total - passed;
+  const passed = results.filter((r) => status(r) === "pass").length;
+  const flakyCount = results.filter((r) => status(r) === "flaky").length;
+  const failed = total - passed - flakyCount;
   const passRate = total > 0 ? Math.round((passed / total) * 100) : 0;
 
   const fixtureIds = [...new Set(results.map((r) => r.fixtureId))];
@@ -64,9 +90,9 @@ export function buildHtmlReport(results: ScenarioReport[], meta?: RunMeta): stri
   const cell = (fixtureId: string, variant: string): string => {
     const match = results.find((r) => r.fixtureId === fixtureId && r.variant === variant);
     if (!match) return `<td class="cell empty">—</td>`;
-    const cls = match.pass ? "pass" : "fail";
-    const title = match.pass ? "passed" : escapeHtml(match.reasons.join("; ") || "failed");
-    return `<td class="cell ${cls}" title="${title}"><a href="#${cardId(fixtureId, variant)}">${match.pass ? "✓" : "✗"}</a></td>`;
+    const s = status(match);
+    const title = s === "pass" ? "passed" : escapeHtml(match.reasons.join("; ") || s);
+    return `<td class="cell ${s}" title="${title}"><a href="#${cardId(fixtureId, variant)}">${STATUS_SYMBOL[s]}</a></td>`;
   };
 
   const matrixRows = fixtureIds
@@ -79,32 +105,50 @@ export function buildHtmlReport(results: ScenarioReport[], meta?: RunMeta): stri
   const bubble = (turn: ConversationTurn): string =>
     `<div class="bubble ${turn.role}"><span class="role">${turn.role}</span>${escapeHtml(turn.content)}</div>`;
 
-  const transcript = (r: ScenarioReport): string => {
-    const turns: ConversationTurn[] = r.turns?.length
-      ? r.turns
-      : [
-          { role: "user", content: r.prompt },
-          { role: "assistant", content: r.reply },
-        ];
-    return `<div class="transcript">${turns.map(bubble).join("")}</div>`;
+  const turnsOrFallback = (r: ScenarioReport): ConversationTurn[] =>
+    r.turns?.length ? r.turns : [{ role: "user", content: r.prompt }, { role: "assistant", content: r.reply }];
+
+  // A scenario run only once (the common case, EVAL_REPEAT unset) shows one transcript inline,
+  // same as before. A repeated scenario shows every repeat as its own labeled, collapsible
+  // block — that per-repeat breakdown is the whole point of flaky detection: which runs failed
+  // and how, not just "sometimes it fails."
+  const body = (r: ScenarioReport): string => {
+    if (!r.repeats || r.repeats.length <= 1) {
+      return `<div class="transcript">${turnsOrFallback(r).map(bubble).join("")}</div>`;
+    }
+    return r.repeats
+      .map((run, i) => {
+        const runReasons = run.reasons.length
+          ? `<ul class="reasons">${run.reasons.map((reason) => `<li>${escapeHtml(reason)}</li>`).join("")}</ul>`
+          : "";
+        return `<details class="repeat" ${run.pass ? "" : "open"}>
+          <summary><span class="badge ${run.pass ? "pass" : "fail"}">${run.pass ? "PASS" : "FAIL"}</span> run ${i + 1} of ${r.repeats!.length}</summary>
+          ${runReasons}
+          <div class="transcript">${run.turns.map(bubble).join("")}</div>
+        </details>`;
+      })
+      .join("\n");
   };
 
   const cards = results
     .map((r) => {
-      const cls = r.pass ? "pass" : "fail";
+      const s = status(r);
       const reasonList = r.reasons.length
         ? `<ul class="reasons">${r.reasons.map((reason) => `<li>${escapeHtml(reason)}</li>`).join("")}</ul>`
         : `<p class="ok">No issues found.</p>`;
       const duration = r.durationMs != null ? `<span class="duration">${(r.durationMs / 1000).toFixed(1)}s</span>` : "";
-      return `<div class="card ${cls}" id="${cardId(r.fixtureId, r.variant)}" data-pass="${r.pass}">
+      const repeatCount = r.repeats && r.repeats.length > 1 ? `<span class="variant-tag">${r.repeats.length} runs</span>` : "";
+      return `<div class="card ${s}" id="${cardId(r.fixtureId, r.variant)}" data-status="${s}">
         <div class="card-head">
-          <span class="badge ${cls}">${r.pass ? "PASS" : "FAIL"}</span>
+          <span class="badge ${s}">${STATUS_LABEL[s]}</span>
           <strong>${escapeHtml(r.fixtureId)}</strong>
           <span class="variant-tag">${escapeHtml(r.variant)}</span>
+          ${repeatCount}
           ${duration}
         </div>
-        ${reasonList}
-        ${transcript(r)}
+        ${s === "flaky" ? `<p class="flaky-note">Inconsistent across repeats — not a confirmed failure, but worth a closer look.</p>` : ""}
+        ${s !== "pass" ? reasonList : ""}
+        ${body(r)}
       </div>`;
     })
     .join("\n");
@@ -150,25 +194,32 @@ export function buildHtmlReport(results: ScenarioReport[], meta?: RunMeta): stri
   .cell a { text-decoration: none; color: inherit; display: block; }
   .cell.pass { color: #2e9e5b; }
   .cell.fail { color: #d64545; background: color-mix(in srgb, #d64545 12%, transparent); }
+  .cell.flaky { color: #b8860b; background: color-mix(in srgb, #d9a52b 15%, transparent); }
   .cell.empty { color: color-mix(in srgb, CanvasText 40%, transparent); }
   .filters { display: flex; gap: 0.5rem; margin-bottom: 1rem; }
   .filter-btn { padding: 0.4rem 0.9rem; border-radius: 999px; border: 1px solid color-mix(in srgb, CanvasText 25%, transparent); background: transparent; color: CanvasText; cursor: pointer; font-size: 0.85rem; }
   .filter-btn.active { background: CanvasText; color: Canvas; }
   .card { border: 1px solid color-mix(in srgb, CanvasText 18%, transparent); border-radius: 10px; padding: 0.9rem 1.1rem; margin-bottom: 0.9rem; scroll-margin-top: 1rem; }
   .card.fail { background: color-mix(in srgb, #d64545 6%, transparent); border-color: color-mix(in srgb, #d64545 40%, transparent); }
+  .card.flaky { background: color-mix(in srgb, #d9a52b 8%, transparent); border-color: color-mix(in srgb, #d9a52b 45%, transparent); }
   .card-head { display: flex; align-items: center; gap: 0.6rem; margin-bottom: 0.5rem; }
   .badge { font-size: 0.7rem; font-weight: 700; letter-spacing: 0.04em; padding: 0.15rem 0.5rem; border-radius: 4px; }
   .badge.pass { background: #2e9e5b; color: white; }
   .badge.fail { background: #d64545; color: white; }
+  .badge.flaky { background: #b8860b; color: white; }
   .variant-tag { font-size: 0.8rem; color: color-mix(in srgb, CanvasText 55%, transparent); }
   .duration { margin-left: auto; font-size: 0.75rem; color: color-mix(in srgb, CanvasText 45%, transparent); }
   .reasons { margin: 0 0 0.6rem; padding-left: 1.1rem; color: #d64545; }
+  .flaky-note { margin: 0 0 0.6rem; color: #b8860b; font-size: 0.85rem; }
   .ok { margin: 0 0 0.6rem; color: color-mix(in srgb, CanvasText 55%, transparent); font-size: 0.85rem; }
   .transcript { display: flex; flex-direction: column; gap: 0.4rem; }
   .bubble { border-radius: 8px; padding: 0.5rem 0.7rem; font-size: 0.85rem; white-space: pre-wrap; max-width: 90%; }
   .bubble .role { display: block; font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.04em; opacity: 0.6; margin-bottom: 0.15rem; }
   .bubble.user { background: color-mix(in srgb, CanvasText 8%, transparent); align-self: flex-end; }
   .bubble.assistant { background: color-mix(in srgb, #2e6fd6 12%, transparent); align-self: flex-start; }
+  .repeat { border: 1px solid color-mix(in srgb, CanvasText 14%, transparent); border-radius: 8px; padding: 0.4rem 0.6rem; margin-bottom: 0.5rem; }
+  .repeat summary { cursor: pointer; font-size: 0.85rem; display: flex; align-items: center; gap: 0.5rem; }
+  .repeat .transcript { margin-top: 0.5rem; }
 </style>
 </head>
 <body>
@@ -178,6 +229,7 @@ ${runMetaLine}
   <div class="stat"><span class="n">${total}</span>scenarios</div>
   <div class="stat"><span class="n">${passed}</span>passed</div>
   <div class="stat"><span class="n">${failed}</span>failed</div>
+  ${flakyCount > 0 ? `<div class="stat"><span class="n">${flakyCount}</span>flaky</div>` : ""}
   <div class="stat">${passRate}% pass rate
     <div class="bar"><div class="bar-fill" style="width:${passRate}%"></div></div>
   </div>
@@ -195,6 +247,7 @@ ${historySection}
 <div class="filters">
   <button class="filter-btn active" data-filter="all">All (${total})</button>
   <button class="filter-btn" data-filter="fail">Failed (${failed})</button>
+  ${flakyCount > 0 ? `<button class="filter-btn" data-filter="flaky">Flaky (${flakyCount})</button>` : ""}
   <button class="filter-btn" data-filter="pass">Passed (${passed})</button>
 </div>
 ${cards}
@@ -206,8 +259,7 @@ document.querySelectorAll(".filter-btn").forEach(function (btn) {
     btn.classList.add("active");
     var f = btn.dataset.filter;
     document.querySelectorAll(".card").forEach(function (card) {
-      var isPass = card.dataset.pass === "true";
-      var show = f === "all" || (f === "pass" && isPass) || (f === "fail" && !isPass);
+      var show = f === "all" || card.dataset.status === f;
       card.style.display = show ? "" : "none";
     });
   });

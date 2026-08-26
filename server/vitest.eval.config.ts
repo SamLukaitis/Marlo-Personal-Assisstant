@@ -10,5 +10,11 @@ export default defineConfig({
     setupFiles: ["./src/test/setup.ts"],
     include: ["src/eval/*.eval.ts"],
     testTimeout: 60_000,
+    // Scenarios are network-bound (real Anthropic API calls), not CPU-bound, and independent of
+    // each other (grounding.eval.ts's describe.concurrent + per-owner fixture data keying makes
+    // this safe) — so running several at once cuts wall-clock time roughly proportionally
+    // without changing how many API calls happen. Keep this moderate: too high risks tripping
+    // Anthropic rate limits, which would show up as spurious scenario failures.
+    maxConcurrency: 6,
   },
 });

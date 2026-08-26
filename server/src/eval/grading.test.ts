@@ -90,6 +90,22 @@ describe("dateAppearsInReply", () => {
     expect(dateAppearsInReply("2026-09-05", "Sep 5, 9:00-9:30 AM — Dentist appointment")).toBe(true);
   });
 
+  it("matches the start date of a day range, e.g. '15-18 Jan 2027'", () => {
+    expect(dateAppearsInReply("2027-01-15", "Novotel Faro, reference XR8821, from 15–18 Jan 2027.")).toBe(true);
+  });
+
+  it("matches the end date of a day range too — it's an equally real date in the range", () => {
+    expect(dateAppearsInReply("2027-01-18", "Novotel Faro, reference XR8821, from 15–18 Jan 2027.")).toBe(true);
+  });
+
+  it("matches a day range with an ASCII hyphen and the month-first form", () => {
+    expect(dateAppearsInReply("2027-01-15", "your stay runs Jan 15-18, 2027")).toBe(true);
+  });
+
+  it("does not match a day that isn't in the range at all", () => {
+    expect(dateAppearsInReply("2027-01-20", "your stay runs 15–18 Jan 2027")).toBe(false);
+  });
+
   it("matches the informal 'Sept' abbreviation", () => {
     expect(dateAppearsInReply("2026-09-05", "Dentist appointment on Sept 5, 9:00-9:30am")).toBe(true);
   });

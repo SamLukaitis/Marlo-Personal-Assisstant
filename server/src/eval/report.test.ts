@@ -8,6 +8,7 @@ function scenario(overrides: Partial<ScenarioReport>): ScenarioReport {
     prompt: "Do I have a flight booked?",
     reply: "Yes, DL1234 on 2026-09-12.",
     pass: true,
+    flaky: false,
     missingFacts: [],
     deniedFacts: false,
     inventedIdentifiers: [],
@@ -96,5 +97,46 @@ describe("buildHtmlReport", () => {
   it("omits the history section when no history is passed", () => {
     const html = buildHtmlReport([scenario({})]);
     expect(html).not.toContain("Run history");
+  });
+
+  it("marks a flaky scenario distinctly from pass/fail, with its own filter button", () => {
+    const html = buildHtmlReport([
+      scenario({
+        pass: false,
+        flaky: true,
+        repeats: [
+          { pass: true, reasons: [], turns: [{ role: "user", content: "u1" }] },
+          { pass: false, reasons: ["missing expected fact(s): DL1234"], turns: [{ role: "user", content: "u2" }] },
+        ],
+      }),
+    ]);
+    expect(html).toContain("FLAKY");
+    expect(html).toContain('data-filter="flaky"');
+    expect(html).toContain('data-status="flaky"');
+  });
+
+  it("does not show a flaky filter button when nothing is flaky", () => {
+    const html = buildHtmlReport([scenario({ pass: true })]);
+    expect(html).not.toContain('data-filter="flaky"');
+  });
+
+  it("renders each repeat's own transcript when a scenario ran more than once", () => {
+    const html = buildHtmlReport([
+      scenario({
+        repeats: [
+          { pass: true, reasons: [], turns: [{ role: "user", content: "first run question" }] },
+          { pass: false, reasons: ["denied"], turns: [{ role: "user", content: "second run question" }] },
+        ],
+      }),
+    ]);
+    expect(html).toContain("first run question");
+    expect(html).toContain("second run question");
+    expect(html).toContain("run 1 of 2");
+    expect(html).toContain("run 2 of 2");
+  });
+
+  it("does not show a per-repeat breakdown for a single-run scenario", () => {
+    const html = buildHtmlReport([scenario({ repeats: [{ pass: true, reasons: [], turns: [] }] })]);
+    expect(html).not.toContain("run 1 of 1");
   });
 });

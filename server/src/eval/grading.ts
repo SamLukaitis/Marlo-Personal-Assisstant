@@ -93,10 +93,16 @@ for (const [name, num] of Object.entries(MONTH_NAMES)) {
   (MONTH_NUM_TO_NAMES[num] ??= []).push(name);
 }
 
+// Any of the dash characters a model might use in a date range ("15-18", "15–18", "15—18").
+const DASH = "[-–—]";
+
 // Checks whether one specific expected date is stated in the reply, tolerating the forms a model
 // actually writes in prose that extractDates' normalize-and-collect can't cover:
 //   - an ordinal suffix on the day ("October 3rd, 2026")
 //   - the year dropped entirely once it's already established in conversation ("Sep 5, 9:00 AM")
+//   - the day written as either end of a range ("15–18 Jan 2027", "Jan 15-18, 2027") — a
+//     check-in date is very often relayed alongside a check-out date this way, and both ends of
+//     a range are equally real dates, so either one can satisfy an expected date that matches it.
 // A year IS required to match if the reply states one — "September 5, 2027" must not satisfy
 // "2026-09-05" just because the month/day happen to line up.
 export function dateAppearsInReply(iso: string, reply: string): boolean {
@@ -109,8 +115,11 @@ export function dateAppearsInReply(iso: string, reply: string): boolean {
 
   const monthAlt = `(?:${names.join("|")})\\.?`;
   const dayAlt = `0?${day}`;
-  const monthDayRe = new RegExp(`\\b${monthAlt}\\s+${dayAlt}(?:st|nd|rd|th)?(?:,?\\s+(\\d{4}))?\\b`, "gi");
-  const dayMonthRe = new RegExp(`\\b${dayAlt}(?:st|nd|rd|th)?\\s+${monthAlt}(?:,?\\s+(\\d{4}))?\\b`, "gi");
+  // The target day, optionally preceded by "<other day>-" (it's the range's end) and/or
+  // followed by "-<other day>" (it's the range's start).
+  const dayInRange = `(?:\\d{1,2}\\s*${DASH}\\s*)?${dayAlt}(?:\\s*${DASH}\\s*\\d{1,2})?`;
+  const monthDayRe = new RegExp(`\\b${monthAlt}\\s+${dayInRange}(?:st|nd|rd|th)?(?:,?\\s+(\\d{4}))?\\b`, "gi");
+  const dayMonthRe = new RegExp(`\\b${dayInRange}(?:st|nd|rd|th)?\\s+${monthAlt}(?:,?\\s+(\\d{4}))?\\b`, "gi");
 
   for (const re of [monthDayRe, dayMonthRe]) {
     for (const m of reply.matchAll(re)) {
