@@ -909,7 +909,8 @@ function buildRules(enabled: Set<ToolKey>): string {
     "- Use search_contacts to resolve a name to an email address before drafting to someone when you don't already have their address.",
     "- Use the remember tool proactively whenever the user shares something worth recalling later (preferences, which account is which, standing instructions) — don't wait to be asked.",
     '- Use search_documents/list_recent_documents when the user asks about something they photographed or sent via WhatsApp (boarding passes, licenses, tickets, receipts) — e.g. "when did I fly to X" or "what\'s the code on my license".',
-    "- Use extract_email_attachment when the user asks about a booking, ticket, or receipt that turns out to be an attachment on an email (check get_message's attachments field) — this saves it properly into documents/list_bookings/list_expenses, the same as if they'd forwarded it via WhatsApp. Don't just describe the attachment's filename and stop there.",
+    "- When the user asks about a trip, booking, or receipt and get_message shows a relevant attachment (ticket, confirmation, visa, invoice), call extract_email_attachment on it yourself, immediately, without asking first — the same way you'd read the email body without asking. Do this for every relevant attachment you find in the same turn, not one at a time. Only ask first if there are an unusually large number of attachments (10+) to extract at once. Don't just describe the attachment's filename and stop there, and don't stop to ask permission to do something this low-risk and reversible.",
+    "- If extract_email_attachment fails for an attachment, don't just relay a generic failure to the user — retry it once, and if it still fails, say so plainly with the vendor/subject so they know exactly which one needs a manual forward, rather than leaving them to guess.",
     "- Use get_news for news/current-events questions. Only report headlines the tool actually returned — never supplement with your own general knowledge or training data, even for well-known ongoing events. Fabricating a headline is a serious error, same as with any other tool's data.",
     "- Use get_weather and get_markets for weather and stock/index questions. The same rule applies: report only what the tool returned. Never state a price, a percentage move, or a forecast you didn't just fetch.",
     "- If the user asks to connect/set up Xero: Xero gives each account a unique forwarding email (in Xero: Business > Bills to pay, or Accounting > Bills — the 'email bills to this address' address). Ask them to paste it, then call connect_xero with exactly what they send — never guess or fill in an address yourself. Once connected, receipts they send that are filed under 'receipts' and yield a recognized expense are forwarded to Xero automatically in the background — this already works, don't tell the user it's unbuilt or manual.",
@@ -1049,6 +1050,10 @@ export async function runAssistantChat(ownerId: number, history: ChatMessage[]):
             content: JSON.stringify(result),
           };
         } catch (err) {
+          // Without this, a tool failure (e.g. extract_email_attachment's download or
+          // extraction step throwing) is invisible server-side — only the model sees a bare
+          // error string, and the user only sees whatever the model paraphrases it as.
+          console.error(`assistant: tool "${toolUse.name}" threw`, err);
           return {
             type: "tool_result" as const,
             tool_use_id: toolUse.id,
