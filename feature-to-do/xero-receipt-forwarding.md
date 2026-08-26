@@ -63,38 +63,32 @@ switch. Here's what's actually involved, in plain terms:
    `feature-to-do/dev-whatsapp-number.md`). Do this once you're ready to point it at a real Xero
    trial/account.
 
-8. **Scan email for invoices, fully automatic. ✅ Done (2026-08-26, revised same day).** Sam
-   separately built two things this plugs into: an email attachment pipeline
-   (`ingestEmailAttachment` — download an attachment from an email and run it through the exact
-   same extract/validate/store path as a WhatsApp photo, so it already benefited from step 1-6's
-   Xero forwarding for free) and a proactive classifier that scans automated mail every 5 minutes
-   and flags one category as `invoice_due`.
+8. **Scan email for invoices, with a confirm step. ✅ Done (2026-08-26).** Sam separately built
+   two things this plugs into: an email attachment pipeline (`ingestEmailAttachment` — download an
+   attachment from an email and run it through the exact same extract/validate/store path as a
+   WhatsApp photo, so it already benefited from step 1-6's Xero forwarding for free) and a
+   proactive classifier that scans automated mail every 5 minutes and flags one category as
+   `invoice_due`.
 
-   **First built as notify-then-confirm** ("reply yes and I'll forward it to Xero"), matching
-   step 1's original design decision. **Revised same day, still 2026-08-26**, once Jake actually
-   used it: having to reply to each one was exactly the hand-holding he'd said from the start he
-   didn't want, so this is now **fully automatic** — same trust level as a WhatsApp receipt.
-   When `invoice_due` fires and Xero is connected and the email has either an attachment or real
-   body text, Marlowe extracts and forwards it immediately, no reply needed; the alert just gains
-   a line — *"Forwarding to Xero."* — and `forwardReceiptToXero`'s own existing success/failure
-   WhatsApp message (already built in step 1) confirms once it's actually done. **Plain-text
-   receipts (no attachment) covered too** — a subscription renewal or payment confirmation that's
-   just email text goes through a sibling path (`ingestEmailBodyReceipt`) that extracts the
-   vendor/amount from the body using the same validation as everything else; if it can't find a
-   real expense, it quietly does nothing rather than forwarding an empty document — there's no
-   human confirming first anymore, so a false-positive classification should fail closed, not
-   send junk to Xero.
+   Decision (2026-08-26, Jake): not full-auto — **notify + confirm**. When `invoice_due` fires and
+   Xero is connected and the email has either an attachment or real body text, the WhatsApp alert
+   gains a line: *"Reply 'yes' and I'll forward it to Xero."* Only on a reply does anything get
+   pulled in. **Plain-text receipts (no attachment) also covered** — a subscription renewal or
+   payment confirmation that's just email text, no PDF, goes through a sibling path
+   (`ingestEmailBodyReceipt`) that extracts the vendor/amount straight from the body, using the
+   same validation as everything else; if it can't find anything, it says so rather than
+   forwarding a document with nothing in it. What actually goes to Xero in that case is the email
+   body as a small `.txt` file, since there's no real file to reuse. Built
+   as: `server/src/services/xeroInvoiceConfirmation.ts` (a one-slot "what's pending" record, not a
+   queue — a second invoice_due email before you answer the first just doesn't get the offer, kept
+   deliberately simple rather than solved with a proper queue), a `respond_to_invoice_forward_prompt`
+   assistant tool that fires only when you're actually replying to that offer, and it never takes
+   the *which email/attachment* decision away from the alert that was already sent — the AI's only
+   judgment call is recognizing your yes/no, same narrow-judgment shape as `connect_xero`.
 
-   The confirm-step machinery (`xeroInvoiceConfirmation.ts`, the `respond_to_invoice_forward_prompt`
-   tool) was deleted outright rather than left dead, once it stopped being how this works.
-
-   **Open question, not yet verified: does the plain-text (`.txt` attachment) path actually
-   produce a usable bill in Xero?** Checked Xero's own documentation (2026-08-26): the standard
-   Email-to-Bills feature only scans attachments (PDF/JPG/PNG) — a plain email body is never read,
-   confirming body-only delivery would never have worked. What we send instead (a small `.txt`
-   *attachment* with the extracted text) has a real chance, since Xero's Hubdoc-powered capture
-   engine does list plain text among its supported formats — but whether Jake's specific
-   forwarding address actually routes through that engine is unconfirmed. **Don't treat this as
-   proven until a real plain-text receipt has been checked in Xero afterward** — if nothing usable
-   shows up, the honest fix is having Marlowe say plainly "no attachment on this one, you'll need
-   to enter it yourself" instead of silently sending something Xero can't read.
+   Known limitation, accepted rather than engineered around: since alerts aren't part of the
+   assistant's own conversation history, a "yes" is matched to the *most recent* pending offer
+   (max 24h old) purely from stored state — a coincidental "yes" to something unrelated within
+   that window could misfire. Judged low-stakes and worth accepting: same reasoning as
+   `document-deduplication.md` — worst case is one unwanted-but-real, recoverable forward to Xero,
+   not silent data loss, and not worth engineering around for something this rare.

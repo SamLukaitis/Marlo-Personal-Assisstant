@@ -31,7 +31,11 @@ import { findFreeSlots } from "../services/freeSlots.js";
 import { buildSpendingDigest } from "../services/spendingDigest.js";
 import { getBriefingSettings, saveBriefingSettings, hasBriefingSettings } from "../services/briefing.js";
 import { getXeroForwardingEmail, setXeroForwardingEmail } from "../services/xero.js";
-import { ingestEmailAttachment } from "../services/documents.js";
+import {
+  getPendingInvoiceForward,
+  clearPendingInvoiceForward,
+} from "../services/xeroInvoiceConfirmation.js";
+import { ingestEmailAttachment, ingestEmailBodyReceipt } from "../services/documents.js";
 import {
   hubListMessages,
   hubGetMessage,
@@ -525,6 +529,18 @@ const ALWAYS_ON_TOOLS: Anthropic.Tool[] = [
       required: ["forwarding_email"],
     },
   },
+  {
+    name: "respond_to_invoice_forward_prompt",
+    description:
+      "Call this when the user is replying to a 'looks like an invoice — reply yes and I'll forward it to Xero' prompt from a recent WhatsApp alert (check your context for a pending Xero invoice confirmation — only call this if one is actually present; if there's none pending, their message is about something else, so don't call this speculatively). Set confirm=true for an affirmative reply (yes, go ahead, please do, sure), confirm=false for a decline (no, skip, ignore, not now). You never choose which email or attachment this acts on — that was already fixed when the alert was sent.",
+    input_schema: {
+      type: "object",
+      properties: {
+        confirm: { type: "boolean" },
+      },
+      required: ["confirm"],
+    },
+  },
 ];
 
 const CONDITIONAL_TOOLS: Record<ToolKey, Anthropic.Tool[]> = {
@@ -789,6 +805,43 @@ export async function runTool(ownerId: number, name: string, input: Record<strin
         return { error: (err as Error).message };
       }
     }
+    case "respond_to_invoice_forward_prompt": {
+      const pending = getPendingInvoiceForward(ownerId);
+      if (!pending) return { error: "No pending invoice confirmation to respond to." };
+      clearPendingInvoiceForward(ownerId);
+      if (!input.confirm) return { ok: true, forwarded: false };
+
+      const message = await hubGetMessage(ownerId, pending.accountId, pending.messageId);
+      if (message?.attachments?.length) {
+        const results = await Promise.all(
+          message.attachments.map((_att, i) =>
+            ingestEmailAttachment({
+              ownerId,
+              accountId: pending.accountId,
+              messageId: pending.messageId,
+              attachmentIndex: i + 1,
+            })
+          )
+        );
+        return { ok: true, forwarded: true, attachmentsProcessed: results.length };
+      }
+
+      if (message?.body?.trim()) {
+        const result = await ingestEmailBodyReceipt({
+          ownerId,
+          accountId: pending.accountId,
+          messageId: pending.messageId,
+          subject: pending.subject,
+          bodyText: message.body,
+        });
+        if (!result.ok) {
+          return { error: "Looked at that email but couldn't find a clear amount/vendor to record — nothing was forwarded." };
+        }
+        return { ok: true, forwarded: true, attachmentsProcessed: 0 };
+      }
+
+      return { error: "Couldn't find that email anymore — it may have been deleted or moved." };
+    }
     case "list_expenses":
       return listEntities<ExpenseData>(ownerId, { type: "expense" })
         .slice(0, (input.limit as number | undefined) ?? 50)
@@ -908,7 +961,7 @@ function buildRules(enabled: Set<ToolKey>): string {
     "- Use get_news for news/current-events questions. Only report headlines the tool actually returned — never supplement with your own general knowledge or training data, even for well-known ongoing events. Fabricating a headline is a serious error, same as with any other tool's data.",
     "- Use get_weather and get_markets for weather and stock/index questions. The same rule applies: report only what the tool returned. Never state a price, a percentage move, or a forecast you didn't just fetch.",
     "- If the user asks to connect/set up Xero: Xero gives each account a unique forwarding email (in Xero: Business > Bills to pay, or Accounting > Bills — the 'email bills to this address' address). Ask them to paste it, then call connect_xero with exactly what they send — never guess or fill in an address yourself. Once connected, receipts they send that are filed under 'receipts' and yield a recognized expense are forwarded to Xero automatically in the background — this already works, don't tell the user it's unbuilt or manual.",
-    "- There are TWO separate paths to Xero, both fully automatic, no confirmation needed: (1) a WhatsApp photo/PDF filed as a receipt forwards automatically. (2) Email is scanned periodically (every few minutes) for invoice-looking automated mail — when it flags one, the attachment (or, if there's no attachment, the email body text) is extracted and forwarded automatically too, with its own WhatsApp confirmation once it's actually sent. If the user asks about a specific email invoice that hasn't been auto-forwarded yet, that just means the periodic scan hasn't run/matched it yet — never claim this feature only works for WhatsApp. Offer to call extract_email_attachment on it directly instead, which triggers the same automatic Xero forwarding immediately.",
+    "- There are TWO separate paths to Xero, both already built: (1) a WhatsApp photo/PDF filed as a receipt forwards automatically, no confirmation needed. (2) Email is scanned periodically (every few minutes) for invoice-looking automated mail; ONLY when that scan actually flags one do you get a pending confirmation to offer 'reply yes to forward' (see below) — the scan hasn't necessarily run yet or matched a given email, so no pending confirmation does NOT mean email invoices are unsupported. If the user asks about a specific email invoice with nothing pending, never claim this feature only works for WhatsApp — instead offer to call extract_email_attachment on it directly, which also triggers the same automatic Xero forwarding once it's saved as a receipt with a real expense, just without the alert/confirm step.",
   ];
   const travel = [
     "- Use list_travel_checkins for questions about where the user has physically been or when they arrived somewhere — this is automatic location history, separate from documents.",
@@ -958,6 +1011,11 @@ export function buildSystemPrompt(ownerId: number): string {
     ? `Xero forwarding address on file: ${xeroEmail}. Receipts filed under 'receipts' that yield a recognized expense are already being forwarded there automatically (via connected Gmail) — this is live, not a future feature.`
     : "Xero: not connected — no forwarding address saved yet.";
 
+  const pendingInvoice = getPendingInvoiceForward(ownerId);
+  const pendingInvoiceStatus = pendingInvoice
+    ? `Pending Xero invoice confirmation: a WhatsApp alert about "${pendingInvoice.subject}" asked the user to reply "yes" to forward it to Xero. If their latest message is answering that (yes/no/go ahead/skip), call respond_to_invoice_forward_prompt with confirm accordingly. If it's about something else, ignore this.`
+    : "";
+
   // This user has never saved briefing settings — they're mid-onboarding (just connected their
   // account via WhatsApp). Settle briefing content first, then pivot to the open-ended tools
   // question in the same reply, so it reads as one continuous conversation rather than two
@@ -982,6 +1040,7 @@ export function buildSystemPrompt(ownerId: number): string {
       `attention would — without forcing it or repeating something you've already brought up ` +
       `this conversation:\n${memoryList}`,
     xeroStatus,
+    pendingInvoiceStatus,
     onboardingNote,
     buildRules(getEnabledTools(ownerId)),
   ]

@@ -11,7 +11,7 @@ import { isWhatsAppConfigured } from "../providers/whatsapp.js";
 import { sendProactiveMessage } from "./outbound.js";
 import { classifyImportantEmails, CATEGORY_INFO, type ImportantEmailCategory } from "./importantEmailClassifier.js";
 import { getXeroForwardingEmail } from "./xero.js";
-import { ingestEmailAttachment, ingestEmailBodyReceipt } from "./documents.js";
+import { setPendingInvoiceForward } from "./xeroInvoiceConfirmation.js";
 import type { UnifiedMessage } from "../providers/types.js";
 
 const MAX_ALERTS_PER_CHECK = 5;
@@ -101,37 +101,32 @@ export async function checkForImportantEmails(ownerId: number): Promise<void> {
   if (matches.length === 0) return;
 
   const toSend = matches.slice(0, MAX_ALERTS_PER_CHECK);
+  // At most one invoice_due match per tick gets the "reply yes" offer — there's only one pending
+  // confirmation slot per owner (see xeroInvoiceConfirmation.ts), by design, not an oversight.
+  let offeredInvoiceConfirm = false;
   for (const { m, category } of toSend) {
     let text = formatImportantEmailAlert(m, category);
+    let confirmable: { accountId: number; messageId: string; subject: string } | null = null;
 
-    // Fully automatic, no confirmation step (Jake, 2026-08-26 — matches how a WhatsApp receipt
-    // already forwards without being asked). forwardReceiptToXero (inside ingestEmailAttachment/
-    // ingestEmailBodyReceipt's shared save path) sends its own separate WhatsApp follow-up once
-    // the forward actually completes or fails, so nothing more is needed here than kicking it
-    // off and letting the user know it's happening.
-    if (category === "invoice_due" && getXeroForwardingEmail(ownerId)) {
+    if (category === "invoice_due" && !offeredInvoiceConfirm && getXeroForwardingEmail(ownerId)) {
       const full = await hubGetMessage(ownerId, m.accountId, m.id).catch(() => null);
-      if (full?.attachments?.length) {
-        text += `\n\nForwarding to Xero.`;
-        void Promise.all(
-          full.attachments.map((_att, i) =>
-            ingestEmailAttachment({ ownerId, accountId: m.accountId, messageId: m.id, attachmentIndex: i + 1 })
-          )
-        ).catch((err) => console.error("importantEmailAlerts: attachment forward failed", err));
-      } else if (full?.body?.trim()) {
-        text += `\n\nForwarding to Xero.`;
-        void ingestEmailBodyReceipt({
-          ownerId,
-          accountId: m.accountId,
-          messageId: m.id,
-          subject: m.subject,
-          bodyText: full.body,
-        }).catch((err) => console.error("importantEmailAlerts: body forward failed", err));
+      // An attachment or a real body is enough to offer — respond_to_invoice_forward_prompt
+      // handles both (ingestEmailAttachment for the former, ingestEmailBodyReceipt for a
+      // plain-text receipt with no attachment, e.g. a subscription renewal notice).
+      if (full?.attachments?.length || full?.body?.trim()) {
+        confirmable = { accountId: m.accountId, messageId: m.id, subject: m.subject };
+        text += `\n\nReply "yes" and I'll forward it to Xero.`;
       }
     }
 
     const delivered = await notifyAll(numbers, text);
-    if (delivered) markAlerted(ownerId, messageKey(m));
+    if (delivered) {
+      markAlerted(ownerId, messageKey(m));
+      if (confirmable) {
+        setPendingInvoiceForward(ownerId, confirmable);
+        offeredInvoiceConfirm = true;
+      }
+    }
   }
 
   const rest = matches.slice(MAX_ALERTS_PER_CHECK);
