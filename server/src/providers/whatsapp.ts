@@ -57,6 +57,34 @@ export async function sendWhatsAppMessage(to: string, text: string): Promise<voi
   }
 }
 
+// Marks the incoming message read and shows WhatsApp's native "..." typing indicator to the
+// user — Meta shows it for up to 25 seconds or until we actually reply, whichever comes first.
+// Best-effort by design (callers fire-and-forget this): a full assistant turn with tool calls
+// can take several seconds, and without this the user has no sign anything is happening.
+export async function sendWhatsAppTypingIndicator(messageId: string): Promise<void> {
+  const phoneNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID;
+  const token = process.env.WHATSAPP_TOKEN;
+  const res = await fetch(
+    `https://graph.facebook.com/${GRAPH_VERSION}/${phoneNumberId}/messages`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        messaging_product: "whatsapp",
+        status: "read",
+        message_id: messageId,
+        typing_indicator: { type: "text" },
+      }),
+    }
+  );
+  if (!res.ok) {
+    throw new Error(`WhatsApp typing indicator failed (${res.status}): ${await res.text()}`);
+  }
+}
+
 export interface IncomingTextMessage {
   kind: "text";
   from: string;

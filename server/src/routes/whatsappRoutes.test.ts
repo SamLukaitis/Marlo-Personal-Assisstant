@@ -2,6 +2,9 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 
 vi.mock("../providers/whatsapp.js", () => ({
   sendWhatsAppMessage: vi.fn(),
+  // Resolves by default (rather than plain vi.fn(), which returns undefined) — handleIncoming
+  // calls .catch() on this fire-and-forget call, which throws on a non-promise return value.
+  sendWhatsAppTypingIndicator: vi.fn().mockResolvedValue(undefined),
   isWhatsAppConfigured: vi.fn(),
   isWhatsAppSignatureConfigured: vi.fn(),
   verifyWebhookChallenge: vi.fn(),
