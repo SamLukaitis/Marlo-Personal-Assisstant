@@ -11,6 +11,7 @@ import { sendWhatsAppMessage, isWhatsAppConfigured } from "../providers/whatsapp
 import { countTravelDays } from "./travelDays.js";
 import { checkForNewImportantMessages } from "./alerts.js";
 import { checkNewEmailsAgainstRecentDocuments } from "./reconciliation.js";
+import { checkDueMemoryReminders } from "./memoryReminders.js";
 
 const CHECK_INTERVAL_MS = 5 * 60 * 1000;
 const SCHENGEN_WARN_AT = 80;
@@ -91,6 +92,14 @@ async function runAlertsCheckForUser(ownerId: number): Promise<void> {
   }
 }
 
+async function runMemoryReminderCheckForUser(ownerId: number): Promise<void> {
+  try {
+    await checkDueMemoryReminders(ownerId);
+  } catch (err) {
+    console.error(`scheduler: memory reminder check failed for user ${ownerId}`, err);
+  }
+}
+
 async function runReconciliationCheckForUser(ownerId: number): Promise<void> {
   try {
     await checkNewEmailsAgainstRecentDocuments(ownerId);
@@ -109,6 +118,9 @@ async function tick(): Promise<void> {
     );
     await runAlertsCheckForUser(ownerId).catch((err) =>
       console.error(`scheduler: alerts check failed for user ${ownerId}`, err)
+    );
+    await runMemoryReminderCheckForUser(ownerId).catch((err) =>
+      console.error(`scheduler: memory reminder check failed for user ${ownerId}`, err)
     );
     await runReconciliationCheckForUser(ownerId).catch((err) =>
       console.error(`scheduler: reconciliation check failed for user ${ownerId}`, err)

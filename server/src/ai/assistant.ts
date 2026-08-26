@@ -357,6 +357,15 @@ const ALWAYS_ON_TOOLS: Anthropic.Tool[] = [
       type: "object",
       properties: {
         note: { type: "string", description: "One clear sentence to remember" },
+        triggerAt: {
+          type: "string",
+          description:
+            "Optional ISO 8601 date/datetime. Set this only if what the user shared has a natural " +
+            "future trigger point — a deadline, a recurring commitment, a stated future plan. Leave " +
+            "unset for ordinary facts or preferences with no time dimension. Setting this will send " +
+            "the user a WhatsApp message at that time, so only set it when they'd genuinely want to " +
+            "be reminded — and mention to them that you've set a reminder.",
+        },
       },
       required: ["note"],
     },
@@ -655,7 +664,7 @@ export async function runTool(ownerId: number, name: string, input: Record<strin
       await hubAddLabel(ownerId, input.account_id as number, input.message_id as string, input.label as string);
       return { ok: true };
     case "remember":
-      addMemoryNote(ownerId, input.note as string);
+      addMemoryNote(ownerId, input.note as string, input.triggerAt as string | undefined);
       return { ok: true };
     case "list_needs_attention":
       return hubFlaggedMessages(ownerId);
@@ -859,7 +868,18 @@ export function buildSystemPrompt(ownerId: number): string {
 
   const memories = listRecentMemoryNotes(ownerId).reverse();
   const memoryList = memories.length
-    ? memories.map((m) => `- ${m.content}`).join("\n")
+    ? memories
+        .map(
+          (m) =>
+            `- ${m.content}${
+              m.triggerAt
+                ? ` (reminder set for ${new Date(m.triggerAt).toDateString()}${
+                    m.lastSurfacedAt ? ", already sent" : ""
+                  })`
+                : ""
+            }`
+        )
+        .join("\n")
     : "(nothing remembered yet)";
 
   const xeroEmail = getXeroForwardingEmail(ownerId);
@@ -886,7 +906,10 @@ export function buildSystemPrompt(ownerId: number): string {
     persona ? `The user described how they want you to behave:\n${persona}` : "",
     `Connected accounts:\n${accountList}`,
     `Local computer folders searchable by file name:\n${folderList}`,
-    `Things you've learned about the user over past conversations:\n${memoryList}`,
+    `Things you remember about the user. You may naturally bring up one of these when it's ` +
+      `genuinely relevant to what's being discussed — the way someone who was actually paying ` +
+      `attention would — without forcing it or repeating something you've already brought up ` +
+      `this conversation:\n${memoryList}`,
     xeroStatus,
     onboardingNote,
     buildRules(getEnabledTools(ownerId)),

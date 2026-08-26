@@ -1,6 +1,13 @@
 import { describe, it, expect } from "vitest";
 import { buildToolsForOwner, buildSystemPrompt, runTool } from "./assistant.js";
-import { findOrCreateUserByEmail, setToolEnabled, getEnabledTools } from "../db/store.js";
+import {
+  findOrCreateUserByEmail,
+  setToolEnabled,
+  getEnabledTools,
+  listMemoryNotes,
+  addMemoryNote,
+  markMemorySurfaced,
+} from "../db/store.js";
 import { getBriefingSettings, saveBriefingSettings, type BriefingSettings } from "../services/briefing.js";
 import { getXeroForwardingEmail } from "../services/xero.js";
 
@@ -121,6 +128,41 @@ describe("buildSystemPrompt", () => {
     const prompt = buildSystemPrompt(user.id);
     expect(prompt).toContain("count_travel_days");
   });
+
+  it("frames memory as something the assistant may proactively volunteer", () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("prompt-proactive-memory"));
+    const prompt = buildSystemPrompt(user.id);
+    expect(prompt).toContain("may naturally bring up");
+    expect(prompt).not.toContain("Things you've learned about the user over past conversations");
+  });
+
+  it("annotates a memory note that has an armed (not-yet-sent) trigger", () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("prompt-memory-armed"));
+    addMemoryNote(user.id, "Visa renewal is due", "2026-09-12T00:00:00Z");
+    const prompt = buildSystemPrompt(user.id);
+    expect(prompt).toContain("Visa renewal is due");
+    expect(prompt).toContain("reminder set for");
+    expect(prompt).not.toContain("already sent");
+  });
+
+  it("annotates a memory note whose trigger already fired as already sent", () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("prompt-memory-sent"));
+    const past = new Date(Date.now() - 60_000).toISOString();
+    const note = addMemoryNote(user.id, "Overdue reminder", past);
+    markMemorySurfaced(user.id, note.id);
+    const prompt = buildSystemPrompt(user.id);
+    expect(prompt).toContain("Overdue reminder");
+    expect(prompt).toContain("reminder set for");
+    expect(prompt).toContain("already sent");
+  });
+
+  it("renders an ordinary note with no triggerAt as a plain line with no annotation", () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("prompt-memory-plain"));
+    addMemoryNote(user.id, "The Acme account is my priority business");
+    const prompt = buildSystemPrompt(user.id);
+    expect(prompt).toContain("- The Acme account is my priority business");
+    expect(prompt).not.toContain("reminder set for");
+  });
 });
 
 describe("runTool defense-in-depth", () => {
@@ -238,6 +280,30 @@ describe("buildSystemPrompt Xero status", () => {
     const user = findOrCreateUserByEmail(uniqueEmail("prompt-xero-on"));
     await runTool(user.id, "connect_xero", { forwarding_email: "xyz789@bills.xero.com" });
     expect(buildSystemPrompt(user.id)).toContain("xyz789@bills.xero.com");
+  });
+});
+
+describe("remember tool — triggerAt", () => {
+  it("stores a parsed triggerAt when the model provides one", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("remember-trigger"));
+    const result = await runTool(user.id, "remember", {
+      note: "Visa renewal is due",
+      triggerAt: "2026-09-12T00:00:00Z",
+    });
+    expect(result).toEqual({ ok: true });
+
+    const [saved] = listMemoryNotes(user.id);
+    expect(saved.content).toBe("Visa renewal is due");
+    expect(saved.triggerAt).toBe(new Date("2026-09-12T00:00:00Z").getTime());
+  });
+
+  it("stores no trigger when the model omits triggerAt, same as before", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("remember-notrigger"));
+    const result = await runTool(user.id, "remember", { note: "Ordinary preference" });
+    expect(result).toEqual({ ok: true });
+
+    const [saved] = listMemoryNotes(user.id);
+    expect(saved.triggerAt).toBeNull();
   });
 });
 
