@@ -18,6 +18,8 @@ import {
   saveWhatsAppAllowedNumbers,
   fetchAlertSettings,
   saveAlertSettings,
+  fetchImportantEmailAlertSettings,
+  saveImportantEmailAlertSettings,
   fetchInvites,
   addInvite,
   removeInvite,
@@ -30,6 +32,7 @@ import {
   type MemoryNote,
   type WhatsAppStatus,
   type AlertSettings,
+  type ImportantEmailAlertSettings,
   type InvitedEmail,
 } from "../api/client";
 import { IconTrash, IconPlus } from "../components/icons";
@@ -84,6 +87,10 @@ export function SettingsPage() {
   const [numbersSaved, setNumbersSaved] = useState(false);
   const [alertSettings, setAlertSettings] = useState<AlertSettings>({ enabled: false });
   const [alertSaved, setAlertSaved] = useState(false);
+  const [importantEmailSettings, setImportantEmailSettings] = useState<ImportantEmailAlertSettings>({
+    enabled: true,
+  });
+  const [importantEmailSaved, setImportantEmailSaved] = useState(false);
   const [invites, setInvites] = useState<InvitedEmail[]>([]);
   const [newInvite, setNewInvite] = useState("");
   const [inviteError, setInviteError] = useState<string | null>(null);
@@ -114,7 +121,7 @@ export function SettingsPage() {
   }
 
   async function load() {
-    const [p, a, f, b, m, ws, nums, al] = await Promise.all([
+    const [p, a, f, b, m, ws, nums, al, iel] = await Promise.all([
       fetchProviders(),
       fetchAccounts(),
       fetchLocalFolders(),
@@ -123,6 +130,7 @@ export function SettingsPage() {
       fetchWhatsAppStatus(),
       fetchWhatsAppAllowedNumbers(),
       fetchAlertSettings(),
+      fetchImportantEmailAlertSettings(),
     ]);
     setProviders(p);
     setAccounts(a);
@@ -132,6 +140,7 @@ export function SettingsPage() {
     setWhatsAppStatus(ws);
     setAllowedNumbers(nums);
     setAlertSettings(al);
+    setImportantEmailSettings(iel);
   }
 
   useEffect(() => {
@@ -184,6 +193,14 @@ export function SettingsPage() {
     await saveAlertSettings(next);
     setAlertSaved(true);
     setTimeout(() => setAlertSaved(false), 2500);
+  }
+
+  async function handleToggleImportantEmailAlerts(enabled: boolean) {
+    const next = { enabled };
+    setImportantEmailSettings(next);
+    await saveImportantEmailAlertSettings(next);
+    setImportantEmailSaved(true);
+    setTimeout(() => setImportantEmailSaved(false), 2500);
   }
 
   async function handleAddInvite(e: React.FormEvent) {
@@ -564,6 +581,26 @@ export function SettingsPage() {
                     </span>
                   </label>
                   {alertSaved && <span className="saved-note">Saved</span>}
+                </div>
+
+                <div className="card card-padded" style={{ marginBottom: 20 }}>
+                  <label className="check-row">
+                    <input
+                      type="checkbox"
+                      checked={importantEmailSettings.enabled}
+                      onChange={(e) => handleToggleImportantEmailAlerts(e.target.checked)}
+                    />
+                    <span>
+                      <span className="check-row-title">Flag important automated mail</span>
+                      <span className="check-row-desc">
+                        Flight changes, invoices, government mail, deliveries, security alerts,
+                        subscription renewals, and refund updates — even from automated senders.
+                        On by default; starts from the moment this ships, so your existing unread
+                        mail won't set it off.
+                      </span>
+                    </span>
+                  </label>
+                  {importantEmailSaved && <span className="saved-note">Saved</span>}
                 </div>
               </>
             )}

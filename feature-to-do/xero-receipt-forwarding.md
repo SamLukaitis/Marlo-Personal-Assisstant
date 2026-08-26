@@ -63,13 +63,26 @@ switch. Here's what's actually involved, in plain terms:
    `feature-to-do/dev-whatsapp-number.md`). Do this once you're ready to point it at a real Xero
    trial/account.
 
-8. **Later: scan email for invoices automatically, no forwarding needed from you.** Right now
-   Marlowe only picks up a receipt when you send it a photo/PDF via WhatsApp. The next step up:
-   Marlowe watches your inbox itself, spots emails that are clearly an invoice or receipt (e.g.
-   "Your Uber receipt", "Invoice from X"), pulls them in the same way as a WhatsApp receipt, and
-   sends them on to Xero — all without you having to forward or upload anything yourself.
+8. **Scan email for invoices, with a confirm step. ✅ Done (2026-08-26).** Sam separately built
+   two things this plugs into: an email attachment pipeline (`ingestEmailAttachment` — download an
+   attachment from an email and run it through the exact same extract/validate/store path as a
+   WhatsApp photo, so it already benefited from step 1-6's Xero forwarding for free) and a
+   proactive classifier that scans automated mail every 5 minutes and flags one category as
+   `invoice_due`.
 
-   Needs the same "only ever does the one narrow thing" discipline as step 1: reading the inbox to
-   *spot* invoices is broader access than sending is, so when this gets picked up, decide up front
-   exactly what Marlowe is allowed to do with what it reads (e.g. it may flag/forward things that
-   look like invoices, but should never be given a general "act on anything in this inbox" tool).
+   Decision (2026-08-26, Jake): not full-auto — **notify + confirm**. When `invoice_due` fires and
+   Xero is connected and the email actually has an attachment, the WhatsApp alert gains a line:
+   *"Reply 'yes' and I'll forward it to Xero."* Only on a reply does anything get pulled in. Built
+   as: `server/src/services/xeroInvoiceConfirmation.ts` (a one-slot "what's pending" record, not a
+   queue — a second invoice_due email before you answer the first just doesn't get the offer, kept
+   deliberately simple rather than solved with a proper queue), a `respond_to_invoice_forward_prompt`
+   assistant tool that fires only when you're actually replying to that offer, and it never takes
+   the *which email/attachment* decision away from the alert that was already sent — the AI's only
+   judgment call is recognizing your yes/no, same narrow-judgment shape as `connect_xero`.
+
+   Known limitation, accepted rather than engineered around: since alerts aren't part of the
+   assistant's own conversation history, a "yes" is matched to the *most recent* pending offer
+   (max 24h old) purely from stored state — a coincidental "yes" to something unrelated within
+   that window could misfire. Judged low-stakes and worth accepting: same reasoning as
+   `document-deduplication.md` — worst case is one unwanted-but-real, recoverable forward to Xero,
+   not silent data loss, and not worth engineering around for something this rare.
