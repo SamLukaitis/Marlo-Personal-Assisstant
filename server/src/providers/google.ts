@@ -222,11 +222,24 @@ export async function googleGetAttachment(
 ): Promise<{ data: Buffer; mimeType: string; filename: string } | null> {
   const gmail = google.gmail({ version: "v1", auth: authFor(account) });
   const message = await gmail.users.messages.get({ userId: "me", id: messageId, format: "full" });
-  const meta = extractAttachmentMetas(message.data.payload).find((a) => a.id === attachmentId);
-  if (!meta) return null;
+  const metas = extractAttachmentMetas(message.data.payload);
+  const meta = metas.find((a) => a.id === attachmentId);
+  if (!meta) {
+    console.error(
+      `google: attachment id ${attachmentId} not found on message ${messageId} — known ids: ` +
+        JSON.stringify(metas.map((m) => ({ id: m.id, filename: m.filename })))
+    );
+    return null;
+  }
 
   const res = await gmail.users.messages.attachments.get({ userId: "me", messageId, id: attachmentId });
-  if (!res.data.data) return null;
+  if (!res.data.data) {
+    console.error(
+      `google: attachments.get returned no data for ${meta.filename} (message ${messageId}, ` +
+        `attachment ${attachmentId}, reported size ${meta.size})`
+    );
+    return null;
+  }
   return { data: Buffer.from(res.data.data, "base64url"), mimeType: meta.mimeType, filename: meta.filename };
 }
 
