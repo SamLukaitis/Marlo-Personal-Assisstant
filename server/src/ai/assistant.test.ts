@@ -305,6 +305,19 @@ describe("buildSystemPrompt Xero status", () => {
     await runTool(user.id, "connect_xero", { forwarding_email: "xyz789@bills.xero.com" });
     expect(buildSystemPrompt(user.id)).toContain("xyz789@bills.xero.com");
   });
+
+  it("always describes both the WhatsApp and email paths, even with nothing pending", () => {
+    // Regression test: with no pending confirmation, the model previously had zero standing
+    // knowledge that email scanning exists at all (only the WhatsApp rule was permanent), and
+    // told a user asking about an email invoice that Xero forwarding "only fires for receipts
+    // sent via WhatsApp" — a hallucinated capability boundary born from the information gap,
+    // not the model just guessing badly. This must hold with no pending invoice confirmation.
+    const user = findOrCreateUserByEmail(uniqueEmail("prompt-xero-two-paths"));
+    const prompt = buildSystemPrompt(user.id);
+    expect(prompt).toContain("TWO separate paths to Xero");
+    expect(prompt).toContain("does NOT mean email invoices are unsupported");
+    expect(prompt).not.toContain("Pending Xero invoice confirmation");
+  });
 });
 
 describe("remember tool — triggerAt", () => {
