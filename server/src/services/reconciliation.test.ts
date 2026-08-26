@@ -1,18 +1,23 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { type MatchKeys, RECONCILIATION_SCAN_LIMIT } from "./reconciliation.js";
 
-vi.mock("../providers/whatsapp.js", () => ({
-  sendWhatsAppMessage: vi.fn(),
-  isWhatsAppConfigured: vi.fn().mockReturnValue(true),
-}));
+vi.mock("../providers/whatsapp.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../providers/whatsapp.js")>();
+  return {
+    ...actual, // keeps the real WhatsAppSendError class — outbound.ts's `instanceof` check needs it
+    sendWhatsAppMessage: vi.fn(),
+    sendWhatsAppTemplate: vi.fn(),
+    isWhatsAppConfigured: vi.fn().mockReturnValue(true),
+  };
+});
 
 const mockHubListMessages = vi.fn();
 vi.mock("./hub.js", () => ({
   hubListMessages: (...args: unknown[]) => mockHubListMessages(...args),
 }));
 
-const { sendWhatsAppMessage, isWhatsAppConfigured } = await import("../providers/whatsapp.js");
-const { findOrCreateUserByEmail, saveDocument, addPhoneNumberForUser, hasAlerted, saveMatchKeys } =
+const { sendWhatsAppMessage, sendWhatsAppTemplate, isWhatsAppConfigured } = await import("../providers/whatsapp.js");
+const { findOrCreateUserByEmail, saveDocument, addPhoneNumberForUser, recordInboundMessage, hasAlerted, saveMatchKeys } =
   await import("../db/store.js");
 const { matchTier, buildMatchNotification, checkDocumentAgainstRecentEmails, checkNewEmailsAgainstRecentDocuments } =
   await import("./reconciliation.js");
@@ -49,6 +54,7 @@ function fakeMessage(overrides: Partial<{ id: string; accountId: number; subject
 
 beforeEach(() => {
   vi.mocked(sendWhatsAppMessage).mockReset();
+  vi.mocked(sendWhatsAppTemplate).mockReset();
   vi.mocked(isWhatsAppConfigured).mockReset().mockReturnValue(true);
   mockHubListMessages.mockReset();
 });
@@ -58,6 +64,7 @@ describe("checkDocumentAgainstRecentEmails", () => {
     const user = findOrCreateUserByEmail(uniqueEmail("doc-to-email"));
     const phoneNumber = freshPhone();
     addPhoneNumberForUser(user.id, phoneNumber);
+    recordInboundMessage(phoneNumber);
     const doc = saveDocument(user.id, {
       phone: phoneNumber,
       filename: null,
@@ -84,6 +91,7 @@ describe("checkDocumentAgainstRecentEmails", () => {
     const user = findOrCreateUserByEmail(uniqueEmail("doc-to-email-nomatch"));
     const phoneNumber = freshPhone();
     addPhoneNumberForUser(user.id, phoneNumber);
+    recordInboundMessage(phoneNumber);
     const doc = saveDocument(user.id, {
       phone: phoneNumber,
       filename: null,
@@ -105,6 +113,7 @@ describe("checkDocumentAgainstRecentEmails", () => {
     const user = findOrCreateUserByEmail(uniqueEmail("doc-to-email-delivery-fail"));
     const phoneNumber = freshPhone();
     addPhoneNumberForUser(user.id, phoneNumber);
+    recordInboundMessage(phoneNumber);
     const doc = saveDocument(user.id, {
       phone: phoneNumber,
       filename: null,
@@ -128,6 +137,7 @@ describe("checkDocumentAgainstRecentEmails", () => {
     const user = findOrCreateUserByEmail(uniqueEmail("doc-to-email-not-configured"));
     const phoneNumber = freshPhone();
     addPhoneNumberForUser(user.id, phoneNumber);
+    recordInboundMessage(phoneNumber);
     const doc = saveDocument(user.id, {
       phone: phoneNumber,
       filename: null,
@@ -152,6 +162,7 @@ describe("checkDocumentAgainstRecentEmails", () => {
     const user = findOrCreateUserByEmail(uniqueEmail("doc-to-email-dedup"));
     const phoneNumber = freshPhone();
     addPhoneNumberForUser(user.id, phoneNumber);
+    recordInboundMessage(phoneNumber);
     const doc = saveDocument(user.id, {
       phone: phoneNumber,
       filename: null,
@@ -195,6 +206,7 @@ describe("checkNewEmailsAgainstRecentDocuments", () => {
     const user = findOrCreateUserByEmail(uniqueEmail("email-to-doc"));
     const phoneNumber = freshPhone();
     addPhoneNumberForUser(user.id, phoneNumber);
+    recordInboundMessage(phoneNumber);
     const doc = saveDocument(user.id, {
       phone: phoneNumber,
       filename: null,
@@ -220,6 +232,7 @@ describe("checkNewEmailsAgainstRecentDocuments", () => {
     const user = findOrCreateUserByEmail(uniqueEmail("email-to-doc-scan-once"));
     const phoneNumber = freshPhone();
     addPhoneNumberForUser(user.id, phoneNumber);
+    recordInboundMessage(phoneNumber);
     const doc = saveDocument(user.id, {
       phone: phoneNumber,
       filename: null,
@@ -257,6 +270,7 @@ describe("checkNewEmailsAgainstRecentDocuments", () => {
     const user = findOrCreateUserByEmail(uniqueEmail("email-to-doc-dedup"));
     const phoneNumber = freshPhone();
     addPhoneNumberForUser(user.id, phoneNumber);
+    recordInboundMessage(phoneNumber);
     const doc = saveDocument(user.id, {
       phone: phoneNumber,
       filename: null,
@@ -281,6 +295,7 @@ describe("checkNewEmailsAgainstRecentDocuments", () => {
     const user = findOrCreateUserByEmail(uniqueEmail("email-to-doc-delivery-fail"));
     const phoneNumber = freshPhone();
     addPhoneNumberForUser(user.id, phoneNumber);
+    recordInboundMessage(phoneNumber);
     const doc = saveDocument(user.id, {
       phone: phoneNumber,
       filename: null,
@@ -321,6 +336,7 @@ describe("checkNewEmailsAgainstRecentDocuments", () => {
     const user = findOrCreateUserByEmail(uniqueEmail("email-to-doc-cap-overflow"));
     const phoneNumber = freshPhone();
     addPhoneNumberForUser(user.id, phoneNumber);
+    recordInboundMessage(phoneNumber);
     const doc = saveDocument(user.id, {
       phone: phoneNumber,
       filename: null,
@@ -408,6 +424,7 @@ describe("reconciliation scan depth", () => {
     const user = findOrCreateUserByEmail(uniqueEmail("scan-depth-doc"));
     const phoneNumber = freshPhone();
     addPhoneNumberForUser(user.id, phoneNumber);
+    recordInboundMessage(phoneNumber);
     const doc = saveDocument(user.id, {
       phone: phoneNumber,
       filename: null,
@@ -430,6 +447,7 @@ describe("reconciliation scan depth", () => {
     const user = findOrCreateUserByEmail(uniqueEmail("scan-depth-email"));
     const phoneNumber = freshPhone();
     addPhoneNumberForUser(user.id, phoneNumber);
+    recordInboundMessage(phoneNumber);
     const doc = saveDocument(user.id, {
       phone: phoneNumber,
       filename: null,

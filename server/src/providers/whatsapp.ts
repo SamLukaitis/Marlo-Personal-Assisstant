@@ -33,6 +33,28 @@ export function verifyWebhookSignature(rawBody: Buffer, signatureHeader?: string
   return a.length === b.length && crypto.timingSafeEqual(a, b);
 }
 
+// Thrown by any Graph send call below. `code` is Meta's own error.code (e.g. 131047 — "outside
+// the 24h customer service window") when the response body parses as their standard error
+// shape; undefined if it doesn't, so callers checking a specific code can't mistake a malformed
+// or unrelated failure for that one.
+export class WhatsAppSendError extends Error {
+  constructor(message: string, public readonly code?: number) {
+    super(message);
+    this.name = "WhatsAppSendError";
+  }
+}
+
+async function buildSendError(prefix: string, res: Response): Promise<WhatsAppSendError> {
+  const bodyText = await res.text();
+  let code: number | undefined;
+  try {
+    code = (JSON.parse(bodyText) as { error?: { code?: number } })?.error?.code;
+  } catch {
+    // non-JSON body — leave code undefined, message still carries the raw text below
+  }
+  return new WhatsAppSendError(`${prefix} (${res.status}): ${bodyText}`, code);
+}
+
 export async function sendWhatsAppMessage(to: string, text: string): Promise<void> {
   const phoneNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID;
   const token = process.env.WHATSAPP_TOKEN;
@@ -53,7 +75,73 @@ export async function sendWhatsAppMessage(to: string, text: string): Promise<voi
     }
   );
   if (!res.ok) {
-    throw new Error(`WhatsApp send failed (${res.status}): ${await res.text()}`);
+    throw await buildSendError("WhatsApp send failed", res);
+  }
+}
+
+// The two pre-approved utility templates outbound.ts falls back to once the 24h customer-service
+// window has closed (see recordInboundMessage/getLastInboundAt in db/store.ts) — Meta rejects a
+// free-form send past that window with error 131047, but a template always goes through.
+// `marlowe_alert` body: "Update from Marlowe: {{update_text}} Reply to this chat with any
+// questions." — covers every short, single-event push (Schengen warnings, important-email/
+// memory/reconciliation/Xero notifications).
+// `marlowe_digest` body: "Your Marlowe briefing: {{briefing_text}} Tap below to see the full
+// details." plus a static URL button — the one multi-paragraph push (the daily briefing).
+// Both must exist and be approved in the Meta Business dashboard with this exact body text
+// (Meta now requires named variables, not positional {{1}}) before this will work in production.
+export type WhatsAppTemplateName = "marlowe_alert" | "marlowe_digest";
+
+// Each template's body variable is named, not positional — the send call has to reference it by
+// this exact name (`parameter_name`) or Meta rejects the send even though the template is approved.
+const TEMPLATE_PARAM_NAME: Record<WhatsAppTemplateName, string> = {
+  marlowe_alert: "update_text",
+  marlowe_digest: "briefing_text",
+};
+
+// Every approved template here uses this language code — change it here (and when re-creating
+// the templates) if that ever needs to differ.
+const TEMPLATE_LANGUAGE_CODE = "en_US";
+
+export async function sendWhatsAppTemplate(
+  to: string,
+  templateName: WhatsAppTemplateName,
+  bodyParam: string
+): Promise<void> {
+  const phoneNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID;
+  const token = process.env.WHATSAPP_TOKEN;
+  const res = await fetch(
+    `https://graph.facebook.com/${GRAPH_VERSION}/${phoneNumberId}/messages`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        messaging_product: "whatsapp",
+        to,
+        type: "template",
+        template: {
+          name: templateName,
+          language: { code: TEMPLATE_LANGUAGE_CODE },
+          components: [
+            {
+              type: "body",
+              parameters: [
+                {
+                  type: "text",
+                  parameter_name: TEMPLATE_PARAM_NAME[templateName],
+                  text: bodyParam,
+                },
+              ],
+            },
+          ],
+        },
+      }),
+    }
+  );
+  if (!res.ok) {
+    throw await buildSendError("WhatsApp template send failed", res);
   }
 }
 

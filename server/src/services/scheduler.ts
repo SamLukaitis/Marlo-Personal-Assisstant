@@ -7,7 +7,8 @@ import {
   listAllUserIds,
   getEnabledTools,
 } from "../db/store.js";
-import { sendWhatsAppMessage, isWhatsAppConfigured } from "../providers/whatsapp.js";
+import { isWhatsAppConfigured } from "../providers/whatsapp.js";
+import { sendProactiveMessage } from "./outbound.js";
 import { countTravelDays } from "./travelDays.js";
 import { checkForNewImportantMessages } from "./alerts.js";
 import { checkNewEmailsAgainstRecentDocuments } from "./reconciliation.js";
@@ -76,7 +77,7 @@ async function runDailyCheckForUser(ownerId: number): Promise<void> {
     const alert = getEnabledTools(ownerId).has("travel") ? schengenAlertLine(ownerId) : null;
     const message = alert ? `${briefing.content}\n\n${alert}` : briefing.content;
     for (const number of numbers) {
-      await sendWhatsAppMessage(number, message);
+      await sendProactiveMessage(number, message, "digest");
     }
     setSetting(ownerId, "last_proactive_send_date", todayKey());
   } catch (err) {

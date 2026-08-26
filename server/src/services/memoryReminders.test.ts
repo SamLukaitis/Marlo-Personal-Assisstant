@@ -1,13 +1,23 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
-vi.mock("../providers/whatsapp.js", () => ({
-  sendWhatsAppMessage: vi.fn(),
-  isWhatsAppConfigured: vi.fn().mockReturnValue(true),
-}));
+vi.mock("../providers/whatsapp.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../providers/whatsapp.js")>();
+  return {
+    ...actual, // keeps the real WhatsAppSendError class — outbound.ts's `instanceof` check needs it
+    sendWhatsAppMessage: vi.fn(),
+    sendWhatsAppTemplate: vi.fn(),
+    isWhatsAppConfigured: vi.fn().mockReturnValue(true),
+  };
+});
 
-const { sendWhatsAppMessage, isWhatsAppConfigured } = await import("../providers/whatsapp.js");
-const { findOrCreateUserByEmail, addPhoneNumberForUser, addMemoryNote, listDueMemoryReminders } =
-  await import("../db/store.js");
+const { sendWhatsAppMessage, sendWhatsAppTemplate, isWhatsAppConfigured } = await import("../providers/whatsapp.js");
+const {
+  findOrCreateUserByEmail,
+  addPhoneNumberForUser,
+  recordInboundMessage,
+  addMemoryNote,
+  listDueMemoryReminders,
+} = await import("../db/store.js");
 const { checkDueMemoryReminders } = await import("./memoryReminders.js");
 
 let counter = 0;
@@ -25,16 +35,27 @@ function freshPhone(): string {
   return `44700004${String(counter).padStart(4, "0")}`;
 }
 
+// Registers a number and marks it as having just messaged us — sendProactiveMessage
+// (services/outbound.ts) treats a number with no recorded inbound message as outside the
+// customer-service window and reaches for a template instead of a free-form send, so tests that
+// want to exercise the free-form send path (what these tests were written to check) need this.
+function registerActivePhone(ownerId: number): string {
+  const phone = freshPhone();
+  addPhoneNumberForUser(ownerId, phone);
+  recordInboundMessage(phone);
+  return phone;
+}
+
 beforeEach(() => {
   vi.mocked(sendWhatsAppMessage).mockReset();
+  vi.mocked(sendWhatsAppTemplate).mockReset();
   vi.mocked(isWhatsAppConfigured).mockReturnValue(true);
 });
 
 describe("checkDueMemoryReminders", () => {
   it("sends a WhatsApp message for a due reminder and marks it surfaced", async () => {
     const user = findOrCreateUserByEmail(uniqueEmail("reminder-due"));
-    const phoneNumber = freshPhone();
-    addPhoneNumberForUser(user.id, phoneNumber);
+    const phoneNumber = registerActivePhone(user.id);
     const past = new Date(Date.now() - 60_000).toISOString();
     addMemoryNote(user.id, "Visa renewal is due", past);
 
@@ -49,7 +70,7 @@ describe("checkDueMemoryReminders", () => {
 
   it("does nothing when there are no due reminders", async () => {
     const user = findOrCreateUserByEmail(uniqueEmail("reminder-none"));
-    addPhoneNumberForUser(user.id, freshPhone());
+    registerActivePhone(user.id);
 
     await checkDueMemoryReminders(user.id);
 
@@ -58,7 +79,7 @@ describe("checkDueMemoryReminders", () => {
 
   it("does not mark a reminder surfaced if the send fails, so it retries next tick", async () => {
     const user = findOrCreateUserByEmail(uniqueEmail("reminder-fail"));
-    addPhoneNumberForUser(user.id, freshPhone());
+    registerActivePhone(user.id);
     const past = new Date(Date.now() - 60_000).toISOString();
     addMemoryNote(user.id, "Important deadline", past);
     vi.mocked(sendWhatsAppMessage).mockRejectedValueOnce(new Error("network error"));
@@ -70,7 +91,7 @@ describe("checkDueMemoryReminders", () => {
 
   it("does nothing when WhatsApp isn't configured", async () => {
     const user = findOrCreateUserByEmail(uniqueEmail("reminder-unconfigured"));
-    addPhoneNumberForUser(user.id, freshPhone());
+    registerActivePhone(user.id);
     const past = new Date(Date.now() - 60_000).toISOString();
     addMemoryNote(user.id, "Some reminder", past);
     vi.mocked(isWhatsAppConfigured).mockReturnValue(false);

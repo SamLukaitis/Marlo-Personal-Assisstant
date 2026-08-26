@@ -13,6 +13,7 @@ vi.mock("../providers/whatsapp.js", () => ({
 }));
 vi.mock("../db/store.js", () => ({
   resolveOwnerByPhone: vi.fn(),
+  recordInboundMessage: vi.fn(),
   getWhatsAppHistory: vi.fn().mockReturnValue([]),
   appendWhatsAppMessage: vi.fn(),
 }));

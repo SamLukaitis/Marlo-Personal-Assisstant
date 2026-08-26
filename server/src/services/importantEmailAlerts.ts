@@ -7,7 +7,8 @@
 
 import { hubListMessages, hubGetMessage, AUTOMATED_SENDER_PATTERN } from "./hub.js";
 import { hasAlerted, markAlerted, getSetting, setSetting, listPhoneNumbersForUser } from "../db/store.js";
-import { sendWhatsAppMessage, isWhatsAppConfigured } from "../providers/whatsapp.js";
+import { isWhatsAppConfigured } from "../providers/whatsapp.js";
+import { sendProactiveMessage } from "./outbound.js";
 import { classifyImportantEmails, CATEGORY_INFO, type ImportantEmailCategory } from "./importantEmailClassifier.js";
 import { getXeroForwardingEmail } from "./xero.js";
 import { setPendingInvoiceForward } from "./xeroInvoiceConfirmation.js";
@@ -37,7 +38,7 @@ async function notifyAll(numbers: string[], text: string): Promise<boolean> {
   let allSucceeded = true;
   for (const number of numbers) {
     try {
-      await sendWhatsAppMessage(number, text);
+      await sendProactiveMessage(number, text, "alert");
     } catch (err) {
       console.error("importantEmailAlerts: failed to send", err);
       allSucceeded = false;
