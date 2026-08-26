@@ -35,7 +35,7 @@ import {
   getPendingInvoiceForward,
   clearPendingInvoiceForward,
 } from "../services/xeroInvoiceConfirmation.js";
-import { ingestEmailAttachment } from "../services/documents.js";
+import { ingestEmailAttachment, ingestEmailBodyReceipt } from "../services/documents.js";
 import {
   hubListMessages,
   hubGetMessage,
@@ -812,20 +812,35 @@ export async function runTool(ownerId: number, name: string, input: Record<strin
       if (!input.confirm) return { ok: true, forwarded: false };
 
       const message = await hubGetMessage(ownerId, pending.accountId, pending.messageId);
-      if (!message?.attachments?.length) {
-        return { error: "Couldn't find that email's attachment anymore — it may have been deleted or moved." };
+      if (message?.attachments?.length) {
+        const results = await Promise.all(
+          message.attachments.map((_att, i) =>
+            ingestEmailAttachment({
+              ownerId,
+              accountId: pending.accountId,
+              messageId: pending.messageId,
+              attachmentIndex: i + 1,
+            })
+          )
+        );
+        return { ok: true, forwarded: true, attachmentsProcessed: results.length };
       }
-      const results = await Promise.all(
-        message.attachments.map((_att, i) =>
-          ingestEmailAttachment({
-            ownerId,
-            accountId: pending.accountId,
-            messageId: pending.messageId,
-            attachmentIndex: i + 1,
-          })
-        )
-      );
-      return { ok: true, forwarded: true, attachmentsProcessed: results.length };
+
+      if (message?.body?.trim()) {
+        const result = await ingestEmailBodyReceipt({
+          ownerId,
+          accountId: pending.accountId,
+          messageId: pending.messageId,
+          subject: pending.subject,
+          bodyText: message.body,
+        });
+        if (!result.ok) {
+          return { error: "Looked at that email but couldn't find a clear amount/vendor to record — nothing was forwarded." };
+        }
+        return { ok: true, forwarded: true, attachmentsProcessed: 0 };
+      }
+
+      return { error: "Couldn't find that email anymore — it may have been deleted or moved." };
     }
     case "list_expenses":
       return listEntities<ExpenseData>(ownerId, { type: "expense" })

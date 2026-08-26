@@ -542,6 +542,40 @@ async function extractFactsFromLinkText(
   return runExtraction([{ type: "text", text: prompt }]);
 }
 
+// Sibling to extractFactsFromLinkText, for the case ingestEmailBodyReceipt handles: an email
+// flagged as a possible invoice/receipt that has no PDF/image attachment — the transaction
+// details, if any, are only in the email text itself (e.g. a subscription renewal notice).
+const MAX_EMAIL_BODY_CHARS = 12_000;
+
+async function extractFactsFromEmailText(
+  bodyText: string,
+  subject: string,
+  uploadedAt: Date
+): Promise<ExtractionResult> {
+  const truncated = bodyText.length > MAX_EMAIL_BODY_CHARS;
+  const text = truncated ? bodyText.slice(0, MAX_EMAIL_BODY_CHARS) : bodyText;
+
+  const prompt =
+    "Call name_document first to title this, then do the extraction below.\n\n" +
+    "This is the body text of an email that was flagged as a possible invoice/receipt/payment " +
+    "confirmation, with no PDF/image attachment — the transaction details, if any, are in the " +
+    "text itself (e.g. a subscription renewal, a payment confirmation, an order receipt). " +
+    "Extract: (1) what kind of email this is, (2) every important fact actually part of the " +
+    "message — dates, vendor name, amounts, reference codes — transcribed exactly as shown, " +
+    "(3) a one-sentence plain-English summary. Ignore email signatures, unsubscribe links, " +
+    "legal footers, and marketing content unrelated to the actual transaction. Never guess at " +
+    "anything not actually present in the text.\n\n" +
+    "If it shows money paid (a total amount charged), call record_purchase — that's the main " +
+    "reason this extraction is being run. If it separately shows a flight or hotel reservation, " +
+    "call record_booking too. Transcribe only what is printed; never compute or estimate an " +
+    "amount yourself.\n\n" +
+    `Subject: ${subject}` +
+    (truncated ? `\n\n(Email body truncated to the first ${MAX_EMAIL_BODY_CHARS} characters.)` : "") +
+    `\n\nEmail body:\n${text}`;
+
+  return runExtraction([{ type: "text", text: prompt }]);
+}
+
 function movementToCheckins(
   movement: TravelMovement,
   documentId: number
@@ -764,6 +798,80 @@ export async function ingestEmailAttachment(params: {
   });
 
   return { ok: true, doc, alreadyExtracted: false };
+}
+
+// Sibling to ingestEmailAttachment for a receipt/invoice email with no PDF/image attachment —
+// only reachable from the invoice_due confirm flow (respond_to_invoice_forward_prompt), never
+// called speculatively on arbitrary email. Unlike ingestWhatsAppLink (which always saves a
+// document regardless of what it finds, since the user explicitly asked to save that link), this
+// only saves anything at all if extraction actually finds a real expense — the user just said
+// "yes, forward this to Xero," so an email that turns out not to contain one should say so
+// plainly rather than leave behind a pointless empty document.
+export async function ingestEmailBodyReceipt(params: {
+  ownerId: number;
+  accountId: number;
+  messageId: string;
+  subject: string;
+  bodyText: string;
+}): Promise<{ ok: true; doc: DocumentRow } | { ok: false; reason: "no_expense_found" }> {
+  const uploadedAt = new Date();
+
+  const { title, category, matchKeys, purchases, bookings } = await extractFactsFromEmailText(
+    params.bodyText,
+    params.subject,
+    uploadedAt
+  );
+
+  const derivedEntities = buildDerivedEntities(purchases, bookings, uploadedAt);
+  if (!derivedEntities.some((e) => e.type === "expense" && e.status === "active")) {
+    return { ok: false, reason: "no_expense_found" };
+  }
+
+  const bodyBuffer = Buffer.from(params.bodyText, "utf8");
+  const storedName = `${Date.now()}-${crypto.randomUUID()}.txt`;
+  const storedPath = path.join(uploadsDir, storedName);
+  fs.writeFileSync(storedPath, encryptBuffer(bodyBuffer));
+
+  let doc: DocumentRow;
+  try {
+    doc = saveDocument(params.ownerId, {
+      phone: `email:${params.accountId}`,
+      filename: `${title ?? params.subject}.txt`,
+      mimeType: "text/plain",
+      storedPath,
+      caption: null,
+      title,
+      extractedText: params.bodyText,
+      category,
+      source: "email",
+      emailAccountId: params.accountId,
+      emailMessageId: params.messageId,
+      emailAttachmentId: null,
+    });
+  } catch (err) {
+    fs.unlinkSync(storedPath);
+    throw err;
+  }
+
+  storeDerivedEntities(params.ownerId, doc.id, derivedEntities);
+
+  if (doc.category === "receipts") {
+    // Same fire-and-forget posture as ingestWhatsAppMedia/ingestEmailAttachment — the "attachment"
+    // forwarded to Xero here is just the email body as a small .txt file, since there's no real
+    // file to reuse; forwardReceiptToXero doesn't need to know the difference.
+    void forwardReceiptToXero(params.ownerId, doc, bodyBuffer).catch((err) =>
+      console.error("documents: xero forwarding failed (email body)", err)
+    );
+  }
+
+  if (matchKeys) {
+    saveMatchKeys(params.ownerId, doc.id, matchKeys);
+    void checkDocumentAgainstRecentEmails(params.ownerId, doc.id, doc.title ?? "a saved document", matchKeys).catch(
+      (err) => console.error("documents: reconciliation check failed", err)
+    );
+  }
+
+  return { ok: true, doc };
 }
 
 // "Save this link" path — a WhatsApp text message that's just a URL (see

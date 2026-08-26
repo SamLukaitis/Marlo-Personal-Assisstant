@@ -110,7 +110,10 @@ export async function checkForImportantEmails(ownerId: number): Promise<void> {
 
     if (category === "invoice_due" && !offeredInvoiceConfirm && getXeroForwardingEmail(ownerId)) {
       const full = await hubGetMessage(ownerId, m.accountId, m.id).catch(() => null);
-      if (full?.attachments?.length) {
+      // An attachment or a real body is enough to offer — respond_to_invoice_forward_prompt
+      // handles both (ingestEmailAttachment for the former, ingestEmailBodyReceipt for a
+      // plain-text receipt with no attachment, e.g. a subscription renewal notice).
+      if (full?.attachments?.length || full?.body?.trim()) {
         confirmable = { accountId: m.accountId, messageId: m.id, subject: m.subject };
         text += `\n\nReply "yes" and I'll forward it to Xero.`;
       }

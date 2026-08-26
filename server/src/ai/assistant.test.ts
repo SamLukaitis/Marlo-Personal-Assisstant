@@ -1,8 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
 const mockIngestEmailAttachment = vi.fn();
+const mockIngestEmailBodyReceipt = vi.fn();
 vi.mock("../services/documents.js", () => ({
   ingestEmailAttachment: (...args: unknown[]) => mockIngestEmailAttachment(...args),
+  ingestEmailBodyReceipt: (...args: unknown[]) => mockIngestEmailBodyReceipt(...args),
 }));
 
 const mockHubGetMessage = vi.fn();
@@ -466,6 +468,7 @@ describe("extract_email_attachment dispatch", () => {
 describe("respond_to_invoice_forward_prompt tool", () => {
   beforeEach(() => {
     mockIngestEmailAttachment.mockReset();
+    mockIngestEmailBodyReceipt.mockReset();
     mockHubGetMessage.mockReset();
   });
 
@@ -512,15 +515,47 @@ describe("respond_to_invoice_forward_prompt tool", () => {
     expect(getPendingInvoiceForward(user.id)).toBeNull();
   });
 
-  it("errors when the pending message no longer has a downloadable attachment", async () => {
+  it("errors when the pending message no longer has an attachment or a body", async () => {
     const user = findOrCreateUserByEmail(uniqueEmail("invoice-confirm-gone"));
     setPendingInvoiceForward(user.id, { accountId: 1, messageId: "m1", subject: "Invoice from Acme" });
     mockHubGetMessage.mockResolvedValue({ attachments: [] });
 
     const result = await runTool(user.id, "respond_to_invoice_forward_prompt", { confirm: true });
 
-    expect(result).toEqual({ error: expect.stringContaining("Couldn't find that email's attachment") });
+    expect(result).toEqual({ error: expect.stringContaining("Couldn't find that email anymore") });
     expect(mockIngestEmailAttachment).not.toHaveBeenCalled();
+    expect(mockIngestEmailBodyReceipt).not.toHaveBeenCalled();
+  });
+
+  it("extracts from the email body when confirmed and there's no attachment, then clears pending state", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("invoice-confirm-body-yes"));
+    setPendingInvoiceForward(user.id, { accountId: 5, messageId: "m1", subject: "Your receipt" });
+    mockHubGetMessage.mockResolvedValue({ attachments: [], body: "Thanks for your payment of £22.80." });
+    mockIngestEmailBodyReceipt.mockResolvedValue({ ok: true, doc: { id: 1 } });
+
+    const result = await runTool(user.id, "respond_to_invoice_forward_prompt", { confirm: true });
+
+    expect(mockIngestEmailAttachment).not.toHaveBeenCalled();
+    expect(mockIngestEmailBodyReceipt).toHaveBeenCalledWith({
+      ownerId: user.id,
+      accountId: 5,
+      messageId: "m1",
+      subject: "Your receipt",
+      bodyText: "Thanks for your payment of £22.80.",
+    });
+    expect(result).toEqual({ ok: true, forwarded: true, attachmentsProcessed: 0 });
+    expect(getPendingInvoiceForward(user.id)).toBeNull();
+  });
+
+  it("reports plainly when the body doesn't actually contain a findable expense", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("invoice-confirm-body-no-expense"));
+    setPendingInvoiceForward(user.id, { accountId: 5, messageId: "m1", subject: "Newsletter" });
+    mockHubGetMessage.mockResolvedValue({ attachments: [], body: "Just a regular update, no charges." });
+    mockIngestEmailBodyReceipt.mockResolvedValue({ ok: false, reason: "no_expense_found" });
+
+    const result = await runTool(user.id, "respond_to_invoice_forward_prompt", { confirm: true });
+
+    expect(result).toEqual({ error: expect.stringContaining("couldn't find a clear amount/vendor") });
   });
 });
 
