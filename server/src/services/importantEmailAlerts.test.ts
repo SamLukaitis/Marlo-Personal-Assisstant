@@ -325,7 +325,7 @@ describe("checkForImportantEmails — invoice forward offer", () => {
     // e.g. a subscription renewal notice where the whole receipt is in the email text itself —
     // handled by ingestEmailBodyReceipt on confirm, not ingestEmailAttachment.
     const user = findOrCreateUserByEmail(uniqueEmail("invoice-body-only"));
-    addPhoneNumberForUser(user.id, freshPhone());
+    registerActivePhone(user.id);
     setXeroForwardingEmail(user.id, "abc123@bills.xero.com");
     await baseline(user.id);
 
