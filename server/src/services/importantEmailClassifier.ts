@@ -35,7 +35,13 @@ export const CATEGORY_INFO: Record<
   invoice_due: {
     emoji: "💳",
     label: "Invoice/payment due",
-    description: "An invoice or payment that is due or overdue.",
+    description:
+      "A bill addressed TO the user asking them to pay someone else — a vendor invoice, a " +
+      "utility bill, a subscription charge, etc. Does NOT include a notification/copy/receipt " +
+      "for an invoice the user's own business issued or sent to one of its own clients or " +
+      "customers (e.g. an invoicing tool confirming 'your invoice to [client] was sent/paid/" +
+      "viewed') — that is the user being paid, not owing payment, and must never match this " +
+      "category.",
   },
   government_mail: {
     emoji: "🏛️",

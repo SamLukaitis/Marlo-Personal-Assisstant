@@ -40,6 +40,15 @@ describe("buildClassifyPrompt", () => {
     }
   });
 
+  it("tells the classifier not to match invoice_due against the user's own outgoing invoices", () => {
+    // A user running their own business (e.g. sending invoices to their own clients) will have
+    // automated notification mail like "your invoice to [client] was sent/paid/viewed" — that's
+    // the user being paid, not owing payment, and must never trigger the same Xero-forward-offer
+    // flow as a bill they actually owe.
+    const prompt = buildClassifyPrompt([]);
+    expect(prompt).toContain("Does NOT include a notification/copy/receipt for an invoice the user's own business issued");
+  });
+
   it("includes each candidate's index, subject, and snippet", () => {
     const prompt = buildClassifyPrompt([
       { index: 0, subject: "Your flight changed", snippet: "Gate moved to B12" },
