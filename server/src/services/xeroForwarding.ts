@@ -3,7 +3,8 @@
 // saved" WhatsApp confirmation the user is waiting on, so any outcome (success or failure)
 // arrives as a separate follow-up message instead.
 import { listAccounts, listPhoneNumbersForUser, markDocumentXeroForwarded, type DocumentRow } from "../db/store.js";
-import { sendWhatsAppMessage, isWhatsAppConfigured } from "../providers/whatsapp.js";
+import { isWhatsAppConfigured } from "../providers/whatsapp.js";
+import { sendProactiveMessage } from "./outbound.js";
 import { getXeroForwardingEmail } from "./xero.js";
 import { hubSendMessage } from "./hub.js";
 
@@ -11,7 +12,7 @@ async function notifyOwner(ownerId: number, text: string): Promise<void> {
   if (!isWhatsAppConfigured()) return;
   for (const { phone } of listPhoneNumbersForUser(ownerId)) {
     try {
-      await sendWhatsAppMessage(phone, text);
+      await sendProactiveMessage(phone, text, "alert");
     } catch (err) {
       console.error("xeroForwarding: failed to notify owner", err);
     }

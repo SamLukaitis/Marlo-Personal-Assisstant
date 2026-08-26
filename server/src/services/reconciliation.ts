@@ -3,7 +3,8 @@
 // design and why this stays entirely deterministic in v1 (no LLM call on the email side at all).
 
 import { hubListMessages } from "./hub.js";
-import { sendWhatsAppMessage, isWhatsAppConfigured } from "../providers/whatsapp.js";
+import { isWhatsAppConfigured } from "../providers/whatsapp.js";
+import { sendProactiveMessage } from "./outbound.js";
 import { hasAlerted, markAlerted, listPhoneNumbersForUser, listRecentMatchKeys } from "../db/store.js";
 import type { UnifiedMessage } from "../providers/types.js";
 
@@ -61,7 +62,7 @@ async function notifyMatch(ownerId: number, text: string): Promise<boolean> {
   let allSucceeded = true;
   for (const number of numbers) {
     try {
-      await sendWhatsAppMessage(number, text);
+      await sendProactiveMessage(number, text, "alert");
     } catch (err) {
       console.error("reconciliation: failed to send match notification", err);
       allSucceeded = false;

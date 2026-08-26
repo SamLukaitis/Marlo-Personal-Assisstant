@@ -1,17 +1,22 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
-vi.mock("../providers/whatsapp.js", () => ({
-  sendWhatsAppMessage: vi.fn(),
-  isWhatsAppConfigured: vi.fn().mockReturnValue(true),
-}));
+vi.mock("../providers/whatsapp.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../providers/whatsapp.js")>();
+  return {
+    ...actual, // keeps the real WhatsAppSendError class — outbound.ts's `instanceof` check needs it
+    sendWhatsAppMessage: vi.fn(),
+    sendWhatsAppTemplate: vi.fn(),
+    isWhatsAppConfigured: vi.fn().mockReturnValue(true),
+  };
+});
 
 const mockHubSendMessage = vi.fn();
 vi.mock("./hub.js", () => ({
   hubSendMessage: (...args: unknown[]) => mockHubSendMessage(...args),
 }));
 
-const { sendWhatsAppMessage, isWhatsAppConfigured } = await import("../providers/whatsapp.js");
-const { findOrCreateUserByEmail, addPhoneNumberForUser, upsertAccount, saveDocument, getDocument } =
+const { sendWhatsAppMessage, sendWhatsAppTemplate, isWhatsAppConfigured } = await import("../providers/whatsapp.js");
+const { findOrCreateUserByEmail, addPhoneNumberForUser, recordInboundMessage, upsertAccount, saveDocument, getDocument } =
   await import("../db/store.js");
 const { setXeroForwardingEmail } = await import("./xero.js");
 const { forwardReceiptToXero } = await import("./xeroForwarding.js");
@@ -44,6 +49,7 @@ function makeReceiptDoc(ownerId: number) {
 
 beforeEach(() => {
   vi.mocked(sendWhatsAppMessage).mockReset().mockResolvedValue(undefined as never);
+  vi.mocked(sendWhatsAppTemplate).mockReset().mockResolvedValue(undefined as never);
   vi.mocked(isWhatsAppConfigured).mockReset().mockReturnValue(true);
   mockHubSendMessage.mockReset().mockResolvedValue({ messageId: "m1", provider: "google", accountEmail: "x" });
 });
@@ -59,7 +65,9 @@ describe("forwardReceiptToXero", () => {
 
   it("sends the file to the saved Xero address via the connected Gmail account, and marks the document forwarded", async () => {
     const user = findOrCreateUserByEmail(uniqueEmail("xero-fwd-send"));
-    addPhoneNumberForUser(user.id, freshPhone());
+    const registeredPhone = freshPhone();
+    addPhoneNumberForUser(user.id, registeredPhone);
+    recordInboundMessage(registeredPhone);
     setXeroForwardingEmail(user.id, "abc123@bills.xero.com");
     const account = upsertAccount(user.id, {
       provider: "google",
@@ -91,7 +99,9 @@ describe("forwardReceiptToXero", () => {
 
   it("skips a document that's already been forwarded, without sending again", async () => {
     const user = findOrCreateUserByEmail(uniqueEmail("xero-fwd-already-sent"));
-    addPhoneNumberForUser(user.id, freshPhone());
+    const registeredPhone = freshPhone();
+    addPhoneNumberForUser(user.id, registeredPhone);
+    recordInboundMessage(registeredPhone);
     setXeroForwardingEmail(user.id, "abc123@bills.xero.com");
     upsertAccount(user.id, {
       provider: "google",
@@ -110,7 +120,9 @@ describe("forwardReceiptToXero", () => {
 
   it("notifies the owner instead of throwing when no Gmail account is connected", async () => {
     const user = findOrCreateUserByEmail(uniqueEmail("xero-fwd-no-account"));
-    addPhoneNumberForUser(user.id, freshPhone());
+    const registeredPhone = freshPhone();
+    addPhoneNumberForUser(user.id, registeredPhone);
+    recordInboundMessage(registeredPhone);
     setXeroForwardingEmail(user.id, "abc123@bills.xero.com");
     const doc = makeReceiptDoc(user.id);
 
@@ -123,7 +135,9 @@ describe("forwardReceiptToXero", () => {
 
   it("notifies the owner instead of throwing when the send itself fails, and does not mark it forwarded", async () => {
     const user = findOrCreateUserByEmail(uniqueEmail("xero-fwd-send-fails"));
-    addPhoneNumberForUser(user.id, freshPhone());
+    const registeredPhone = freshPhone();
+    addPhoneNumberForUser(user.id, registeredPhone);
+    recordInboundMessage(registeredPhone);
     setXeroForwardingEmail(user.id, "abc123@bills.xero.com");
     upsertAccount(user.id, {
       provider: "google",

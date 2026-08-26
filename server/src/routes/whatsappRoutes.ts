@@ -9,7 +9,7 @@ import {
   extractIncomingMessages,
   type IncomingWhatsAppMessage,
 } from "../providers/whatsapp.js";
-import { resolveOwnerByPhone, getWhatsAppHistory, appendWhatsAppMessage } from "../db/store.js";
+import { resolveOwnerByPhone, recordInboundMessage, getWhatsAppHistory, appendWhatsAppMessage } from "../db/store.js";
 import { runAssistantChat, MAX_HISTORY_MESSAGES } from "../ai/assistant.js";
 import { ingestWhatsAppMedia, ingestWhatsAppLink } from "../services/documents.js";
 import { findSaveableUrl, type FetchFailureReason } from "../services/safeLinkFetcher.js";
@@ -201,6 +201,10 @@ export async function handleIncoming(message: IncomingWhatsAppMessage): Promise<
     );
     return;
   }
+
+  // Marks the customer-service window open again as of now — see outbound.ts, which reads this
+  // to decide whether a later proactive push can go out as free-form text or needs a template.
+  recordInboundMessage(message.from);
 
   try {
     if (message.kind === "text") {

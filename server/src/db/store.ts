@@ -569,6 +569,19 @@ if (!memoryNoteColumns.includes("last_surfaced_at")) {
 }
 db.exec(`CREATE INDEX IF NOT EXISTS idx_memory_notes_trigger ON memory_notes (owner_id, trigger_at)`);
 
+// When a number last sent us a message — powers the outbound-message-type decision in
+// outbound.ts (WhatsApp only allows free-form replies within 24h of the user's last message;
+// past that, a proactive push has to go out as a pre-approved template or Meta rejects it with
+// error 131047). Null means "never messaged us, or predates this column" — treated as outside
+// the window, which is the safe default (falls back to a template rather than risking a failed
+// send).
+const userPhoneNumberColumns = (
+  db.prepare(`PRAGMA table_info(user_phone_numbers)`).all() as { name: string }[]
+).map((c) => c.name);
+if (!userPhoneNumberColumns.includes("last_inbound_at")) {
+  db.exec(`ALTER TABLE user_phone_numbers ADD COLUMN last_inbound_at INTEGER`);
+}
+
 export const uploadsDir = path.join(dataDir, "uploads");
 if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
 
@@ -949,6 +962,22 @@ export function resolveOwnerByPhone(phone: string): number | null {
     | { userId: number }
     | undefined;
   return row ? row.userId : null;
+}
+
+// Called once per inbound webhook message, right after the sender resolves to an owner — see
+// outbound.ts for how this timestamp decides free-form vs. template on the way back out.
+export function recordInboundMessage(phone: string): void {
+  db.prepare(`UPDATE user_phone_numbers SET last_inbound_at = ? WHERE phone = ?`).run(
+    Date.now(),
+    normalizePhone(phone)
+  );
+}
+
+export function getLastInboundAt(phone: string): number | null {
+  const row = db
+    .prepare(`SELECT last_inbound_at AS lastInboundAt FROM user_phone_numbers WHERE phone = ?`)
+    .get(normalizePhone(phone)) as { lastInboundAt: number | null } | undefined;
+  return row?.lastInboundAt ?? null;
 }
 
 // Fixed on purpose (not free-form LLM tags) — a small, predictable set keeps the Files page

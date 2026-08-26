@@ -1,10 +1,15 @@
 // server/src/services/importantEmailAlerts.test.ts
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
-vi.mock("../providers/whatsapp.js", () => ({
-  sendWhatsAppMessage: vi.fn(),
-  isWhatsAppConfigured: vi.fn().mockReturnValue(true),
-}));
+vi.mock("../providers/whatsapp.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../providers/whatsapp.js")>();
+  return {
+    ...actual, // keeps the real WhatsAppSendError class — outbound.ts's `instanceof` check needs it
+    sendWhatsAppMessage: vi.fn(),
+    sendWhatsAppTemplate: vi.fn(),
+    isWhatsAppConfigured: vi.fn().mockReturnValue(true),
+  };
+});
 
 const mockHubListMessages = vi.fn();
 const mockHubGetMessage = vi.fn();
@@ -23,8 +28,10 @@ vi.mock("./importantEmailClassifier.js", async (importOriginal) => {
   return { ...actual, classifyImportantEmails: (...args: unknown[]) => mockClassify(...args) };
 });
 
-const { sendWhatsAppMessage, isWhatsAppConfigured } = await import("../providers/whatsapp.js");
-const { findOrCreateUserByEmail, addPhoneNumberForUser, hasAlerted } = await import("../db/store.js");
+const { sendWhatsAppMessage, sendWhatsAppTemplate, isWhatsAppConfigured } = await import("../providers/whatsapp.js");
+const { findOrCreateUserByEmail, addPhoneNumberForUser, recordInboundMessage, hasAlerted } = await import(
+  "../db/store.js"
+);
 const { checkForImportantEmails, formatImportantEmailAlert } = await import("./importantEmailAlerts.js");
 const { setXeroForwardingEmail } = await import("./xero.js");
 const { getPendingInvoiceForward } = await import("./xeroInvoiceConfirmation.js");
@@ -42,6 +49,17 @@ function uniqueEmail(prefix: string): string {
 function freshPhone(): string {
   counter += 1;
   return `44700005${String(counter).padStart(4, "0")}`;
+}
+
+// Registers a number and marks it as having just messaged us — sendProactiveMessage
+// (services/outbound.ts) treats a number with no recorded inbound message as outside the
+// customer-service window and reaches for a template instead of a free-form send, so tests that
+// want to exercise the free-form send path (what these tests were written to check) need this.
+function registerActivePhone(ownerId: number): string {
+  const phone = freshPhone();
+  addPhoneNumberForUser(ownerId, phone);
+  recordInboundMessage(phone);
+  return phone;
 }
 
 function fakeMessage(
@@ -75,6 +93,7 @@ async function baseline(ownerId: number) {
 
 beforeEach(() => {
   vi.mocked(sendWhatsAppMessage).mockReset();
+  vi.mocked(sendWhatsAppTemplate).mockReset();
   vi.mocked(isWhatsAppConfigured).mockReset().mockReturnValue(true);
   mockHubListMessages.mockReset();
   mockHubGetMessage.mockReset();
@@ -95,7 +114,7 @@ describe("checkForImportantEmails", () => {
 
   it("filters to unread automated-sender mail only, ignoring read mail and mail from real people", async () => {
     const user = findOrCreateUserByEmail(uniqueEmail("filter"));
-    addPhoneNumberForUser(user.id, freshPhone());
+    registerActivePhone(user.id);
     await baseline(user.id);
 
     mockHubListMessages.mockResolvedValueOnce([
@@ -113,8 +132,7 @@ describe("checkForImportantEmails", () => {
 
   it("sends a WhatsApp alert for a classified match, formatted with the category", async () => {
     const user = findOrCreateUserByEmail(uniqueEmail("match"));
-    const phone = freshPhone();
-    addPhoneNumberForUser(user.id, phone);
+    const phone = registerActivePhone(user.id);
     await baseline(user.id);
 
     mockHubListMessages.mockResolvedValueOnce([
@@ -134,8 +152,7 @@ describe("checkForImportantEmails", () => {
 
   it("does not re-classify or re-alert the same message on a later tick", async () => {
     const user = findOrCreateUserByEmail(uniqueEmail("dedup"));
-    const phone = freshPhone();
-    addPhoneNumberForUser(user.id, phone);
+    const phone = registerActivePhone(user.id);
     await baseline(user.id);
 
     mockHubListMessages.mockResolvedValue([fakeMessage({ id: "flight-2" })]);
@@ -150,7 +167,7 @@ describe("checkForImportantEmails", () => {
 
   it("marks a non-matching candidate scanned so it isn't reclassified next tick", async () => {
     const user = findOrCreateUserByEmail(uniqueEmail("nonmatch"));
-    addPhoneNumberForUser(user.id, freshPhone());
+    registerActivePhone(user.id);
     await baseline(user.id);
 
     mockHubListMessages.mockResolvedValue([fakeMessage({ id: "boring-1" })]);
@@ -165,7 +182,7 @@ describe("checkForImportantEmails", () => {
 
   it("leaves everything unscanned when classification itself fails", async () => {
     const user = findOrCreateUserByEmail(uniqueEmail("classify-fail"));
-    addPhoneNumberForUser(user.id, freshPhone());
+    registerActivePhone(user.id);
     await baseline(user.id);
 
     mockHubListMessages.mockResolvedValueOnce([fakeMessage({ id: "err-1" })]);
@@ -180,8 +197,7 @@ describe("checkForImportantEmails", () => {
 
   it("leaves a matched message unmarked (retriable) when delivery fails", async () => {
     const user = findOrCreateUserByEmail(uniqueEmail("deliver-fail"));
-    const phone = freshPhone();
-    addPhoneNumberForUser(user.id, phone);
+    const phone = registerActivePhone(user.id);
     await baseline(user.id);
 
     mockHubListMessages.mockResolvedValueOnce([fakeMessage({ id: "fail-1" })]);
@@ -222,8 +238,7 @@ describe("checkForImportantEmails", () => {
 
   it("caps alerts per tick and sends a summary for the overflow", async () => {
     const user = findOrCreateUserByEmail(uniqueEmail("cap"));
-    const phone = freshPhone();
-    addPhoneNumberForUser(user.id, phone);
+    const phone = registerActivePhone(user.id);
     await baseline(user.id);
 
     // MAX_ALERTS_PER_CHECK is 5 — six matches means the sixth goes into the overflow summary.
@@ -250,8 +265,7 @@ describe("checkForImportantEmails", () => {
 describe("checkForImportantEmails — invoice forward offer", () => {
   it("offers to forward and sets pending state when Xero is connected and the email has an attachment", async () => {
     const user = findOrCreateUserByEmail(uniqueEmail("invoice-offer"));
-    const phone = freshPhone();
-    addPhoneNumberForUser(user.id, phone);
+    const phone = registerActivePhone(user.id);
     setXeroForwardingEmail(user.id, "abc123@bills.xero.com");
     await baseline(user.id);
 
@@ -276,7 +290,7 @@ describe("checkForImportantEmails — invoice forward offer", () => {
 
   it("does not offer to forward when Xero isn't connected", async () => {
     const user = findOrCreateUserByEmail(uniqueEmail("invoice-no-xero"));
-    addPhoneNumberForUser(user.id, freshPhone());
+    registerActivePhone(user.id);
     await baseline(user.id);
 
     mockHubListMessages.mockResolvedValueOnce([fakeMessage({ id: "inv-2" })]);
@@ -292,7 +306,7 @@ describe("checkForImportantEmails — invoice forward offer", () => {
 
   it("does not offer to forward when the email has no attachment", async () => {
     const user = findOrCreateUserByEmail(uniqueEmail("invoice-no-attachment"));
-    addPhoneNumberForUser(user.id, freshPhone());
+    registerActivePhone(user.id);
     setXeroForwardingEmail(user.id, "abc123@bills.xero.com");
     await baseline(user.id);
 
@@ -309,7 +323,7 @@ describe("checkForImportantEmails — invoice forward offer", () => {
 
   it("only offers the CTA once per tick even with multiple invoice_due matches", async () => {
     const user = findOrCreateUserByEmail(uniqueEmail("invoice-single-slot"));
-    addPhoneNumberForUser(user.id, freshPhone());
+    registerActivePhone(user.id);
     setXeroForwardingEmail(user.id, "abc123@bills.xero.com");
     await baseline(user.id);
 
@@ -332,7 +346,7 @@ describe("checkForImportantEmails — invoice forward offer", () => {
 
   it("does not set pending state when delivery of the offer fails", async () => {
     const user = findOrCreateUserByEmail(uniqueEmail("invoice-deliver-fail"));
-    addPhoneNumberForUser(user.id, freshPhone());
+    registerActivePhone(user.id);
     setXeroForwardingEmail(user.id, "abc123@bills.xero.com");
     await baseline(user.id);
 

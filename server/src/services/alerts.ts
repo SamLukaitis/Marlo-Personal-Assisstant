@@ -1,6 +1,7 @@
 import { hubListMessages, AUTOMATED_SENDER_PATTERN } from "./hub.js";
 import { hasAlerted, markAlerted, getSetting, setSetting, listPhoneNumbersForUser } from "../db/store.js";
-import { sendWhatsAppMessage, isWhatsAppConfigured } from "../providers/whatsapp.js";
+import { isWhatsAppConfigured } from "../providers/whatsapp.js";
+import { sendProactiveMessage } from "./outbound.js";
 import type { UnifiedMessage } from "../providers/types.js";
 
 const MAX_ALERTS_PER_CHECK = 5;
@@ -13,7 +14,7 @@ function messageKey(m: UnifiedMessage): string {
 async function notify(numbers: string[], text: string): Promise<void> {
   for (const number of numbers) {
     try {
-      await sendWhatsAppMessage(number, text);
+      await sendProactiveMessage(number, text, "alert");
     } catch (err) {
       console.error("alerts: failed to send", err);
     }

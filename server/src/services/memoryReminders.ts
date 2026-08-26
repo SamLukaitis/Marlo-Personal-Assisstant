@@ -3,7 +3,8 @@
 // docs/superpowers/specs/2026-08-24-proactive-memory-surfacing-design.md.
 
 import { listDueMemoryReminders, markMemorySurfaced, listPhoneNumbersForUser } from "../db/store.js";
-import { sendWhatsAppMessage, isWhatsAppConfigured } from "../providers/whatsapp.js";
+import { isWhatsAppConfigured } from "../providers/whatsapp.js";
+import { sendProactiveMessage } from "./outbound.js";
 
 const MAX_REMINDERS_PER_CHECK = 5;
 
@@ -26,7 +27,7 @@ export async function checkDueMemoryReminders(ownerId: number): Promise<void> {
     let allSucceeded = true;
     for (const number of numbers) {
       try {
-        await sendWhatsAppMessage(number, text);
+        await sendProactiveMessage(number, text, "alert");
       } catch (err) {
         console.error("memoryReminders: failed to send reminder", err);
         allSucceeded = false;
