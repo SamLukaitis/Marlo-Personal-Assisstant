@@ -6,6 +6,7 @@ import {
   listAllCheckinsAscending,
   listAllUserIds,
   getEnabledTools,
+  deleteExpiredPendingActions,
 } from "../db/store.js";
 import { isWhatsAppConfigured } from "../providers/whatsapp.js";
 import { sendProactiveMessage } from "./outbound.js";
@@ -123,6 +124,7 @@ async function runImportantEmailAlertsCheckForUser(ownerId: number): Promise<voi
 // caught independently so one tenant's failure (a broken account, a transient API error) can't
 // block or crash another tenant's briefing/alerts.
 async function tick(): Promise<void> {
+  deleteExpiredPendingActions();
   for (const ownerId of listAllUserIds()) {
     await runDailyCheckForUser(ownerId).catch((err) =>
       console.error(`scheduler: daily check failed for user ${ownerId}`, err)
