@@ -226,6 +226,17 @@ if (!userColumns.includes("is_admin")) {
   db.exec(`ALTER TABLE users ADD COLUMN is_admin INTEGER NOT NULL DEFAULT 0`);
 }
 
+// Bootstraps the very first non-owner admin without needing an existing admin to grant it through
+// the Portal's Admins tab first (a chicken-and-egg problem otherwise) — and deliberately doesn't
+// touch APP_OWNER_EMAIL/isAppOwner, since that also controls who /api/checkin's phone-automation
+// endpoint resolves to. Runs on every startup, but is idempotent (re-setting is_admin=1 is a
+// no-op), so it's safe to leave this var configured indefinitely rather than a true one-shot.
+const bootstrapAdminEmail = process.env.BOOTSTRAP_ADMIN_EMAIL?.trim();
+if (bootstrapAdminEmail) {
+  const bootstrapUser = findOrCreateUserByEmail(bootstrapAdminEmail);
+  db.prepare(`UPDATE users SET is_admin = 1 WHERE id = ?`).run(bootstrapUser.id);
+}
+
 // Lightweight migration: CREATE TABLE IF NOT EXISTS doesn't add columns to a table that
 // already existed before this field was introduced, so add it explicitly if missing.
 const accountColumns = (db.prepare(`PRAGMA table_info(accounts)`).all() as { name: string }[]).map(
