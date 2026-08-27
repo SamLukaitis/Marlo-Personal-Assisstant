@@ -1066,7 +1066,7 @@ function buildRules(enabled: Set<ToolKey>): string {
 export function buildSystemPrompt(ownerId: number, conversationSummary?: string): string {
   const accounts = listAccounts(ownerId);
   const persona = getSetting(ownerId, "persona");
-  const name = getSetting(ownerId, "assistant_name") ?? "Assistant";
+  const name = getSetting(ownerId, "assistant_name") ?? "Marlowe";
 
   const accountList = accounts.length
     ? accounts.map((a) => `- id ${a.id}: ${a.email} (${a.provider})`).join("\n")

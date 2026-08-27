@@ -7,7 +7,7 @@ export const settingsRoutes = Router();
 settingsRoutes.get("/api/settings", (req, res) => {
   const ownerId = (req as unknown as AuthedRequest).userId;
   res.json({
-    assistantName: getSetting(ownerId, "assistant_name") ?? "Assistant",
+    assistantName: getSetting(ownerId, "assistant_name") ?? "Marlowe",
     persona: getSetting(ownerId, "persona") ?? "",
   });
 });
