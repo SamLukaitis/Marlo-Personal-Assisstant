@@ -3,7 +3,7 @@ import fs from "node:fs";
 import crypto from "node:crypto";
 import Anthropic from "@anthropic-ai/sdk";
 import { PDFParse } from "pdf-parse";
-import { downloadWhatsAppMedia } from "../providers/whatsapp.js";
+import { downloadWhatsAppMedia, sendWhatsAppMediaFromBuffer } from "../providers/whatsapp.js";
 import { hubGetAttachment, hubGetMessage } from "./hub.js";
 import {
   saveDocument,
@@ -14,11 +14,12 @@ import {
   uploadsDir,
   DOCUMENT_CATEGORIES,
   findDocumentByEmailAttachment,
+  getDocument,
   type DocumentRow,
   type DocumentCategory,
   type DocumentSource,
 } from "../db/store.js";
-import { encryptBuffer } from "./crypto.js";
+import { encryptBuffer, decryptBuffer } from "./crypto.js";
 import { validateTravelMovement, type TravelMovement } from "./travelValidation.js";
 import {
   validateExpense,
@@ -958,4 +959,43 @@ export async function ingestWhatsAppLink(params: {
   }
 
   return { ok: true, doc };
+}
+
+// Sends a previously-saved document's original file back to the user on WhatsApp — e.g. "send me
+// that photo again" after Marlowe has already described what's in it, or given them the code it
+// read off a license. WhatsApp-only: there's no equivalent "hand back the file" affordance in web
+// chat, so the assistant tool this backs is only usable from a WhatsApp conversation.
+export async function sendSavedDocumentFile(
+  ownerId: number,
+  phone: string,
+  documentId: number
+): Promise<{ ok: true } | { ok: false; reason: "not_found" | "no_original_file" | "send_failed" }> {
+  const doc = getDocument(ownerId, documentId);
+  if (!doc || !fs.existsSync(doc.storedPath)) {
+    return { ok: false, reason: "not_found" };
+  }
+  // Links and email-body receipts are stored as synthesized .txt — there's no original photo/
+  // file to hand back, just extracted text the assistant can already recite.
+  if (doc.mimeType === "text/plain") {
+    return { ok: false, reason: "no_original_file" };
+  }
+
+  const onDisk = fs.readFileSync(doc.storedPath);
+  // Same lazy plaintext-fallback as documentRoutes.ts's download route — files saved before
+  // encryption was added are still plaintext on disk.
+  let buffer: Buffer;
+  try {
+    buffer = decryptBuffer(onDisk);
+  } catch {
+    buffer = onDisk;
+  }
+
+  const filename = doc.filename ?? `${doc.title ?? "document"}.${EXTENSIONS[doc.mimeType] ?? "bin"}`;
+  try {
+    await sendWhatsAppMediaFromBuffer(phone, buffer, doc.mimeType, filename);
+  } catch (err) {
+    console.error("documents: sendSavedDocumentFile failed", err);
+    return { ok: false, reason: "send_failed" };
+  }
+  return { ok: true };
 }

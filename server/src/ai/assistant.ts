@@ -37,7 +37,7 @@ import {
   getPendingInvoiceForward,
   clearPendingInvoiceForward,
 } from "../services/xeroInvoiceConfirmation.js";
-import { ingestEmailAttachment, ingestEmailBodyReceipt } from "../services/documents.js";
+import { ingestEmailAttachment, ingestEmailBodyReceipt, sendSavedDocumentFile } from "../services/documents.js";
 import {
   hubListMessages,
   hubGetMessage,
@@ -419,6 +419,18 @@ const ALWAYS_ON_TOOLS: Anthropic.Tool[] = [
     },
   },
   {
+    name: "send_document",
+    description:
+      "Send the original photo/file of a previously saved document back to the user on WhatsApp — e.g. 'send me that photo again' or 'can I get the original image of my license'. Only use this when the user wants the actual file back, not just its extracted details (which you can already answer from search_documents/list_recent_documents). Find the right document's id with search_documents or list_recent_documents first. Only works in a WhatsApp conversation — if there's no original photo (e.g. a saved link or email-body receipt), this will say so.",
+    input_schema: {
+      type: "object",
+      properties: {
+        document_id: { type: "number", description: "The document's id, from search_documents/list_recent_documents" },
+      },
+      required: ["document_id"],
+    },
+  },
+  {
     name: "extract_email_attachment",
     description:
       "Download one attachment from an email and run it through the same extraction pipeline as a WhatsApp photo/PDF — saves it as a document and, if it's a flight/hotel booking or a receipt, adds a structured record to list_bookings/list_expenses. Call this when the user asks about a booking, ticket, or receipt that's attached to an email you found via get_message, rather than just reading the email body — an email attachment is never extracted automatically. Use the email's account_id/message_id and the attachment's position from get_message's attachments field.",
@@ -688,7 +700,14 @@ const TOOL_NAME_TO_KEY: Record<string, ToolKey> = {
   count_travel_days: "travel",
 };
 
-export async function runTool(ownerId: number, name: string, input: Record<string, unknown>): Promise<unknown> {
+// phone is optional and WhatsApp-only (web chat/eval callers omit it) — used only by tools that
+// need to send something directly to the user's chat (currently just send_document).
+export async function runTool(
+  ownerId: number,
+  name: string,
+  input: Record<string, unknown>,
+  phone?: string
+): Promise<unknown> {
   const requiredKey = TOOL_NAME_TO_KEY[name];
   if (requiredKey && !getEnabledTools(ownerId).has(requiredKey)) {
     return { error: `tool not enabled: ${name}` };
@@ -777,6 +796,21 @@ export async function runTool(ownerId: number, name: string, input: Record<strin
       return searchDocuments(ownerId, input.query as string).map(forModel);
     case "list_recent_documents":
       return listDocuments(ownerId, (input.limit as number | undefined) ?? 10).map(forModel);
+    case "send_document": {
+      if (!phone) {
+        return { error: "Sending the original file back is only available in a WhatsApp conversation." };
+      }
+      const result = await sendSavedDocumentFile(ownerId, phone, input.document_id as number);
+      if (!result.ok) {
+        const messages: Record<typeof result.reason, string> = {
+          not_found: "No saved document with that id — check search_documents/list_recent_documents for the right one.",
+          no_original_file: "There's no original photo/file for this one — it was saved from a link or email text, not a photo.",
+          send_failed: "Couldn't send that file — it may be too large or an unsupported type for WhatsApp.",
+        };
+        return { error: messages[result.reason] };
+      }
+      return { ok: true };
+    }
     case "extract_email_attachment": {
       const result = await ingestEmailAttachment({
         ownerId,
@@ -1058,6 +1092,7 @@ function buildRules(enabled: Set<ToolKey>): string {
     "- If search_contacts (or any lookup) returns more than one plausible match and it's not obvious which one is meant, use ask_user_choice(mode=\"resume\") with one option per candidate instead of listing them in prose and waiting for a typed reply.",
     "- Use the remember tool proactively whenever the user shares something worth recalling later (preferences, which account is which, standing instructions) — don't wait to be asked.",
     '- Use search_documents/list_recent_documents when the user asks about something they photographed or sent via WhatsApp (boarding passes, licenses, tickets, receipts) — e.g. "when did I fly to X" or "what\'s the code on my license".',
+    "- If the user wants the actual photo/file back rather than just its details (e.g. \"send me that photo again\", \"can I get the original image\"), find the right document with search_documents/list_recent_documents first, then call send_document with its id.",
     "- When the user asks about a trip, booking, or receipt and get_message shows a relevant attachment (ticket, confirmation, visa, invoice), call extract_email_attachment on it yourself, immediately, without asking first — the same way you'd read the email body without asking. Do this for every relevant attachment you find in the same turn, not one at a time. Only ask first if there are an unusually large number of attachments (10+) to extract at once. Don't just describe the attachment's filename and stop there, and don't stop to ask permission to do something this low-risk and reversible.",
     "- If extract_email_attachment fails for an attachment, don't just relay a generic failure to the user — retry it once, and if it still fails, say so plainly with the vendor/subject so they know exactly which one needs a manual forward, rather than leaving them to guess.",
     "- Use get_news for news/current-events questions. Only report headlines the tool actually returned — never supplement with your own general knowledge or training data, even for well-known ongoing events. Fabricating a headline is a serious error, same as with any other tool's data.",
@@ -1212,7 +1247,7 @@ export async function runAssistantChat(
     const toolResults: Anthropic.ToolResultBlockParam[] = await Promise.all(
       toolUses.map(async (toolUse) => {
         try {
-          const result = await runTool(ownerId, toolUse.name, toolUse.input as Record<string, unknown>);
+          const result = await runTool(ownerId, toolUse.name, toolUse.input as Record<string, unknown>, phone);
           return {
             type: "tool_result" as const,
             tool_use_id: toolUse.id,

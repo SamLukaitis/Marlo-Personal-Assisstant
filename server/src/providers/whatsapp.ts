@@ -212,6 +212,66 @@ export async function sendChoiceMessage(
   }
 }
 
+// Uploads raw bytes to Meta so they can be referenced by media id in a subsequent send call —
+// Meta doesn't accept inline bytes on the /messages endpoint itself, media has to be uploaded
+// first and then referenced by the id this returns.
+async function uploadWhatsAppMedia(buffer: Buffer, mimeType: string, filename: string): Promise<string> {
+  const phoneNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID;
+  const token = process.env.WHATSAPP_TOKEN;
+  const form = new FormData();
+  form.append("messaging_product", "whatsapp");
+  form.append("file", new Blob([new Uint8Array(buffer)], { type: mimeType }), filename);
+  const res = await fetch(`https://graph.facebook.com/${GRAPH_VERSION}/${phoneNumberId}/media`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}` },
+    body: form,
+  });
+  if (!res.ok) {
+    throw await buildSendError("WhatsApp media upload failed", res);
+  }
+  const data = (await res.json()) as { id?: string };
+  if (!data.id) throw new Error("WhatsApp media upload returned no id");
+  return data.id;
+}
+
+// Sends the original bytes of a saved document/photo back to the user — e.g. "send me that
+// photo" after Marlowe has already described what's in it. Real photos (jpeg/png — the two types
+// WhatsApp's Cloud API will render as an inline image) go out as `type: "image"`; everything else
+// (pdf, gif/webp, plain text) goes out as `type: "document"` with a filename, which WhatsApp
+// renders as a downloadable file instead.
+export async function sendWhatsAppMediaFromBuffer(
+  to: string,
+  buffer: Buffer,
+  mimeType: string,
+  filename: string
+): Promise<void> {
+  const mediaId = await uploadWhatsAppMedia(buffer, mimeType, filename);
+  const phoneNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID;
+  const token = process.env.WHATSAPP_TOKEN;
+  const asImage = mimeType === "image/jpeg" || mimeType === "image/png";
+  const res = await fetch(
+    `https://graph.facebook.com/${GRAPH_VERSION}/${phoneNumberId}/messages`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        messaging_product: "whatsapp",
+        to,
+        type: asImage ? "image" : "document",
+        ...(asImage
+          ? { image: { id: mediaId } }
+          : { document: { id: mediaId, filename } }),
+      }),
+    }
+  );
+  if (!res.ok) {
+    throw await buildSendError("WhatsApp media message send failed", res);
+  }
+}
+
 // The two pre-approved utility templates outbound.ts falls back to once the 24h customer-service
 // window has closed (see recordInboundMessage/getLastInboundAt in db/store.ts) — Meta rejects a
 // free-form send past that window with error 131047, but a template always goes through.

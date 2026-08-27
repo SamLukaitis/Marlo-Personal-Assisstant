@@ -2,9 +2,11 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 
 const mockIngestEmailAttachment = vi.fn();
 const mockIngestEmailBodyReceipt = vi.fn();
+const mockSendSavedDocumentFile = vi.fn();
 vi.mock("../services/documents.js", () => ({
   ingestEmailAttachment: (...args: unknown[]) => mockIngestEmailAttachment(...args),
   ingestEmailBodyReceipt: (...args: unknown[]) => mockIngestEmailBodyReceipt(...args),
+  sendSavedDocumentFile: (...args: unknown[]) => mockSendSavedDocumentFile(...args),
 }));
 
 const mockHubGetMessage = vi.fn();
@@ -474,6 +476,40 @@ describe("extract_email_attachment dispatch", () => {
     });
 
     expect(result).toEqual({ error: expect.stringContaining("index") });
+  });
+});
+
+describe("send_document dispatch", () => {
+  beforeEach(() => {
+    mockSendSavedDocumentFile.mockReset();
+  });
+
+  it("refuses without a phone (web chat/eval callers) before calling sendSavedDocumentFile", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("send-doc-no-phone"));
+
+    const result = await runTool(user.id, "send_document", { document_id: 1 });
+
+    expect(result).toEqual({ error: expect.stringContaining("WhatsApp conversation") });
+    expect(mockSendSavedDocumentFile).not.toHaveBeenCalled();
+  });
+
+  it("passes ownerId/phone/document_id through and reports success", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("send-doc-ok"));
+    mockSendSavedDocumentFile.mockResolvedValue({ ok: true });
+
+    const result = await runTool(user.id, "send_document", { document_id: 42 }, "447000000001");
+
+    expect(mockSendSavedDocumentFile).toHaveBeenCalledWith(user.id, "447000000001", 42);
+    expect(result).toEqual({ ok: true });
+  });
+
+  it("surfaces a specific error when there's no original file to send", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("send-doc-no-original"));
+    mockSendSavedDocumentFile.mockResolvedValue({ ok: false, reason: "no_original_file" });
+
+    const result = await runTool(user.id, "send_document", { document_id: 7 }, "447000000001");
+
+    expect(result).toEqual({ error: expect.stringContaining("no original photo") });
   });
 });
 

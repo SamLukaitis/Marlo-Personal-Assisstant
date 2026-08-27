@@ -83,7 +83,7 @@ describe("handlePendingActionReply", () => {
     });
 
     expect(result).toBe(true);
-    expect(runTool).toHaveBeenCalledWith(1, "archive_messages", { account_id: 1, query: "from:nike" });
+    expect(runTool).toHaveBeenCalledWith(1, "archive_messages", { account_id: 1, query: "from:nike" }, "44700");
     expect(sendWhatsAppMessage).toHaveBeenCalledWith("44700", "✓ Archived 3 messages.");
   });
 
