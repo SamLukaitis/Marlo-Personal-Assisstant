@@ -209,6 +209,21 @@ export async function googleGetMessage(
     const unified = toUnified(account, full.data);
     unified.body = extractBody(full.data.payload).slice(0, 20000);
     unified.attachments = extractAttachmentMetas(full.data.payload);
+    // TEMP diagnostic (investigating a reported "email body came back empty" bug, 2026-08-27):
+    // extractBody has no logging on its own, so a payload shape it doesn't handle fails silently.
+    // Remove once that's root-caused — see docs/superpowers/plans/2026-08-27-whatsapp-session-handover.md.
+    if (!unified.body && full.data.payload) {
+      const shape: { mimeType: string; hasData: boolean; filename: string }[] = [];
+      const walk = (p: gmail_v1.Schema$MessagePart) => {
+        shape.push({ mimeType: p.mimeType ?? "?", hasData: !!p.body?.data, filename: p.filename ?? "" });
+        p.parts?.forEach(walk);
+      };
+      walk(full.data.payload);
+      console.error(
+        `google: extractBody returned empty (message ${messageId}, subject "${unified.subject}") — MIME shape:`,
+        JSON.stringify(shape)
+      );
+    }
     return unified;
   } catch {
     return null;
