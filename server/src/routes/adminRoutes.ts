@@ -69,15 +69,24 @@ adminRoutes.post("/api/admin/reset-test-phone", (req, res) => {
   deletePendingRegistration(phone);
 
   const ownerId = resolveOwnerByPhone(phone);
-  if (ownerId !== null) {
-    const { deletedDocumentPaths } = deleteUserCompletely(ownerId);
-    for (const p of deletedDocumentPaths) {
-      try {
-        fs.unlinkSync(p);
-      } catch {
-        // best-effort — a missing file on disk shouldn't block the rest of the reset
+  try {
+    if (ownerId !== null) {
+      const { deletedDocumentPaths } = deleteUserCompletely(ownerId);
+      for (const p of deletedDocumentPaths) {
+        try {
+          fs.unlinkSync(p);
+        } catch {
+          // best-effort — a missing file on disk shouldn't block the rest of the reset
+        }
       }
     }
+  } catch (err) {
+    // Surface the real DB error (e.g. a newly-added owner_id-referencing table this purge
+    // hasn't been taught to clear yet) instead of letting it fall through to Express's default
+    // HTML error page, which the client can't parse and reports as a generic failure.
+    console.error("admin: reset-test-phone failed", err);
+    res.status(500).json({ error: (err as Error).message });
+    return;
   }
 
   res.json({ ok: true, hadAccount: ownerId !== null });

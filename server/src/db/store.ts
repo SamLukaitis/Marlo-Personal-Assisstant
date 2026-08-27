@@ -1608,6 +1608,8 @@ export function deleteUserCompletely(ownerId: number): { deletedDocumentPaths: s
     db.prepare(`DELETE FROM links WHERE owner_id = ?`).run(ownerId);
     db.prepare(`DELETE FROM alerted_messages WHERE owner_id = ?`).run(ownerId);
     db.prepare(`DELETE FROM user_enabled_tools WHERE owner_id = ?`).run(ownerId);
+    db.prepare(`DELETE FROM pending_setup WHERE owner_id = ?`).run(ownerId);
+    db.prepare(`DELETE FROM pending_actions WHERE owner_id = ?`).run(ownerId);
     db.prepare(`DELETE FROM user_phone_numbers WHERE user_id = ?`).run(ownerId);
     db.prepare(`DELETE FROM sessions WHERE user_id = ?`).run(ownerId);
     db.prepare(`DELETE FROM users WHERE id = ?`).run(ownerId);
