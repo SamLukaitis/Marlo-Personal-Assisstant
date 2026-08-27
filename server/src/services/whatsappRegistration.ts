@@ -233,7 +233,8 @@ async function redirectToSetup(phone: string): Promise<void> {
 // incoming message. Media messages during registration get a short redirect — ingestWhatsAppMedia
 // requires a resolved ownerId, which doesn't exist yet at this point. Interactive (button tap)
 // messages are only meaningful at the awaiting_provider step; anywhere else they get the same
-// redirect as a mistimed media message.
+// redirect as a mistimed media message. Unsupported types (location, voice, sticker, ...) get the
+// same redirect too — there's no registration state to advance from one of these either.
 export async function handlePendingRegistration(message: IncomingWhatsAppMessage): Promise<void> {
   const phone = message.from;
   let row = getPendingRegistration(phone);
@@ -252,7 +253,7 @@ export async function handlePendingRegistration(message: IncomingWhatsAppMessage
     return;
   }
 
-  if (message.kind === "media") {
+  if (message.kind === "media" || message.kind === "unsupported") {
     await redirectToSetup(phone);
     return;
   }

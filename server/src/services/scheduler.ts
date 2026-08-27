@@ -7,6 +7,7 @@ import {
   listAllUserIds,
   getEnabledTools,
   deleteExpiredPendingActions,
+  deleteExpiredSeenWamids,
 } from "../db/store.js";
 import { isWhatsAppConfigured } from "../providers/whatsapp.js";
 import { sendProactiveMessage } from "./outbound.js";
@@ -125,6 +126,7 @@ async function runImportantEmailAlertsCheckForUser(ownerId: number): Promise<voi
 // block or crash another tenant's briefing/alerts.
 async function tick(): Promise<void> {
   deleteExpiredPendingActions();
+  deleteExpiredSeenWamids();
   for (const ownerId of listAllUserIds()) {
     await runDailyCheckForUser(ownerId).catch((err) =>
       console.error(`scheduler: daily check failed for user ${ownerId}`, err)

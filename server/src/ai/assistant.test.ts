@@ -189,6 +189,18 @@ describe("buildSystemPrompt", () => {
     expect(prompt).toContain("- The Acme account is my priority business");
     expect(prompt).not.toContain("reminder set for");
   });
+
+  it("includes the rolling conversation summary when one is passed", () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("prompt-conv-summary"));
+    const prompt = buildSystemPrompt(user.id, "The user mentioned their flight to Lisbon was delayed to 6pm.");
+    expect(prompt).toContain("The user mentioned their flight to Lisbon was delayed to 6pm.");
+  });
+
+  it("omits any conversation-summary framing when none is passed", () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("prompt-conv-summary-absent"));
+    const prompt = buildSystemPrompt(user.id);
+    expect(prompt).not.toContain("Earlier in this conversation");
+  });
 });
 
 describe("runTool defense-in-depth", () => {

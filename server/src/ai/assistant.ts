@@ -19,6 +19,7 @@ import {
   setToolEnabled,
   TOOL_KEYS,
   createPendingAction,
+  getConversationSummary,
   type ToolKey,
   type DocumentRow,
 } from "../db/store.js";
@@ -79,10 +80,13 @@ function chooseModel(latestUserMessage: string): string {
   return MODEL_COMPLEX; // unmatched phrasing defaults to the safer tier, not the cheapest
 }
 
-// How many prior turns get resent as raw history. Older turns are neither summarized nor kept
-// — durable facts are expected to live in memory notes (via the `remember` tool) instead, so
-// this just bounds per-call token cost rather than trying to preserve everything forever.
-export const MAX_HISTORY_MESSAGES = 12;
+// How many prior turns get resent as raw history. Anything older than this is no longer sent
+// verbatim, but for WhatsApp conversations it isn't lost either — see
+// services/conversationSummary.ts, which rolls it into a compact running summary injected into
+// the system prompt instead (buildSystemPrompt's conversationSummary param). Durable standing
+// facts (preferences, which account is which) still belong in memory notes via the `remember`
+// tool regardless — the rolling summary is conversational continuity, not a replacement for that.
+export const MAX_HISTORY_MESSAGES = 24;
 
 // search_messages is a targeted query, not a recent-inbox dump — 10 was too shallow (a single
 // broad topic search routinely needs to scan past newsletters/automated mail to find the actual
@@ -1074,7 +1078,7 @@ function buildRules(enabled: Set<ToolKey>): string {
   return ["Rules:", ...base, ...(enabled.has("travel") ? travel : []), ...tail].join("\n");
 }
 
-export function buildSystemPrompt(ownerId: number): string {
+export function buildSystemPrompt(ownerId: number, conversationSummary?: string): string {
   const accounts = listAccounts(ownerId);
   const persona = getSetting(ownerId, "persona");
   const name = getSetting(ownerId, "assistant_name") ?? "Assistant";
@@ -1139,6 +1143,9 @@ export function buildSystemPrompt(ownerId: number): string {
       `this conversation:\n${memoryList}`,
     xeroStatus,
     pendingInvoiceStatus,
+    conversationSummary
+      ? `Earlier in this conversation, before what's shown in the message history below:\n${conversationSummary}`
+      : "",
     onboardingNote,
     buildRules(getEnabledTools(ownerId)),
   ]
@@ -1146,9 +1153,17 @@ export function buildSystemPrompt(ownerId: number): string {
     .join("\n\n");
 }
 
-export async function runAssistantChat(ownerId: number, history: ChatMessage[]): Promise<AssistantReply> {
+// phone is optional and WhatsApp-only (web chat/eval callers omit it) — when given, it's used
+// purely to look up the rolling conversation summary (services/conversationSummary.ts writes it,
+// keyed by phone) to fold into the system prompt. Not otherwise used in this function.
+export async function runAssistantChat(
+  ownerId: number,
+  history: ChatMessage[],
+  phone?: string
+): Promise<AssistantReply> {
   const anthropic = getClient();
-  const system = buildSystemPrompt(ownerId);
+  const conversationSummary = phone ? (getConversationSummary(phone)?.summary ?? undefined) : undefined;
+  const system = buildSystemPrompt(ownerId, conversationSummary);
 
   // Bound history defensively here (not just at the WhatsApp DB-read site) so the web chat
   // route — which resends whatever the client has accumulated — gets the same cap.

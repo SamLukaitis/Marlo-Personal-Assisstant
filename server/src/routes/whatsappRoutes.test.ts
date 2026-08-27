@@ -46,6 +46,9 @@ vi.mock("../services/whatsappReply.js", () => ({
 vi.mock("../services/actionHandlers.js", () => ({
   handlePendingActionReply: vi.fn().mockResolvedValue(false),
 }));
+vi.mock("../services/conversationSummary.js", () => ({
+  maybeUpdateConversationSummary: vi.fn().mockResolvedValue(undefined),
+}));
 
 const { sendWhatsAppMessage } = await import("../providers/whatsapp.js");
 const { resolveOwnerByPhone } = await import("../db/store.js");
@@ -53,6 +56,7 @@ const { runAssistantChat } = await import("../ai/assistant.js");
 const { handlePostConnectSetupReply } = await import("../services/postConnectSetup.js");
 const { sendAssistantReply } = await import("../services/whatsappReply.js");
 const { handlePendingActionReply } = await import("../services/actionHandlers.js");
+const { maybeUpdateConversationSummary } = await import("../services/conversationSummary.js");
 const { handleIncoming } = await import("./whatsappRoutes.js");
 
 beforeEach(() => {
@@ -62,6 +66,7 @@ beforeEach(() => {
   vi.mocked(handlePostConnectSetupReply).mockReset().mockResolvedValue(false);
   vi.mocked(sendAssistantReply).mockClear();
   vi.mocked(handlePendingActionReply).mockReset().mockResolvedValue(false);
+  vi.mocked(maybeUpdateConversationSummary).mockClear().mockResolvedValue(undefined);
 });
 
 describe("handleIncoming — help trigger for already-registered users", () => {
@@ -115,6 +120,22 @@ describe("handleIncoming — post-connect setup button taps", () => {
   });
 });
 
+describe("handleIncoming — unsupported message types", () => {
+  it("logs the raw type and replies with a friendly one-liner, without touching the assistant", async () => {
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+    await handleIncoming({ kind: "unsupported", from: "447900000009", messageId: "m9", type: "location" });
+
+    expect(logSpy).toHaveBeenCalledWith(expect.stringContaining("unsupported"), expect.objectContaining({ type: "location" }));
+    expect(runAssistantChat).not.toHaveBeenCalled();
+    expect(sendWhatsAppMessage).toHaveBeenCalledWith(
+      "447900000009",
+      "I can't read that message type yet — text me instead."
+    );
+    logSpy.mockRestore();
+  });
+});
+
 describe("handleIncoming — routes runAssistantChat's result through sendAssistantReply", () => {
   it("passes the full AssistantReply through, not just .text", async () => {
     vi.mocked(runAssistantChat).mockResolvedValue({ text: "a real reply" });
@@ -122,6 +143,24 @@ describe("handleIncoming — routes runAssistantChat's result through sendAssist
     await handleIncoming({ kind: "text", from: "447900000005", text: "what's on my calendar today?", messageId: "m6" });
 
     expect(sendAssistantReply).toHaveBeenCalledWith(42, "447900000005", { text: "a real reply" });
+  });
+});
+
+describe("handleIncoming — rolling conversation summary", () => {
+  it("kicks off a summary update for the sender's phone on every text message", async () => {
+    vi.mocked(runAssistantChat).mockResolvedValue({ text: "reply" });
+
+    await handleIncoming({ kind: "text", from: "447900000010", text: "what's on my calendar today?", messageId: "m10" });
+
+    expect(maybeUpdateConversationSummary).toHaveBeenCalledWith("447900000010");
+  });
+
+  it("passes the sender's phone through to runAssistantChat so it can look up the summary", async () => {
+    vi.mocked(runAssistantChat).mockResolvedValue({ text: "reply" });
+
+    await handleIncoming({ kind: "text", from: "447900000011", text: "what's on my calendar today?", messageId: "m11" });
+
+    expect(runAssistantChat).toHaveBeenCalledWith(42, expect.anything(), "447900000011");
   });
 });
 

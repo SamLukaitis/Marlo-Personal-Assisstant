@@ -622,6 +622,34 @@ db.exec(`
   );
 `);
 
+// Durable dedupe ledger for inbound webhook deliveries. Meta retries a webhook POST (ours or its
+// own timeout) for up to 7 days, and a full assistant/tool-calling round trip is easily slow
+// enough to look like a failure to Meta — so without this, a retry re-runs the whole handler
+// (double-sends replies, double-archives, etc). Was an in-memory Set capped at 500 in
+// whatsappRoutes.ts; that lost its dedupe history on every restart/deploy, right when a burst of
+// retries is most likely (Meta retries faster after a fresh connection failure). A DB row survives
+// restarts and naturally handles concurrent webhook POSTs via INSERT OR IGNORE's atomicity.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS seen_wamids (
+    wamid TEXT PRIMARY KEY,
+    seen_at INTEGER NOT NULL
+  );
+`);
+
+// One rolling summary per WhatsApp conversation, covering everything older than the raw history
+// window (ai/assistant.ts's MAX_HISTORY_MESSAGES) sent to the model on each turn. See
+// services/conversationSummary.ts, which is the only writer; ai/assistant.ts's buildSystemPrompt
+// is the reader. summarized_through_id is the highest whatsapp_messages.id already folded in, so
+// the next update knows where to resume from.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS whatsapp_conversation_summaries (
+    phone TEXT PRIMARY KEY,
+    summary TEXT NOT NULL,
+    summarized_through_id INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+  );
+`);
+
 export const uploadsDir = path.join(dataDir, "uploads");
 if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
 
@@ -925,6 +953,57 @@ export function appendWhatsAppMessage(
   db.prepare(
     `INSERT INTO whatsapp_messages (owner_id, phone, role, content, created_at) VALUES (?, ?, ?, ?, ?)`
   ).run(ownerId, phone, role, content, Date.now());
+}
+
+export interface ConversationSummaryRow {
+  phone: string;
+  summary: string;
+  summarizedThroughId: number;
+  updatedAt: number;
+}
+
+export function getConversationSummary(phone: string): ConversationSummaryRow | null {
+  const row = db
+    .prepare(
+      `SELECT phone, summary, summarized_through_id AS summarizedThroughId, updated_at AS updatedAt
+       FROM whatsapp_conversation_summaries WHERE phone = ?`
+    )
+    .get(phone) as ConversationSummaryRow | undefined;
+  return row ?? null;
+}
+
+export function saveConversationSummary(phone: string, summary: string, summarizedThroughId: number): void {
+  db.prepare(
+    `INSERT INTO whatsapp_conversation_summaries (phone, summary, summarized_through_id, updated_at)
+     VALUES (?, ?, ?, ?)
+     ON CONFLICT(phone) DO UPDATE SET
+       summary = excluded.summary,
+       summarized_through_id = excluded.summarized_through_id,
+       updated_at = excluded.updated_at`
+  ).run(phone, summary, summarizedThroughId, Date.now());
+}
+
+// The batch of messages that has fallen out of the raw history window since the last summary
+// update: strictly newer than `afterId` (the previous summarizedThroughId, or 0 for "never
+// summarized"), strictly older than the current window — i.e. excluding the most recent
+// `keepRecent` rows, which the model still sees directly and don't need summarizing yet. Empty
+// once total history still fits inside the raw window (nothing has fallen out yet).
+export function getWhatsAppBacklogForSummary(
+  phone: string,
+  afterId: number,
+  keepRecent: number
+): WhatsAppMessageRow[] {
+  const recentIds = db
+    .prepare(`SELECT id FROM whatsapp_messages WHERE phone = ? ORDER BY id DESC LIMIT ?`)
+    .all(phone, keepRecent) as { id: number }[];
+  if (recentIds.length < keepRecent) return [];
+  const windowStartId = recentIds[recentIds.length - 1].id;
+  return db
+    .prepare(
+      `SELECT id, phone, role, content, created_at AS createdAt FROM whatsapp_messages
+       WHERE phone = ? AND id > ? AND id < ? ORDER BY id ASC`
+    )
+    .all(phone, afterId, windowStartId) as WhatsAppMessageRow[];
 }
 
 export function normalizePhone(phone: string): string {
@@ -1878,4 +1957,24 @@ export function consumePendingAction(id: string, ownerId: number): PendingAction
 // tick (not per user — this isn't scoped to a tenant).
 export function deleteExpiredPendingActions(): void {
   db.prepare(`DELETE FROM pending_actions WHERE expires_at < ?`).run(Date.now());
+}
+
+const SEEN_WAMID_RETENTION_MS = 8 * 24 * 60 * 60 * 1000; // Meta retries for 7 days; +1 day margin.
+
+// Atomically records a wamid as seen and reports whether this is the first time — the same
+// check-and-insert `alreadyProcessed` used to do with an in-memory Set, but race-safe across
+// concurrent webhook POSTs (INSERT OR IGNORE either inserts or no-ops, never both callers "win")
+// and durable across restarts. Returns true (process it) the first time, false (skip — a Meta
+// retry) every time after.
+export function markWamidSeenIfNew(wamid: string): boolean {
+  const result = db
+    .prepare(`INSERT OR IGNORE INTO seen_wamids (wamid, seen_at) VALUES (?, ?)`)
+    .run(wamid, Date.now());
+  return result.changes > 0;
+}
+
+// Hygiene only, same shape as deleteExpiredPendingActions — dedupe correctness comes from the
+// primary key, not from this. Called once per scheduler tick to keep the table bounded.
+export function deleteExpiredSeenWamids(): void {
+  db.prepare(`DELETE FROM seen_wamids WHERE seen_at < ?`).run(Date.now() - SEEN_WAMID_RETENTION_MS);
 }
