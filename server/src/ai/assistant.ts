@@ -18,6 +18,7 @@ import {
   getEnabledTools,
   setToolEnabled,
   TOOL_KEYS,
+  createPendingAction,
   type ToolKey,
   type DocumentRow,
 } from "../db/store.js";
@@ -325,7 +326,7 @@ const ALWAYS_ON_TOOLS: Anthropic.Tool[] = [
   {
     name: "delete_calendar_event",
     description:
-      "Delete/cancel a calendar event. Get the event_id from list_upcoming_events first. Confirm with the user before deleting unless they were explicit about which event.",
+      "Delete/cancel a calendar event. Get the event_id from list_upcoming_events first. Confirm with the user via ask_user_choice(mode=\"confirm\") before deleting unless they were explicit about which event — don't ask in prose.",
     input_schema: {
       type: "object",
       properties: {
@@ -539,6 +540,37 @@ const ALWAYS_ON_TOOLS: Anthropic.Tool[] = [
         confirm: { type: "boolean" },
       },
       required: ["confirm"],
+    },
+  },
+  {
+    name: "ask_user_choice",
+    description:
+      "Ask the user a closed-set question and get back a real tappable answer (WhatsApp buttons or a list) instead of free text. Call this ALONE — the only tool call in your turn — after you already have whatever information you need (e.g. call search_contacts first, look at the results, then call ask_user_choice in your NEXT turn once you can see them). Use mode='confirm' before a bulk or destructive action: pass confirm_tool and confirm_input set to the exact tool call you'd make if the user says yes — you do not execute it yourself, it only runs if they tap Yes. Use mode='resume' to disambiguate between 2-10 candidates (e.g. multiple contacts matching a name): pass one option per candidate; whichever one is tapped comes back to you as a normal follow-up message.",
+    input_schema: {
+      type: "object",
+      properties: {
+        question: { type: "string", description: "The question to show the user." },
+        mode: { type: "string", enum: ["confirm", "resume"] },
+        options: {
+          type: "array",
+          description:
+            "Required for mode='resume': 2-10 choices to present. Not used for mode='confirm' (always rendered as Yes/No).",
+          items: {
+            type: "object",
+            properties: { label: { type: "string" } },
+            required: ["label"],
+          },
+        },
+        confirm_tool: {
+          type: "string",
+          description: "Required for mode='confirm': the exact tool name to call if the user taps Yes.",
+        },
+        confirm_input: {
+          type: "object",
+          description: "Required for mode='confirm': the exact input to pass to confirm_tool if the user taps Yes.",
+        },
+      },
+      required: ["question", "mode"],
     },
   },
 ];
@@ -924,6 +956,70 @@ export async function runTool(ownerId: number, name: string, input: Record<strin
   }
 }
 
+export interface PendingChoiceButton {
+  key: string;
+  label: string;
+}
+
+export interface AssistantReply {
+  text: string;
+  choice?: {
+    actionId: string;
+    question: string;
+    mode: "confirm" | "resume";
+    buttons: PendingChoiceButton[];
+  };
+}
+
+// Builds the AssistantReply for an ask_user_choice tool call and persists the pending_actions
+// row it refers to. Never called for anything else — see runAssistantChat's loop below, which
+// intercepts ask_user_choice before it would otherwise reach runTool's generic dispatch (runTool
+// has no case for it and returns "unknown tool" if ever called directly — see its test).
+function buildChoiceReply(ownerId: number, input: Record<string, unknown>): AssistantReply {
+  const question = input.question as string;
+  const mode = input.mode as "confirm" | "resume";
+
+  if (mode === "confirm") {
+    const tool = input.confirm_tool as string;
+    const confirmInput = (input.confirm_input as Record<string, unknown>) ?? {};
+    const actionId = createPendingAction(
+      ownerId,
+      "confirm",
+      question,
+      JSON.stringify({ tool, input: confirmInput })
+    );
+    return {
+      text: `${question} Reply yes or no.`,
+      choice: {
+        actionId,
+        question,
+        mode: "confirm",
+        buttons: [
+          { key: "yes", label: "Yes" },
+          { key: "no", label: "No" },
+        ],
+      },
+    };
+  }
+
+  const options = (input.options as { label: string }[] | undefined) ?? [];
+  const actionId = createPendingAction(
+    ownerId,
+    "resume",
+    question,
+    JSON.stringify({ options: options.map((o) => o.label) })
+  );
+  return {
+    text: `${question}\n${options.map((o, i) => `${i + 1}. ${o.label}`).join("\n")}`,
+    choice: {
+      actionId,
+      question,
+      mode: "resume",
+      buttons: options.map((o, i) => ({ key: String(i), label: o.label })),
+    },
+  };
+}
+
 export interface ChatMessage {
   role: "user" | "assistant";
   content: string;
@@ -932,13 +1028,15 @@ export interface ChatMessage {
 function buildRules(enabled: Set<ToolKey>): string {
   const base = [
     "- Always look up real data with your tools before answering questions about email, calendar, or files — never invent contents.",
+    "- ask_user_choice renders real tappable buttons/a list on WhatsApp instead of asking in prose — use it for confirm-before-destructive-action and for disambiguating between candidates (see the archive and search_contacts rules below for the two concrete cases). Call it alone, as the only tool call in your turn.",
     "- Never state that something does NOT exist (no booking, no email, nothing on file, calendar is empty, etc.) without calling the relevant tool in THIS turn first. You do not retain tool results from earlier turns — only your own past reply text — so a memory of having checked before is not verification. If a user pushes back on something you said, that is a signal to re-run the tool, not to just apologize or reverse yourself from reasoning alone.",
     "- list_bookings/list_expenses only cover confirmations and receipts that were already saved as a document AND successfully extracted into a structured record — they do NOT search email. Before telling the user there's no hotel, flight, car rental, invoice, or payment due, also check search_messages/list_recent_messages: the confirmation or invoice email may exist even though nothing has been extracted into list_bookings/list_expenses yet. An empty list_bookings/list_expenses result on its own is not enough to say something doesn't exist.",
     "- For a broad or topic-level search (a country, region, or trip name — e.g. \"South America\", \"my Lisbon trip\"), call search_messages multiple times with different concrete sub-terms — city/place names, likely vendor names (airlines, hotels, booking sites), reference codes you already know — before concluding nothing was found. A single broad query is not sufficient; a broad topic phrase rarely appears verbatim in a real subject line.",
     "- You can create email drafts but can never send email. After creating a draft, tell the user to review and send it from their mailbox.",
     "- You can create, edit, and delete calendar events directly on the user's own calendar — these are low-risk and reversible. You can never invite other people to an event; calendar events you create are personal-only.",
-    '- You can archive emails and apply labels/categories directly — archiving is fully reversible (the email is just removed from the inbox, never deleted) so you don\'t need to ask permission first, but do confirm if the query is broad or ambiguous (e.g. "archive everything" with no filter).',
+    '- You can archive emails and apply labels/categories directly — archiving is fully reversible (the email is just removed from the inbox, never deleted) so you don\'t need to ask permission first, but when the query is broad or ambiguous (e.g. "archive everything" with no filter), confirm first with ask_user_choice(mode="confirm", confirm_tool="archive_messages", confirm_input=<the exact call>) instead of asking in prose.',
     "- Use search_contacts to resolve a name to an email address before drafting to someone when you don't already have their address.",
+    "- If search_contacts (or any lookup) returns more than one plausible match and it's not obvious which one is meant, use ask_user_choice(mode=\"resume\") with one option per candidate instead of listing them in prose and waiting for a typed reply.",
     "- Use the remember tool proactively whenever the user shares something worth recalling later (preferences, which account is which, standing instructions) — don't wait to be asked.",
     '- Use search_documents/list_recent_documents when the user asks about something they photographed or sent via WhatsApp (boarding passes, licenses, tickets, receipts) — e.g. "when did I fly to X" or "what\'s the code on my license".',
     "- When the user asks about a trip, booking, or receipt and get_message shows a relevant attachment (ticket, confirmation, visa, invoice), call extract_email_attachment on it yourself, immediately, without asking first — the same way you'd read the email body without asking. Do this for every relevant attachment you find in the same turn, not one at a time. Only ask first if there are an unusually large number of attachments (10+) to extract at once. Don't just describe the attachment's filename and stop there, and don't stop to ask permission to do something this low-risk and reversible.",
@@ -1033,7 +1131,7 @@ export function buildSystemPrompt(ownerId: number): string {
     .join("\n\n");
 }
 
-export async function runAssistantChat(ownerId: number, history: ChatMessage[]): Promise<string> {
+export async function runAssistantChat(ownerId: number, history: ChatMessage[]): Promise<AssistantReply> {
   const anthropic = getClient();
   const system = buildSystemPrompt(ownerId);
 
@@ -1068,7 +1166,15 @@ export async function runAssistantChat(ownerId: number, history: ChatMessage[]):
       const text = response.content.find(
         (b): b is Anthropic.TextBlock => b.type === "text"
       );
-      return text?.text ?? "";
+      return { text: text?.text ?? "" };
+    }
+
+    // ask_user_choice is a hard stop, not a tool result to feed back to the model — the system
+    // prompt tells the model to call it alone, so any other tool_use blocks in this same
+    // response are ignored rather than run.
+    const choiceUse = toolUses.find((t) => t.name === "ask_user_choice");
+    if (choiceUse) {
+      return buildChoiceReply(ownerId, choiceUse.input as Record<string, unknown>);
     }
 
     messages.push({ role: "assistant", content: response.content });
@@ -1100,7 +1206,7 @@ export async function runAssistantChat(ownerId: number, history: ChatMessage[]):
     messages.push({ role: "user", content: toolResults });
   }
 
-  return "I wasn't able to finish that within my tool-call limit — try a more specific request.";
+  return { text: "I wasn't able to finish that within my tool-call limit — try a more specific request." };
 }
 
 // Narrow, tool-free assistant call used by the WhatsApp registration state machine

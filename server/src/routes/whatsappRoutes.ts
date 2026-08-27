@@ -92,7 +92,7 @@ async function handleLink(ownerId: number, from: string, url: string): Promise<v
     history.push({ role: "user", content: docContext });
   }
 
-  const reply = await runAssistantChat(ownerId, history);
+  const reply = (await runAssistantChat(ownerId, history)).text;
   appendWhatsAppMessage(ownerId, from, "assistant", reply);
   await sendWhatsAppMessage(from, reply);
 }
@@ -134,7 +134,7 @@ async function handleText(ownerId: number, from: string, text: string): Promise<
     content: m.content,
   }));
 
-  const reply = await runAssistantChat(ownerId, history);
+  const reply = (await runAssistantChat(ownerId, history)).text;
   appendWhatsAppMessage(ownerId, from, "assistant", reply);
   await sendWhatsAppMessage(from, reply);
 }
@@ -175,7 +175,7 @@ async function handleMedia(
     history.push({ role: "user", content: docContext });
   }
 
-  const reply = await runAssistantChat(ownerId, history);
+  const reply = (await runAssistantChat(ownerId, history)).text;
   appendWhatsAppMessage(ownerId, from, "assistant", reply);
   await sendWhatsAppMessage(from, reply);
 }

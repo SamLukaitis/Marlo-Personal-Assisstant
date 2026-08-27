@@ -547,3 +547,31 @@ describe("buildSystemPrompt extract_email_attachment rule", () => {
     expect(prompt).toContain("extract_email_attachment");
   });
 });
+
+describe("ask_user_choice tool", () => {
+  it("is always available with mode/options/confirm_tool/confirm_input in its schema", () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("ask-user-choice-schema"));
+    const tool = buildToolsForOwner(user.id).find((t) => t.name === "ask_user_choice");
+    expect(tool).toBeDefined();
+    const props = (tool!.input_schema as { properties: Record<string, unknown> }).properties;
+    expect(props).toHaveProperty("question");
+    expect(props).toHaveProperty("mode");
+    expect(props).toHaveProperty("options");
+    expect(props).toHaveProperty("confirm_tool");
+    expect(props).toHaveProperty("confirm_input");
+  });
+
+  it("is excluded from runTool's generic dispatch — it must be intercepted before reaching here", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("ask-user-choice-runtool"));
+    const result = await runTool(user.id, "ask_user_choice", {});
+    expect(result).toEqual({ error: "unknown tool: ask_user_choice" });
+  });
+});
+
+describe("buildSystemPrompt ask_user_choice rule", () => {
+  it("instructs the model to confirm archiving via ask_user_choice instead of prose", () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("ask-user-choice-rule"));
+    const prompt = buildSystemPrompt(user.id);
+    expect(prompt).toContain("ask_user_choice");
+  });
+});

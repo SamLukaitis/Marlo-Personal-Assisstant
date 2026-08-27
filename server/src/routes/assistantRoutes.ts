@@ -12,7 +12,7 @@ assistantRoutes.post("/api/assistant/chat", async (req, res) => {
   }
   try {
     const reply = await runAssistantChat((req as unknown as AuthedRequest).userId, history);
-    res.json({ reply });
+    res.json({ reply: reply.text });
   } catch (err) {
     console.error("assistant chat failed", err);
     res.status(500).json({ error: (err as Error).message });

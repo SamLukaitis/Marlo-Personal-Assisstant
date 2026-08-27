@@ -64,7 +64,7 @@ describe("handleIncoming — help trigger for already-registered users", () => {
   });
 
   it("still routes an ordinary message to the real assistant", async () => {
-    vi.mocked(runAssistantChat).mockResolvedValue("a real reply");
+    vi.mocked(runAssistantChat).mockResolvedValue({ text: "a real reply" });
 
     await handleIncoming({ kind: "text", from: "447900000001", text: "what's on my calendar today?", messageId: "m2" });
 
