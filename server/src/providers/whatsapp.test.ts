@@ -129,6 +129,65 @@ describe("extractIncomingMessages — interactive button replies", () => {
   });
 });
 
+describe("extractIncomingMessages — unsupported message types", () => {
+  it("parses a location message into an IncomingUnsupportedMessage carrying its raw type", () => {
+    const payload = {
+      entry: [
+        {
+          changes: [
+            {
+              value: {
+                messages: [
+                  {
+                    from: "447000000001",
+                    id: "wamid.loc",
+                    type: "location",
+                    location: { latitude: 51.5, longitude: -0.1 },
+                  },
+                ],
+              },
+            },
+          ],
+        },
+      ],
+    };
+
+    const messages = extractIncomingMessages(payload);
+
+    expect(messages).toEqual([
+      { kind: "unsupported", from: "447000000001", messageId: "wamid.loc", type: "location" },
+    ]);
+  });
+
+  it("parses a sticker message the same way", () => {
+    const payload = {
+      entry: [
+        {
+          changes: [
+            {
+              value: {
+                messages: [{ from: "447000000001", id: "wamid.sticker", type: "sticker" }],
+              },
+            },
+          ],
+        },
+      ],
+    };
+
+    expect(extractIncomingMessages(payload)).toEqual([
+      { kind: "unsupported", from: "447000000001", messageId: "wamid.sticker", type: "sticker" },
+    ]);
+  });
+
+  it("drops a message missing both from and id rather than producing an unusable entry", () => {
+    const payload = {
+      entry: [{ changes: [{ value: { messages: [{ type: "location" }] } }] }],
+    };
+
+    expect(extractIncomingMessages(payload)).toEqual([]);
+  });
+});
+
 describe("sendWhatsAppListMessage", () => {
   it("posts an interactive list message with the given rows", async () => {
     const fetchMock = mockFetchOk();

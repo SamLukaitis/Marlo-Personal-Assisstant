@@ -9,7 +9,13 @@ import {
   extractIncomingMessages,
   type IncomingWhatsAppMessage,
 } from "../providers/whatsapp.js";
-import { resolveOwnerByPhone, recordInboundMessage, getWhatsAppHistory, appendWhatsAppMessage } from "../db/store.js";
+import {
+  resolveOwnerByPhone,
+  recordInboundMessage,
+  getWhatsAppHistory,
+  appendWhatsAppMessage,
+  markWamidSeenIfNew,
+} from "../db/store.js";
 import { runAssistantChat, MAX_HISTORY_MESSAGES } from "../ai/assistant.js";
 import { ingestWhatsAppMedia, ingestWhatsAppLink } from "../services/documents.js";
 import { findSaveableUrl, type FetchFailureReason } from "../services/safeLinkFetcher.js";
@@ -17,6 +23,7 @@ import { handlePendingRegistration, isHelpTrigger, MARLOWE_HELP_TEXT } from "../
 import { handlePostConnectSetupReply } from "../services/postConnectSetup.js";
 import { sendAssistantReply } from "../services/whatsappReply.js";
 import { handlePendingActionReply } from "../services/actionHandlers.js";
+import { maybeUpdateConversationSummary } from "../services/conversationSummary.js";
 import { isVersionTrigger, buildVersionText } from "../services/version.js";
 
 export const whatsappRoutes = Router();
@@ -34,17 +41,12 @@ whatsappRoutes.get("/webhooks/whatsapp", (req, res) => {
   }
 });
 
-// Bounded recent-message-ID cache to ignore Meta's webhook retries (it retries if we're slow
-// to ACK, which we always will be relative to a full Claude tool-calling round trip).
-const seenMessageIds = new Set<string>();
+// Durable dedupe (db/store.ts's seen_wamids) to ignore Meta's webhook retries (it retries if
+// we're slow to ACK, which we always will be relative to a full Claude tool-calling round trip,
+// and keeps retrying for up to 7 days) — survives restarts, unlike the in-memory cache this used
+// to be.
 function alreadyProcessed(id: string): boolean {
-  if (seenMessageIds.has(id)) return true;
-  seenMessageIds.add(id);
-  if (seenMessageIds.size > 500) {
-    const first = seenMessageIds.values().next().value;
-    if (first !== undefined) seenMessageIds.delete(first);
-  }
-  return false;
+  return !markWamidSeenIfNew(id);
 }
 
 // Friendly, non-leaky wording per failure reason — never expose the raw fetch/DNS error detail
@@ -94,7 +96,7 @@ async function handleLink(ownerId: number, from: string, url: string): Promise<v
     history.push({ role: "user", content: docContext });
   }
 
-  const reply = await runAssistantChat(ownerId, history);
+  const reply = await runAssistantChat(ownerId, history, from);
   await sendAssistantReply(ownerId, from, reply);
 }
 
@@ -135,7 +137,7 @@ async function handleText(ownerId: number, from: string, text: string): Promise<
     content: m.content,
   }));
 
-  const reply = await runAssistantChat(ownerId, history);
+  const reply = await runAssistantChat(ownerId, history, from);
   await sendAssistantReply(ownerId, from, reply);
 }
 
@@ -175,7 +177,7 @@ async function handleMedia(
     history.push({ role: "user", content: docContext });
   }
 
-  const reply = await runAssistantChat(ownerId, history);
+  const reply = await runAssistantChat(ownerId, history, from);
   await sendAssistantReply(ownerId, from, reply);
 }
 
@@ -206,6 +208,13 @@ export async function handleIncoming(message: IncomingWhatsAppMessage): Promise<
   // to decide whether a later proactive push can go out as free-form text or needs a template.
   recordInboundMessage(message.from);
 
+  // Fire-and-forget, same as the typing indicator above — folds any backlog that's fallen out of
+  // the raw history window into the rolling summary (services/conversationSummary.ts). Cheap to
+  // call every time (usually a no-op); never let it block or fail message handling.
+  maybeUpdateConversationSummary(message.from).catch((err) =>
+    console.error("whatsapp: conversation summary update failed", err)
+  );
+
   // A tap answering one of postConnectSetup's yes/no button questions (daily briefing, Teams,
   // Schengen tracking) — handled entirely there and never reaches the assistant. Returns false for
   // everything else (nothing pending, a stray/late tap, or ordinary text/media), which falls
@@ -218,6 +227,14 @@ export async function handleIncoming(message: IncomingWhatsAppMessage): Promise<
       await handleText(ownerId, message.from, message.text);
     } else if (message.kind === "media") {
       await handleMedia(ownerId, message.from, message.mediaId, message.mimeType, message.filename, message.caption);
+    } else if (message.kind === "unsupported") {
+      // Location, voice/audio, sticker, contacts, reaction, video, etc. — nothing reads these
+      // yet. Tell the user plainly rather than staying silent, and log the raw type so it's
+      // visible which ones are actually showing up in practice.
+      console.log("whatsapp: unsupported message type", { ownerId, type: message.type });
+      const reply = "I can't read that message type yet — text me instead.";
+      appendWhatsAppMessage(ownerId, message.from, "assistant", reply);
+      await sendWhatsAppMessage(message.from, reply);
     } else {
       // A button tap with nothing pending for this owner — nothing sends buttons outside
       // registration/post-connect setup today, so this is always a stray/late tap. Log and ignore
