@@ -1980,8 +1980,10 @@ export function deleteUserCompletely(ownerId: number): { deletedDocumentPaths: s
     db.prepare(`DELETE FROM briefings WHERE owner_id = ?`).run(ownerId);
     db.prepare(`DELETE FROM memory_notes WHERE owner_id = ?`).run(ownerId);
     db.prepare(`DELETE FROM whatsapp_messages WHERE owner_id = ?`).run(ownerId);
-    db.prepare(`DELETE FROM documents WHERE owner_id = ?`).run(ownerId);
+    // document_match_keys.document_id REFERENCES documents(id) — must be deleted before
+    // documents itself or the FK constraint rejects the documents delete.
     db.prepare(`DELETE FROM document_match_keys WHERE owner_id = ?`).run(ownerId);
+    db.prepare(`DELETE FROM documents WHERE owner_id = ?`).run(ownerId);
     db.prepare(`DELETE FROM travel_checkins WHERE owner_id = ?`).run(ownerId);
     db.prepare(`DELETE FROM entities WHERE owner_id = ?`).run(ownerId);
     db.prepare(`DELETE FROM links WHERE owner_id = ?`).run(ownerId);
