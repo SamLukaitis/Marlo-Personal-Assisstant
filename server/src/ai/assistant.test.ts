@@ -24,6 +24,7 @@ import {
   listMemoryNotes,
   addMemoryNote,
   markMemorySurfaced,
+  listUnmetRequests,
 } from "../db/store.js";
 import { getBriefingSettings, saveBriefingSettings, type BriefingSettings } from "../services/briefing.js";
 import { getXeroForwardingEmail } from "../services/xero.js";
@@ -222,6 +223,26 @@ describe("runTool defense-in-depth", () => {
     const user = findOrCreateUserByEmail(uniqueEmail("defense-remember"));
     const result = await runTool(user.id, "remember", { note: "test note" });
     expect(result).toEqual({ ok: true });
+  });
+});
+
+describe("flag_unmet_request tool", () => {
+  it("logs a web-channel unmet request when no phone is passed", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("unmet-web"));
+    const result = await runTool(user.id, "flag_unmet_request", {
+      summary: "Wanted Marlowe to book a flight — no booking capability exists",
+    });
+    expect(result).toEqual({ ok: true });
+    const logged = listUnmetRequests(true).find((r) => r.ownerId === user.id);
+    expect(logged?.channel).toBe("web");
+    expect(logged?.summary).toBe("Wanted Marlowe to book a flight — no booking capability exists");
+  });
+
+  it("logs a whatsapp-channel unmet request when a phone is passed", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("unmet-whatsapp"));
+    await runTool(user.id, "flag_unmet_request", { summary: "Asked to pay an invoice directly" }, "447700900000");
+    const logged = listUnmetRequests(true).find((r) => r.ownerId === user.id);
+    expect(logged?.channel).toBe("whatsapp");
   });
 });
 

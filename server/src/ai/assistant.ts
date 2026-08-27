@@ -20,6 +20,8 @@ import {
   TOOL_KEYS,
   createPendingAction,
   getConversationSummary,
+  addUnmetRequest,
+  recordApiUsage,
   type ToolKey,
   type DocumentRow,
 } from "../db/store.js";
@@ -59,7 +61,7 @@ import type { UnifiedMessage } from "../providers/types.js";
 // Cheap tier for lookups/summaries, richer tier for anything needing judgment or drafting.
 // No classifier call to pick between them — that would add an extra API round-trip for a
 // decision that keyword matching on the latest message handles for free.
-const MODEL_SIMPLE = process.env.ASSISTANT_MODEL_SIMPLE ?? "claude-haiku-4-5";
+export const MODEL_SIMPLE = process.env.ASSISTANT_MODEL_SIMPLE ?? "claude-haiku-4-5";
 const MODEL_COMPLEX = process.env.ASSISTANT_MODEL_COMPLEX ?? "claude-sonnet-5";
 
 const COMPLEX_PATTERNS = [
@@ -97,7 +99,9 @@ export const SEARCH_MESSAGES_DEFAULT_LIMIT = 30;
 export const LIST_RECENT_MESSAGES_DEFAULT_LIMIT = 20;
 
 let client: Anthropic | null = null;
-function getClient(): Anthropic {
+// Exported so portalRoutes.ts's log-explain endpoint can reuse the same lazily-created client
+// instead of standing up a second one.
+export function getClient(): Anthropic {
   if (!client) {
     if (!process.env.ANTHROPIC_API_KEY) {
       throw new Error("ANTHROPIC_API_KEY is not set — add it to server/.env");
@@ -387,6 +391,18 @@ const ALWAYS_ON_TOOLS: Anthropic.Tool[] = [
         },
       },
       required: ["note"],
+    },
+  },
+  {
+    name: "flag_unmet_request",
+    description:
+      "Call this (alongside your normal honest reply to the user, same turn) whenever the user asked for something you genuinely can't do with your current tools/capabilities — not for things you can do but haven't yet, and not for ordinary clarifying questions. Give a one-sentence summary of what they wanted and why you couldn't help, so the team can see what to build next.",
+    input_schema: {
+      type: "object",
+      properties: {
+        summary: { type: "string", description: "One sentence: what they wanted and why you couldn't help" },
+      },
+      required: ["summary"],
     },
   },
   {
@@ -790,6 +806,9 @@ export async function runTool(
     case "remember":
       addMemoryNote(ownerId, input.note as string, input.triggerAt as string | undefined);
       return { ok: true };
+    case "flag_unmet_request":
+      addUnmetRequest(ownerId, input.summary as string, phone ? "whatsapp" : "web");
+      return { ok: true };
     case "list_needs_attention":
       return hubFlaggedMessages(ownerId);
     case "search_documents":
@@ -1091,6 +1110,7 @@ function buildRules(enabled: Set<ToolKey>): string {
     "- Use search_contacts to resolve a name to an email address before drafting to someone when you don't already have their address.",
     "- If search_contacts (or any lookup) returns more than one plausible match and it's not obvious which one is meant, use ask_user_choice(mode=\"resume\") with one option per candidate instead of listing them in prose and waiting for a typed reply.",
     "- Use the remember tool proactively whenever the user shares something worth recalling later (preferences, which account is which, standing instructions) — don't wait to be asked.",
+    "- Use flag_unmet_request whenever you have to tell the user you can't do something — call it in the same turn as your reply, don't wait to be asked.",
     '- Use search_documents/list_recent_documents when the user asks about something they photographed or sent via WhatsApp (boarding passes, licenses, tickets, receipts) — e.g. "when did I fly to X" or "what\'s the code on my license".',
     "- If the user wants the actual photo/file back rather than just its details (e.g. \"send me that photo again\", \"can I get the original image\"), find the right document with search_documents/list_recent_documents first, then call send_document with its id.",
     "- When the user asks about a trip, booking, or receipt and get_message shows a relevant attachment (ticket, confirmation, visa, invoice), call extract_email_attachment on it yourself, immediately, without asking first — the same way you'd read the email body without asking. Do this for every relevant attachment you find in the same turn, not one at a time. Only ask first if there are an unusually large number of attachments (10+) to extract at once. Don't just describe the attachment's filename and stop there, and don't stop to ask permission to do something this low-risk and reversible.",
@@ -1213,6 +1233,17 @@ export async function runAssistantChat(
     content: m.content,
   }));
 
+  // Summed across every anthropic.messages.create call this invocation makes (the loop below can
+  // take up to 8 turns for one user message, e.g. several tool round-trips) and recorded once,
+  // via finish() below, rather than once per turn — admins want "how many times was the assistant
+  // actually asked something" and "how many tokens did that cost", not internal loop iterations.
+  const usageTotals = { inputTokens: 0, outputTokens: 0 };
+  const channel = phone ? "whatsapp" : "web";
+  function finish(reply: AssistantReply): AssistantReply {
+    recordApiUsage(ownerId, channel, model, usageTotals.inputTokens, usageTotals.outputTokens);
+    return reply;
+  }
+
   for (let turn = 0; turn < 8; turn++) {
     const response = await anthropic.messages.create({
       model,
@@ -1222,6 +1253,10 @@ export async function runAssistantChat(
       tools: buildToolsForOwner(ownerId),
       messages,
     });
+    // response.usage is absent in some existing tests' mocked responses — tolerate that rather
+    // than letting a usage-tracking side effect break the actual conversation flow.
+    usageTotals.inputTokens += response.usage?.input_tokens ?? 0;
+    usageTotals.outputTokens += response.usage?.output_tokens ?? 0;
 
     const toolUses = response.content.filter(
       (block): block is Anthropic.ToolUseBlock => block.type === "tool_use"
@@ -1231,7 +1266,7 @@ export async function runAssistantChat(
       const text = response.content.find(
         (b): b is Anthropic.TextBlock => b.type === "text"
       );
-      return { text: text?.text ?? "" };
+      return finish({ text: text?.text ?? "" });
     }
 
     // ask_user_choice is a hard stop, not a tool result to feed back to the model — the system
@@ -1239,7 +1274,7 @@ export async function runAssistantChat(
     // response are ignored rather than run.
     const choiceUse = toolUses.find((t) => t.name === "ask_user_choice");
     if (choiceUse) {
-      return buildChoiceReply(ownerId, choiceUse.input as Record<string, unknown>);
+      return finish(buildChoiceReply(ownerId, choiceUse.input as Record<string, unknown>));
     }
 
     messages.push({ role: "assistant", content: response.content });
@@ -1271,7 +1306,7 @@ export async function runAssistantChat(
     messages.push({ role: "user", content: toolResults });
   }
 
-  return { text: "I wasn't able to finish that within my tool-call limit — try a more specific request." };
+  return finish({ text: "I wasn't able to finish that within my tool-call limit — try a more specific request." });
 }
 
 // Narrow, tool-free assistant call used by the WhatsApp registration state machine

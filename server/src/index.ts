@@ -23,9 +23,15 @@ import { alertRoutes } from "./routes/alertRoutes.js";
 import { toolsRoutes } from "./routes/toolsRoutes.js";
 import { newsRoutes } from "./routes/newsRoutes.js";
 import { adminRoutes } from "./routes/adminRoutes.js";
+import { portalRoutes } from "./routes/portalRoutes.js";
 import { helpChatRoutes } from "./routes/helpChatRoutes.js";
-import { requireAuth } from "./middleware/auth.js";
+import { requireAuth, requireAdmin } from "./middleware/auth.js";
 import { startScheduler } from "./services/scheduler.js";
+import { installLogCapture } from "./services/logCapture.js";
+
+// Installed before anything else has a chance to log, so every console.error/console.warn from
+// here on (including ones during route registration below) is captured for the admin Portal.
+installLogCapture();
 
 // Safety net: an uncaught async error anywhere (a route handler, the scheduler, a webhook
 // handler) would otherwise crash the whole process — Node's default since v15 is to terminate
@@ -97,6 +103,11 @@ app.use(alertRoutes);
 app.use(toolsRoutes);
 app.use(newsRoutes);
 app.use(adminRoutes);
+// The Portal has ~15 endpoints that all share the same "must be admin" predicate, unlike
+// adminRoutes.ts's 4 owner-only routes (kept as inline isAppOwner checks there) — a shared
+// middleware makes more sense at this size. Mounted after the blanket requireAuth above, so
+// req.userId is already set.
+app.use("/api/portal", requireAdmin, portalRoutes);
 
 app.get("/health", (_req, res) => res.json({ ok: true }));
 

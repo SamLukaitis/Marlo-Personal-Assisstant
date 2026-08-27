@@ -33,6 +33,9 @@ export interface Account {
 export interface Me {
   id: number;
   email: string;
+  /** The single APP_OWNER_EMAIL account — gates the narrower invites/reset-test-phone section in Settings. */
+  isAppOwner: boolean;
+  /** The app owner plus anyone promoted via the Portal's Admins tab — gates the Portal itself. */
   isAdmin: boolean;
 }
 
@@ -252,6 +255,25 @@ async function getJson<T>(path: string): Promise<T> {
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
     throw new Error(body.error ?? `request failed (${res.status})`);
+  }
+  return res.json();
+}
+
+// Shared by the Portal's ~15 write endpoints (portalRoutes.ts) — the existing invite/reset-test-
+// phone helpers below hand-write this each time, but that'd mean a lot of near-identical
+// boilerplate at Portal's size.
+async function mutateJson<T>(path: string, method: "POST" | "PUT" | "DELETE", body?: unknown): Promise<T> {
+  const res = await fetch(
+    `${API_BASE}${path}`,
+    withCredentials({
+      method,
+      headers: body !== undefined ? { "Content-Type": "application/json" } : undefined,
+      body: body !== undefined ? JSON.stringify(body) : undefined,
+    })
+  );
+  if (!res.ok) {
+    const errBody = await res.json().catch(() => ({}));
+    throw new Error(errBody.error ?? `request failed (${res.status})`);
   }
   return res.json();
 }
@@ -548,6 +570,93 @@ export async function resetTestPhone(phone: string): Promise<{ ok: true; hadAcco
   }
   return res.json();
 }
+
+// --- Admin Portal -----------------------------------------------------------------------------
+
+export interface AdminCandidate {
+  id: number;
+  email: string;
+  isAdmin: boolean;
+  isAppOwner: boolean;
+  createdAt: number;
+}
+
+export const fetchAdminCandidates = () => getJson<AdminCandidate[]>("/api/portal/admins");
+export const grantAdmin = (userId: number) =>
+  mutateJson<AdminCandidate[]>(`/api/portal/admins/${userId}`, "POST");
+export const revokeAdmin = (userId: number) =>
+  mutateJson<AdminCandidate[]>(`/api/portal/admins/${userId}`, "DELETE");
+
+export interface UnmetRequest {
+  id: number;
+  ownerId: number;
+  summary: string;
+  channel: string;
+  createdAt: number;
+  resolvedAt: number | null;
+}
+
+export const fetchUnmetRequests = (includeResolved = false) =>
+  getJson<UnmetRequest[]>(`/api/portal/unmet-requests?includeResolved=${includeResolved}`);
+export const resolveUnmetRequest = (id: number) =>
+  mutateJson<{ ok: true }>(`/api/portal/unmet-requests/${id}/resolve`, "POST");
+
+export interface ServerLog {
+  id: number;
+  level: string;
+  message: string;
+  createdAt: number;
+  explanation: string | null;
+  explainedAt: number | null;
+}
+
+export const fetchServerLogs = (limit = 200) => getJson<ServerLog[]>(`/api/portal/logs?limit=${limit}`);
+export const explainServerLog = (id: number) =>
+  mutateJson<{ explanation: string; cached: boolean }>(`/api/portal/logs/${id}/explain`, "POST");
+
+export interface ApiUsageRow {
+  day: string;
+  channel: string;
+  model: string;
+  calls: number;
+  inputTokens: number;
+  outputTokens: number;
+  estimatedCost: number | null;
+}
+
+export const fetchUsageSummary = (days = 30) =>
+  getJson<{ rows: ApiUsageRow[]; approx: true }>(`/api/portal/usage?days=${days}`);
+
+export interface AdminTodo {
+  id: number;
+  text: string;
+  done: boolean;
+  createdBy: number;
+  createdByEmail: string;
+  createdAt: number;
+  doneAt: number | null;
+}
+
+export const fetchAdminTodos = () => getJson<AdminTodo[]>("/api/portal/todos");
+export const addAdminTodo = (text: string) => mutateJson<AdminTodo[]>("/api/portal/todos", "POST", { text });
+export const setAdminTodoDone = (id: number, done: boolean) =>
+  mutateJson<AdminTodo[]>(`/api/portal/todos/${id}`, "PUT", { done });
+export const deleteAdminTodo = (id: number) =>
+  mutateJson<AdminTodo[]>(`/api/portal/todos/${id}`, "DELETE");
+
+export interface PosterNote {
+  id: number;
+  authorId: number;
+  authorEmail: string;
+  text: string;
+  createdAt: number;
+}
+
+export const fetchPosterNotes = () => getJson<PosterNote[]>("/api/portal/notes");
+export const addPosterNote = (text: string) => mutateJson<PosterNote[]>("/api/portal/notes", "POST", { text });
+export const deletePosterNote = (id: number) => mutateJson<{ ok: true }>(`/api/portal/notes/${id}`, "DELETE");
+
+export const fetchPortalVersion = () => getJson<{ text: string }>("/api/portal/version");
 
 export async function sendChatMessage(messages: ChatMessage[]): Promise<string> {
   const res = await fetch(
