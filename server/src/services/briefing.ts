@@ -104,7 +104,7 @@ export function saveBriefingSettings(ownerId: number, settings: BriefingSettings
 
 async function buildBriefingText(ownerId: number): Promise<string> {
   const settings = getBriefingSettings(ownerId);
-  const assistantName = getSetting(ownerId, "assistant_name") ?? "Assistant";
+  const assistantName = getSetting(ownerId, "assistant_name") ?? "Marlowe";
   const persona = getSetting(ownerId, "persona") ?? "";
 
   const [messages, events, flagged] = await Promise.all([

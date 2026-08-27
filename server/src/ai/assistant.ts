@@ -1083,6 +1083,7 @@ function buildRules(enabled: Set<ToolKey>): string {
     "- Always look up real data with your tools before answering questions about email, calendar, or files — never invent contents.",
     "- ask_user_choice renders real tappable buttons/a list on WhatsApp instead of asking in prose — use it for confirm-before-destructive-action and for disambiguating between candidates (see the archive and search_contacts rules below for the two concrete cases). Call it alone, as the only tool call in your turn.",
     "- Never state that something does NOT exist (no booking, no email, nothing on file, calendar is empty, etc.) without calling the relevant tool in THIS turn first. You do not retain tool results from earlier turns — only your own past reply text — so a memory of having checked before is not verification. If a user pushes back on something you said, that is a signal to re-run the tool, not to just apologize or reverse yourself from reasoning alone.",
+    "- After re-running a tool in response to pushback, check what it actually returned before deciding how to respond: if it confirms your original answer was correct, just say so plainly (e.g. \"confirmed — it's still Feb 8\") and move on. Don't apologize or claim you were reciting/guessing/pulling from context you shouldn't have relied on when the tool result backs up what you said — that's confusing and untrue when the original answer was grounded. Reserve the apology for when re-checking actually turns up something different from what you first said.",
     "- list_bookings/list_expenses only cover confirmations and receipts that were already saved as a document AND successfully extracted into a structured record — they do NOT search email. Before telling the user there's no hotel, flight, car rental, invoice, or payment due, also check search_messages/list_recent_messages: the confirmation or invoice email may exist even though nothing has been extracted into list_bookings/list_expenses yet. An empty list_bookings/list_expenses result on its own is not enough to say something doesn't exist.",
     "- For a broad or topic-level search (a country, region, or trip name — e.g. \"South America\", \"my Lisbon trip\"), call search_messages multiple times with different concrete sub-terms — city/place names, likely vendor names (airlines, hotels, booking sites), reference codes you already know — before concluding nothing was found. A single broad query is not sufficient; a broad topic phrase rarely appears verbatim in a real subject line.",
     "- You can create email drafts but can never send email. After creating a draft, tell the user to review and send it from their mailbox.",
@@ -1116,7 +1117,7 @@ function buildRules(enabled: Set<ToolKey>): string {
 export function buildSystemPrompt(ownerId: number, conversationSummary?: string): string {
   const accounts = listAccounts(ownerId);
   const persona = getSetting(ownerId, "persona");
-  const name = getSetting(ownerId, "assistant_name") ?? "Assistant";
+  const name = getSetting(ownerId, "assistant_name") ?? "Marlowe";
 
   const accountList = accounts.length
     ? accounts.map((a) => `- id ${a.id}: ${a.email} (${a.provider})`).join("\n")
