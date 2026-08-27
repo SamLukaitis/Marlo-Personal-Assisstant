@@ -43,12 +43,16 @@ vi.mock("../services/postConnectSetup.js", () => ({
 vi.mock("../services/whatsappReply.js", () => ({
   sendAssistantReply: vi.fn(),
 }));
+vi.mock("../services/actionHandlers.js", () => ({
+  handlePendingActionReply: vi.fn().mockResolvedValue(false),
+}));
 
 const { sendWhatsAppMessage } = await import("../providers/whatsapp.js");
 const { resolveOwnerByPhone } = await import("../db/store.js");
 const { runAssistantChat } = await import("../ai/assistant.js");
 const { handlePostConnectSetupReply } = await import("../services/postConnectSetup.js");
 const { sendAssistantReply } = await import("../services/whatsappReply.js");
+const { handlePendingActionReply } = await import("../services/actionHandlers.js");
 const { handleIncoming } = await import("./whatsappRoutes.js");
 
 beforeEach(() => {
@@ -57,6 +61,7 @@ beforeEach(() => {
   vi.mocked(resolveOwnerByPhone).mockReturnValue(42);
   vi.mocked(handlePostConnectSetupReply).mockReset().mockResolvedValue(false);
   vi.mocked(sendAssistantReply).mockClear();
+  vi.mocked(handlePendingActionReply).mockReset().mockResolvedValue(false);
 });
 
 describe("handleIncoming — help trigger for already-registered users", () => {
@@ -117,5 +122,21 @@ describe("handleIncoming — routes runAssistantChat's result through sendAssist
     await handleIncoming({ kind: "text", from: "447900000005", text: "what's on my calendar today?", messageId: "m6" });
 
     expect(sendAssistantReply).toHaveBeenCalledWith(42, "447900000005", { text: "a real reply" });
+  });
+});
+
+describe("handleIncoming — pending-action taps", () => {
+  it("is handled by handlePendingActionReply and never reaches the assistant", async () => {
+    vi.mocked(handlePendingActionReply).mockResolvedValue(true);
+
+    await handleIncoming({ kind: "interactive", from: "447900000006", messageId: "m7", buttonId: "pa:abc:yes" });
+
+    expect(handlePendingActionReply).toHaveBeenCalledWith(42, {
+      kind: "interactive",
+      from: "447900000006",
+      messageId: "m7",
+      buttonId: "pa:abc:yes",
+    });
+    expect(runAssistantChat).not.toHaveBeenCalled();
   });
 });

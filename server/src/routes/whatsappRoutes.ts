@@ -16,6 +16,7 @@ import { findSaveableUrl, type FetchFailureReason } from "../services/safeLinkFe
 import { handlePendingRegistration, isHelpTrigger, MARLOWE_HELP_TEXT } from "../services/whatsappRegistration.js";
 import { handlePostConnectSetupReply } from "../services/postConnectSetup.js";
 import { sendAssistantReply } from "../services/whatsappReply.js";
+import { handlePendingActionReply } from "../services/actionHandlers.js";
 import { isVersionTrigger, buildVersionText } from "../services/version.js";
 
 export const whatsappRoutes = Router();
@@ -210,6 +211,7 @@ export async function handleIncoming(message: IncomingWhatsAppMessage): Promise<
   // everything else (nothing pending, a stray/late tap, or ordinary text/media), which falls
   // through to normal handling below exactly as before.
   if (await handlePostConnectSetupReply(ownerId, message)) return;
+  if (await handlePendingActionReply(ownerId, message)) return;
 
   try {
     if (message.kind === "text") {
