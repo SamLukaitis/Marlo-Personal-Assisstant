@@ -157,6 +157,61 @@ export async function sendWhatsAppCtaUrl(
   }
 }
 
+// A tappable menu of up to 10 rows in one section — used for closed-set questions with more
+// options than fit as buttons (WhatsApp caps buttons at 3). A tap comes back as an
+// IncomingInteractiveMessage (extractIncomingMessages below) carrying the row's id, exactly like
+// a button tap does.
+export async function sendWhatsAppListMessage(
+  to: string,
+  bodyText: string,
+  buttonLabel: string,
+  rows: { id: string; title: string }[]
+): Promise<void> {
+  const phoneNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID;
+  const token = process.env.WHATSAPP_TOKEN;
+  const res = await fetch(
+    `https://graph.facebook.com/${GRAPH_VERSION}/${phoneNumberId}/messages`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        messaging_product: "whatsapp",
+        to,
+        type: "interactive",
+        interactive: {
+          type: "list",
+          body: { text: bodyText },
+          action: {
+            button: buttonLabel,
+            sections: [{ rows: rows.map((r) => ({ id: r.id, title: r.title })) }],
+          },
+        },
+      }),
+    }
+  );
+  if (!res.ok) {
+    throw await buildSendError("WhatsApp list-message send failed", res);
+  }
+}
+
+// Picks buttons (WhatsApp caps these at 3) or a list (up to 10) based on how many choices there
+// are — callers building a closed-set question use this instead of choosing between
+// sendWhatsAppReplyButtons and sendWhatsAppListMessage themselves.
+export async function sendChoiceMessage(
+  to: string,
+  bodyText: string,
+  choices: { id: string; title: string }[]
+): Promise<void> {
+  if (choices.length <= 3) {
+    await sendWhatsAppReplyButtons(to, bodyText, choices);
+  } else {
+    await sendWhatsAppListMessage(to, bodyText, "Choose", choices);
+  }
+}
+
 // The two pre-approved utility templates outbound.ts falls back to once the 24h customer-service
 // window has closed (see recordInboundMessage/getLastInboundAt in db/store.ts) — Meta rejects a
 // free-form send past that window with error 131047, but a template always goes through.
@@ -294,7 +349,11 @@ interface WebhookPayload {
           text?: { body?: string };
           image?: { id?: string; mime_type?: string; caption?: string };
           document?: { id?: string; mime_type?: string; filename?: string; caption?: string };
-          interactive?: { type?: string; button_reply?: { id?: string; title?: string } };
+          interactive?: {
+            type?: string;
+            button_reply?: { id?: string; title?: string };
+            list_reply?: { id?: string; title?: string };
+          };
         }>;
       };
     }>;
@@ -339,6 +398,19 @@ export function extractIncomingMessages(payload: WebhookPayload): IncomingWhatsA
             from: m.from,
             messageId: m.id,
             buttonId: m.interactive.button_reply.id,
+          });
+        } else if (
+          m.type === "interactive" &&
+          m.from &&
+          m.id &&
+          m.interactive?.type === "list_reply" &&
+          m.interactive.list_reply?.id
+        ) {
+          messages.push({
+            kind: "interactive",
+            from: m.from,
+            messageId: m.id,
+            buttonId: m.interactive.list_reply.id,
           });
         }
       }

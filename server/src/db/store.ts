@@ -605,6 +605,23 @@ db.exec(`
   );
 `);
 
+// Backs ask_user_choice (assistant.ts): a closed-set question rendered as WhatsApp buttons/a
+// list, tapped later. 'confirm' rows store the exact tool+args to run on a Yes tap (executed
+// directly, no further LLM call); 'resume' rows store the option labels to inject back into the
+// conversation as a synthetic user message. See actionHandlers.ts for the consuming side.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS pending_actions (
+    id TEXT PRIMARY KEY,
+    owner_id INTEGER NOT NULL REFERENCES users(id),
+    mode TEXT NOT NULL,
+    question TEXT NOT NULL,
+    context_json TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    expires_at INTEGER NOT NULL,
+    consumed_at INTEGER
+  );
+`);
+
 export const uploadsDir = path.join(dataDir, "uploads");
 if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
 
@@ -1800,4 +1817,63 @@ export function setPendingSetup(ownerId: number, step: PostConnectSetupStep): vo
 
 export function clearPendingSetup(ownerId: number): void {
   db.prepare(`DELETE FROM pending_setup WHERE owner_id = ?`).run(ownerId);
+}
+
+// ---------------------------------------------------------------------------
+// Pending actions — ask_user_choice's backing store (see assistant.ts / actionHandlers.ts)
+// ---------------------------------------------------------------------------
+
+export type PendingActionMode = "confirm" | "resume";
+
+export interface PendingActionRow {
+  id: string;
+  ownerId: number;
+  mode: PendingActionMode;
+  question: string;
+  contextJson: string;
+}
+
+const PENDING_ACTION_TTL_MS = 24 * 60 * 60 * 1000;
+
+export function createPendingAction(
+  ownerId: number,
+  mode: PendingActionMode,
+  question: string,
+  contextJson: string
+): string {
+  const id = crypto.randomUUID();
+  const now = Date.now();
+  db.prepare(
+    `INSERT INTO pending_actions (id, owner_id, mode, question, context_json, created_at, expires_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`
+  ).run(id, ownerId, mode, question, contextJson, now, now + PENDING_ACTION_TTL_MS);
+  return id;
+}
+
+// Atomically marks the row consumed and returns it. Returns null if the id doesn't exist,
+// belongs to a different owner, is already consumed, or is past its expiry — expiry is checked
+// here rather than relying solely on the periodic sweep, since the sweep is hygiene only, not
+// the correctness boundary.
+export function consumePendingAction(id: string, ownerId: number): PendingActionRow | null {
+  const now = Date.now();
+  const result = db
+    .prepare(
+      `UPDATE pending_actions SET consumed_at = ?
+       WHERE id = ? AND owner_id = ? AND consumed_at IS NULL AND expires_at > ?`
+    )
+    .run(now, id, ownerId, now);
+  if (result.changes === 0) return null;
+  const row = db
+    .prepare(
+      `SELECT id, owner_id AS ownerId, mode, question, context_json AS contextJson
+       FROM pending_actions WHERE id = ?`
+    )
+    .get(id) as PendingActionRow | undefined;
+  return row ?? null;
+}
+
+// Hygiene only — expiry is already enforced at consume time above. Called once per scheduler
+// tick (not per user — this isn't scoped to a tenant).
+export function deleteExpiredPendingActions(): void {
+  db.prepare(`DELETE FROM pending_actions WHERE expires_at < ?`).run(Date.now());
 }

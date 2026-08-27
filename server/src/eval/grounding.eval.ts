@@ -122,7 +122,7 @@ async function runScenarioOnce(fixture: Fixture, variantName: VariantName, owner
   let lastReply = "";
   for (const turnText of userTurns) {
     history.push({ role: "user", content: turnText });
-    lastReply = await runAssistantChat(ownerId, history);
+    lastReply = (await runAssistantChat(ownerId, history)).text;
     history.push({ role: "assistant", content: lastReply });
   }
 

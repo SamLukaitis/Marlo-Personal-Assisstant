@@ -40,11 +40,19 @@ vi.mock("../services/whatsappRegistration.js", async () => {
 vi.mock("../services/postConnectSetup.js", () => ({
   handlePostConnectSetupReply: vi.fn().mockResolvedValue(false),
 }));
+vi.mock("../services/whatsappReply.js", () => ({
+  sendAssistantReply: vi.fn(),
+}));
+vi.mock("../services/actionHandlers.js", () => ({
+  handlePendingActionReply: vi.fn().mockResolvedValue(false),
+}));
 
 const { sendWhatsAppMessage } = await import("../providers/whatsapp.js");
 const { resolveOwnerByPhone } = await import("../db/store.js");
 const { runAssistantChat } = await import("../ai/assistant.js");
 const { handlePostConnectSetupReply } = await import("../services/postConnectSetup.js");
+const { sendAssistantReply } = await import("../services/whatsappReply.js");
+const { handlePendingActionReply } = await import("../services/actionHandlers.js");
 const { handleIncoming } = await import("./whatsappRoutes.js");
 
 beforeEach(() => {
@@ -52,6 +60,8 @@ beforeEach(() => {
   vi.mocked(runAssistantChat).mockClear();
   vi.mocked(resolveOwnerByPhone).mockReturnValue(42);
   vi.mocked(handlePostConnectSetupReply).mockReset().mockResolvedValue(false);
+  vi.mocked(sendAssistantReply).mockClear();
+  vi.mocked(handlePendingActionReply).mockReset().mockResolvedValue(false);
 });
 
 describe("handleIncoming — help trigger for already-registered users", () => {
@@ -64,7 +74,7 @@ describe("handleIncoming — help trigger for already-registered users", () => {
   });
 
   it("still routes an ordinary message to the real assistant", async () => {
-    vi.mocked(runAssistantChat).mockResolvedValue("a real reply");
+    vi.mocked(runAssistantChat).mockResolvedValue({ text: "a real reply" });
 
     await handleIncoming({ kind: "text", from: "447900000001", text: "what's on my calendar today?", messageId: "m2" });
 
@@ -102,5 +112,31 @@ describe("handleIncoming — post-connect setup button taps", () => {
     expect(sendWhatsAppMessage).not.toHaveBeenCalled();
     expect(errorSpy).toHaveBeenCalled();
     errorSpy.mockRestore();
+  });
+});
+
+describe("handleIncoming — routes runAssistantChat's result through sendAssistantReply", () => {
+  it("passes the full AssistantReply through, not just .text", async () => {
+    vi.mocked(runAssistantChat).mockResolvedValue({ text: "a real reply" });
+
+    await handleIncoming({ kind: "text", from: "447900000005", text: "what's on my calendar today?", messageId: "m6" });
+
+    expect(sendAssistantReply).toHaveBeenCalledWith(42, "447900000005", { text: "a real reply" });
+  });
+});
+
+describe("handleIncoming — pending-action taps", () => {
+  it("is handled by handlePendingActionReply and never reaches the assistant", async () => {
+    vi.mocked(handlePendingActionReply).mockResolvedValue(true);
+
+    await handleIncoming({ kind: "interactive", from: "447900000006", messageId: "m7", buttonId: "pa:abc:yes" });
+
+    expect(handlePendingActionReply).toHaveBeenCalledWith(42, {
+      kind: "interactive",
+      from: "447900000006",
+      messageId: "m7",
+      buttonId: "pa:abc:yes",
+    });
+    expect(runAssistantChat).not.toHaveBeenCalled();
   });
 });

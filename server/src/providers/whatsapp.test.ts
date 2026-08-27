@@ -2,6 +2,8 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import {
   sendWhatsAppReplyButtons,
   sendWhatsAppCtaUrl,
+  sendWhatsAppListMessage,
+  sendChoiceMessage,
   extractIncomingMessages,
   WhatsAppSendError,
 } from "./whatsapp.js";
@@ -124,5 +126,84 @@ describe("extractIncomingMessages — interactive button replies", () => {
     };
 
     expect(extractIncomingMessages(payload)).toEqual([]);
+  });
+});
+
+describe("sendWhatsAppListMessage", () => {
+  it("posts an interactive list message with the given rows", async () => {
+    const fetchMock = mockFetchOk();
+
+    await sendWhatsAppListMessage("447000000001", "Pick one", "Choose", [
+      { id: "pa:abc:0", title: "Sarah Chen" },
+      { id: "pa:abc:1", title: "Sarah Lee" },
+    ]);
+
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body);
+    expect(body.interactive.type).toBe("list");
+    expect(body.interactive.body.text).toBe("Pick one");
+    expect(body.interactive.action.button).toBe("Choose");
+    expect(body.interactive.action.sections).toEqual([
+      {
+        rows: [
+          { id: "pa:abc:0", title: "Sarah Chen" },
+          { id: "pa:abc:1", title: "Sarah Lee" },
+        ],
+      },
+    ]);
+  });
+});
+
+describe("sendChoiceMessage", () => {
+  it("uses reply buttons for 3 or fewer choices", async () => {
+    const fetchMock = mockFetchOk();
+
+    await sendChoiceMessage("447000000001", "Archive 3 emails?", [
+      { id: "pa:abc:yes", title: "Yes" },
+      { id: "pa:abc:no", title: "No" },
+    ]);
+
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body);
+    expect(body.interactive.type).toBe("button");
+  });
+
+  it("uses a list message for more than 3 choices", async () => {
+    const fetchMock = mockFetchOk();
+
+    await sendChoiceMessage("447000000001", "Which one?", [
+      { id: "pa:abc:0", title: "A" },
+      { id: "pa:abc:1", title: "B" },
+      { id: "pa:abc:2", title: "C" },
+      { id: "pa:abc:3", title: "D" },
+    ]);
+
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body);
+    expect(body.interactive.type).toBe("list");
+  });
+});
+
+describe("extractIncomingMessages — interactive list replies", () => {
+  it("parses a list_reply into an IncomingInteractiveMessage", () => {
+    const payload = {
+      entry: [
+        {
+          changes: [
+            {
+              value: {
+                messages: [
+                  {
+                    from: "447000000001",
+                    id: "wamid.def",
+                    type: "interactive",
+                    interactive: { type: "list_reply", list_reply: { id: "pa:abc:0", title: "Sarah Chen" } },
+                  },
+                ],
+              },
+            },
+          ],
+        },
+      ],
+    };
+    const messages = extractIncomingMessages(payload);
+    expect(messages).toEqual([{ kind: "interactive", from: "447000000001", messageId: "wamid.def", buttonId: "pa:abc:0" }]);
   });
 });

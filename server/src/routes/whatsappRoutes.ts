@@ -15,6 +15,8 @@ import { ingestWhatsAppMedia, ingestWhatsAppLink } from "../services/documents.j
 import { findSaveableUrl, type FetchFailureReason } from "../services/safeLinkFetcher.js";
 import { handlePendingRegistration, isHelpTrigger, MARLOWE_HELP_TEXT } from "../services/whatsappRegistration.js";
 import { handlePostConnectSetupReply } from "../services/postConnectSetup.js";
+import { sendAssistantReply } from "../services/whatsappReply.js";
+import { handlePendingActionReply } from "../services/actionHandlers.js";
 import { isVersionTrigger, buildVersionText } from "../services/version.js";
 
 export const whatsappRoutes = Router();
@@ -93,8 +95,7 @@ async function handleLink(ownerId: number, from: string, url: string): Promise<v
   }
 
   const reply = await runAssistantChat(ownerId, history);
-  appendWhatsAppMessage(ownerId, from, "assistant", reply);
-  await sendWhatsAppMessage(from, reply);
+  await sendAssistantReply(ownerId, from, reply);
 }
 
 async function handleText(ownerId: number, from: string, text: string): Promise<void> {
@@ -135,8 +136,7 @@ async function handleText(ownerId: number, from: string, text: string): Promise<
   }));
 
   const reply = await runAssistantChat(ownerId, history);
-  appendWhatsAppMessage(ownerId, from, "assistant", reply);
-  await sendWhatsAppMessage(from, reply);
+  await sendAssistantReply(ownerId, from, reply);
 }
 
 async function handleMedia(
@@ -176,8 +176,7 @@ async function handleMedia(
   }
 
   const reply = await runAssistantChat(ownerId, history);
-  appendWhatsAppMessage(ownerId, from, "assistant", reply);
-  await sendWhatsAppMessage(from, reply);
+  await sendAssistantReply(ownerId, from, reply);
 }
 
 export async function handleIncoming(message: IncomingWhatsAppMessage): Promise<void> {
@@ -212,6 +211,7 @@ export async function handleIncoming(message: IncomingWhatsAppMessage): Promise<
   // everything else (nothing pending, a stray/late tap, or ordinary text/media), which falls
   // through to normal handling below exactly as before.
   if (await handlePostConnectSetupReply(ownerId, message)) return;
+  if (await handlePendingActionReply(ownerId, message)) return;
 
   try {
     if (message.kind === "text") {
