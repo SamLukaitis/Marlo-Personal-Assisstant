@@ -15,6 +15,7 @@ import { ingestWhatsAppMedia, ingestWhatsAppLink } from "../services/documents.j
 import { findSaveableUrl, type FetchFailureReason } from "../services/safeLinkFetcher.js";
 import { handlePendingRegistration, isHelpTrigger, MARLOWE_HELP_TEXT } from "../services/whatsappRegistration.js";
 import { handlePostConnectSetupReply } from "../services/postConnectSetup.js";
+import { sendAssistantReply } from "../services/whatsappReply.js";
 import { isVersionTrigger, buildVersionText } from "../services/version.js";
 
 export const whatsappRoutes = Router();
@@ -92,9 +93,8 @@ async function handleLink(ownerId: number, from: string, url: string): Promise<v
     history.push({ role: "user", content: docContext });
   }
 
-  const reply = (await runAssistantChat(ownerId, history)).text;
-  appendWhatsAppMessage(ownerId, from, "assistant", reply);
-  await sendWhatsAppMessage(from, reply);
+  const reply = await runAssistantChat(ownerId, history);
+  await sendAssistantReply(ownerId, from, reply);
 }
 
 async function handleText(ownerId: number, from: string, text: string): Promise<void> {
@@ -134,9 +134,8 @@ async function handleText(ownerId: number, from: string, text: string): Promise<
     content: m.content,
   }));
 
-  const reply = (await runAssistantChat(ownerId, history)).text;
-  appendWhatsAppMessage(ownerId, from, "assistant", reply);
-  await sendWhatsAppMessage(from, reply);
+  const reply = await runAssistantChat(ownerId, history);
+  await sendAssistantReply(ownerId, from, reply);
 }
 
 async function handleMedia(
@@ -175,9 +174,8 @@ async function handleMedia(
     history.push({ role: "user", content: docContext });
   }
 
-  const reply = (await runAssistantChat(ownerId, history)).text;
-  appendWhatsAppMessage(ownerId, from, "assistant", reply);
-  await sendWhatsAppMessage(from, reply);
+  const reply = await runAssistantChat(ownerId, history);
+  await sendAssistantReply(ownerId, from, reply);
 }
 
 export async function handleIncoming(message: IncomingWhatsAppMessage): Promise<void> {

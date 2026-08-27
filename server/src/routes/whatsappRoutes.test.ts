@@ -40,11 +40,15 @@ vi.mock("../services/whatsappRegistration.js", async () => {
 vi.mock("../services/postConnectSetup.js", () => ({
   handlePostConnectSetupReply: vi.fn().mockResolvedValue(false),
 }));
+vi.mock("../services/whatsappReply.js", () => ({
+  sendAssistantReply: vi.fn(),
+}));
 
 const { sendWhatsAppMessage } = await import("../providers/whatsapp.js");
 const { resolveOwnerByPhone } = await import("../db/store.js");
 const { runAssistantChat } = await import("../ai/assistant.js");
 const { handlePostConnectSetupReply } = await import("../services/postConnectSetup.js");
+const { sendAssistantReply } = await import("../services/whatsappReply.js");
 const { handleIncoming } = await import("./whatsappRoutes.js");
 
 beforeEach(() => {
@@ -52,6 +56,7 @@ beforeEach(() => {
   vi.mocked(runAssistantChat).mockClear();
   vi.mocked(resolveOwnerByPhone).mockReturnValue(42);
   vi.mocked(handlePostConnectSetupReply).mockReset().mockResolvedValue(false);
+  vi.mocked(sendAssistantReply).mockClear();
 });
 
 describe("handleIncoming — help trigger for already-registered users", () => {
@@ -102,5 +107,15 @@ describe("handleIncoming — post-connect setup button taps", () => {
     expect(sendWhatsAppMessage).not.toHaveBeenCalled();
     expect(errorSpy).toHaveBeenCalled();
     errorSpy.mockRestore();
+  });
+});
+
+describe("handleIncoming — routes runAssistantChat's result through sendAssistantReply", () => {
+  it("passes the full AssistantReply through, not just .text", async () => {
+    vi.mocked(runAssistantChat).mockResolvedValue({ text: "a real reply" });
+
+    await handleIncoming({ kind: "text", from: "447900000005", text: "what's on my calendar today?", messageId: "m6" });
+
+    expect(sendAssistantReply).toHaveBeenCalledWith(42, "447900000005", { text: "a real reply" });
   });
 });
