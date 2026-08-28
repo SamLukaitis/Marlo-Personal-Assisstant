@@ -1278,6 +1278,20 @@ export async function runAssistantChat(
       return finish(buildChoiceReply(ownerId, choiceUse.input as Record<string, unknown>));
     }
 
+    // flag_unmet_request is a fire-and-forget log, not a tool whose result the model needs fed
+    // back to keep reasoning — its own instructions tell the model to call it "alongside your
+    // normal reply, same turn," meaning the actual reply text is usually already sitting right
+    // here in this same response. Without this check, that text was being silently discarded and
+    // a second full round-trip (whole system prompt + tools + history resent) paid for just to
+    // get the model to repeat itself as plain text — doubling the API cost of every single
+    // capability-gap decline. Bug found 2026-08-28, introduced the same day this tool shipped.
+    const flagUse = toolUses.find((t) => t.name === "flag_unmet_request");
+    const textBlock = response.content.find((b): b is Anthropic.TextBlock => b.type === "text");
+    if (flagUse && textBlock && toolUses.length === 1) {
+      await runTool(ownerId, "flag_unmet_request", flagUse.input as Record<string, unknown>, phone);
+      return finish({ text: textBlock.text });
+    }
+
     messages.push({ role: "assistant", content: response.content });
 
     const toolResults: Anthropic.ToolResultBlockParam[] = await Promise.all(

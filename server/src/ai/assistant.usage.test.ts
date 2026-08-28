@@ -9,7 +9,7 @@ vi.mock("@anthropic-ai/sdk", () => {
 });
 
 import { runAssistantChat } from "./assistant.js";
-import { findOrCreateUserByEmail, getApiUsageSummary } from "../db/store.js";
+import { findOrCreateUserByEmail, getApiUsageSummary, listUnmetRequests } from "../db/store.js";
 
 let counter = 0;
 function uniqueEmail(prefix: string): string {
@@ -60,5 +60,30 @@ describe("runAssistantChat — usage tracking", () => {
 
     expect(mockCreate).toHaveBeenCalledTimes(2);
     expect(totalCalls()).toBe(before + 1);
+  });
+
+  // Regression test for a real bug found 2026-08-28: flag_unmet_request's own instructions tell
+  // the model to call it "alongside your normal reply, same turn" — meaning the model's actual
+  // reply text is usually already present in the SAME response as the tool call. Before the fix,
+  // the loop discarded that text and paid for a second full round-trip (whole system prompt +
+  // tools + history resent) just to get the model to repeat itself as plain text, doubling the
+  // cost of every single capability-gap decline.
+  it("costs only one API call when the model combines flag_unmet_request with its reply text in the same turn", async () => {
+    mockCreate.mockResolvedValueOnce({
+      content: [
+        { type: "text", text: "I can't book flights yet, sorry!" },
+        { type: "tool_use", id: "tool_1", name: "flag_unmet_request", input: { summary: "Wanted to book a flight" } },
+      ],
+      usage: { input_tokens: 80, output_tokens: 15 },
+    });
+    const before = totalCalls();
+    const user = findOrCreateUserByEmail(uniqueEmail("flag-unmet-single-turn"));
+
+    const reply = await runAssistantChat(user.id, [{ role: "user", content: "book me a flight" }]);
+
+    expect(mockCreate).toHaveBeenCalledTimes(1);
+    expect(reply).toEqual({ text: "I can't book flights yet, sorry!" });
+    expect(totalCalls()).toBe(before + 1);
+    expect(listUnmetRequests(true).some((r) => r.ownerId === user.id)).toBe(true);
   });
 });
