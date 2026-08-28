@@ -1,5 +1,5 @@
 import Anthropic from "@anthropic-ai/sdk";
-import { getBriefing, saveBriefing, getSetting, setSetting } from "../db/store.js";
+import { getBriefing, saveBriefing, getSetting, setSetting, recordApiUsage } from "../db/store.js";
 import { hubListMessages, hubListEvents, hubFlaggedMessages } from "./hub.js";
 import { fetchHeadlines, type NewsTopic } from "../providers/news.js";
 import { fetchWeather, type WeatherReport } from "../providers/weather.js";
@@ -168,6 +168,7 @@ The Weather, Markets, and News sections are opt-in: if their fact line is absent
 For Inbox/Calendar/Needs attention, if the fact says "none" or "nothing scheduled", say so briefly rather than skipping it — those sections always exist. Keep the whole thing under 250 words.`,
     messages: [{ role: "user", content: facts }],
   });
+  recordApiUsage(ownerId, "background", MODEL, "daily_briefing", response.usage?.input_tokens ?? 0, response.usage?.output_tokens ?? 0);
 
   const text = response.content.find((b): b is Anthropic.TextBlock => b.type === "text");
   return text?.text ?? "Nothing to report today.";

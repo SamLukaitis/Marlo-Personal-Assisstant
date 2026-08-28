@@ -1241,7 +1241,7 @@ export async function runAssistantChat(
   const usageTotals = { inputTokens: 0, outputTokens: 0 };
   const channel = phone ? "whatsapp" : "web";
   function finish(reply: AssistantReply): AssistantReply {
-    recordApiUsage(ownerId, channel, model, usageTotals.inputTokens, usageTotals.outputTokens);
+    recordApiUsage(ownerId, channel, model, "assistant_chat", usageTotals.inputTokens, usageTotals.outputTokens);
     return reply;
   }
 
@@ -1385,6 +1385,8 @@ export async function getHelpChatReply(history: HelpChatTurn[]): Promise<string>
       system: HELP_CHAT_SYSTEM_PROMPT,
       messages: history.map((turn) => ({ role: turn.role, content: turn.text })),
     });
+    // No owner yet — this is the public marketing site, pre-sign-in.
+    recordApiUsage(null, "web", MODEL_SIMPLE, "help_widget", response.usage?.input_tokens ?? 0, response.usage?.output_tokens ?? 0);
     const text = response.content.find((b): b is Anthropic.TextBlock => b.type === "text");
     return text?.text ?? HELP_CHAT_FALLBACK;
   } catch (err) {
@@ -1405,6 +1407,8 @@ export async function getRegistrationAssistReply(
       system: REGISTRATION_ASSIST_SYSTEM_PROMPTS[context],
       messages: [{ role: "user", content: userText }],
     });
+    // No owner yet — this fires mid-signup, before a users row exists for this phone number.
+    recordApiUsage(null, "whatsapp", MODEL_SIMPLE, "registration_assist", response.usage?.input_tokens ?? 0, response.usage?.output_tokens ?? 0);
     const text = response.content.find((b): b is Anthropic.TextBlock => b.type === "text");
     return text?.text ?? REGISTRATION_ASSIST_FALLBACK[context];
   } catch (err) {

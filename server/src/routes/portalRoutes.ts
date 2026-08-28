@@ -10,6 +10,8 @@ import {
   getServerLog,
   setServerLogExplanation,
   getApiUsageSummary,
+  getApiUsageByPurpose,
+  recordApiUsage,
   listAdminTodos,
   addAdminTodo,
   setAdminTodoDone,
@@ -120,6 +122,14 @@ portalRoutes.post("/logs/:id/explain", async (req, res) => {
       system: EXPLAIN_SYSTEM_PROMPT,
       messages: [{ role: "user", content: `Log to explain:\n\n${log.message}` }],
     });
+    recordApiUsage(
+      ownerId(req),
+      "admin",
+      MODEL_SIMPLE,
+      "log_explanation",
+      response.usage?.input_tokens ?? 0,
+      response.usage?.output_tokens ?? 0
+    );
     const text = response.content.find((b): b is Anthropic.TextBlock => b.type === "text");
     const explanation = text?.text ?? "Couldn't generate an explanation for this one — try again.";
     setServerLogExplanation(id, explanation);
@@ -139,18 +149,37 @@ const MODEL_PRICE_PER_MTOK: Record<string, { input: number; output: number }> = 
   "claude-sonnet-5": { input: 3, output: 15 },
 };
 
+// estimatedCost is null for a model not in the price table above (e.g. one added after this
+// list was last updated) rather than silently reporting $0, which would understate real spend.
+function estimateCost(model: string, inputTokens: number, outputTokens: number): number | null {
+  const price = MODEL_PRICE_PER_MTOK[model];
+  if (!price) return null;
+  return (inputTokens / 1_000_000) * price.input + (outputTokens / 1_000_000) * price.output;
+}
+
 portalRoutes.get("/usage", (req, res) => {
   const days = Math.min(Number(req.query.days) || 30, 365);
   const sinceMs = Date.now() - days * 24 * 60 * 60 * 1000;
-  const rows = getApiUsageSummary(sinceMs);
-  const withCost = rows.map((r) => {
-    const price = MODEL_PRICE_PER_MTOK[r.model];
-    const estimatedCost = price
-      ? (r.inputTokens / 1_000_000) * price.input + (r.outputTokens / 1_000_000) * price.output
-      : null;
-    return { ...r, estimatedCost };
-  });
-  res.json({ rows: withCost, approx: true });
+
+  const rows = getApiUsageSummary(sinceMs).map((r) => ({
+    ...r,
+    estimatedCost: estimateCost(r.model, r.inputTokens, r.outputTokens),
+  }));
+
+  // A model-agnostic cost estimate per purpose — getApiUsageByPurpose() doesn't break down by
+  // model, so this sums the per-day/model estimate above rather than re-deriving one, avoiding a
+  // second (wrong) blended-rate calculation.
+  const costByPurpose = new Map<string, number>();
+  for (const r of rows) {
+    if (r.estimatedCost == null) continue;
+    costByPurpose.set(r.purpose, (costByPurpose.get(r.purpose) ?? 0) + r.estimatedCost);
+  }
+  const byPurpose = getApiUsageByPurpose(sinceMs).map((r) => ({
+    ...r,
+    estimatedCost: costByPurpose.get(r.purpose) ?? null,
+  }));
+
+  res.json({ rows, byPurpose, approx: true });
 });
 
 // --- To-do list -----------------------------------------------------------------------------

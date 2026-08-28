@@ -8,6 +8,7 @@ import {
   addUnmetRequest,
   addServerLog,
   getServerLog,
+  recordApiUsage,
 } from "../db/store.js";
 import type { AuthedRequest } from "../middleware/auth.js";
 
@@ -190,5 +191,40 @@ describe("logs explain", () => {
     expect(secondRes.status).toBe(200);
     expect(secondRes.body.cached).toBe(true);
     expect(getClient).not.toHaveBeenCalled();
+  });
+});
+
+describe("usage", () => {
+  it("breaks down recorded calls by purpose, separately from the day/channel/model table", async () => {
+    const admin = makeAdmin("usage");
+    const someUser = findOrCreateUserByEmail(uniqueEmail("usage-owner"));
+    recordApiUsage(someUser.id, "web", "claude-sonnet-5", "assistant_chat", 1000, 200);
+    recordApiUsage(someUser.id, "background", "claude-sonnet-5", "document_extraction", 3000, 500);
+    const app = buildTestApp(admin.id);
+
+    const res = await request(app).get("/api/portal/usage?days=1");
+    expect(res.status).toBe(200);
+    expect(res.body.approx).toBe(true);
+
+    const chatPurpose = res.body.byPurpose.find((p: { purpose: string }) => p.purpose === "assistant_chat");
+    const extractionPurpose = res.body.byPurpose.find(
+      (p: { purpose: string }) => p.purpose === "document_extraction"
+    );
+    expect(chatPurpose).toMatchObject({ calls: 1, inputTokens: 1000, outputTokens: 200 });
+    expect(extractionPurpose).toMatchObject({ calls: 1, inputTokens: 3000, outputTokens: 500 });
+
+    const dayRow = res.body.rows.find((r: { purpose: string }) => r.purpose === "assistant_chat");
+    expect(dayRow.channel).toBe("web");
+  });
+
+  it("reports estimatedCost as null for a model with no entry in the price table", async () => {
+    const admin = makeAdmin("usage-unknown-model");
+    const someUser = findOrCreateUserByEmail(uniqueEmail("usage-owner-2"));
+    recordApiUsage(someUser.id, "web", "claude-some-future-model", "assistant_chat", 1000, 200);
+    const app = buildTestApp(admin.id);
+
+    const res = await request(app).get("/api/portal/usage?days=1");
+    const row = res.body.rows.find((r: { model: string }) => r.model === "claude-some-future-model");
+    expect(row.estimatedCost).toBeNull();
   });
 });

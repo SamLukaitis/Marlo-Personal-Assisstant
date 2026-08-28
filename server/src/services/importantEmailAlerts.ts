@@ -82,7 +82,8 @@ export async function checkForImportantEmails(ownerId: number): Promise<void> {
   let classified: Map<number, ImportantEmailCategory>;
   try {
     classified = await classifyImportantEmails(
-      unscanned.map((m, index) => ({ index, subject: m.subject, snippet: m.snippet }))
+      unscanned.map((m, index) => ({ index, subject: m.subject, snippet: m.snippet })),
+      ownerId
     );
   } catch (err) {
     console.error(`importantEmailAlerts: classification failed for owner ${ownerId}`, err);

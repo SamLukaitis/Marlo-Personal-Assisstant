@@ -192,9 +192,10 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_server_logs_created ON server_logs(created_at);
   CREATE TABLE IF NOT EXISTS api_usage (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
-    owner_id      INTEGER NOT NULL REFERENCES users(id),
+    owner_id      INTEGER REFERENCES users(id),
     channel       TEXT NOT NULL,
     model         TEXT NOT NULL,
+    purpose       TEXT NOT NULL DEFAULT 'assistant_chat',
     input_tokens  INTEGER NOT NULL,
     output_tokens INTEGER NOT NULL,
     created_at    INTEGER NOT NULL
@@ -224,6 +225,35 @@ const userColumns = (db.prepare(`PRAGMA table_info(users)`).all() as { name: str
 );
 if (!userColumns.includes("is_admin")) {
   db.exec(`ALTER TABLE users ADD COLUMN is_admin INTEGER NOT NULL DEFAULT 0`);
+}
+
+// api_usage originally only tracked the main assistant chat (owner_id required, no purpose
+// column). Recording usage for calls with no signed-in owner yet (the public help widget, the
+// WhatsApp registration assistant) needs owner_id to be nullable, which SQLite can't ALTER
+// directly — rebuild the table when the new "purpose" column (a proxy for "hasn't been migrated
+// yet") is missing, same precedent as travel_checkins' lat/long-nullable migration above. Every
+// pre-existing row was, by definition, the main assistant chat.
+const apiUsageColumns = (db.prepare(`PRAGMA table_info(api_usage)`).all() as { name: string }[]).map(
+  (c) => c.name
+);
+if (!apiUsageColumns.includes("purpose")) {
+  db.exec(`
+    CREATE TABLE api_usage_new (
+      id            INTEGER PRIMARY KEY AUTOINCREMENT,
+      owner_id      INTEGER REFERENCES users(id),
+      channel       TEXT NOT NULL,
+      model         TEXT NOT NULL,
+      purpose       TEXT NOT NULL DEFAULT 'assistant_chat',
+      input_tokens  INTEGER NOT NULL,
+      output_tokens INTEGER NOT NULL,
+      created_at    INTEGER NOT NULL
+    );
+    INSERT INTO api_usage_new (id, owner_id, channel, model, purpose, input_tokens, output_tokens, created_at)
+      SELECT id, owner_id, channel, model, 'assistant_chat', input_tokens, output_tokens, created_at FROM api_usage;
+    DROP TABLE api_usage;
+    ALTER TABLE api_usage_new RENAME TO api_usage;
+    CREATE INDEX IF NOT EXISTS idx_api_usage_created ON api_usage(created_at);
+  `);
 }
 
 // Bootstraps the very first non-owner admin without needing an existing admin to grant it through
@@ -1839,25 +1869,29 @@ export function pruneOldServerLogs(maxAgeMs: number): void {
   db.prepare(`DELETE FROM server_logs WHERE created_at < ?`).run(Date.now() - maxAgeMs);
 }
 
-// One row per runAssistantChat() call (not per internal tool-call turn) — see assistant.ts's
-// `finish()` helper, which is the sole call site.
+// One row per traced API call — for the multi-turn callers (runAssistantChat, documents.ts's
+// runExtraction) that's once per outer invocation with turns summed, not once per internal turn;
+// see each call site's own comment. ownerId is null for calls with no signed-in user yet (the
+// public help widget, the WhatsApp registration assistant, before an account exists).
 export function recordApiUsage(
-  ownerId: number,
+  ownerId: number | null,
   channel: string,
   model: string,
+  purpose: string,
   inputTokens: number,
   outputTokens: number
 ): void {
   db.prepare(
-    `INSERT INTO api_usage (owner_id, channel, model, input_tokens, output_tokens, created_at)
-     VALUES (?, ?, ?, ?, ?, ?)`
-  ).run(ownerId, channel, model, inputTokens, outputTokens, Date.now());
+    `INSERT INTO api_usage (owner_id, channel, model, purpose, input_tokens, output_tokens, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`
+  ).run(ownerId, channel, model, purpose, inputTokens, outputTokens, Date.now());
 }
 
 export interface ApiUsageSummaryRow {
   day: string;
   channel: string;
   model: string;
+  purpose: string;
   calls: number;
   inputTokens: number;
   outputTokens: number;
@@ -1872,15 +1906,42 @@ export function getApiUsageSummary(sinceMs: number): ApiUsageSummaryRow[] {
          date(created_at / 1000, 'unixepoch') AS day,
          channel,
          model,
+         purpose,
          COUNT(*) AS calls,
          SUM(input_tokens) AS inputTokens,
          SUM(output_tokens) AS outputTokens
        FROM api_usage
        WHERE created_at >= ?
-       GROUP BY day, channel, model
+       GROUP BY day, channel, model, purpose
        ORDER BY day DESC`
     )
     .all(sinceMs) as ApiUsageSummaryRow[];
+}
+
+export interface ApiUsageByPurposeRow {
+  purpose: string;
+  calls: number;
+  inputTokens: number;
+  outputTokens: number;
+}
+
+// A flatter "what's actually costing us tokens" view than getApiUsageSummary's day-by-day
+// breakdown — totals per purpose across the whole window, for the Portal Usage tab's headline
+// breakdown rather than the detailed table underneath it.
+export function getApiUsageByPurpose(sinceMs: number): ApiUsageByPurposeRow[] {
+  return db
+    .prepare(
+      `SELECT
+         purpose,
+         COUNT(*) AS calls,
+         SUM(input_tokens) AS inputTokens,
+         SUM(output_tokens) AS outputTokens
+       FROM api_usage
+       WHERE created_at >= ?
+       GROUP BY purpose
+       ORDER BY (SUM(input_tokens) + SUM(output_tokens)) DESC`
+    )
+    .all(sinceMs) as ApiUsageByPurposeRow[];
 }
 
 export interface AdminTodoRow {

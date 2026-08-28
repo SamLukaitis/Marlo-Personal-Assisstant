@@ -4,6 +4,7 @@
 // can catch. See docs/superpowers/specs/2026-08-26-important-email-alerts-design.md.
 
 import Anthropic from "@anthropic-ai/sdk";
+import { recordApiUsage } from "../db/store.js";
 
 export const IMPORTANT_EMAIL_CATEGORIES = [
   "flight_change",
@@ -153,7 +154,8 @@ const CLASSIFY_TOOL: Anthropic.Tool = {
 // Not unit-tested directly — this repo has no precedent for mocking the Anthropic SDK, same as
 // documents.ts's extraction call. Verified manually (see plan Task 7).
 export async function classifyImportantEmails(
-  candidates: ClassifyCandidate[]
+  candidates: ClassifyCandidate[],
+  ownerId: number
 ): Promise<Map<number, ImportantEmailCategory>> {
   if (candidates.length === 0) return new Map();
 
@@ -164,6 +166,14 @@ export async function classifyImportantEmails(
     tool_choice: { type: "tool", name: "classify_messages" },
     messages: [{ role: "user", content: buildClassifyPrompt(candidates) }],
   });
+  recordApiUsage(
+    ownerId,
+    "background",
+    CLASSIFY_MODEL,
+    "email_importance_classifier",
+    response.usage?.input_tokens ?? 0,
+    response.usage?.output_tokens ?? 0
+  );
 
   if (response.stop_reason === "max_tokens") {
     throw new Error("classification response was truncated (max_tokens)");

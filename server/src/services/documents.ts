@@ -15,6 +15,7 @@ import {
   DOCUMENT_CATEGORIES,
   findDocumentByEmailAttachment,
   getDocument,
+  recordApiUsage,
   type DocumentRow,
   type DocumentCategory,
   type DocumentSource,
@@ -198,7 +199,7 @@ const GIBBERISH_CHECK_MODEL = process.env.ASSISTANT_MODEL_SIMPLE ?? "claude-haik
 // boilerplate text extracts fine and pads the result past any length threshold. This is what
 // actually catches that: a fast model reading the text and judging whether a meaningful chunk of
 // it is corrupted, not just checking how many characters came out.
-async function looksLikeGibberish(text: string): Promise<boolean> {
+async function looksLikeGibberish(text: string, ownerId: number): Promise<boolean> {
   const response = await getClient().messages.create({
     model: GIBBERISH_CHECK_MODEL,
     max_tokens: 5,
@@ -216,18 +217,26 @@ async function looksLikeGibberish(text: string): Promise<boolean> {
       },
     ],
   });
+  recordApiUsage(
+    ownerId,
+    "background",
+    GIBBERISH_CHECK_MODEL,
+    "pdf_gibberish_check",
+    response.usage?.input_tokens ?? 0,
+    response.usage?.output_tokens ?? 0
+  );
   const answer = response.content.find((b): b is Anthropic.TextBlock => b.type === "text")?.text ?? "";
   return answer.toUpperCase().includes("GIBBERISH");
 }
 
-async function extractPdfTextLayer(buffer: Buffer): Promise<string | null> {
+async function extractPdfTextLayer(buffer: Buffer, ownerId: number): Promise<string | null> {
   try {
     const parser = new PDFParse({ data: buffer });
     const result = await parser.getText();
     await parser.destroy();
     const trimmed = result.text.trim();
     if (trimmed.length < MIN_PDF_TEXT_LENGTH) return null;
-    if (await looksLikeGibberish(trimmed)) {
+    if (await looksLikeGibberish(trimmed, ownerId)) {
       console.warn("documents: pdf text layer looked garbled — falling back to vision");
       return null;
     }
@@ -256,7 +265,10 @@ interface ExtractionResult {
 // themselves succeeded. A single non-looping call can't recover from that; feed the tool calls
 // back as normal tool_results and let the conversation continue, same as the main assistant loop
 // in ai/assistant.ts does, until the model actually produces the write-up.
-async function runExtraction(initialContent: Anthropic.ContentBlockParam[]): Promise<ExtractionResult> {
+async function runExtraction(
+  initialContent: Anthropic.ContentBlockParam[],
+  ownerId: number
+): Promise<ExtractionResult> {
   const messages: Anthropic.MessageParam[] = [{ role: "user", content: initialContent }];
   let response: Anthropic.Message;
   let textBlock: Anthropic.TextBlock | undefined;
@@ -265,6 +277,9 @@ async function runExtraction(initialContent: Anthropic.ContentBlockParam[]): Pro
   let matchKeysUse: Anthropic.ToolUseBlock | undefined;
   const purchases: unknown[] = [];
   const bookings: unknown[] = [];
+  // Summed across every turn of this one extraction (up to 3) and recorded once below — mirrors
+  // ai/assistant.ts's runAssistantChat, which records once per invocation, not once per turn.
+  const usageTotals = { inputTokens: 0, outputTokens: 0 };
 
   for (let turn = 0; turn < 3; turn++) {
     response = await getClient().messages.create({
@@ -277,6 +292,8 @@ async function runExtraction(initialContent: Anthropic.ContentBlockParam[]): Pro
       tools: [NAME_DOCUMENT_TOOL, TRAVEL_MOVEMENT_TOOL, RECORD_MATCH_KEYS_TOOL, RECORD_PURCHASE_TOOL, RECORD_BOOKING_TOOL],
       messages,
     });
+    usageTotals.inputTokens += response.usage?.input_tokens ?? 0;
+    usageTotals.outputTokens += response.usage?.output_tokens ?? 0;
 
     textBlock = response.content.find((b): b is Anthropic.TextBlock => b.type === "text");
     const toolUses = response.content.filter(
@@ -302,6 +319,15 @@ async function runExtraction(initialContent: Anthropic.ContentBlockParam[]): Pro
       })),
     });
   }
+
+  recordApiUsage(
+    ownerId,
+    "background",
+    EXTRACTION_MODEL,
+    "document_extraction",
+    usageTotals.inputTokens,
+    usageTotals.outputTokens
+  );
 
   const nameInput = nameUse?.input as { title?: unknown; category?: unknown } | undefined;
   const rawTitle = nameInput?.title;
@@ -449,7 +475,7 @@ function storeDerivedEntities(
   }
 }
 
-async function extractDocument(buffer: Buffer, mimeType: string): Promise<ExtractionResult> {
+async function extractDocument(buffer: Buffer, mimeType: string, ownerId: number): Promise<ExtractionResult> {
   const uploadedAt = new Date().toISOString();
   const prompt =
     "Call name_document first to title this file, then do the extraction below.\n\n" +
@@ -474,7 +500,7 @@ async function extractDocument(buffer: Buffer, mimeType: string): Promise<Extrac
     "number, also call record_match_keys with it, so it can be cross-referenced against " +
     "email later.";
 
-  const pdfText = mimeType === "application/pdf" ? await extractPdfTextLayer(buffer) : null;
+  const pdfText = mimeType === "application/pdf" ? await extractPdfTextLayer(buffer, ownerId) : null;
 
   const base64 = buffer.toString("base64");
   const content: Anthropic.ContentBlockParam[] = pdfText
@@ -500,7 +526,7 @@ async function extractDocument(buffer: Buffer, mimeType: string): Promise<Extrac
         { type: "text", text: prompt },
       ];
 
-  return runExtraction(content);
+  return runExtraction(content, ownerId);
 }
 
 // Text-only counterpart to extractDocument — for content that arrives as plain text rather than
@@ -513,7 +539,8 @@ const MAX_LINK_TEXT_CHARS = 12_000;
 async function extractFactsFromLinkText(
   pageText: string,
   sourceUrl: string,
-  uploadedAt: Date
+  uploadedAt: Date,
+  ownerId: number
 ): Promise<ExtractionResult> {
   const truncated = pageText.length > MAX_LINK_TEXT_CHARS;
   const bodyText = truncated ? pageText.slice(0, MAX_LINK_TEXT_CHARS) : pageText;
@@ -540,7 +567,7 @@ async function extractFactsFromLinkText(
     (truncated ? `\n\n(Page text truncated to the first ${MAX_LINK_TEXT_CHARS} characters.)` : "") +
     `\n\nPage text:\n${bodyText}`;
 
-  return runExtraction([{ type: "text", text: prompt }]);
+  return runExtraction([{ type: "text", text: prompt }], ownerId);
 }
 
 // Sibling to extractFactsFromLinkText, for the case ingestEmailBodyReceipt handles: an email
@@ -551,7 +578,8 @@ const MAX_EMAIL_BODY_CHARS = 12_000;
 async function extractFactsFromEmailText(
   bodyText: string,
   subject: string,
-  uploadedAt: Date
+  uploadedAt: Date,
+  ownerId: number
 ): Promise<ExtractionResult> {
   const truncated = bodyText.length > MAX_EMAIL_BODY_CHARS;
   const text = truncated ? bodyText.slice(0, MAX_EMAIL_BODY_CHARS) : bodyText;
@@ -574,7 +602,7 @@ async function extractFactsFromEmailText(
     (truncated ? `\n\n(Email body truncated to the first ${MAX_EMAIL_BODY_CHARS} characters.)` : "") +
     `\n\nEmail body:\n${text}`;
 
-  return runExtraction([{ type: "text", text: prompt }]);
+  return runExtraction([{ type: "text", text: prompt }], ownerId);
 }
 
 function movementToCheckins(
@@ -642,7 +670,7 @@ async function finalizeIngestedFile(
       purchases,
       bookings,
     } = canAnalyze
-      ? await extractDocument(buffer, mimeType)
+      ? await extractDocument(buffer, mimeType, ownerId)
       : {
           text: `(file type ${mimeType} isn't supported for automatic analysis — stored for download only)`,
           title: null,
@@ -820,7 +848,8 @@ export async function ingestEmailBodyReceipt(params: {
   const { title, category, matchKeys, purchases, bookings } = await extractFactsFromEmailText(
     params.bodyText,
     params.subject,
-    uploadedAt
+    uploadedAt,
+    params.ownerId
   );
 
   const derivedEntities = buildDerivedEntities(purchases, bookings, uploadedAt);
@@ -912,7 +941,7 @@ export async function ingestWhatsAppLink(params: {
       matchKeys: extractedMatchKeys,
       purchases,
       bookings,
-    } = await extractFactsFromLinkText(fetched.text, fetched.finalUrl, uploadedAt);
+    } = await extractFactsFromLinkText(fetched.text, fetched.finalUrl, uploadedAt, params.ownerId);
 
     const validated = applyTravelValidation(extractedText, movement, uploadedAt);
     storableMovement = validated.storableMovement;

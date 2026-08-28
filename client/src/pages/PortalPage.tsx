@@ -9,6 +9,7 @@ import {
   fetchServerLogs,
   explainServerLog,
   fetchUsageSummary,
+  usagePurposeLabel,
   fetchAdminTodos,
   addAdminTodo,
   setAdminTodoDone,
@@ -21,6 +22,7 @@ import {
   type UnmetRequest,
   type ServerLog,
   type ApiUsageRow,
+  type ApiUsageByPurposeRow,
   type AdminTodo,
   type PosterNote,
 } from "../api/client";
@@ -396,13 +398,17 @@ function LogsTab() {
 
 function UsageTab() {
   const [rows, setRows] = useState<ApiUsageRow[]>([]);
+  const [byPurpose, setByPurpose] = useState<ApiUsageByPurposeRow[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [days, setDays] = useState(30);
 
   function load(d: number) {
     setLoaded(false);
     fetchUsageSummary(d)
-      .then((r) => setRows(r.rows))
+      .then((r) => {
+        setRows(r.rows);
+        setByPurpose(r.byPurpose);
+      })
       .finally(() => setLoaded(true));
   }
 
@@ -448,37 +454,77 @@ function UsageTab() {
 
       {!loaded ? (
         <p className="muted">Loading…</p>
-      ) : rows.length === 0 ? (
-        <p className="muted">No assistant activity in this range.</p>
       ) : (
-        <div className="card" style={{ overflowX: "auto" }}>
-          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
-            <thead>
-              <tr style={{ textAlign: "left" }}>
-                <th style={{ padding: "8px 12px" }}>Day</th>
-                <th style={{ padding: "8px 12px" }}>Channel</th>
-                <th style={{ padding: "8px 12px" }}>Model</th>
-                <th style={{ padding: "8px 12px" }}>Calls</th>
-                <th style={{ padding: "8px 12px" }}>Input tok.</th>
-                <th style={{ padding: "8px 12px" }}>Output tok.</th>
-                <th style={{ padding: "8px 12px" }}>Est. cost</th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((r, i) => (
-                <tr key={i} className="list-item">
-                  <td style={{ padding: "8px 12px" }}>{r.day}</td>
-                  <td style={{ padding: "8px 12px" }}>{r.channel}</td>
-                  <td style={{ padding: "8px 12px" }}>{r.model}</td>
-                  <td style={{ padding: "8px 12px" }}>{r.calls}</td>
-                  <td style={{ padding: "8px 12px" }}>{r.inputTokens.toLocaleString()}</td>
-                  <td style={{ padding: "8px 12px" }}>{r.outputTokens.toLocaleString()}</td>
-                  <td style={{ padding: "8px 12px" }}>{r.estimatedCost != null ? `$${r.estimatedCost.toFixed(3)}` : "—"}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+        <>
+          <h2 style={{ fontSize: 15, marginBottom: 10 }}>What it's being used for</h2>
+          {byPurpose.length === 0 ? (
+            <p className="muted">No assistant activity in this range.</p>
+          ) : (
+            <div className="card card-padded" style={{ marginBottom: 24 }}>
+              {byPurpose.map((p) => {
+                const tokens = p.inputTokens + p.outputTokens;
+                const share = totalTokens > 0 ? Math.round((tokens / totalTokens) * 100) : 0;
+                return (
+                  <div key={p.purpose} style={{ marginBottom: 10 }}>
+                    <div className="row" style={{ justifyContent: "space-between", fontSize: 13 }}>
+                      <span>{usagePurposeLabel(p.purpose)}</span>
+                      <span className="muted">
+                        {p.calls} call{p.calls === 1 ? "" : "s"} · {tokens.toLocaleString()} tok.
+                        {p.estimatedCost != null ? ` · $${p.estimatedCost.toFixed(3)}` : ""}
+                      </span>
+                    </div>
+                    <div style={{ background: "var(--border-soft)", borderRadius: 4, height: 6, marginTop: 4 }}>
+                      <div
+                        style={{
+                          width: `${share}%`,
+                          background: "var(--accent)",
+                          borderRadius: 4,
+                          height: "100%",
+                        }}
+                      />
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          <h2 style={{ fontSize: 15, marginBottom: 10 }}>Day by day</h2>
+          {rows.length === 0 ? (
+            <p className="muted">No assistant activity in this range.</p>
+          ) : (
+            <div className="card" style={{ overflowX: "auto" }}>
+              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+                <thead>
+                  <tr style={{ textAlign: "left" }}>
+                    <th style={{ padding: "8px 12px" }}>Day</th>
+                    <th style={{ padding: "8px 12px" }}>Purpose</th>
+                    <th style={{ padding: "8px 12px" }}>Channel</th>
+                    <th style={{ padding: "8px 12px" }}>Model</th>
+                    <th style={{ padding: "8px 12px" }}>Calls</th>
+                    <th style={{ padding: "8px 12px" }}>Input tok.</th>
+                    <th style={{ padding: "8px 12px" }}>Output tok.</th>
+                    <th style={{ padding: "8px 12px" }}>Est. cost</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {rows.map((r, i) => (
+                    <tr key={i} className="list-item">
+                      <td style={{ padding: "8px 12px" }}>{r.day}</td>
+                      <td style={{ padding: "8px 12px" }}>{usagePurposeLabel(r.purpose)}</td>
+                      <td style={{ padding: "8px 12px" }}>{r.channel}</td>
+                      <td style={{ padding: "8px 12px" }}>{r.model}</td>
+                      <td style={{ padding: "8px 12px" }}>{r.calls}</td>
+                      <td style={{ padding: "8px 12px" }}>{r.inputTokens.toLocaleString()}</td>
+                      <td style={{ padding: "8px 12px" }}>{r.outputTokens.toLocaleString()}</td>
+                      <td style={{ padding: "8px 12px" }}>{r.estimatedCost != null ? `$${r.estimatedCost.toFixed(3)}` : "—"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </>
       )}
     </>
   );

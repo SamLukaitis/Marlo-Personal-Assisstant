@@ -618,14 +618,43 @@ export interface ApiUsageRow {
   day: string;
   channel: string;
   model: string;
+  purpose: string;
   calls: number;
   inputTokens: number;
   outputTokens: number;
   estimatedCost: number | null;
 }
 
+export interface ApiUsageByPurposeRow {
+  purpose: string;
+  calls: number;
+  inputTokens: number;
+  outputTokens: number;
+  estimatedCost: number | null;
+}
+
+// Maps the internal purpose tags (assistant.ts, documents.ts, etc.) to what an admin actually
+// reads — keep this in sync whenever a new call site starts calling recordApiUsage.
+export const USAGE_PURPOSE_LABELS: Record<string, string> = {
+  assistant_chat: "Assistant chat (web + WhatsApp)",
+  help_widget: "Public help widget",
+  registration_assist: "WhatsApp sign-up assistant",
+  log_explanation: "Portal log explanations",
+  email_importance_classifier: "Important-email scanning",
+  daily_briefing: "Daily briefing",
+  conversation_summary: "WhatsApp memory summarization",
+  document_extraction: "Document/photo extraction",
+  pdf_gibberish_check: "PDF text-quality check",
+};
+
+export function usagePurposeLabel(purpose: string): string {
+  return USAGE_PURPOSE_LABELS[purpose] ?? purpose;
+}
+
 export const fetchUsageSummary = (days = 30) =>
-  getJson<{ rows: ApiUsageRow[]; approx: true }>(`/api/portal/usage?days=${days}`);
+  getJson<{ rows: ApiUsageRow[]; byPurpose: ApiUsageByPurposeRow[]; approx: true }>(
+    `/api/portal/usage?days=${days}`
+  );
 
 export interface AdminTodo {
   id: number;
