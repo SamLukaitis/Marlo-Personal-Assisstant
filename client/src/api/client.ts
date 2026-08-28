@@ -566,7 +566,9 @@ export async function resetTestPhone(phone: string): Promise<{ ok: true; hadAcco
   );
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
-    throw new Error(body.error ?? "failed to reset that number");
+    const offenders = Array.isArray(body.offenders) ? body.offenders : [];
+    const suffix = offenders.length > 0 ? ` — blocked by: ${offenders.join(", ")}` : "";
+    throw new Error((body.error ?? "failed to reset that number") + suffix);
   }
   return res.json();
 }

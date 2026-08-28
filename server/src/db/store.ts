@@ -2181,6 +2181,35 @@ export function deleteUserCompletely(ownerId: number): { deletedDocumentPaths: s
   return { deletedDocumentPaths: documentPaths };
 }
 
+// Introspects the live schema (rather than a hand-maintained table list) to find every column
+// that declares REFERENCES users(id), and reports which of them still hold a row for this owner.
+// deleteUserCompletely has needed this exact class of fix three times now (pending_setup/
+// pending_actions, document_match_keys, admin_todos/poster_notes) — each time because a new
+// owner-scoped table was added elsewhere and this purge wasn't updated to match, and each time
+// the only symptom was a bare "FOREIGN KEY constraint failed" with no table name. Call this from
+// the catch site around deleteUserCompletely so a future occurrence names the exact table on the
+// first failure instead of requiring another guess-and-redeploy cycle.
+export function findRemainingOwnerReferences(ownerId: number): string[] {
+  const tables = (
+    db.prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'`).all() as {
+      name: string;
+    }[]
+  ).map((t) => t.name);
+
+  const offenders: string[] = [];
+  for (const table of tables) {
+    const fks = db.prepare(`PRAGMA foreign_key_list("${table}")`).all() as { table: string; from: string }[];
+    for (const fk of fks) {
+      if (fk.table !== "users") continue;
+      const { c } = db.prepare(`SELECT COUNT(*) AS c FROM "${table}" WHERE "${fk.from}" = ?`).get(ownerId) as {
+        c: number;
+      };
+      if (c > 0) offenders.push(`${table}.${fk.from} (${c} row${c === 1 ? "" : "s"})`);
+    }
+  }
+  return offenders;
+}
+
 const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days, sliding — refreshed on each use
 
 // Shared by session tokens and WhatsApp registration link tokens below — same primitive, two
