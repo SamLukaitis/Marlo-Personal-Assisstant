@@ -38,7 +38,9 @@ vi.mock("../services/whatsappRegistration.js", async () => {
   };
 });
 vi.mock("../services/postConnectSetup.js", () => ({
+  handleFirstTaskReply: vi.fn().mockResolvedValue(false),
   handlePostConnectSetupReply: vi.fn().mockResolvedValue(false),
+  handleBriefingContentReply: vi.fn().mockResolvedValue(false),
 }));
 vi.mock("../services/whatsappReply.js", () => ({
   sendAssistantReply: vi.fn(),
@@ -53,7 +55,9 @@ vi.mock("../services/conversationSummary.js", () => ({
 const { sendWhatsAppMessage } = await import("../providers/whatsapp.js");
 const { resolveOwnerByPhone } = await import("../db/store.js");
 const { runAssistantChat } = await import("../ai/assistant.js");
-const { handlePostConnectSetupReply } = await import("../services/postConnectSetup.js");
+const { handleFirstTaskReply, handlePostConnectSetupReply, handleBriefingContentReply } = await import(
+  "../services/postConnectSetup.js"
+);
 const { sendAssistantReply } = await import("../services/whatsappReply.js");
 const { handlePendingActionReply } = await import("../services/actionHandlers.js");
 const { maybeUpdateConversationSummary } = await import("../services/conversationSummary.js");
@@ -63,7 +67,9 @@ beforeEach(() => {
   vi.mocked(sendWhatsAppMessage).mockClear();
   vi.mocked(runAssistantChat).mockClear();
   vi.mocked(resolveOwnerByPhone).mockReturnValue(42);
+  vi.mocked(handleFirstTaskReply).mockReset().mockResolvedValue(false);
   vi.mocked(handlePostConnectSetupReply).mockReset().mockResolvedValue(false);
+  vi.mocked(handleBriefingContentReply).mockReset().mockResolvedValue(false);
   vi.mocked(sendAssistantReply).mockClear();
   vi.mocked(handlePendingActionReply).mockReset().mockResolvedValue(false);
   vi.mocked(maybeUpdateConversationSummary).mockClear().mockResolvedValue(undefined);
@@ -94,6 +100,26 @@ describe("handleIncoming — version trigger", () => {
     expect(runAssistantChat).not.toHaveBeenCalled();
     expect(sendWhatsAppMessage).toHaveBeenCalledTimes(1);
     expect(vi.mocked(sendWhatsAppMessage).mock.calls[0][0]).toBe("447900000002");
+  });
+});
+
+describe("handleIncoming — blocking free-text setup steps", () => {
+  it("short-circuits entirely when handleFirstTaskReply consumes the message", async () => {
+    vi.mocked(handleFirstTaskReply).mockResolvedValue(true);
+
+    await handleIncoming({ kind: "text", from: "447900000012", text: "skip", messageId: "m12" });
+
+    expect(handleFirstTaskReply).toHaveBeenCalledWith(42, expect.objectContaining({ text: "skip" }));
+    expect(runAssistantChat).not.toHaveBeenCalled();
+  });
+
+  it("short-circuits entirely when handleBriefingContentReply consumes the message", async () => {
+    vi.mocked(handleBriefingContentReply).mockResolvedValue(true);
+
+    await handleIncoming({ kind: "text", from: "447900000013", text: "news please", messageId: "m13" });
+
+    expect(handleBriefingContentReply).toHaveBeenCalledWith(42, expect.objectContaining({ text: "news please" }));
+    expect(runAssistantChat).not.toHaveBeenCalled();
   });
 });
 

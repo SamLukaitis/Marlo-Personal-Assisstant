@@ -24,6 +24,7 @@ import {
   listMemoryNotes,
   addMemoryNote,
   markMemorySurfaced,
+  setPendingSetup,
   listUnmetRequests,
 } from "../db/store.js";
 import { getBriefingSettings, saveBriefingSettings, type BriefingSettings } from "../services/briefing.js";
@@ -382,27 +383,32 @@ describe("remember tool — triggerAt", () => {
 });
 
 describe("buildSystemPrompt onboarding paragraph", () => {
-  it("is present when the user has never saved briefing settings", () => {
-    const user = findOrCreateUserByEmail(uniqueEmail("prompt-onboarding-on"));
+  it("is present, mentioning set_briefing_preferences, while ask_briefing_content is pending", () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("prompt-onboarding-content"));
+    setPendingSetup(user.id, "ask_briefing_content");
     const prompt = buildSystemPrompt(user.id);
     expect(prompt).toContain("set_briefing_preferences");
   });
 
-  it("is absent once briefing settings have been saved", () => {
+  it("is present, without mentioning set_briefing_preferences, while ask_first_task is pending", () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("prompt-onboarding-first-task"));
+    setPendingSetup(user.id, "ask_first_task");
+    const prompt = buildSystemPrompt(user.id);
+    expect(prompt).toContain("mid-setup");
+    expect(prompt).not.toContain("set_briefing_preferences");
+  });
+
+  it("is absent once the post-connect chain isn't pending, even for a user with no saved briefing settings", () => {
     const user = findOrCreateUserByEmail(uniqueEmail("prompt-onboarding-off"));
-    saveBriefingSettings(user.id, {
-      enabled: true,
-      includeNews: false,
-      topics: [],
-      includeMarkets: false,
-      tickers: [],
-      includeWeather: false,
-      weatherLocation: "",
-      proactive: false,
-      sendTime: "07:30",
-    });
     const prompt = buildSystemPrompt(user.id);
     expect(prompt).not.toContain("set_briefing_preferences");
+    expect(prompt).not.toContain("mid-setup");
+  });
+
+  it("is absent for ask_briefing/ask_teams (the button-only steps)", () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("prompt-onboarding-buttons"));
+    setPendingSetup(user.id, "ask_briefing");
+    expect(buildSystemPrompt(user.id)).not.toContain("mid-setup");
   });
 });
 
