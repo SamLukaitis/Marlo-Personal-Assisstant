@@ -9,6 +9,7 @@ import {
   saveMatchKeys,
   addAdminTodo,
   addPosterNote,
+  findRemainingOwnerReferences,
 } from "./store.js";
 
 let counter = 0;
@@ -79,5 +80,25 @@ describe("deleteUserCompletely", () => {
 
     expect(() => deleteUserCompletely(user.id)).not.toThrow();
     expect(getUser(user.id)).toBeNull();
+  });
+});
+
+describe("findRemainingOwnerReferences", () => {
+  // This is the diagnostic that should have named the table on the very first occurrence of this
+  // bug class instead of leaving nothing but a bare "FOREIGN KEY constraint failed" to debug —
+  // verify it actually names a table it doesn't yet know to clear.
+  it("names a table that still holds a row for the owner", () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("dangling-ref"));
+    setPendingSetup(user.id, "ask_briefing");
+
+    expect(findRemainingOwnerReferences(user.id)).toEqual(["pending_setup.owner_id (1 row)"]);
+  });
+
+  it("returns nothing once the owner has actually been purged", () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("clean-ref"));
+    setPendingSetup(user.id, "ask_briefing");
+    deleteUserCompletely(user.id);
+
+    expect(findRemainingOwnerReferences(user.id)).toEqual([]);
   });
 });

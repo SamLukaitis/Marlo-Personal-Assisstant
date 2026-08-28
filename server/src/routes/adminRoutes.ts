@@ -9,6 +9,7 @@ import {
   deleteUserCompletely,
   deletePendingRegistration,
   normalizePhone,
+  findRemainingOwnerReferences,
 } from "../db/store.js";
 import type { AuthedRequest } from "../middleware/auth.js";
 
@@ -83,9 +84,16 @@ adminRoutes.post("/api/admin/reset-test-phone", (req, res) => {
   } catch (err) {
     // Surface the real DB error (e.g. a newly-added owner_id-referencing table this purge
     // hasn't been taught to clear yet) instead of letting it fall through to Express's default
-    // HTML error page, which the client can't parse and reports as a generic failure.
-    console.error("admin: reset-test-phone failed", err);
-    res.status(500).json({ error: (err as Error).message });
+    // HTML error page, which the client can't parse and reports as a generic failure. The
+    // transaction rolled back on throw, so ownerId's rows are all still intact here — naming
+    // exactly which table blocked it beats another guess-and-redeploy cycle (this purge list has
+    // gone stale three times already).
+    const offenders = ownerId !== null ? findRemainingOwnerReferences(ownerId) : [];
+    console.error("admin: reset-test-phone failed", err, { offenders });
+    res.status(500).json({
+      error: (err as Error).message,
+      ...(offenders.length > 0 ? { offenders } : {}),
+    });
     return;
   }
 
