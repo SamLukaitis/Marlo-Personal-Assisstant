@@ -15,7 +15,13 @@ vi.mock("../services/hub.js", async (importOriginal) => {
   return { ...actual, hubGetMessage: (...args: unknown[]) => mockHubGetMessage(...args) };
 });
 
-import { buildToolsForOwner, buildSystemPrompt, runTool, messageForModel } from "./assistant.js";
+import {
+  buildToolsForOwner,
+  buildSystemPrompt,
+  runTool,
+  messageForModel,
+  trimSnippetForList,
+} from "./assistant.js";
 import type { UnifiedMessage } from "../providers/types.js";
 import {
   findOrCreateUserByEmail,
@@ -448,6 +454,33 @@ describe("messageForModel", () => {
 
   it("passes null through untouched", () => {
     expect(messageForModel(null)).toBeNull();
+  });
+});
+
+describe("trimSnippetForList", () => {
+  const BASE: UnifiedMessage = {
+    id: "m1",
+    accountId: 2,
+    accountEmail: "a@example.com",
+    provider: "google",
+    subject: "Your ticket",
+    from: "airline@example.com",
+    snippet: "short preview",
+    receivedAt: "2026-08-01T00:00:00.000Z",
+    unread: false,
+    link: "https://mail.example.com/m1",
+  };
+
+  it("leaves a snippet at or under 150 chars untouched", () => {
+    expect(trimSnippetForList(BASE)).toEqual(BASE);
+  });
+
+  it("truncates a snippet over 150 chars to 150 chars plus an ellipsis, leaving other fields untouched", () => {
+    const longSnippet = "x".repeat(300);
+    const out = trimSnippetForList({ ...BASE, snippet: longSnippet });
+
+    expect(out.snippet).toBe("x".repeat(150) + "…");
+    expect(out).toEqual({ ...BASE, snippet: "x".repeat(150) + "…" });
   });
 });
 

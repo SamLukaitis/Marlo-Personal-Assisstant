@@ -1,5 +1,12 @@
 # Token cost reduction — trim tool results, cache conversation history, treat evals as spend
 
+## Status
+
+- [x] #1 Trim search/list result snippets — `trimSnippetForList` in `server/src/ai/assistant.ts`
+- [x] #2 Cache breakpoint on conversation messages — `withMessagesCacheBreakpoint` in the same
+      file, applied in `runAssistantChat`'s loop
+- [ ] #3 Treat eval runs as deliberate spend — practice/optional guard, not yet enforced in code
+
 ## Background (why this exists)
 
 Investigated 2026-08-28 after API spend jumped from under $1/day to tens of dollars/day starting
