@@ -55,7 +55,7 @@ export function CalendarPage() {
             </p>
           )}
           {events.map((e) => (
-            <div key={`${e.accountId}-${e.id}`} className="list-item list-item-hover">
+            <div key={`${e.accountId}-${e.id}`} className="data-row data-row-hover">
               <a href={e.link} target="_blank" rel="noreferrer" style={{ padding: "0 16px" }}>
                 <div className="list-title">
                   <span>{e.title}</span>

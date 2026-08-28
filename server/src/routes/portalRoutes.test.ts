@@ -138,12 +138,88 @@ describe("todos", () => {
     expect(addRes.status).toBe(200);
     const todo = addRes.body.find((t: { text: string }) => t.text === "Fix the thing");
     expect(todo.done).toBe(false);
+    expect(todo.replies).toEqual([]);
+    expect(todo.unreadReplyCount).toBe(0);
 
     const doneRes = await request(app).put(`/api/portal/todos/${todo.id}`).send({ done: true });
     expect(doneRes.body.find((t: { id: number }) => t.id === todo.id).done).toBe(true);
 
     const delRes = await request(app).delete(`/api/portal/todos/${todo.id}`);
     expect(delRes.body.find((t: { id: number }) => t.id === todo.id)).toBeUndefined();
+  });
+
+  it("lets another admin reply, and shows the reply with author + unread count to the poster", async () => {
+    const poster = makeAdmin("todo-poster");
+    const replier = makeAdmin("todo-replier");
+    const posterApp = buildTestApp(poster.id);
+    const replierApp = buildTestApp(replier.id);
+
+    const addRes = await request(posterApp).post("/api/portal/todos").send({ text: "Investigate the spike" });
+    const todo = addRes.body.find((t: { text: string }) => t.text === "Investigate the spike");
+
+    const replyRes = await request(replierApp)
+      .post(`/api/portal/todos/${todo.id}/replies`)
+      .send({ text: "Already found it, see the commit" });
+    expect(replyRes.status).toBe(200);
+    const afterReply = replyRes.body.find((t: { id: number }) => t.id === todo.id);
+    expect(afterReply.replies).toHaveLength(1);
+    expect(afterReply.replies[0]).toMatchObject({
+      text: "Already found it, see the commit",
+      authorEmail: replier.email,
+    });
+
+    // The poster hasn't read it yet — GET as the poster should show 1 unread.
+    const posterView = await request(posterApp).get("/api/portal/todos");
+    const posterTodo = posterView.body.find((t: { id: number }) => t.id === todo.id);
+    expect(posterTodo.unreadReplyCount).toBe(1);
+
+    // Posting implies having read up through your own reply — the replier sees 0 unread without
+    // an explicit read-mark, while the poster (who did nothing) still sees 1. Confirms unread
+    // counts are computed per-viewer, not shared.
+    const replierView = await request(replierApp).get("/api/portal/todos");
+    const replierTodo = replierView.body.find((t: { id: number }) => t.id === todo.id);
+    expect(replierTodo.unreadReplyCount).toBe(0);
+  });
+
+  it("clears unreadReplyCount for the caller only after marking read", async () => {
+    const poster = makeAdmin("todo-read-poster");
+    const replier = makeAdmin("todo-read-replier");
+    const posterApp = buildTestApp(poster.id);
+    const replierApp = buildTestApp(replier.id);
+
+    const addRes = await request(posterApp).post("/api/portal/todos").send({ text: "Ship the fix" });
+    const todo = addRes.body.find((t: { text: string }) => t.text === "Ship the fix");
+    await request(replierApp).post(`/api/portal/todos/${todo.id}/replies`).send({ text: "On it" });
+
+    const readRes = await request(posterApp).post(`/api/portal/todos/${todo.id}/read`);
+    expect(readRes.status).toBe(200);
+    expect(readRes.body.find((t: { id: number }) => t.id === todo.id).unreadReplyCount).toBe(0);
+
+    // A second reply after the read-mark should be unread again for the poster.
+    await request(replierApp).post(`/api/portal/todos/${todo.id}/replies`).send({ text: "Deployed" });
+    const afterSecond = await request(posterApp).get("/api/portal/todos");
+    expect(afterSecond.body.find((t: { id: number }) => t.id === todo.id).unreadReplyCount).toBe(1);
+  });
+
+  it("never counts an admin's own just-sent reply as unread to themselves", async () => {
+    const poster = makeAdmin("todo-self-read-poster");
+    const app = buildTestApp(poster.id);
+
+    const addRes = await request(app).post("/api/portal/todos").send({ text: "Write the docs" });
+    const todo = addRes.body[0];
+
+    const replyRes = await request(app).post(`/api/portal/todos/${todo.id}/replies`).send({ text: "Started on it" });
+    expect(replyRes.body.find((t: { id: number }) => t.id === todo.id).unreadReplyCount).toBe(0);
+  });
+
+  it("rejects an empty reply", async () => {
+    const admin = makeAdmin("todo-empty-reply");
+    const app = buildTestApp(admin.id);
+    const addRes = await request(app).post("/api/portal/todos").send({ text: "Something" });
+    const todo = addRes.body[0];
+
+    const res = await request(app).post(`/api/portal/todos/${todo.id}/replies`).send({ text: "   " });
+    expect(res.status).toBe(400);
   });
 });
 

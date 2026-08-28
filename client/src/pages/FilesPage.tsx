@@ -102,7 +102,7 @@ export function FilesPage() {
   // than inlined twice.
   function renderDocument(d: StoredDocument) {
     return (
-      <div key={d.id} className="list-item">
+      <div key={d.id} className="data-row">
         <div className="row" style={{ justifyContent: "space-between" }}>
           {/* The title comes from the extraction pass, so the list reads as a set of
               named documents rather than a dump of whatever was typed alongside the
@@ -222,7 +222,7 @@ export function FilesPage() {
                   </p>
                 )}
                 {files.map((f) => (
-                  <div key={`${f.accountId}-${f.id}`} className="list-item list-item-hover">
+                  <div key={`${f.accountId}-${f.id}`} className="data-row data-row-hover">
                     <a href={f.link} target="_blank" rel="noreferrer" style={{ padding: "0 16px" }}>
                       <div className="list-title">
                         <span>{f.name}</span>

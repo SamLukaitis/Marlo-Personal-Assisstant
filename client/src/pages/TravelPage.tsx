@@ -99,7 +99,7 @@ export function TravelPage() {
             </p>
           )}
           {checkins.map((c) => (
-            <div key={c.id} className="list-item row" style={{ justifyContent: "space-between", padding: "0 16px" }}>
+            <div key={c.id} className="data-row row" style={{ justifyContent: "space-between", padding: "0 16px" }}>
               <span style={{ fontSize: 13.5 }}>
                 {c.city ? `${c.city}, ` : ""}
                 {c.country ??

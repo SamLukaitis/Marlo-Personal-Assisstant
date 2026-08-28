@@ -198,7 +198,7 @@ export function OnboardingPage() {
               {numbers.length > 0 && (
                 <div style={{ marginTop: 10 }}>
                   {numbers.map((n) => (
-                    <div key={n} className="list-item row" style={{ justifyContent: "space-between" }}>
+                    <div key={n} className="data-row row" style={{ justifyContent: "space-between" }}>
                       <span style={{ fontSize: 13.5 }}>{n}</span>
                       <button className="btn-danger" onClick={() => removeNumber(n)}>
                         <IconTrash />

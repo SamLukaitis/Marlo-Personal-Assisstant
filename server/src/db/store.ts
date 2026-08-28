@@ -211,6 +211,23 @@ db.exec(`
     created_at INTEGER NOT NULL,
     done_at    INTEGER
   );
+  CREATE TABLE IF NOT EXISTS admin_todo_replies (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    todo_id    INTEGER NOT NULL REFERENCES admin_todos(id),
+    author_id  INTEGER NOT NULL REFERENCES users(id),
+    text       TEXT NOT NULL,
+    created_at INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_admin_todo_replies_todo ON admin_todo_replies(todo_id);
+  -- Per-viewer read state so "unread reply count" is a personal, not global, notion — the
+  -- composite key is (todo_id, user_id), not an autoincrement id, since there's at most one
+  -- row per pairing (upserted, never appended to).
+  CREATE TABLE IF NOT EXISTS admin_todo_reply_reads (
+    todo_id            INTEGER NOT NULL REFERENCES admin_todos(id),
+    user_id            INTEGER NOT NULL REFERENCES users(id),
+    last_read_reply_id INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (todo_id, user_id)
+  );
   CREATE TABLE IF NOT EXISTS poster_notes (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     author_id  INTEGER NOT NULL REFERENCES users(id),
@@ -2044,6 +2061,15 @@ export function listRecentApiUsage(limit: number): ApiUsageCallRow[] {
     .all(limit) as ApiUsageCallRow[];
 }
 
+export interface AdminTodoReplyRow {
+  id: number;
+  todoId: number;
+  text: string;
+  authorId: number;
+  authorEmail: string;
+  createdAt: number;
+}
+
 export interface AdminTodoRow {
   id: number;
   text: string;
@@ -2052,18 +2078,56 @@ export interface AdminTodoRow {
   createdByEmail: string;
   createdAt: number;
   doneAt: number | null;
+  replies: AdminTodoReplyRow[];
+  // Replies on this todo with id > viewerId's last-read-reply-id — personal to whichever admin
+  // is calling listAdminTodos, not a global count. See admin_todo_reply_reads above.
+  unreadReplyCount: number;
 }
 
-export function listAdminTodos(): AdminTodoRow[] {
-  const rows = db
+// viewerId drives unreadReplyCount — every admin sees the same todos/replies, but each has their
+// own read position per todo, so the same todo can show "2 unread" to one admin and "0" to
+// another. Replies are fetched in one extra query (not per-todo N+1) and grouped in JS; an admin
+// to-do list is small enough that this is simpler than a correlated SQL subquery per row.
+export function listAdminTodos(viewerId: number): AdminTodoRow[] {
+  const todoRows = db
     .prepare(
       `SELECT t.id, t.text, t.done, t.created_by AS createdBy, u.email AS createdByEmail,
               t.created_at AS createdAt, t.done_at AS doneAt
        FROM admin_todos t JOIN users u ON u.id = t.created_by
        ORDER BY t.done ASC, t.created_at DESC`
     )
-    .all() as (Omit<AdminTodoRow, "done"> & { done: number })[];
-  return rows.map((r) => ({ ...r, done: r.done === 1 }));
+    .all() as (Omit<AdminTodoRow, "done" | "replies" | "unreadReplyCount"> & { done: number })[];
+
+  const replyRows = db
+    .prepare(
+      `SELECT r.id, r.todo_id AS todoId, r.text, r.author_id AS authorId, u.email AS authorEmail,
+              r.created_at AS createdAt
+       FROM admin_todo_replies r JOIN users u ON u.id = r.author_id
+       ORDER BY r.created_at ASC, r.id ASC`
+    )
+    .all() as AdminTodoReplyRow[];
+  const repliesByTodo = new Map<number, AdminTodoReplyRow[]>();
+  for (const r of replyRows) {
+    const list = repliesByTodo.get(r.todoId) ?? [];
+    list.push(r);
+    repliesByTodo.set(r.todoId, list);
+  }
+
+  const readRows = db
+    .prepare(`SELECT todo_id AS todoId, last_read_reply_id AS lastReadReplyId FROM admin_todo_reply_reads WHERE user_id = ?`)
+    .all(viewerId) as { todoId: number; lastReadReplyId: number }[];
+  const lastReadByTodo = new Map(readRows.map((r) => [r.todoId, r.lastReadReplyId]));
+
+  return todoRows.map((t) => {
+    const replies = repliesByTodo.get(t.id) ?? [];
+    const lastRead = lastReadByTodo.get(t.id) ?? 0;
+    return {
+      ...t,
+      done: t.done === 1,
+      replies,
+      unreadReplyCount: replies.filter((r) => r.id > lastRead).length,
+    };
+  });
 }
 
 export function addAdminTodo(text: string, createdBy: number): void {
@@ -2083,7 +2147,31 @@ export function setAdminTodoDone(id: number, done: boolean): void {
 }
 
 export function deleteAdminTodo(id: number): void {
+  // Children before parent — same manual-cascade precedent as the account-purge document/
+  // document_match_keys ordering (no ON DELETE CASCADE in this schema).
+  db.prepare(`DELETE FROM admin_todo_reply_reads WHERE todo_id = ?`).run(id);
+  db.prepare(`DELETE FROM admin_todo_replies WHERE todo_id = ?`).run(id);
   db.prepare(`DELETE FROM admin_todos WHERE id = ?`).run(id);
+}
+
+export function addAdminTodoReply(todoId: number, authorId: number, text: string): void {
+  db.prepare(`INSERT INTO admin_todo_replies (todo_id, author_id, text, created_at) VALUES (?, ?, ?, ?)`).run(
+    todoId,
+    authorId,
+    text,
+    Date.now()
+  );
+}
+
+// Marks every reply currently on the todo as read for this viewer — not just the ones present
+// when they opened it, but genuinely "up to now," since the upsert reads admin_todo_replies'
+// current MAX(id) at write time rather than a client-supplied count.
+export function markAdminTodoRepliesRead(todoId: number, userId: number): void {
+  db.prepare(
+    `INSERT INTO admin_todo_reply_reads (todo_id, user_id, last_read_reply_id)
+     VALUES (?, ?, COALESCE((SELECT MAX(id) FROM admin_todo_replies WHERE todo_id = ?), 0))
+     ON CONFLICT(todo_id, user_id) DO UPDATE SET last_read_reply_id = excluded.last_read_reply_id`
+  ).run(todoId, userId, todoId);
 }
 
 export interface PosterNoteRow {

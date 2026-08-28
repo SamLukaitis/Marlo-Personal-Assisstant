@@ -91,7 +91,7 @@ export function ChatsPage() {
             </p>
           )}
           {chats.map((c) => (
-            <div key={`${c.accountId}-${c.id}`} className="list-item list-item-hover">
+            <div key={`${c.accountId}-${c.id}`} className="data-row data-row-hover">
               <a href={c.link} target="_blank" rel="noreferrer" style={{ padding: "0 16px" }}>
                 <div className="list-title">
                   <span>{c.topic}</span>

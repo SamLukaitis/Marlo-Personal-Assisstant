@@ -698,6 +698,15 @@ export const fetchUsageSummary = (days = 30, recentLimit = 50) =>
     approx: true;
   }>(`/api/portal/usage?days=${days}&recentLimit=${recentLimit}`);
 
+export interface AdminTodoReply {
+  id: number;
+  todoId: number;
+  text: string;
+  authorId: number;
+  authorEmail: string;
+  createdAt: number;
+}
+
 export interface AdminTodo {
   id: number;
   text: string;
@@ -706,6 +715,9 @@ export interface AdminTodo {
   createdByEmail: string;
   createdAt: number;
   doneAt: number | null;
+  replies: AdminTodoReply[];
+  // Personal to whichever admin fetched this list — see store.ts's listAdminTodos.
+  unreadReplyCount: number;
 }
 
 export const fetchAdminTodos = () => getJson<AdminTodo[]>("/api/portal/todos");
@@ -714,6 +726,10 @@ export const setAdminTodoDone = (id: number, done: boolean) =>
   mutateJson<AdminTodo[]>(`/api/portal/todos/${id}`, "PUT", { done });
 export const deleteAdminTodo = (id: number) =>
   mutateJson<AdminTodo[]>(`/api/portal/todos/${id}`, "DELETE");
+export const addAdminTodoReply = (id: number, text: string) =>
+  mutateJson<AdminTodo[]>(`/api/portal/todos/${id}/replies`, "POST", { text });
+export const markAdminTodoRepliesRead = (id: number) =>
+  mutateJson<AdminTodo[]>(`/api/portal/todos/${id}/read`, "POST");
 
 export interface PosterNote {
   id: number;

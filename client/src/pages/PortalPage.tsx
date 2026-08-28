@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Navigate } from "react-router-dom";
 import {
   fetchAdminCandidates,
@@ -14,6 +14,8 @@ import {
   addAdminTodo,
   setAdminTodoDone,
   deleteAdminTodo,
+  addAdminTodoReply,
+  markAdminTodoRepliesRead,
   fetchPosterNotes,
   addPosterNote,
   deletePosterNote,
@@ -30,7 +32,7 @@ import {
   type PosterNote,
 } from "../api/client";
 import { useAuth } from "../context/AuthContext";
-import { IconTrash, IconPlus, IconRefresh } from "../components/icons";
+import { IconTrash, IconPlus, IconRefresh, IconChat } from "../components/icons";
 
 const SECTIONS = [
   { key: "todos", label: "To-Do" },
@@ -57,16 +59,75 @@ function timeAgo(ms: number): string {
 // the sidebar for admins (Sidebar.tsx filters it out otherwise), but the actual gate is the
 // server's requireAdmin middleware on every /api/portal/* route — this client-side check is just
 // defense in depth against a typed-in URL.
+interface Toast {
+  id: string;
+  text: string;
+}
+
+const TOAST_DURATION_MS = 5000;
+// Cross-tab notification poll — separate from TodosTab's own REPLY_POLL_MS (below): this one
+// runs regardless of which Portal section is open, since a reply to YOUR to-do should surface
+// even while you're looking at Usage or Logs, not only while the To-Do tab itself is mounted.
+const NOTIFY_POLL_MS = 15_000;
+
 export function PortalPage() {
   const { user } = useAuth();
   const [section, setSection] = useState<SectionKey>("todos");
   const [version, setVersion] = useState<string>("");
+  const [toasts, setToasts] = useState<Toast[]>([]);
+  // null until the first poll completes — that first poll only baselines what's already there,
+  // so opening the Portal with a backlog of old unread replies doesn't fire a toast for each one.
+  const seenReplyIdsRef = useRef<Set<number> | null>(null);
 
   useEffect(() => {
     fetchPortalVersion()
       .then((v) => setVersion(v.text))
       .catch(() => {});
   }, []);
+
+  useEffect(() => {
+    if (!user) return;
+    let cancelled = false;
+
+    async function poll() {
+      let todos;
+      try {
+        todos = await fetchAdminTodos();
+      } catch {
+        return; // transient network blip — next tick retries, nothing to notify about yet
+      }
+      if (cancelled) return;
+
+      const currentIds = new Set<number>();
+      const newlyArrived: { text: string; authorEmail: string }[] = [];
+      for (const t of todos) {
+        for (const r of t.replies) {
+          currentIds.add(r.id);
+          const isNew = seenReplyIdsRef.current && !seenReplyIdsRef.current.has(r.id);
+          // Only the original poster gets pinged, and never for their own reply.
+          if (isNew && t.createdBy === user!.id && r.authorId !== user!.id) {
+            newlyArrived.push({ text: t.text, authorEmail: r.authorEmail });
+          }
+        }
+      }
+
+      if (seenReplyIdsRef.current) {
+        for (const arrival of newlyArrived) {
+          const id = `${Date.now()}-${Math.random()}`;
+          setToasts((prev) => [...prev, { id, text: `${arrival.authorEmail} replied to "${arrival.text}"` }]);
+          setTimeout(() => setToasts((prev) => prev.filter((t) => t.id !== id)), TOAST_DURATION_MS);
+        }
+      }
+      seenReplyIdsRef.current = currentIds;
+    }
+
+    poll();
+    const interval = setInterval(poll, NOTIFY_POLL_MS);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [user]);
 
   if (!user?.isAdmin) return <Navigate to="/assistant" replace />;
 
@@ -105,6 +166,113 @@ export function PortalPage() {
           </div>
         </div>
       </div>
+
+      <div className="toast-stack">
+        {toasts.map((t) => (
+          <div key={t.id} className="toast">
+            {t.text}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// Re-fetches every REPLY_POLL_MS while the To-Do tab is mounted, on top of the load-on-mount —
+// keeps unread badges current if another admin replies while this tab is just sitting open,
+// without needing a websocket for what's a handful-of-admins internal tool. Separate from
+// PortalPage's own cross-tab poll (which drives the toast) — both hit the same cheap GET, and
+// keeping them independent means neither has to know the other exists.
+const REPLY_POLL_MS = 20_000;
+
+function TodoRow({
+  todo,
+  done,
+  onSetDone,
+  onDelete,
+  onReply,
+  onMarkRead,
+}: {
+  todo: AdminTodo;
+  done: boolean;
+  onSetDone: (id: number, done: boolean) => void;
+  onDelete: (id: number) => void;
+  onReply: (id: number, text: string) => Promise<void>;
+  onMarkRead: (id: number) => void;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const [draft, setDraft] = useState("");
+  const [sending, setSending] = useState(false);
+
+  function toggleExpanded() {
+    const next = !expanded;
+    setExpanded(next);
+    // Mark read on OPEN, not close — opening is the moment the admin actually sees the thread.
+    if (next && todo.unreadReplyCount > 0) onMarkRead(todo.id);
+  }
+
+  async function handleReplySubmit(e: React.FormEvent) {
+    e.preventDefault();
+    const trimmed = draft.trim();
+    if (!trimmed || sending) return;
+    setSending(true);
+    try {
+      await onReply(todo.id, trimmed);
+      setDraft("");
+    } finally {
+      setSending(false);
+    }
+  }
+
+  return (
+    <div className="todo-row">
+      <div className="todo-checkbox-col">
+        <input type="checkbox" checked={done} onChange={() => onSetDone(todo.id, !done)} />
+      </div>
+
+      <div className="todo-content">
+        <div className="todo-title" style={done ? { textDecoration: "line-through", opacity: 0.6 } : undefined}>
+          {todo.text}
+        </div>
+        <div className="muted todo-meta">— {todo.createdByEmail}</div>
+
+        <button className="todo-reply-toggle" onClick={toggleExpanded} type="button">
+          <IconChat />
+          {todo.replies.length === 0 ? "Reply" : `${todo.replies.length} repl${todo.replies.length === 1 ? "y" : "ies"}`}
+          {todo.unreadReplyCount > 0 && <span className="todo-unread-badge">{todo.unreadReplyCount}</span>}
+        </button>
+
+        {expanded && (
+          <div className="todo-thread">
+            {todo.replies.map((r) => (
+              <div key={r.id}>
+                <div className="todo-reply-header">
+                  <span className="todo-reply-author">{r.authorEmail}</span>
+                  <span className="muted todo-reply-time">{timeAgo(r.createdAt)}</span>
+                </div>
+                <div className="todo-reply-text">{r.text}</div>
+              </div>
+            ))}
+            <form className="row todo-reply-form" onSubmit={handleReplySubmit}>
+              <input
+                value={draft}
+                onChange={(e) => setDraft(e.target.value)}
+                placeholder="Write a reply…"
+                disabled={sending}
+              />
+              <button className="btn-secondary" type="submit" disabled={sending || !draft.trim()}>
+                Reply
+              </button>
+            </form>
+          </div>
+        )}
+      </div>
+
+      <div className="todo-actions">
+        <button className="btn-danger" onClick={() => onDelete(todo.id)}>
+          <IconTrash />
+        </button>
+      </div>
     </div>
   );
 }
@@ -120,13 +288,25 @@ function TodosTab() {
       .finally(() => setLoaded(true));
   }
 
-  useEffect(load, []);
+  useEffect(() => {
+    load();
+    const interval = setInterval(load, REPLY_POLL_MS);
+    return () => clearInterval(interval);
+  }, []);
 
   async function handleAdd(e: React.FormEvent) {
     e.preventDefault();
     if (!text.trim()) return;
     setTodos(await addAdminTodo(text.trim()));
     setText("");
+  }
+
+  async function handleReply(id: number, replyText: string) {
+    setTodos(await addAdminTodoReply(id, replyText));
+  }
+
+  async function handleMarkRead(id: number) {
+    setTodos(await markAdminTodoRepliesRead(id));
   }
 
   const open = todos.filter((t) => !t.done);
@@ -152,42 +332,36 @@ function TodosTab() {
         <p className="muted">Nothing on the list yet.</p>
       ) : (
         <>
-          {open.map((t) => (
-            <div key={t.id} className="list-item row" style={{ justifyContent: "space-between" }}>
-              <label className="row" style={{ gap: 10, fontSize: 13.5 }}>
-                <input
-                  type="checkbox"
-                  checked={false}
-                  onChange={async () => setTodos(await setAdminTodoDone(t.id, true))}
-                />
-                {t.text}
-                <span className="muted" style={{ fontSize: 12 }}>
-                  — {t.createdByEmail}
-                </span>
-              </label>
-              <button className="btn-danger" onClick={async () => setTodos(await deleteAdminTodo(t.id))}>
-                <IconTrash />
-              </button>
-            </div>
-          ))}
+          <div className="card card-padded">
+            {open.map((t) => (
+              <TodoRow
+                key={t.id}
+                todo={t}
+                done={false}
+                onSetDone={async (id, d) => setTodos(await setAdminTodoDone(id, d))}
+                onDelete={async (id) => setTodos(await deleteAdminTodo(id))}
+                onReply={handleReply}
+                onMarkRead={handleMarkRead}
+              />
+            ))}
+            {open.length === 0 && <p className="muted">Nothing open — nice.</p>}
+          </div>
           {done.length > 0 && (
             <>
               <h2 style={{ marginTop: 24 }}>Done</h2>
-              {done.map((t) => (
-                <div key={t.id} className="list-item row" style={{ justifyContent: "space-between" }}>
-                  <label className="row" style={{ gap: 10, fontSize: 13.5, opacity: 0.6 }}>
-                    <input
-                      type="checkbox"
-                      checked
-                      onChange={async () => setTodos(await setAdminTodoDone(t.id, false))}
-                    />
-                    <span style={{ textDecoration: "line-through" }}>{t.text}</span>
-                  </label>
-                  <button className="btn-danger" onClick={async () => setTodos(await deleteAdminTodo(t.id))}>
-                    <IconTrash />
-                  </button>
-                </div>
-              ))}
+              <div className="card card-padded">
+                {done.map((t) => (
+                  <TodoRow
+                    key={t.id}
+                    todo={t}
+                    done
+                    onSetDone={async (id, d) => setTodos(await setAdminTodoDone(id, d))}
+                    onDelete={async (id) => setTodos(await deleteAdminTodo(id))}
+                    onReply={handleReply}
+                    onMarkRead={handleMarkRead}
+                  />
+                ))}
+              </div>
             </>
           )}
         </>
@@ -303,7 +477,7 @@ function RequestsTab() {
         <p className="muted">Nothing outstanding.</p>
       ) : (
         requests.map((r) => (
-          <div key={r.id} className="list-item row" style={{ justifyContent: "space-between", alignItems: "flex-start" }}>
+          <div key={r.id} className="data-row row" style={{ justifyContent: "space-between", alignItems: "flex-start" }}>
             <div>
               <p style={{ margin: 0, fontSize: 13.5 }}>{r.summary}</p>
               <p className="muted" style={{ margin: "4px 0 0", fontSize: 12 }}>
@@ -581,7 +755,7 @@ function UsageTab() {
                 </thead>
                 <tbody>
                   {rows.map((r, i) => (
-                    <tr key={i} className="list-item">
+                    <tr key={i} className="data-row">
                       <td style={tdText}>{r.day}</td>
                       <td style={tdText}>{usagePurposeLabel(r.purpose)}</td>
                       <td style={tdText}>{r.channel}</td>
@@ -625,7 +799,7 @@ function UsageTab() {
                 </thead>
                 <tbody>
                   {recent.map((r) => (
-                    <tr key={r.id} className="list-item">
+                    <tr key={r.id} className="data-row">
                       <td style={{ ...tdText, whiteSpace: "nowrap" }}>{timeAgo(r.createdAt)}</td>
                       <td style={tdText}>{usagePurposeLabel(r.purpose)}</td>
                       <td style={tdText}>{r.ownerEmail ?? "—"}</td>
@@ -681,7 +855,7 @@ function AdminsTab({ currentUserId }: { currentUserId: number }) {
         <p className="muted">Loading…</p>
       ) : (
         candidates.map((c) => (
-          <div key={c.id} className="list-item row" style={{ justifyContent: "space-between" }}>
+          <div key={c.id} className="data-row row" style={{ justifyContent: "space-between" }}>
             <span style={{ fontSize: 13.5 }}>
               {c.email}
               {c.id === currentUserId && <span className="muted"> (you)</span>}

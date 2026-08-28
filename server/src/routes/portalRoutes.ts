@@ -18,6 +18,8 @@ import {
   addAdminTodo,
   setAdminTodoDone,
   deleteAdminTodo,
+  addAdminTodoReply,
+  markAdminTodoRepliesRead,
   listPosterNotes,
   addPosterNote,
   deletePosterNote,
@@ -281,8 +283,8 @@ portalRoutes.get("/usage", (req, res) => {
 
 // --- To-do list -----------------------------------------------------------------------------
 
-portalRoutes.get("/todos", (_req, res) => {
-  res.json(listAdminTodos());
+portalRoutes.get("/todos", (req, res) => {
+  res.json(listAdminTodos(ownerId(req)));
 });
 
 portalRoutes.post("/todos", (req, res) => {
@@ -292,7 +294,7 @@ portalRoutes.post("/todos", (req, res) => {
     return;
   }
   addAdminTodo(text, ownerId(req));
-  res.json(listAdminTodos());
+  res.json(listAdminTodos(ownerId(req)));
 });
 
 portalRoutes.put("/todos/:id", (req, res) => {
@@ -302,7 +304,7 @@ portalRoutes.put("/todos/:id", (req, res) => {
     return;
   }
   setAdminTodoDone(id, !!req.body?.done);
-  res.json(listAdminTodos());
+  res.json(listAdminTodos(ownerId(req)));
 });
 
 portalRoutes.delete("/todos/:id", (req, res) => {
@@ -312,7 +314,38 @@ portalRoutes.delete("/todos/:id", (req, res) => {
     return;
   }
   deleteAdminTodo(id);
-  res.json(listAdminTodos());
+  res.json(listAdminTodos(ownerId(req)));
+});
+
+portalRoutes.post("/todos/:id/replies", (req, res) => {
+  const id = Number(req.params.id);
+  const text = typeof req.body?.text === "string" ? req.body.text.trim() : "";
+  if (!Number.isInteger(id)) {
+    res.status(400).json({ error: "invalid id" });
+    return;
+  }
+  if (!text) {
+    res.status(400).json({ error: "text is required" });
+    return;
+  }
+  addAdminTodoReply(id, ownerId(req), text);
+  // Writing a reply implies having read everything up to and including it — without this, the
+  // author's own just-sent reply would immediately count as "unread" against themselves.
+  markAdminTodoRepliesRead(id, ownerId(req));
+  res.json(listAdminTodos(ownerId(req)));
+});
+
+// Marks every reply on this todo as read for the caller — called when an admin expands a
+// thread, so their own unreadReplyCount (and the "(N)" badge it drives) clears without
+// affecting any other admin's unread state for the same todo.
+portalRoutes.post("/todos/:id/read", (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id)) {
+    res.status(400).json({ error: "invalid id" });
+    return;
+  }
+  markAdminTodoRepliesRead(id, ownerId(req));
+  res.json(listAdminTodos(ownerId(req)));
 });
 
 // --- Poster board --------------------------------------------------------------------------

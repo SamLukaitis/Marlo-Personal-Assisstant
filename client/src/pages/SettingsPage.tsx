@@ -313,7 +313,7 @@ export function SettingsPage() {
                   {accounts.map((a) => {
                     const providerInfo = providers.find((p) => p.provider === a.provider);
                     return (
-                      <div key={a.id} className="list-item" style={{ display: "block" }}>
+                      <div key={a.id} className="data-row" style={{ display: "block" }}>
                         <div className="row" style={{ justifyContent: "space-between" }}>
                           <div>
                             <strong>{a.email}</strong>{" "}
@@ -417,7 +417,7 @@ export function SettingsPage() {
                     </p>
                   ) : (
                     memoryNotes.map((n) => (
-                      <div key={n.id} className="list-item row" style={{ justifyContent: "space-between" }}>
+                      <div key={n.id} className="data-row row" style={{ justifyContent: "space-between" }}>
                         <span style={{ fontSize: 13.5 }}>{n.content}</span>
                         <button
                           className="btn-danger"
@@ -553,7 +553,7 @@ export function SettingsPage() {
                     </p>
                   ) : (
                     allowedNumbers.map((n) => (
-                      <div key={n} className="list-item row" style={{ justifyContent: "space-between" }}>
+                      <div key={n} className="data-row row" style={{ justifyContent: "space-between" }}>
                         <span style={{ fontSize: 13.5 }}>{n}</span>
                         <button className="btn-danger" onClick={() => handleRemoveNumber(n)}>
                           <IconTrash />
@@ -660,7 +660,7 @@ export function SettingsPage() {
                     </p>
                   ) : (
                     folders.map((f) => (
-                      <div key={f.id} className="list-item row" style={{ justifyContent: "space-between" }}>
+                      <div key={f.id} className="data-row row" style={{ justifyContent: "space-between" }}>
                         <span style={{ fontSize: 13.5 }}>{f.path}</span>
                         <button
                           className="btn-danger"
@@ -714,7 +714,7 @@ export function SettingsPage() {
                     </p>
                   ) : (
                     invites.map((inv) => (
-                      <div key={inv.email} className="list-item row" style={{ justifyContent: "space-between" }}>
+                      <div key={inv.email} className="data-row row" style={{ justifyContent: "space-between" }}>
                         <div>
                           <span style={{ fontSize: 13.5 }}>{inv.email}</span>{" "}
                           <span className="muted" style={{ fontSize: 12 }}>
