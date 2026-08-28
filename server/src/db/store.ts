@@ -2165,6 +2165,13 @@ export function deleteUserCompletely(ownerId: number): { deletedDocumentPaths: s
     db.prepare(`DELETE FROM pending_actions WHERE owner_id = ?`).run(ownerId);
     db.prepare(`DELETE FROM unmet_requests WHERE owner_id = ?`).run(ownerId);
     db.prepare(`DELETE FROM api_usage WHERE owner_id = ?`).run(ownerId);
+    // admin_todos.created_by and poster_notes.author_id both declare NOT NULL REFERENCES
+    // users(id) (Portal admin feature, commit 686d173). Same bug shape as the pending_setup/
+    // pending_actions and document_match_keys fixes above: an admin (including the app owner
+    // being reset here) who'd used their own to-do list or poster board left a row behind, and
+    // the final DELETE FROM users below violated the foreign key.
+    db.prepare(`DELETE FROM admin_todos WHERE created_by = ?`).run(ownerId);
+    db.prepare(`DELETE FROM poster_notes WHERE author_id = ?`).run(ownerId);
     db.prepare(`DELETE FROM user_phone_numbers WHERE user_id = ?`).run(ownerId);
     db.prepare(`DELETE FROM sessions WHERE user_id = ?`).run(ownerId);
     db.prepare(`DELETE FROM users WHERE id = ?`).run(ownerId);
