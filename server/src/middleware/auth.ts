@@ -1,5 +1,5 @@
 import type { Request, Response, NextFunction } from "express";
-import { getUserIdBySessionToken } from "../db/store.js";
+import { getUserIdBySessionToken, isAdmin } from "../db/store.js";
 
 export const SESSION_COOKIE_NAME = "session";
 
@@ -22,5 +22,17 @@ export function requireAuth(req: Request, res: Response, next: NextFunction): vo
     return;
   }
   (req as unknown as AuthedRequest).userId = userId;
+  next();
+}
+
+// Mounted ahead of portalRoutes.ts (see index.ts) — the portal has ~15 endpoints that all share
+// this one predicate, unlike adminRoutes.ts's 4 owner-only routes, which check isAppOwner inline
+// per-route instead. Must run after requireAuth, since it relies on req.userId already being set.
+export function requireAdmin(req: Request, res: Response, next: NextFunction): void {
+  const userId = (req as unknown as AuthedRequest).userId;
+  if (!isAdmin(userId)) {
+    res.status(403).json({ error: "not allowed" });
+    return;
+  }
   next();
 }

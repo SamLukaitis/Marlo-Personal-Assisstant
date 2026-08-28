@@ -11,6 +11,7 @@ import { CalendarPage } from "./pages/CalendarPage";
 import { FilesPage } from "./pages/FilesPage";
 import { TravelPage } from "./pages/TravelPage";
 import { SettingsPage } from "./pages/SettingsPage";
+import { PortalPage } from "./pages/PortalPage";
 
 function App() {
   return (
@@ -50,6 +51,7 @@ function App() {
             <Route path="/files" element={<FilesPage />} />
             <Route path="/travel" element={<TravelPage />} />
             <Route path="/settings" element={<SettingsPage />} />
+            <Route path="/portal" element={<PortalPage />} />
             {/* "Setup" was renamed to "Settings" — it behaves like one now. */}
             <Route path="/setup" element={<Navigate to="/settings" replace />} />
           </Route>

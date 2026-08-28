@@ -3,7 +3,7 @@ import fs from "node:fs";
 import crypto from "node:crypto";
 import Anthropic from "@anthropic-ai/sdk";
 import { PDFParse } from "pdf-parse";
-import { downloadWhatsAppMedia } from "../providers/whatsapp.js";
+import { downloadWhatsAppMedia, sendWhatsAppMediaFromBuffer } from "../providers/whatsapp.js";
 import { hubGetAttachment, hubGetMessage } from "./hub.js";
 import {
   saveDocument,
@@ -14,11 +14,13 @@ import {
   uploadsDir,
   DOCUMENT_CATEGORIES,
   findDocumentByEmailAttachment,
+  getDocument,
+  recordApiUsage,
   type DocumentRow,
   type DocumentCategory,
   type DocumentSource,
 } from "../db/store.js";
-import { encryptBuffer } from "./crypto.js";
+import { encryptBuffer, decryptBuffer } from "./crypto.js";
 import { validateTravelMovement, type TravelMovement } from "./travelValidation.js";
 import {
   validateExpense,
@@ -197,7 +199,7 @@ const GIBBERISH_CHECK_MODEL = process.env.ASSISTANT_MODEL_SIMPLE ?? "claude-haik
 // boilerplate text extracts fine and pads the result past any length threshold. This is what
 // actually catches that: a fast model reading the text and judging whether a meaningful chunk of
 // it is corrupted, not just checking how many characters came out.
-async function looksLikeGibberish(text: string): Promise<boolean> {
+async function looksLikeGibberish(text: string, ownerId: number): Promise<boolean> {
   const response = await getClient().messages.create({
     model: GIBBERISH_CHECK_MODEL,
     max_tokens: 5,
@@ -215,18 +217,28 @@ async function looksLikeGibberish(text: string): Promise<boolean> {
       },
     ],
   });
+  recordApiUsage(
+    ownerId,
+    "background",
+    GIBBERISH_CHECK_MODEL,
+    "pdf_gibberish_check",
+    response.usage?.input_tokens ?? 0,
+    response.usage?.output_tokens ?? 0,
+    response.usage?.cache_read_input_tokens ?? 0,
+    response.usage?.cache_creation_input_tokens ?? 0
+  );
   const answer = response.content.find((b): b is Anthropic.TextBlock => b.type === "text")?.text ?? "";
   return answer.toUpperCase().includes("GIBBERISH");
 }
 
-async function extractPdfTextLayer(buffer: Buffer): Promise<string | null> {
+async function extractPdfTextLayer(buffer: Buffer, ownerId: number): Promise<string | null> {
   try {
     const parser = new PDFParse({ data: buffer });
     const result = await parser.getText();
     await parser.destroy();
     const trimmed = result.text.trim();
     if (trimmed.length < MIN_PDF_TEXT_LENGTH) return null;
-    if (await looksLikeGibberish(trimmed)) {
+    if (await looksLikeGibberish(trimmed, ownerId)) {
       console.warn("documents: pdf text layer looked garbled — falling back to vision");
       return null;
     }
@@ -255,7 +267,10 @@ interface ExtractionResult {
 // themselves succeeded. A single non-looping call can't recover from that; feed the tool calls
 // back as normal tool_results and let the conversation continue, same as the main assistant loop
 // in ai/assistant.ts does, until the model actually produces the write-up.
-async function runExtraction(initialContent: Anthropic.ContentBlockParam[]): Promise<ExtractionResult> {
+async function runExtraction(
+  initialContent: Anthropic.ContentBlockParam[],
+  ownerId: number
+): Promise<ExtractionResult> {
   const messages: Anthropic.MessageParam[] = [{ role: "user", content: initialContent }];
   let response: Anthropic.Message;
   let textBlock: Anthropic.TextBlock | undefined;
@@ -264,6 +279,9 @@ async function runExtraction(initialContent: Anthropic.ContentBlockParam[]): Pro
   let matchKeysUse: Anthropic.ToolUseBlock | undefined;
   const purchases: unknown[] = [];
   const bookings: unknown[] = [];
+  // Summed across every turn of this one extraction (up to 3) and recorded once below — mirrors
+  // ai/assistant.ts's runAssistantChat, which records once per invocation, not once per turn.
+  const usageTotals = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0 };
 
   for (let turn = 0; turn < 3; turn++) {
     response = await getClient().messages.create({
@@ -276,6 +294,10 @@ async function runExtraction(initialContent: Anthropic.ContentBlockParam[]): Pro
       tools: [NAME_DOCUMENT_TOOL, TRAVEL_MOVEMENT_TOOL, RECORD_MATCH_KEYS_TOOL, RECORD_PURCHASE_TOOL, RECORD_BOOKING_TOOL],
       messages,
     });
+    usageTotals.inputTokens += response.usage?.input_tokens ?? 0;
+    usageTotals.outputTokens += response.usage?.output_tokens ?? 0;
+    usageTotals.cacheReadTokens += response.usage?.cache_read_input_tokens ?? 0;
+    usageTotals.cacheCreationTokens += response.usage?.cache_creation_input_tokens ?? 0;
 
     textBlock = response.content.find((b): b is Anthropic.TextBlock => b.type === "text");
     const toolUses = response.content.filter(
@@ -301,6 +323,17 @@ async function runExtraction(initialContent: Anthropic.ContentBlockParam[]): Pro
       })),
     });
   }
+
+  recordApiUsage(
+    ownerId,
+    "background",
+    EXTRACTION_MODEL,
+    "document_extraction",
+    usageTotals.inputTokens,
+    usageTotals.outputTokens,
+    usageTotals.cacheReadTokens,
+    usageTotals.cacheCreationTokens
+  );
 
   const nameInput = nameUse?.input as { title?: unknown; category?: unknown } | undefined;
   const rawTitle = nameInput?.title;
@@ -448,7 +481,7 @@ function storeDerivedEntities(
   }
 }
 
-async function extractDocument(buffer: Buffer, mimeType: string): Promise<ExtractionResult> {
+async function extractDocument(buffer: Buffer, mimeType: string, ownerId: number): Promise<ExtractionResult> {
   const uploadedAt = new Date().toISOString();
   const prompt =
     "Call name_document first to title this file, then do the extraction below.\n\n" +
@@ -473,7 +506,7 @@ async function extractDocument(buffer: Buffer, mimeType: string): Promise<Extrac
     "number, also call record_match_keys with it, so it can be cross-referenced against " +
     "email later.";
 
-  const pdfText = mimeType === "application/pdf" ? await extractPdfTextLayer(buffer) : null;
+  const pdfText = mimeType === "application/pdf" ? await extractPdfTextLayer(buffer, ownerId) : null;
 
   const base64 = buffer.toString("base64");
   const content: Anthropic.ContentBlockParam[] = pdfText
@@ -499,7 +532,7 @@ async function extractDocument(buffer: Buffer, mimeType: string): Promise<Extrac
         { type: "text", text: prompt },
       ];
 
-  return runExtraction(content);
+  return runExtraction(content, ownerId);
 }
 
 // Text-only counterpart to extractDocument — for content that arrives as plain text rather than
@@ -512,7 +545,8 @@ const MAX_LINK_TEXT_CHARS = 12_000;
 async function extractFactsFromLinkText(
   pageText: string,
   sourceUrl: string,
-  uploadedAt: Date
+  uploadedAt: Date,
+  ownerId: number
 ): Promise<ExtractionResult> {
   const truncated = pageText.length > MAX_LINK_TEXT_CHARS;
   const bodyText = truncated ? pageText.slice(0, MAX_LINK_TEXT_CHARS) : pageText;
@@ -539,7 +573,42 @@ async function extractFactsFromLinkText(
     (truncated ? `\n\n(Page text truncated to the first ${MAX_LINK_TEXT_CHARS} characters.)` : "") +
     `\n\nPage text:\n${bodyText}`;
 
-  return runExtraction([{ type: "text", text: prompt }]);
+  return runExtraction([{ type: "text", text: prompt }], ownerId);
+}
+
+// Sibling to extractFactsFromLinkText, for the case ingestEmailBodyReceipt handles: an email
+// flagged as a possible invoice/receipt that has no PDF/image attachment — the transaction
+// details, if any, are only in the email text itself (e.g. a subscription renewal notice).
+const MAX_EMAIL_BODY_CHARS = 12_000;
+
+async function extractFactsFromEmailText(
+  bodyText: string,
+  subject: string,
+  uploadedAt: Date,
+  ownerId: number
+): Promise<ExtractionResult> {
+  const truncated = bodyText.length > MAX_EMAIL_BODY_CHARS;
+  const text = truncated ? bodyText.slice(0, MAX_EMAIL_BODY_CHARS) : bodyText;
+
+  const prompt =
+    "Call name_document first to title this, then do the extraction below.\n\n" +
+    "This is the body text of an email that was flagged as a possible invoice/receipt/payment " +
+    "confirmation, with no PDF/image attachment — the transaction details, if any, are in the " +
+    "text itself (e.g. a subscription renewal, a payment confirmation, an order receipt). " +
+    "Extract: (1) what kind of email this is, (2) every important fact actually part of the " +
+    "message — dates, vendor name, amounts, reference codes — transcribed exactly as shown, " +
+    "(3) a one-sentence plain-English summary. Ignore email signatures, unsubscribe links, " +
+    "legal footers, and marketing content unrelated to the actual transaction. Never guess at " +
+    "anything not actually present in the text.\n\n" +
+    "If it shows money paid (a total amount charged), call record_purchase — that's the main " +
+    "reason this extraction is being run. If it separately shows a flight or hotel reservation, " +
+    "call record_booking too. Transcribe only what is printed; never compute or estimate an " +
+    "amount yourself.\n\n" +
+    `Subject: ${subject}` +
+    (truncated ? `\n\n(Email body truncated to the first ${MAX_EMAIL_BODY_CHARS} characters.)` : "") +
+    `\n\nEmail body:\n${text}`;
+
+  return runExtraction([{ type: "text", text: prompt }], ownerId);
 }
 
 function movementToCheckins(
@@ -607,7 +676,7 @@ async function finalizeIngestedFile(
       purchases,
       bookings,
     } = canAnalyze
-      ? await extractDocument(buffer, mimeType)
+      ? await extractDocument(buffer, mimeType, ownerId)
       : {
           text: `(file type ${mimeType} isn't supported for automatic analysis — stored for download only)`,
           title: null,
@@ -766,6 +835,81 @@ export async function ingestEmailAttachment(params: {
   return { ok: true, doc, alreadyExtracted: false };
 }
 
+// Sibling to ingestEmailAttachment for a receipt/invoice email with no PDF/image attachment —
+// only reachable from the invoice_due confirm flow (respond_to_invoice_forward_prompt), never
+// called speculatively on arbitrary email. Unlike ingestWhatsAppLink (which always saves a
+// document regardless of what it finds, since the user explicitly asked to save that link), this
+// only saves anything at all if extraction actually finds a real expense — the user just said
+// "yes, forward this to Xero," so an email that turns out not to contain one should say so
+// plainly rather than leave behind a pointless empty document.
+export async function ingestEmailBodyReceipt(params: {
+  ownerId: number;
+  accountId: number;
+  messageId: string;
+  subject: string;
+  bodyText: string;
+}): Promise<{ ok: true; doc: DocumentRow } | { ok: false; reason: "no_expense_found" }> {
+  const uploadedAt = new Date();
+
+  const { title, category, matchKeys, purchases, bookings } = await extractFactsFromEmailText(
+    params.bodyText,
+    params.subject,
+    uploadedAt,
+    params.ownerId
+  );
+
+  const derivedEntities = buildDerivedEntities(purchases, bookings, uploadedAt);
+  if (!derivedEntities.some((e) => e.type === "expense" && e.status === "active")) {
+    return { ok: false, reason: "no_expense_found" };
+  }
+
+  const bodyBuffer = Buffer.from(params.bodyText, "utf8");
+  const storedName = `${Date.now()}-${crypto.randomUUID()}.txt`;
+  const storedPath = path.join(uploadsDir, storedName);
+  fs.writeFileSync(storedPath, encryptBuffer(bodyBuffer));
+
+  let doc: DocumentRow;
+  try {
+    doc = saveDocument(params.ownerId, {
+      phone: `email:${params.accountId}`,
+      filename: `${title ?? params.subject}.txt`,
+      mimeType: "text/plain",
+      storedPath,
+      caption: null,
+      title,
+      extractedText: params.bodyText,
+      category,
+      source: "email",
+      emailAccountId: params.accountId,
+      emailMessageId: params.messageId,
+      emailAttachmentId: null,
+    });
+  } catch (err) {
+    fs.unlinkSync(storedPath);
+    throw err;
+  }
+
+  storeDerivedEntities(params.ownerId, doc.id, derivedEntities);
+
+  if (doc.category === "receipts") {
+    // Same fire-and-forget posture as ingestWhatsAppMedia/ingestEmailAttachment — the "attachment"
+    // forwarded to Xero here is just the email body as a small .txt file, since there's no real
+    // file to reuse; forwardReceiptToXero doesn't need to know the difference.
+    void forwardReceiptToXero(params.ownerId, doc, bodyBuffer).catch((err) =>
+      console.error("documents: xero forwarding failed (email body)", err)
+    );
+  }
+
+  if (matchKeys) {
+    saveMatchKeys(params.ownerId, doc.id, matchKeys);
+    void checkDocumentAgainstRecentEmails(params.ownerId, doc.id, doc.title ?? "a saved document", matchKeys).catch(
+      (err) => console.error("documents: reconciliation check failed", err)
+    );
+  }
+
+  return { ok: true, doc };
+}
+
 // "Save this link" path — a WhatsApp text message that's just a URL (see
 // safeLinkFetcher.findSaveableUrl for the detection heuristic). Mirrors ingestWhatsAppMedia's
 // shape (fetch/download -> extract -> validate travel facts -> store) but the "file" being
@@ -803,7 +947,7 @@ export async function ingestWhatsAppLink(params: {
       matchKeys: extractedMatchKeys,
       purchases,
       bookings,
-    } = await extractFactsFromLinkText(fetched.text, fetched.finalUrl, uploadedAt);
+    } = await extractFactsFromLinkText(fetched.text, fetched.finalUrl, uploadedAt, params.ownerId);
 
     const validated = applyTravelValidation(extractedText, movement, uploadedAt);
     storableMovement = validated.storableMovement;
@@ -850,4 +994,43 @@ export async function ingestWhatsAppLink(params: {
   }
 
   return { ok: true, doc };
+}
+
+// Sends a previously-saved document's original file back to the user on WhatsApp — e.g. "send me
+// that photo again" after Marlowe has already described what's in it, or given them the code it
+// read off a license. WhatsApp-only: there's no equivalent "hand back the file" affordance in web
+// chat, so the assistant tool this backs is only usable from a WhatsApp conversation.
+export async function sendSavedDocumentFile(
+  ownerId: number,
+  phone: string,
+  documentId: number
+): Promise<{ ok: true } | { ok: false; reason: "not_found" | "no_original_file" | "send_failed" }> {
+  const doc = getDocument(ownerId, documentId);
+  if (!doc || !fs.existsSync(doc.storedPath)) {
+    return { ok: false, reason: "not_found" };
+  }
+  // Links and email-body receipts are stored as synthesized .txt — there's no original photo/
+  // file to hand back, just extracted text the assistant can already recite.
+  if (doc.mimeType === "text/plain") {
+    return { ok: false, reason: "no_original_file" };
+  }
+
+  const onDisk = fs.readFileSync(doc.storedPath);
+  // Same lazy plaintext-fallback as documentRoutes.ts's download route — files saved before
+  // encryption was added are still plaintext on disk.
+  let buffer: Buffer;
+  try {
+    buffer = decryptBuffer(onDisk);
+  } catch {
+    buffer = onDisk;
+  }
+
+  const filename = doc.filename ?? `${doc.title ?? "document"}.${EXTENSIONS[doc.mimeType] ?? "bin"}`;
+  try {
+    await sendWhatsAppMediaFromBuffer(phone, buffer, doc.mimeType, filename);
+  } catch (err) {
+    console.error("documents: sendSavedDocumentFile failed", err);
+    return { ok: false, reason: "send_failed" };
+  }
+  return { ok: true };
 }

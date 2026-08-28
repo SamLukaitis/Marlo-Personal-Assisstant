@@ -71,8 +71,14 @@ switch. Here's what's actually involved, in plain terms:
    `invoice_due`.
 
    Decision (2026-08-26, Jake): not full-auto — **notify + confirm**. When `invoice_due` fires and
-   Xero is connected and the email actually has an attachment, the WhatsApp alert gains a line:
-   *"Reply 'yes' and I'll forward it to Xero."* Only on a reply does anything get pulled in. Built
+   Xero is connected and the email has either an attachment or real body text, the WhatsApp alert
+   gains a line: *"Reply 'yes' and I'll forward it to Xero."* Only on a reply does anything get
+   pulled in. **Plain-text receipts (no attachment) also covered** — a subscription renewal or
+   payment confirmation that's just email text, no PDF, goes through a sibling path
+   (`ingestEmailBodyReceipt`) that extracts the vendor/amount straight from the body, using the
+   same validation as everything else; if it can't find anything, it says so rather than
+   forwarding a document with nothing in it. What actually goes to Xero in that case is the email
+   body as a small `.txt` file, since there's no real file to reuse. Built
    as: `server/src/services/xeroInvoiceConfirmation.ts` (a one-slot "what's pending" record, not a
    queue — a second invoice_due email before you answer the first just doesn't get the offer, kept
    deliberately simple rather than solved with a proper queue), a `respond_to_invoice_forward_prompt`

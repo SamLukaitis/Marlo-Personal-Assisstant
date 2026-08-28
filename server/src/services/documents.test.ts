@@ -1,4 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import fs from "node:fs";
+import path from "node:path";
 
 const mockHubGetAttachment = vi.fn();
 const mockHubGetMessage = vi.fn();
@@ -7,8 +9,20 @@ vi.mock("../services/hub.js", () => ({
   hubGetMessage: (...args: unknown[]) => mockHubGetMessage(...args),
 }));
 
-const { findOrCreateUserByEmail, saveDocument } = await import("../db/store.js");
-const { resolveDocumentCategory, buildDerivedEntities, ingestEmailAttachment } = await import("./documents.js");
+const mockSendWhatsAppMediaFromBuffer = vi.fn();
+vi.mock("../providers/whatsapp.js", () => ({
+  downloadWhatsAppMedia: vi.fn(),
+  sendWhatsAppMediaFromBuffer: (...args: unknown[]) => mockSendWhatsAppMediaFromBuffer(...args),
+}));
+
+const { findOrCreateUserByEmail, saveDocument, uploadsDir } = await import("../db/store.js");
+const { encryptBuffer } = await import("./crypto.js");
+const {
+  resolveDocumentCategory,
+  buildDerivedEntities,
+  ingestEmailAttachment,
+  sendSavedDocumentFile,
+} = await import("./documents.js");
 
 describe("resolveDocumentCategory", () => {
   it("accepts each known category", () => {
@@ -97,6 +111,7 @@ function uniqueEmail(prefix: string): string {
 beforeEach(() => {
   mockHubGetAttachment.mockReset();
   mockHubGetMessage.mockReset();
+  mockSendWhatsAppMediaFromBuffer.mockReset();
 });
 
 describe("ingestEmailAttachment", () => {
@@ -164,5 +179,81 @@ describe("ingestEmailAttachment", () => {
 
     expect(result).toEqual({ ok: false, reason: "invalid_index" });
     expect(mockHubGetAttachment).not.toHaveBeenCalled();
+  });
+});
+
+describe("sendSavedDocumentFile", () => {
+  it("decrypts the stored file and sends it as WhatsApp media", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("send-doc"));
+    const plaintext = Buffer.from("fake-jpeg-bytes");
+    const storedPath = path.join(uploadsDir, `test-send-${Date.now()}.jpg`);
+    fs.writeFileSync(storedPath, encryptBuffer(plaintext));
+    const doc = saveDocument(user.id, {
+      phone: "44700",
+      filename: "license.jpg",
+      mimeType: "image/jpeg",
+      storedPath,
+      caption: null,
+      title: "Driving License",
+      extractedText: "text",
+      category: "id_legal",
+    });
+    mockSendWhatsAppMediaFromBuffer.mockResolvedValue(undefined);
+
+    const result = await sendSavedDocumentFile(user.id, "44700", doc.id);
+
+    expect(result).toEqual({ ok: true });
+    expect(mockSendWhatsAppMediaFromBuffer).toHaveBeenCalledWith("44700", plaintext, "image/jpeg", "license.jpg");
+    fs.unlinkSync(storedPath);
+  });
+
+  it("reports no_original_file for a document saved as text (link/email body, no real photo)", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("send-doc-text"));
+    const storedPath = path.join(uploadsDir, `test-send-${Date.now()}.txt`);
+    fs.writeFileSync(storedPath, encryptBuffer(Buffer.from("hello")));
+    const doc = saveDocument(user.id, {
+      phone: "44700",
+      filename: null,
+      mimeType: "text/plain",
+      storedPath,
+      caption: "https://example.com",
+      title: "Some Link",
+      extractedText: "text",
+      category: "other",
+    });
+
+    const result = await sendSavedDocumentFile(user.id, "44700", doc.id);
+
+    expect(result).toEqual({ ok: false, reason: "no_original_file" });
+    expect(mockSendWhatsAppMediaFromBuffer).not.toHaveBeenCalled();
+    fs.unlinkSync(storedPath);
+  });
+
+  it("reports not_found for an id that doesn't belong to this owner", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("send-doc-missing"));
+    const result = await sendSavedDocumentFile(user.id, "44700", 999999);
+    expect(result).toEqual({ ok: false, reason: "not_found" });
+  });
+
+  it("reports send_failed when the WhatsApp send itself throws", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("send-doc-fail"));
+    const storedPath = path.join(uploadsDir, `test-send-${Date.now()}.jpg`);
+    fs.writeFileSync(storedPath, encryptBuffer(Buffer.from("bytes")));
+    const doc = saveDocument(user.id, {
+      phone: "44700",
+      filename: "photo.jpg",
+      mimeType: "image/jpeg",
+      storedPath,
+      caption: null,
+      title: "A Photo",
+      extractedText: "text",
+      category: "other",
+    });
+    mockSendWhatsAppMediaFromBuffer.mockRejectedValue(new Error("boom"));
+
+    const result = await sendSavedDocumentFile(user.id, "44700", doc.id);
+
+    expect(result).toEqual({ ok: false, reason: "send_failed" });
+    fs.unlinkSync(storedPath);
   });
 });

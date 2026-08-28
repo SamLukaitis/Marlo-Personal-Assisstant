@@ -8,6 +8,7 @@ import {
   getEnabledTools,
   deleteExpiredPendingActions,
   deleteExpiredSeenWamids,
+  pruneOldServerLogs,
 } from "../db/store.js";
 import { isWhatsAppConfigured } from "../providers/whatsapp.js";
 import { sendProactiveMessage } from "./outbound.js";
@@ -118,9 +119,12 @@ async function runImportantEmailAlertsCheckForUser(ownerId: number): Promise<voi
 // Loops over every tenant rather than assuming a single global run — each user's iteration is
 // caught independently so one tenant's failure (a broken account, a transient API error) can't
 // block or crash another tenant's briefing/alerts.
+const SERVER_LOG_RETENTION_MS = 30 * 24 * 60 * 60 * 1000; // logs are a debugging aid, not a permanent record
+
 async function tick(): Promise<void> {
   deleteExpiredPendingActions();
   deleteExpiredSeenWamids();
+  pruneOldServerLogs(SERVER_LOG_RETENTION_MS);
   for (const ownerId of listAllUserIds()) {
     await runDailyCheckForUser(ownerId).catch((err) =>
       console.error(`scheduler: daily check failed for user ${ownerId}`, err)

@@ -103,13 +103,13 @@ export function SettingsPage() {
   const { user } = useAuth();
   const [searchParams, setSearchParams] = useSearchParams();
 
-  const visibleSections = SECTIONS.filter((s) => s.key !== "admin" || user?.isAdmin);
+  const visibleSections = SECTIONS.filter((s) => s.key !== "admin" || user?.isAppOwner);
 
   const sectionParam = searchParams.get("section");
   // A non-admin can't land on "admin" even by pasting the URL — falls back the same as an
   // unrecognized section would.
   const section: SectionKey =
-    isSectionKey(sectionParam) && (sectionParam !== "admin" || user?.isAdmin)
+    isSectionKey(sectionParam) && (sectionParam !== "admin" || user?.isAppOwner)
       ? sectionParam
       : "accounts";
 
@@ -150,12 +150,12 @@ export function SettingsPage() {
   // Separate from load(): fetching this for every user would just draw a guaranteed 403 from
   // adminRoutes.ts for the vast majority of them, for a section they'll never see.
   useEffect(() => {
-    if (!user?.isAdmin) return;
+    if (!user?.isAppOwner) return;
     fetchInvites()
       .then(setInvites)
       .catch(() => {})
       .finally(() => setInvitesLoaded(true));
-  }, [user?.isAdmin]);
+  }, [user?.isAppOwner]);
 
   const connected = searchParams.get("connected");
   const errorKey = searchParams.get("error");
@@ -679,7 +679,7 @@ export function SettingsPage() {
               </>
             )}
 
-            {section === "admin" && user?.isAdmin && (
+            {section === "admin" && user?.isAppOwner && (
               <>
                 <h2>Invited testers</h2>
                 <p className="settings-section-intro">

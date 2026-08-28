@@ -9,6 +9,8 @@ import {
   getConversationSummary,
   saveConversationSummary,
   getWhatsAppBacklogForSummary,
+  resolveOwnerByPhone,
+  recordApiUsage,
   type WhatsAppMessageRow,
 } from "../db/store.js";
 
@@ -63,6 +65,16 @@ export async function maybeUpdateConversationSummary(phone: string): Promise<voi
       max_tokens: 1024,
       messages: [{ role: "user", content: buildSummaryPrompt(existing?.summary ?? null, batch) }],
     });
+    recordApiUsage(
+      resolveOwnerByPhone(phone),
+      "whatsapp",
+      SUMMARY_MODEL,
+      "conversation_summary",
+      response.usage?.input_tokens ?? 0,
+      response.usage?.output_tokens ?? 0,
+      response.usage?.cache_read_input_tokens ?? 0,
+      response.usage?.cache_creation_input_tokens ?? 0
+    );
     const text = response.content.find((b) => b.type === "text")?.text;
     if (!text) return;
 

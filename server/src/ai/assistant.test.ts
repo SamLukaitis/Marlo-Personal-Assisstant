@@ -1,8 +1,12 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
 const mockIngestEmailAttachment = vi.fn();
+const mockIngestEmailBodyReceipt = vi.fn();
+const mockSendSavedDocumentFile = vi.fn();
 vi.mock("../services/documents.js", () => ({
   ingestEmailAttachment: (...args: unknown[]) => mockIngestEmailAttachment(...args),
+  ingestEmailBodyReceipt: (...args: unknown[]) => mockIngestEmailBodyReceipt(...args),
+  sendSavedDocumentFile: (...args: unknown[]) => mockSendSavedDocumentFile(...args),
 }));
 
 const mockHubGetMessage = vi.fn();
@@ -10,11 +14,6 @@ vi.mock("../services/hub.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../services/hub.js")>();
   return { ...actual, hubGetMessage: (...args: unknown[]) => mockHubGetMessage(...args) };
 });
-
-const mockSendWhatsAppMessage = vi.fn().mockResolvedValue(undefined);
-vi.mock("../providers/whatsapp.js", () => ({
-  sendWhatsAppMessage: (...args: unknown[]) => mockSendWhatsAppMessage(...args),
-}));
 
 import { buildToolsForOwner, buildSystemPrompt, runTool, messageForModel } from "./assistant.js";
 import type { UnifiedMessage } from "../providers/types.js";
@@ -26,8 +25,7 @@ import {
   addMemoryNote,
   markMemorySurfaced,
   setPendingSetup,
-  addPhoneNumberForUser,
-  getAppOwnerUserId,
+  listUnmetRequests,
 } from "../db/store.js";
 import { getBriefingSettings, saveBriefingSettings, type BriefingSettings } from "../services/briefing.js";
 import { getXeroForwardingEmail } from "../services/xero.js";
@@ -229,6 +227,26 @@ describe("runTool defense-in-depth", () => {
   });
 });
 
+describe("flag_unmet_request tool", () => {
+  it("logs a web-channel unmet request when no phone is passed", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("unmet-web"));
+    const result = await runTool(user.id, "flag_unmet_request", {
+      summary: "Wanted Marlowe to book a flight — no booking capability exists",
+    });
+    expect(result).toEqual({ ok: true });
+    const logged = listUnmetRequests(true).find((r) => r.ownerId === user.id);
+    expect(logged?.channel).toBe("web");
+    expect(logged?.summary).toBe("Wanted Marlowe to book a flight — no booking capability exists");
+  });
+
+  it("logs a whatsapp-channel unmet request when a phone is passed", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("unmet-whatsapp"));
+    await runTool(user.id, "flag_unmet_request", { summary: "Asked to pay an invoice directly" }, "447700900000");
+    const logged = listUnmetRequests(true).find((r) => r.ownerId === user.id);
+    expect(logged?.channel).toBe("whatsapp");
+  });
+});
+
 describe("set_briefing_preferences tool", () => {
   it("merges a patch onto a user's existing briefing settings", async () => {
     const user = findOrCreateUserByEmail(uniqueEmail("briefing-merge"));
@@ -394,34 +412,6 @@ describe("buildSystemPrompt onboarding paragraph", () => {
   });
 });
 
-describe("send_feedback_to_admin", () => {
-  beforeEach(() => {
-    mockSendWhatsAppMessage.mockClear();
-  });
-
-  it("sends a WhatsApp message to the app owner's registered number(s), tagged with the reporter's email", async () => {
-    // Uses the real app owner account (APP_OWNER_EMAIL, see db/store.ts) rather than mocking
-    // getAppOwnerUserId — it's a plain lookup over an env var, not worth mocking here.
-    const adminId = getAppOwnerUserId();
-    addPhoneNumberForUser(adminId, "447000009999");
-    const reporter = findOrCreateUserByEmail(uniqueEmail("feedback-reporter"));
-
-    const result = await runTool(reporter.id, "send_feedback_to_admin", {
-      summary: "The briefing skips weather even though I turned it on",
-    });
-
-    expect(result).toEqual({ ok: true });
-    expect(mockSendWhatsAppMessage).toHaveBeenCalledWith(
-      "447000009999",
-      expect.stringContaining(reporter.email)
-    );
-    expect(mockSendWhatsAppMessage).toHaveBeenCalledWith(
-      "447000009999",
-      expect.stringContaining("weather even though")
-    );
-  });
-});
-
 describe("messageForModel", () => {
   const BASE: UnifiedMessage = {
     id: "m1",
@@ -516,9 +506,44 @@ describe("extract_email_attachment dispatch", () => {
   });
 });
 
+describe("send_document dispatch", () => {
+  beforeEach(() => {
+    mockSendSavedDocumentFile.mockReset();
+  });
+
+  it("refuses without a phone (web chat/eval callers) before calling sendSavedDocumentFile", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("send-doc-no-phone"));
+
+    const result = await runTool(user.id, "send_document", { document_id: 1 });
+
+    expect(result).toEqual({ error: expect.stringContaining("WhatsApp conversation") });
+    expect(mockSendSavedDocumentFile).not.toHaveBeenCalled();
+  });
+
+  it("passes ownerId/phone/document_id through and reports success", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("send-doc-ok"));
+    mockSendSavedDocumentFile.mockResolvedValue({ ok: true });
+
+    const result = await runTool(user.id, "send_document", { document_id: 42 }, "447000000001");
+
+    expect(mockSendSavedDocumentFile).toHaveBeenCalledWith(user.id, "447000000001", 42);
+    expect(result).toEqual({ ok: true });
+  });
+
+  it("surfaces a specific error when there's no original file to send", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("send-doc-no-original"));
+    mockSendSavedDocumentFile.mockResolvedValue({ ok: false, reason: "no_original_file" });
+
+    const result = await runTool(user.id, "send_document", { document_id: 7 }, "447000000001");
+
+    expect(result).toEqual({ error: expect.stringContaining("no original photo") });
+  });
+});
+
 describe("respond_to_invoice_forward_prompt tool", () => {
   beforeEach(() => {
     mockIngestEmailAttachment.mockReset();
+    mockIngestEmailBodyReceipt.mockReset();
     mockHubGetMessage.mockReset();
   });
 
@@ -565,15 +590,47 @@ describe("respond_to_invoice_forward_prompt tool", () => {
     expect(getPendingInvoiceForward(user.id)).toBeNull();
   });
 
-  it("errors when the pending message no longer has a downloadable attachment", async () => {
+  it("errors when the pending message no longer has an attachment or a body", async () => {
     const user = findOrCreateUserByEmail(uniqueEmail("invoice-confirm-gone"));
     setPendingInvoiceForward(user.id, { accountId: 1, messageId: "m1", subject: "Invoice from Acme" });
     mockHubGetMessage.mockResolvedValue({ attachments: [] });
 
     const result = await runTool(user.id, "respond_to_invoice_forward_prompt", { confirm: true });
 
-    expect(result).toEqual({ error: expect.stringContaining("Couldn't find that email's attachment") });
+    expect(result).toEqual({ error: expect.stringContaining("Couldn't find that email anymore") });
     expect(mockIngestEmailAttachment).not.toHaveBeenCalled();
+    expect(mockIngestEmailBodyReceipt).not.toHaveBeenCalled();
+  });
+
+  it("extracts from the email body when confirmed and there's no attachment, then clears pending state", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("invoice-confirm-body-yes"));
+    setPendingInvoiceForward(user.id, { accountId: 5, messageId: "m1", subject: "Your receipt" });
+    mockHubGetMessage.mockResolvedValue({ attachments: [], body: "Thanks for your payment of £22.80." });
+    mockIngestEmailBodyReceipt.mockResolvedValue({ ok: true, doc: { id: 1 } });
+
+    const result = await runTool(user.id, "respond_to_invoice_forward_prompt", { confirm: true });
+
+    expect(mockIngestEmailAttachment).not.toHaveBeenCalled();
+    expect(mockIngestEmailBodyReceipt).toHaveBeenCalledWith({
+      ownerId: user.id,
+      accountId: 5,
+      messageId: "m1",
+      subject: "Your receipt",
+      bodyText: "Thanks for your payment of £22.80.",
+    });
+    expect(result).toEqual({ ok: true, forwarded: true, attachmentsProcessed: 0 });
+    expect(getPendingInvoiceForward(user.id)).toBeNull();
+  });
+
+  it("reports plainly when the body doesn't actually contain a findable expense", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("invoice-confirm-body-no-expense"));
+    setPendingInvoiceForward(user.id, { accountId: 5, messageId: "m1", subject: "Newsletter" });
+    mockHubGetMessage.mockResolvedValue({ attachments: [], body: "Just a regular update, no charges." });
+    mockIngestEmailBodyReceipt.mockResolvedValue({ ok: false, reason: "no_expense_found" });
+
+    const result = await runTool(user.id, "respond_to_invoice_forward_prompt", { confirm: true });
+
+    expect(result).toEqual({ error: expect.stringContaining("couldn't find a clear amount/vendor") });
   });
 });
 

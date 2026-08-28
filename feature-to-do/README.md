@@ -5,7 +5,8 @@ prioritized or scheduled, just a place to capture ideas as they come up so they 
 
 Each file says what's wanted and why, in plain (non-technical) terms, so it's usable later without
 needing to reconstruct the context. Technical/implementation plans get written up separately when
-the feature is actually picked up.
+the feature is actually picked up. Files prefixed `done-` are finished — kept for reference rather
+than deleted, since they still explain the reasoning behind what was built.
 
 - [calendar-backward-looking.md](calendar-backward-looking.md)
 - [delay-compensation-script.md](delay-compensation-script.md)
@@ -15,4 +16,7 @@ the feature is actually picked up.
 - [xero-receipt-forwarding.md](xero-receipt-forwarding.md)
 - [marlowe-capabilities-ui.md](marlowe-capabilities-ui.md)
 - [document-deduplication.md](document-deduplication.md)
-- [admin-version-check.md](admin-version-check.md)
+- [tenant-isolation-audit.md](tenant-isolation-audit.md)
+- [token-cost-reduction.md](token-cost-reduction.md)
+- [done-admin-version-check.md](done-admin-version-check.md)
+- [done-admin-portal.md](done-admin-portal.md)

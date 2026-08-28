@@ -21,9 +21,8 @@ import {
   createPendingAction,
   getConversationSummary,
   getPendingSetup,
-  getUser,
-  getAppOwnerUserId,
-  listPhoneNumbersForUser,
+  addUnmetRequest,
+  recordApiUsage,
   type ToolKey,
   type DocumentRow,
 } from "../db/store.js";
@@ -32,7 +31,6 @@ import { listLocalFolders } from "../providers/local.js";
 import { fetchHeadlines, NEWS_TOPICS, type NewsTopic } from "../providers/news.js";
 import { fetchWeather } from "../providers/weather.js";
 import { fetchQuotes, DEFAULT_SYMBOLS } from "../providers/markets.js";
-import { sendWhatsAppMessage } from "../providers/whatsapp.js";
 import { countTravelDays } from "../services/travelDays.js";
 import { findFreeSlots } from "../services/freeSlots.js";
 import { buildSpendingDigest } from "../services/spendingDigest.js";
@@ -42,7 +40,7 @@ import {
   getPendingInvoiceForward,
   clearPendingInvoiceForward,
 } from "../services/xeroInvoiceConfirmation.js";
-import { ingestEmailAttachment } from "../services/documents.js";
+import { ingestEmailAttachment, ingestEmailBodyReceipt, sendSavedDocumentFile } from "../services/documents.js";
 import {
   hubListMessages,
   hubGetMessage,
@@ -64,7 +62,7 @@ import type { UnifiedMessage } from "../providers/types.js";
 // Cheap tier for lookups/summaries, richer tier for anything needing judgment or drafting.
 // No classifier call to pick between them — that would add an extra API round-trip for a
 // decision that keyword matching on the latest message handles for free.
-const MODEL_SIMPLE = process.env.ASSISTANT_MODEL_SIMPLE ?? "claude-haiku-4-5";
+export const MODEL_SIMPLE = process.env.ASSISTANT_MODEL_SIMPLE ?? "claude-haiku-4-5";
 const MODEL_COMPLEX = process.env.ASSISTANT_MODEL_COMPLEX ?? "claude-sonnet-5";
 
 const COMPLEX_PATTERNS = [
@@ -102,7 +100,9 @@ export const SEARCH_MESSAGES_DEFAULT_LIMIT = 30;
 export const LIST_RECENT_MESSAGES_DEFAULT_LIMIT = 20;
 
 let client: Anthropic | null = null;
-function getClient(): Anthropic {
+// Exported so portalRoutes.ts's log-explain endpoint can reuse the same lazily-created client
+// instead of standing up a second one.
+export function getClient(): Anthropic {
   if (!client) {
     if (!process.env.ANTHROPIC_API_KEY) {
       throw new Error("ANTHROPIC_API_KEY is not set — add it to server/.env");
@@ -395,6 +395,18 @@ const ALWAYS_ON_TOOLS: Anthropic.Tool[] = [
     },
   },
   {
+    name: "flag_unmet_request",
+    description:
+      "Call this (alongside your normal honest reply to the user, same turn) whenever the user asked for something you genuinely can't do with your current tools/capabilities — not for things you can do but haven't yet, and not for ordinary clarifying questions. Give a one-sentence summary of what they wanted and why you couldn't help, so the team can see what to build next.",
+    input_schema: {
+      type: "object",
+      properties: {
+        summary: { type: "string", description: "One sentence: what they wanted and why you couldn't help" },
+      },
+      required: ["summary"],
+    },
+  },
+  {
     name: "list_needs_attention",
     description:
       "List emails that look like they've been sitting unread for a while from real people (not newsletters/notifications). Call this when the user asks what needs attention, what they're missing, or what's falling through the cracks.",
@@ -421,6 +433,18 @@ const ALWAYS_ON_TOOLS: Anthropic.Tool[] = [
       properties: {
         limit: { type: "number", description: "Max documents, default 10" },
       },
+    },
+  },
+  {
+    name: "send_document",
+    description:
+      "Send the original photo/file of a previously saved document back to the user on WhatsApp — e.g. 'send me that photo again' or 'can I get the original image of my license'. Only use this when the user wants the actual file back, not just its extracted details (which you can already answer from search_documents/list_recent_documents). Find the right document's id with search_documents or list_recent_documents first. Only works in a WhatsApp conversation — if there's no original photo (e.g. a saved link or email-body receipt), this will say so.",
+    input_schema: {
+      type: "object",
+      properties: {
+        document_id: { type: "number", description: "The document's id, from search_documents/list_recent_documents" },
+      },
+      required: ["document_id"],
     },
   },
   {
@@ -522,21 +546,6 @@ const ALWAYS_ON_TOOLS: Anthropic.Tool[] = [
         enabled: { type: "boolean" },
       },
       required: ["tool", "enabled"],
-    },
-  },
-  {
-    name: "send_feedback_to_admin",
-    description:
-      "Relay a bug report, complaint, or feature request from the user to the developers (Sam and Jake). Call this whenever the user asks you to pass something along, report an issue, or explicitly says something like 'tell Sam' / 'send this to admin'. Not for routine questions — only for something they clearly want a human to see.",
-    input_schema: {
-      type: "object",
-      properties: {
-        summary: {
-          type: "string",
-          description: "A concise summary of the feedback/request/bug, in the user's own terms.",
-        },
-      },
-      required: ["summary"],
     },
   },
   {
@@ -708,7 +717,14 @@ const TOOL_NAME_TO_KEY: Record<string, ToolKey> = {
   count_travel_days: "travel",
 };
 
-export async function runTool(ownerId: number, name: string, input: Record<string, unknown>): Promise<unknown> {
+// phone is optional and WhatsApp-only (web chat/eval callers omit it) — used only by tools that
+// need to send something directly to the user's chat (currently just send_document).
+export async function runTool(
+  ownerId: number,
+  name: string,
+  input: Record<string, unknown>,
+  phone?: string
+): Promise<unknown> {
   const requiredKey = TOOL_NAME_TO_KEY[name];
   if (requiredKey && !getEnabledTools(ownerId).has(requiredKey)) {
     return { error: `tool not enabled: ${name}` };
@@ -791,12 +807,30 @@ export async function runTool(ownerId: number, name: string, input: Record<strin
     case "remember":
       addMemoryNote(ownerId, input.note as string, input.triggerAt as string | undefined);
       return { ok: true };
+    case "flag_unmet_request":
+      addUnmetRequest(ownerId, input.summary as string, phone ? "whatsapp" : "web");
+      return { ok: true };
     case "list_needs_attention":
       return hubFlaggedMessages(ownerId);
     case "search_documents":
       return searchDocuments(ownerId, input.query as string).map(forModel);
     case "list_recent_documents":
       return listDocuments(ownerId, (input.limit as number | undefined) ?? 10).map(forModel);
+    case "send_document": {
+      if (!phone) {
+        return { error: "Sending the original file back is only available in a WhatsApp conversation." };
+      }
+      const result = await sendSavedDocumentFile(ownerId, phone, input.document_id as number);
+      if (!result.ok) {
+        const messages: Record<typeof result.reason, string> = {
+          not_found: "No saved document with that id — check search_documents/list_recent_documents for the right one.",
+          no_original_file: "There's no original photo/file for this one — it was saved from a link or email text, not a photo.",
+          send_failed: "Couldn't send that file — it may be too large or an unsupported type for WhatsApp.",
+        };
+        return { error: messages[result.reason] };
+      }
+      return { ok: true };
+    }
     case "extract_email_attachment": {
       const result = await ingestEmailAttachment({
         ownerId,
@@ -853,31 +887,6 @@ export async function runTool(ownerId: number, name: string, input: Record<strin
       setToolEnabled(ownerId, tool as ToolKey, !!input.enabled);
       return { ok: true };
     }
-    case "send_feedback_to_admin": {
-      const summary = input.summary as string;
-      const reporter = getUser(ownerId);
-      const adminId = getAppOwnerUserId();
-      const adminNumbers = listPhoneNumbersForUser(adminId).map((r) => r.phone);
-      const text = `*Feedback from ${reporter?.email ?? `user #${ownerId}`}:*\n${summary}`;
-      if (adminNumbers.length === 0) {
-        console.error(
-          `send_feedback_to_admin: no WhatsApp number registered for the app owner (user ${adminId}) — feedback logged only`,
-          { ownerId, summary }
-        );
-      } else {
-        await Promise.all(
-          adminNumbers.map((phone) =>
-            sendWhatsAppMessage(phone, text).catch((err) =>
-              console.error("send_feedback_to_admin: failed to notify admin", err)
-            )
-          )
-        );
-      }
-      // Never fails the tool call itself — a delivery failure is logged server-side only, same
-      // as every other outbound WhatsApp send in this codebase; the model still confirms to the
-      // user rather than surfacing an internal error.
-      return { ok: true };
-    }
     case "connect_xero": {
       try {
         setXeroForwardingEmail(ownerId, input.forwarding_email as string);
@@ -893,20 +902,35 @@ export async function runTool(ownerId: number, name: string, input: Record<strin
       if (!input.confirm) return { ok: true, forwarded: false };
 
       const message = await hubGetMessage(ownerId, pending.accountId, pending.messageId);
-      if (!message?.attachments?.length) {
-        return { error: "Couldn't find that email's attachment anymore — it may have been deleted or moved." };
+      if (message?.attachments?.length) {
+        const results = await Promise.all(
+          message.attachments.map((_att, i) =>
+            ingestEmailAttachment({
+              ownerId,
+              accountId: pending.accountId,
+              messageId: pending.messageId,
+              attachmentIndex: i + 1,
+            })
+          )
+        );
+        return { ok: true, forwarded: true, attachmentsProcessed: results.length };
       }
-      const results = await Promise.all(
-        message.attachments.map((_att, i) =>
-          ingestEmailAttachment({
-            ownerId,
-            accountId: pending.accountId,
-            messageId: pending.messageId,
-            attachmentIndex: i + 1,
-          })
-        )
-      );
-      return { ok: true, forwarded: true, attachmentsProcessed: results.length };
+
+      if (message?.body?.trim()) {
+        const result = await ingestEmailBodyReceipt({
+          ownerId,
+          accountId: pending.accountId,
+          messageId: pending.messageId,
+          subject: pending.subject,
+          bodyText: message.body,
+        });
+        if (!result.ok) {
+          return { error: "Looked at that email but couldn't find a clear amount/vendor to record — nothing was forwarded." };
+        }
+        return { ok: true, forwarded: true, attachmentsProcessed: 0 };
+      }
+
+      return { error: "Couldn't find that email anymore — it may have been deleted or moved." };
     }
     case "list_expenses":
       return listEntities<ExpenseData>(ownerId, { type: "expense" })
@@ -1088,7 +1112,9 @@ function buildRules(enabled: Set<ToolKey>): string {
     "- Use search_contacts to resolve a name to an email address before drafting to someone when you don't already have their address.",
     "- If search_contacts (or any lookup) returns more than one plausible match and it's not obvious which one is meant, use ask_user_choice(mode=\"resume\") with one option per candidate instead of listing them in prose and waiting for a typed reply.",
     "- Use the remember tool proactively whenever the user shares something worth recalling later (preferences, which account is which, standing instructions) — don't wait to be asked.",
+    "- Use flag_unmet_request whenever you have to tell the user you can't do something — call it in the same turn as your reply, don't wait to be asked.",
     '- Use search_documents/list_recent_documents when the user asks about something they photographed or sent via WhatsApp (boarding passes, licenses, tickets, receipts) — e.g. "when did I fly to X" or "what\'s the code on my license".',
+    "- If the user wants the actual photo/file back rather than just its details (e.g. \"send me that photo again\", \"can I get the original image\"), find the right document with search_documents/list_recent_documents first, then call send_document with its id.",
     "- When the user asks about a trip, booking, or receipt and get_message shows a relevant attachment (ticket, confirmation, visa, invoice), call extract_email_attachment on it yourself, immediately, without asking first — the same way you'd read the email body without asking. Do this for every relevant attachment you find in the same turn, not one at a time. Only ask first if there are an unusually large number of attachments (10+) to extract at once. Don't just describe the attachment's filename and stop there, and don't stop to ask permission to do something this low-risk and reversible.",
     "- If extract_email_attachment fails for an attachment, don't just relay a generic failure to the user — retry it once, and if it still fails, say so plainly with the vendor/subject so they know exactly which one needs a manual forward, rather than leaving them to guess.",
     "- Use get_news for news/current-events questions. Only report headlines the tool actually returned — never supplement with your own general knowledge or training data, even for well-known ongoing events. Fabricating a headline is a serious error, same as with any other tool's data.",
@@ -1216,6 +1242,26 @@ export async function runAssistantChat(
     content: m.content,
   }));
 
+  // Summed across every anthropic.messages.create call this invocation makes (the loop below can
+  // take up to 8 turns for one user message, e.g. several tool round-trips) and recorded once,
+  // via finish() below, rather than once per turn — admins want "how many times was the assistant
+  // actually asked something" and "how many tokens did that cost", not internal loop iterations.
+  const usageTotals = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0 };
+  const channel = phone ? "whatsapp" : "web";
+  function finish(reply: AssistantReply): AssistantReply {
+    recordApiUsage(
+      ownerId,
+      channel,
+      model,
+      "assistant_chat",
+      usageTotals.inputTokens,
+      usageTotals.outputTokens,
+      usageTotals.cacheReadTokens,
+      usageTotals.cacheCreationTokens
+    );
+    return reply;
+  }
+
   for (let turn = 0; turn < 8; turn++) {
     const response = await anthropic.messages.create({
       model,
@@ -1225,6 +1271,14 @@ export async function runAssistantChat(
       tools: buildToolsForOwner(ownerId),
       messages,
     });
+    // response.usage is absent in some existing tests' mocked responses — tolerate that rather
+    // than letting a usage-tracking side effect break the actual conversation flow.
+    usageTotals.inputTokens += response.usage?.input_tokens ?? 0;
+    usageTotals.outputTokens += response.usage?.output_tokens ?? 0;
+    // input_tokens above is ONLY the uncached tail — the cached tools+system prefix this loop
+    // re-reads on every turn is reported separately here, and it's most of the real bill.
+    usageTotals.cacheReadTokens += response.usage?.cache_read_input_tokens ?? 0;
+    usageTotals.cacheCreationTokens += response.usage?.cache_creation_input_tokens ?? 0;
 
     const toolUses = response.content.filter(
       (block): block is Anthropic.ToolUseBlock => block.type === "tool_use"
@@ -1234,7 +1288,7 @@ export async function runAssistantChat(
       const text = response.content.find(
         (b): b is Anthropic.TextBlock => b.type === "text"
       );
-      return { text: text?.text ?? "" };
+      return finish({ text: text?.text ?? "" });
     }
 
     // ask_user_choice is a hard stop, not a tool result to feed back to the model — the system
@@ -1242,7 +1296,21 @@ export async function runAssistantChat(
     // response are ignored rather than run.
     const choiceUse = toolUses.find((t) => t.name === "ask_user_choice");
     if (choiceUse) {
-      return buildChoiceReply(ownerId, choiceUse.input as Record<string, unknown>);
+      return finish(buildChoiceReply(ownerId, choiceUse.input as Record<string, unknown>));
+    }
+
+    // flag_unmet_request is a fire-and-forget log, not a tool whose result the model needs fed
+    // back to keep reasoning — its own instructions tell the model to call it "alongside your
+    // normal reply, same turn," meaning the actual reply text is usually already sitting right
+    // here in this same response. Without this check, that text was being silently discarded and
+    // a second full round-trip (whole system prompt + tools + history resent) paid for just to
+    // get the model to repeat itself as plain text — doubling the API cost of every single
+    // capability-gap decline. Bug found 2026-08-28, introduced the same day this tool shipped.
+    const flagUse = toolUses.find((t) => t.name === "flag_unmet_request");
+    const textBlock = response.content.find((b): b is Anthropic.TextBlock => b.type === "text");
+    if (flagUse && textBlock && toolUses.length === 1) {
+      await runTool(ownerId, "flag_unmet_request", flagUse.input as Record<string, unknown>, phone);
+      return finish({ text: textBlock.text });
     }
 
     messages.push({ role: "assistant", content: response.content });
@@ -1250,7 +1318,7 @@ export async function runAssistantChat(
     const toolResults: Anthropic.ToolResultBlockParam[] = await Promise.all(
       toolUses.map(async (toolUse) => {
         try {
-          const result = await runTool(ownerId, toolUse.name, toolUse.input as Record<string, unknown>);
+          const result = await runTool(ownerId, toolUse.name, toolUse.input as Record<string, unknown>, phone);
           return {
             type: "tool_result" as const,
             tool_use_id: toolUse.id,
@@ -1274,7 +1342,7 @@ export async function runAssistantChat(
     messages.push({ role: "user", content: toolResults });
   }
 
-  return { text: "I wasn't able to finish that within my tool-call limit — try a more specific request." };
+  return finish({ text: "I wasn't able to finish that within my tool-call limit — try a more specific request." });
 }
 
 // Narrow, tool-free assistant call used by the WhatsApp registration state machine
@@ -1352,6 +1420,17 @@ export async function getHelpChatReply(history: HelpChatTurn[]): Promise<string>
       system: HELP_CHAT_SYSTEM_PROMPT,
       messages: history.map((turn) => ({ role: turn.role, content: turn.text })),
     });
+    // No owner yet — this is the public marketing site, pre-sign-in.
+    recordApiUsage(
+      null,
+      "web",
+      MODEL_SIMPLE,
+      "help_widget",
+      response.usage?.input_tokens ?? 0,
+      response.usage?.output_tokens ?? 0,
+      response.usage?.cache_read_input_tokens ?? 0,
+      response.usage?.cache_creation_input_tokens ?? 0
+    );
     const text = response.content.find((b): b is Anthropic.TextBlock => b.type === "text");
     return text?.text ?? HELP_CHAT_FALLBACK;
   } catch (err) {
@@ -1372,6 +1451,17 @@ export async function getRegistrationAssistReply(
       system: REGISTRATION_ASSIST_SYSTEM_PROMPTS[context],
       messages: [{ role: "user", content: userText }],
     });
+    // No owner yet — this fires mid-signup, before a users row exists for this phone number.
+    recordApiUsage(
+      null,
+      "whatsapp",
+      MODEL_SIMPLE,
+      "registration_assist",
+      response.usage?.input_tokens ?? 0,
+      response.usage?.output_tokens ?? 0,
+      response.usage?.cache_read_input_tokens ?? 0,
+      response.usage?.cache_creation_input_tokens ?? 0
+    );
     const text = response.content.find((b): b is Anthropic.TextBlock => b.type === "text");
     return text?.text ?? REGISTRATION_ASSIST_FALLBACK[context];
   } catch (err) {

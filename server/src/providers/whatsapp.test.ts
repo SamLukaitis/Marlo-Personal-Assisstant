@@ -4,6 +4,7 @@ import {
   sendWhatsAppCtaUrl,
   sendWhatsAppListMessage,
   sendChoiceMessage,
+  sendWhatsAppMediaFromBuffer,
   extractIncomingMessages,
   WhatsAppSendError,
 } from "./whatsapp.js";
@@ -237,6 +238,48 @@ describe("sendChoiceMessage", () => {
 
     const body = JSON.parse(fetchMock.mock.calls[0][1].body);
     expect(body.interactive.type).toBe("list");
+  });
+});
+
+describe("sendWhatsAppMediaFromBuffer", () => {
+  it("uploads the buffer then sends an image message for jpeg/png", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ id: "media-1" }) })
+      .mockResolvedValueOnce({ ok: true, text: async () => "{}" });
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    await sendWhatsAppMediaFromBuffer("447000000001", Buffer.from("fake-bytes"), "image/jpeg", "license.jpg");
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock.mock.calls[0][0]).toContain("/media");
+    const sendBody = JSON.parse(fetchMock.mock.calls[1][1].body);
+    expect(sendBody.type).toBe("image");
+    expect(sendBody.image).toEqual({ id: "media-1" });
+  });
+
+  it("sends a document message (with filename) for a non-image mime type", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ id: "media-2" }) })
+      .mockResolvedValueOnce({ ok: true, text: async () => "{}" });
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    await sendWhatsAppMediaFromBuffer("447000000001", Buffer.from("fake-bytes"), "application/pdf", "ticket.pdf");
+
+    const sendBody = JSON.parse(fetchMock.mock.calls[1][1].body);
+    expect(sendBody.type).toBe("document");
+    expect(sendBody.document).toEqual({ id: "media-2", filename: "ticket.pdf" });
+  });
+
+  it("throws a WhatsAppSendError if the upload itself fails", async () => {
+    global.fetch = vi
+      .fn()
+      .mockResolvedValue({ ok: false, status: 400, text: async () => '{"error":{"code":100}}' }) as unknown as typeof fetch;
+
+    await expect(
+      sendWhatsAppMediaFromBuffer("447000000001", Buffer.from("x"), "image/jpeg", "a.jpg")
+    ).rejects.toThrow(WhatsAppSendError);
   });
 });
 

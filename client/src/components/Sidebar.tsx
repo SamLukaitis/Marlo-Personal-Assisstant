@@ -11,6 +11,7 @@ import {
   IconTravel,
   IconSettings,
   IconLogOut,
+  IconPortal,
 } from "./icons";
 
 interface NavItem {
@@ -19,6 +20,8 @@ interface NavItem {
   Icon: () => ReactElement;
   /** When set, this item only appears if the user has that tool switched on. */
   requiresTool?: Tool["key"];
+  /** When set, this item only appears for admins (see AuthContext's user.isAdmin). */
+  requiresAdmin?: boolean;
 }
 
 // The nav is a function of which tools the user picked, not a fixed list. Someone who never
@@ -31,11 +34,12 @@ const NAV_ITEMS: NavItem[] = [
   { to: "/files", label: "Files", Icon: IconFolder },
   { to: "/travel", label: "Travel", Icon: IconTravel, requiresTool: "travel" },
   { to: "/settings", label: "Settings", Icon: IconSettings },
+  { to: "/portal", label: "Portal", Icon: IconPortal, requiresAdmin: true },
 ];
 
 export function Sidebar() {
   const [accounts, setAccounts] = useState<Account[]>([]);
-  const { refresh } = useAuth();
+  const { user, refresh } = useAuth();
   const { isEnabled, loaded } = useTools();
   const navigate = useNavigate();
 
@@ -53,9 +57,11 @@ export function Sidebar() {
 
   // Render the un-gated items during the first load rather than nothing, so the nav doesn't
   // flash empty; gated items appear once we actually know whether they belong.
-  const items = NAV_ITEMS.filter(
-    (item) => !item.requiresTool || (loaded && isEnabled(item.requiresTool))
-  );
+  const items = NAV_ITEMS.filter((item) => {
+    if (item.requiresAdmin && !user?.isAdmin) return false;
+    if (item.requiresTool && !(loaded && isEnabled(item.requiresTool))) return false;
+    return true;
+  });
 
   return (
     <>

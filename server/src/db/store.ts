@@ -168,7 +168,123 @@ db.exec(`
   );
   CREATE INDEX IF NOT EXISTS idx_links_from ON links(owner_id, from_type, from_id);
   CREATE INDEX IF NOT EXISTS idx_links_to   ON links(owner_id, to_type, to_id);
+
+  -- Admin portal (feature-to-do doc: admin portal) — global/shared across every admin, not
+  -- scoped to a tenant, except unmet_requests/api_usage which record which owner's conversation
+  -- they came from (admin routes still read across every owner).
+  CREATE TABLE IF NOT EXISTS unmet_requests (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    owner_id   INTEGER NOT NULL REFERENCES users(id),
+    summary    TEXT NOT NULL,
+    channel    TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    resolved_at INTEGER
+  );
+  CREATE INDEX IF NOT EXISTS idx_unmet_requests_created ON unmet_requests(created_at);
+  CREATE TABLE IF NOT EXISTS server_logs (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    level      TEXT NOT NULL,
+    message    TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    explanation TEXT,
+    explained_at INTEGER
+  );
+  CREATE INDEX IF NOT EXISTS idx_server_logs_created ON server_logs(created_at);
+  CREATE TABLE IF NOT EXISTS api_usage (
+    id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+    owner_id              INTEGER REFERENCES users(id),
+    channel               TEXT NOT NULL,
+    model                 TEXT NOT NULL,
+    purpose               TEXT NOT NULL DEFAULT 'assistant_chat',
+    input_tokens          INTEGER NOT NULL,
+    output_tokens         INTEGER NOT NULL,
+    cache_read_tokens     INTEGER NOT NULL DEFAULT 0,
+    cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
+    created_at            INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_api_usage_created ON api_usage(created_at);
+  CREATE TABLE IF NOT EXISTS admin_todos (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    text       TEXT NOT NULL,
+    done       INTEGER NOT NULL DEFAULT 0,
+    created_by INTEGER NOT NULL REFERENCES users(id),
+    created_at INTEGER NOT NULL,
+    done_at    INTEGER
+  );
+  CREATE TABLE IF NOT EXISTS poster_notes (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    author_id  INTEGER NOT NULL REFERENCES users(id),
+    text       TEXT NOT NULL,
+    created_at INTEGER NOT NULL
+  );
 `);
+
+// Lightweight migration (same pattern as accounts.auth_broken below): users predates the is_admin
+// flag, so add it explicitly if missing. The single app owner (isAppOwner) is always implicitly
+// admin regardless of this flag — this only covers additional people granted portal access.
+const userColumns = (db.prepare(`PRAGMA table_info(users)`).all() as { name: string }[]).map(
+  (c) => c.name
+);
+if (!userColumns.includes("is_admin")) {
+  db.exec(`ALTER TABLE users ADD COLUMN is_admin INTEGER NOT NULL DEFAULT 0`);
+}
+
+// api_usage originally only tracked the main assistant chat (owner_id required, no purpose
+// column). Recording usage for calls with no signed-in owner yet (the public help widget, the
+// WhatsApp registration assistant) needs owner_id to be nullable, which SQLite can't ALTER
+// directly — rebuild the table when the new "purpose" column (a proxy for "hasn't been migrated
+// yet") is missing, same precedent as travel_checkins' lat/long-nullable migration above. Every
+// pre-existing row was, by definition, the main assistant chat.
+const apiUsageColumns = (db.prepare(`PRAGMA table_info(api_usage)`).all() as { name: string }[]).map(
+  (c) => c.name
+);
+if (!apiUsageColumns.includes("purpose")) {
+  db.exec(`
+    CREATE TABLE api_usage_new (
+      id            INTEGER PRIMARY KEY AUTOINCREMENT,
+      owner_id      INTEGER REFERENCES users(id),
+      channel       TEXT NOT NULL,
+      model         TEXT NOT NULL,
+      purpose       TEXT NOT NULL DEFAULT 'assistant_chat',
+      input_tokens  INTEGER NOT NULL,
+      output_tokens INTEGER NOT NULL,
+      created_at    INTEGER NOT NULL
+    );
+    INSERT INTO api_usage_new (id, owner_id, channel, model, purpose, input_tokens, output_tokens, created_at)
+      SELECT id, owner_id, channel, model, 'assistant_chat', input_tokens, output_tokens, created_at FROM api_usage;
+    DROP TABLE api_usage;
+    ALTER TABLE api_usage_new RENAME TO api_usage;
+    CREATE INDEX IF NOT EXISTS idx_api_usage_created ON api_usage(created_at);
+  `);
+}
+
+// api_usage originally recorded only usage.input_tokens/output_tokens — but with prompt caching
+// active (ai/assistant.ts), input_tokens EXCLUDES all cached tokens, so the dominant token class
+// on the real Anthropic bill (cache reads/writes of the big tools+system prefix, re-sent on every
+// loop turn) was invisible here and the Usage tab's cost estimate understated real spend.
+// PRAGMA is re-read rather than reusing apiUsageColumns above: if the purpose rebuild just ran,
+// that snapshot is stale (and api_usage_new deliberately doesn't include these columns, so both
+// migration paths land here needing the ALTERs).
+const apiUsageColumnsNow = (db.prepare(`PRAGMA table_info(api_usage)`).all() as { name: string }[]).map(
+  (c) => c.name
+);
+if (!apiUsageColumnsNow.includes("cache_read_tokens")) {
+  db.exec(`
+    ALTER TABLE api_usage ADD COLUMN cache_read_tokens INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE api_usage ADD COLUMN cache_creation_tokens INTEGER NOT NULL DEFAULT 0;
+  `);
+}
+
+// Bootstraps the very first non-owner admin without needing an existing admin to grant it through
+// the Portal's Admins tab first (a chicken-and-egg problem otherwise) — and deliberately doesn't
+// touch APP_OWNER_EMAIL/isAppOwner, since that also controls who /api/checkin's phone-automation
+// endpoint resolves to. Runs on every startup, but is idempotent (re-setting is_admin=1 is a
+// no-op), so it's safe to leave this var configured indefinitely rather than a true one-shot.
+const bootstrapAdminEmail = process.env.BOOTSTRAP_ADMIN_EMAIL?.trim();
+if (bootstrapAdminEmail) {
+  const bootstrapUser = findOrCreateUserByEmail(bootstrapAdminEmail);
+  db.prepare(`UPDATE users SET is_admin = 1 WHERE id = ?`).run(bootstrapUser.id);
+}
 
 // Lightweight migration: CREATE TABLE IF NOT EXISTS doesn't add columns to a table that
 // already existed before this field was introduced, so add it explicitly if missing.
@@ -1644,6 +1760,362 @@ export function isAppOwner(userId: number): boolean {
   return userId === getAppOwnerUserId();
 }
 
+// Gates the admin Portal (to-dos, poster board, unmet requests, logs, usage) — broader than
+// isAppOwner: the app owner is always implicitly an admin, plus anyone else an existing admin has
+// promoted via the Portal's Admins tab. Deliberately kept separate from isAppOwner, which still
+// alone gates the narrower invites/reset-test-phone section in Settings (see adminRoutes.ts).
+export function isAdmin(userId: number): boolean {
+  if (isAppOwner(userId)) return true;
+  const row = db.prepare(`SELECT is_admin AS isAdmin FROM users WHERE id = ?`).get(userId) as
+    | { isAdmin: number }
+    | undefined;
+  return row?.isAdmin === 1;
+}
+
+export interface AdminCandidateRow {
+  id: number;
+  email: string;
+  isAdmin: boolean;
+  isAppOwner: boolean;
+  createdAt: number;
+}
+
+// Every user, with their admin status resolved — lets the Portal's Admins tab show who already
+// has access and pick from everyone else to grant it to (only invited users can log in at all,
+// so this list is implicitly scoped to people who could actually use it).
+export function listAdminCandidateUsers(): AdminCandidateRow[] {
+  const rows = db
+    .prepare(`SELECT id, email, is_admin AS isAdminFlag, created_at AS createdAt FROM users ORDER BY created_at ASC`)
+    .all() as { id: number; email: string; isAdminFlag: number; createdAt: number }[];
+  return rows.map((r) => ({
+    id: r.id,
+    email: r.email,
+    isAdmin: r.isAdminFlag === 1 || r.id === getAppOwnerUserId(),
+    isAppOwner: r.id === getAppOwnerUserId(),
+    createdAt: r.createdAt,
+  }));
+}
+
+// The app owner can't be demoted this way (isAdmin() checks isAppOwner first regardless of the
+// flag) — callers should still avoid calling this on the owner so the Admins tab doesn't show a
+// revoke action that would silently do nothing.
+export function setUserAdmin(userId: number, admin: boolean): void {
+  db.prepare(`UPDATE users SET is_admin = ? WHERE id = ?`).run(admin ? 1 : 0, userId);
+}
+
+export interface UnmetRequestRow {
+  id: number;
+  ownerId: number;
+  summary: string;
+  channel: string;
+  createdAt: number;
+  resolvedAt: number | null;
+}
+
+// Written by the assistant's flag_unmet_request tool (assistant.ts) whenever a user asks for
+// something Marlowe genuinely can't do — gives admins a running signal of what to build next
+// without having to comb through conversation history themselves.
+export function addUnmetRequest(ownerId: number, summary: string, channel: string): void {
+  db.prepare(
+    `INSERT INTO unmet_requests (owner_id, summary, channel, created_at) VALUES (?, ?, ?, ?)`
+  ).run(ownerId, summary, channel, Date.now());
+}
+
+export function listUnmetRequests(includeResolved: boolean): UnmetRequestRow[] {
+  const sql = includeResolved
+    ? `SELECT id, owner_id AS ownerId, summary, channel, created_at AS createdAt, resolved_at AS resolvedAt
+       FROM unmet_requests ORDER BY created_at DESC`
+    : `SELECT id, owner_id AS ownerId, summary, channel, created_at AS createdAt, resolved_at AS resolvedAt
+       FROM unmet_requests WHERE resolved_at IS NULL ORDER BY created_at DESC`;
+  return db.prepare(sql).all() as UnmetRequestRow[];
+}
+
+export function resolveUnmetRequest(id: number): void {
+  db.prepare(`UPDATE unmet_requests SET resolved_at = ? WHERE id = ?`).run(Date.now(), id);
+}
+
+export interface ServerLogRow {
+  id: number;
+  level: string;
+  message: string;
+  createdAt: number;
+  explanation: string | null;
+  explainedAt: number | null;
+}
+
+// Written by logCapture.ts, which wraps console.error/console.warn once at startup so every
+// existing call site across the codebase is captured without having to touch each one.
+export function addServerLog(level: string, message: string): void {
+  db.prepare(`INSERT INTO server_logs (level, message, created_at) VALUES (?, ?, ?)`).run(
+    level,
+    message,
+    Date.now()
+  );
+}
+
+export function listRecentServerLogs(limit: number): ServerLogRow[] {
+  return db
+    .prepare(
+      `SELECT id, level, message, created_at AS createdAt, explanation, explained_at AS explainedAt
+       FROM server_logs ORDER BY created_at DESC LIMIT ?`
+    )
+    .all(limit) as ServerLogRow[];
+}
+
+export function getServerLog(id: number): ServerLogRow | null {
+  const row = db
+    .prepare(
+      `SELECT id, level, message, created_at AS createdAt, explanation, explained_at AS explainedAt
+       FROM server_logs WHERE id = ?`
+    )
+    .get(id) as ServerLogRow | undefined;
+  return row ?? null;
+}
+
+// Caches a Claude-generated plain-English explanation on the log row itself, so re-opening the
+// same log in the Portal doesn't pay for another API call.
+export function setServerLogExplanation(id: number, explanation: string): void {
+  db.prepare(`UPDATE server_logs SET explanation = ?, explained_at = ? WHERE id = ?`).run(
+    explanation,
+    Date.now(),
+    id
+  );
+}
+
+// Called once per scheduler tick (see scheduler.ts) to keep the table bounded — logs are a
+// debugging aid, not a permanent record worth keeping forever.
+export function pruneOldServerLogs(maxAgeMs: number): void {
+  db.prepare(`DELETE FROM server_logs WHERE created_at < ?`).run(Date.now() - maxAgeMs);
+}
+
+// One row per traced API call — for the multi-turn callers (runAssistantChat, documents.ts's
+// runExtraction) that's once per outer invocation with turns summed, not once per internal turn;
+// see each call site's own comment. ownerId is null for calls with no signed-in user yet (the
+// public help widget, the WhatsApp registration assistant, before an account exists).
+// cacheReadTokens/cacheCreationTokens come from usage.cache_read_input_tokens and
+// usage.cache_creation_input_tokens — with prompt caching active, usage.input_tokens excludes
+// both, so omitting them here is what made the Usage tab blind to most of the real bill. Every
+// call site passes them (0 for uncached calls) so a future caching change can't silently
+// reintroduce that gap.
+export function recordApiUsage(
+  ownerId: number | null,
+  channel: string,
+  model: string,
+  purpose: string,
+  inputTokens: number,
+  outputTokens: number,
+  cacheReadTokens: number,
+  cacheCreationTokens: number
+): void {
+  db.prepare(
+    `INSERT INTO api_usage (owner_id, channel, model, purpose, input_tokens, output_tokens,
+                            cache_read_tokens, cache_creation_tokens, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  ).run(ownerId, channel, model, purpose, inputTokens, outputTokens, cacheReadTokens, cacheCreationTokens, Date.now());
+}
+
+export interface ApiUsageSummaryRow {
+  day: string;
+  channel: string;
+  model: string;
+  purpose: string;
+  calls: number;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheCreationTokens: number;
+}
+
+// Grouped in SQL rather than fetched-and-reduced in JS — this table only grows over time, so
+// letting SQLite do the aggregation keeps this cheap regardless of how much history accumulates.
+export function getApiUsageSummary(sinceMs: number): ApiUsageSummaryRow[] {
+  return db
+    .prepare(
+      `SELECT
+         date(created_at / 1000, 'unixepoch') AS day,
+         channel,
+         model,
+         purpose,
+         COUNT(*) AS calls,
+         SUM(input_tokens) AS inputTokens,
+         SUM(output_tokens) AS outputTokens,
+         SUM(cache_read_tokens) AS cacheReadTokens,
+         SUM(cache_creation_tokens) AS cacheCreationTokens
+       FROM api_usage
+       WHERE created_at >= ?
+       GROUP BY day, channel, model, purpose
+       ORDER BY day DESC`
+    )
+    .all(sinceMs) as ApiUsageSummaryRow[];
+}
+
+export interface ApiUsageByPurposeRow {
+  purpose: string;
+  calls: number;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheCreationTokens: number;
+}
+
+// A flatter "what's actually costing us tokens" view than getApiUsageSummary's day-by-day
+// breakdown — totals per purpose across the whole window, for the Portal Usage tab's headline
+// breakdown rather than the detailed table underneath it.
+export function getApiUsageByPurpose(sinceMs: number): ApiUsageByPurposeRow[] {
+  return db
+    .prepare(
+      `SELECT
+         purpose,
+         COUNT(*) AS calls,
+         SUM(input_tokens) AS inputTokens,
+         SUM(output_tokens) AS outputTokens,
+         SUM(cache_read_tokens) AS cacheReadTokens,
+         SUM(cache_creation_tokens) AS cacheCreationTokens
+       FROM api_usage
+       WHERE created_at >= ?
+       GROUP BY purpose
+       ORDER BY (SUM(input_tokens) + SUM(output_tokens) + SUM(cache_read_tokens) + SUM(cache_creation_tokens)) DESC`
+    )
+    .all(sinceMs) as ApiUsageByPurposeRow[];
+}
+
+export interface ApiUsageByOwnerModelRow {
+  ownerEmail: string | null;
+  model: string;
+  calls: number;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheCreationTokens: number;
+}
+
+// Grouped by owner AND model (not just owner) so the caller can apply per-model pricing before
+// collapsing to one total per owner — mirrors how getApiUsageSummary's rows feed byPurpose's
+// cost totals in portalRoutes.ts, for the same reason (a blended rate across models would be
+// wrong). ownerEmail is null both for pre-login WhatsApp calls (no owner yet) and for a user
+// since deleted (e.g. via reset-test-phone) — LEFT JOIN, not JOIN.
+export function getApiUsageByOwner(sinceMs: number): ApiUsageByOwnerModelRow[] {
+  return db
+    .prepare(
+      `SELECT
+         us.email AS ownerEmail,
+         u.model,
+         COUNT(*) AS calls,
+         SUM(u.input_tokens) AS inputTokens,
+         SUM(u.output_tokens) AS outputTokens,
+         SUM(u.cache_read_tokens) AS cacheReadTokens,
+         SUM(u.cache_creation_tokens) AS cacheCreationTokens
+       FROM api_usage u LEFT JOIN users us ON us.id = u.owner_id
+       WHERE u.created_at >= ?
+       GROUP BY u.owner_id, u.model
+       ORDER BY (SUM(u.input_tokens) + SUM(u.output_tokens) + SUM(u.cache_read_tokens) + SUM(u.cache_creation_tokens)) DESC`
+    )
+    .all(sinceMs) as ApiUsageByOwnerModelRow[];
+}
+
+export interface ApiUsageCallRow {
+  id: number;
+  ownerEmail: string | null;
+  channel: string;
+  model: string;
+  purpose: string;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheCreationTokens: number;
+  createdAt: number;
+}
+
+// Individual calls with an exact timestamp, newest first — getApiUsageSummary/getApiUsageByPurpose
+// only aggregate down to the day, which isn't specific enough to tell exactly when something
+// happened (e.g. tracking down what caused a cost spike). LEFT JOIN, not JOIN — owner_id is
+// nullable (calls with no signed-in user yet, e.g. the public help widget).
+export function listRecentApiUsage(limit: number): ApiUsageCallRow[] {
+  return db
+    .prepare(
+      `SELECT u.id, us.email AS ownerEmail, u.channel, u.model, u.purpose,
+              u.input_tokens AS inputTokens, u.output_tokens AS outputTokens,
+              u.cache_read_tokens AS cacheReadTokens, u.cache_creation_tokens AS cacheCreationTokens,
+              u.created_at AS createdAt
+       FROM api_usage u LEFT JOIN users us ON us.id = u.owner_id
+       ORDER BY u.created_at DESC, u.id DESC
+       LIMIT ?`
+    )
+    .all(limit) as ApiUsageCallRow[];
+}
+
+export interface AdminTodoRow {
+  id: number;
+  text: string;
+  done: boolean;
+  createdBy: number;
+  createdByEmail: string;
+  createdAt: number;
+  doneAt: number | null;
+}
+
+export function listAdminTodos(): AdminTodoRow[] {
+  const rows = db
+    .prepare(
+      `SELECT t.id, t.text, t.done, t.created_by AS createdBy, u.email AS createdByEmail,
+              t.created_at AS createdAt, t.done_at AS doneAt
+       FROM admin_todos t JOIN users u ON u.id = t.created_by
+       ORDER BY t.done ASC, t.created_at DESC`
+    )
+    .all() as (Omit<AdminTodoRow, "done"> & { done: number })[];
+  return rows.map((r) => ({ ...r, done: r.done === 1 }));
+}
+
+export function addAdminTodo(text: string, createdBy: number): void {
+  db.prepare(`INSERT INTO admin_todos (text, created_by, created_at) VALUES (?, ?, ?)`).run(
+    text,
+    createdBy,
+    Date.now()
+  );
+}
+
+export function setAdminTodoDone(id: number, done: boolean): void {
+  db.prepare(`UPDATE admin_todos SET done = ?, done_at = ? WHERE id = ?`).run(
+    done ? 1 : 0,
+    done ? Date.now() : null,
+    id
+  );
+}
+
+export function deleteAdminTodo(id: number): void {
+  db.prepare(`DELETE FROM admin_todos WHERE id = ?`).run(id);
+}
+
+export interface PosterNoteRow {
+  id: number;
+  authorId: number;
+  authorEmail: string;
+  text: string;
+  createdAt: number;
+}
+
+export function listPosterNotes(limit: number): PosterNoteRow[] {
+  return db
+    .prepare(
+      `SELECT n.id, n.author_id AS authorId, u.email AS authorEmail, n.text, n.created_at AS createdAt
+       FROM poster_notes n JOIN users u ON u.id = n.author_id
+       ORDER BY n.created_at DESC LIMIT ?`
+    )
+    .all(limit) as PosterNoteRow[];
+}
+
+export function addPosterNote(authorId: number, text: string): void {
+  db.prepare(`INSERT INTO poster_notes (author_id, text, created_at) VALUES (?, ?, ?)`).run(
+    authorId,
+    text,
+    Date.now()
+  );
+}
+
+export function deletePosterNote(id: number): void {
+  db.prepare(`DELETE FROM poster_notes WHERE id = ?`).run(id);
+}
+
 export interface InvitedEmailRow {
   email: string;
   invitedAt: number;
@@ -1691,6 +2163,8 @@ export function deleteUserCompletely(ownerId: number): { deletedDocumentPaths: s
     db.prepare(`DELETE FROM user_enabled_tools WHERE owner_id = ?`).run(ownerId);
     db.prepare(`DELETE FROM pending_setup WHERE owner_id = ?`).run(ownerId);
     db.prepare(`DELETE FROM pending_actions WHERE owner_id = ?`).run(ownerId);
+    db.prepare(`DELETE FROM unmet_requests WHERE owner_id = ?`).run(ownerId);
+    db.prepare(`DELETE FROM api_usage WHERE owner_id = ?`).run(ownerId);
     db.prepare(`DELETE FROM user_phone_numbers WHERE user_id = ?`).run(ownerId);
     db.prepare(`DELETE FROM sessions WHERE user_id = ?`).run(ownerId);
     db.prepare(`DELETE FROM users WHERE id = ?`).run(ownerId);

@@ -62,7 +62,7 @@ export async function handlePendingActionReply(
       input: Record<string, unknown>;
     };
     try {
-      const result = await runTool(ownerId, tool, input);
+      const result = await runTool(ownerId, tool, input, phone);
       const confirmText = describeToolResult(tool, result);
       appendWhatsAppMessage(ownerId, phone, "assistant", confirmText);
       await sendWhatsAppMessage(phone, confirmText);

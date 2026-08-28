@@ -104,3 +104,10 @@ export const IconRefresh = () => (
     <path d="M21 2v6h-6M3 22v-6h6M3.51 9a9 9 0 0 1 14.85-3.36L21 8M3 16l2.64 2.36A9 9 0 0 0 20.49 15" />
   </svg>
 );
+
+export const IconPortal = () => (
+  <svg {...base}>
+    <path d="M12 3 4 6.5V12c0 4.5 3.2 8 8 9 4.8-1 8-4.5 8-9V6.5z" />
+    <path d="M9 12l2 2 4-4" />
+  </svg>
+);
