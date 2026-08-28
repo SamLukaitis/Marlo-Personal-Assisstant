@@ -7,6 +7,8 @@ import {
   getUser,
   saveDocument,
   saveMatchKeys,
+  addAdminTodo,
+  addPosterNote,
 } from "./store.js";
 
 let counter = 0;
@@ -54,6 +56,26 @@ describe("deleteUserCompletely", () => {
       category: "travel",
     });
     saveMatchKeys(user.id, doc.id, { referenceCode: "ABCD1234" });
+
+    expect(() => deleteUserCompletely(user.id)).not.toThrow();
+    expect(getUser(user.id)).toBeNull();
+  });
+
+  // Regression test: admin_todos.created_by and poster_notes.author_id both declare
+  // `NOT NULL REFERENCES users(id)` (Portal admin feature, commit 686d173). deleteUserCompletely
+  // never cleared either table, so an admin who'd used their own Portal to-do list or poster board
+  // hit "FOREIGN KEY constraint failed" on reset — reported against the app owner's own account.
+  it("does not throw when the owner has an admin_todos row", () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("admin-todo"));
+    addAdminTodo("test todo", user.id);
+
+    expect(() => deleteUserCompletely(user.id)).not.toThrow();
+    expect(getUser(user.id)).toBeNull();
+  });
+
+  it("does not throw when the owner has a poster_notes row", () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("poster-note"));
+    addPosterNote(user.id, "test note");
 
     expect(() => deleteUserCompletely(user.id)).not.toThrow();
     expect(getUser(user.id)).toBeNull();
