@@ -235,6 +235,14 @@ export async function microsoftGetMessage(
       0,
       20000
     );
+    // TEMP diagnostic (investigating a reported "email body came back empty" bug, 2026-08-27):
+    // remove once root-caused — see docs/superpowers/plans/2026-08-27-whatsapp-session-handover.md.
+    if (!unified.body) {
+      console.error(
+        `microsoft: body extraction returned empty (message ${messageId}, subject "${unified.subject}") — ` +
+          `contentType: ${m.body?.contentType ?? "?"}, raw content length: ${raw.length}`
+      );
+    }
     if (m.hasAttachments) {
       const attachmentData = await graphGet<{ value: GraphAttachment[] }>(
         account,

@@ -17,17 +17,11 @@ import { checkForNewImportantMessages } from "./alerts.js";
 import { checkNewEmailsAgainstRecentDocuments } from "./reconciliation.js";
 import { checkDueMemoryReminders } from "./memoryReminders.js";
 import { checkForImportantEmails } from "./importantEmailAlerts.js";
+import { todayKey } from "./dateKey.js";
 
 const CHECK_INTERVAL_MS = 5 * 60 * 1000;
 const SCHENGEN_WARN_AT = 80;
 const SCHENGEN_LIMIT = 90;
-
-function todayKey(): string {
-  const now = new Date();
-  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(
-    now.getDate()
-  ).padStart(2, "0")}`;
-}
 
 function currentHHMM(): string {
   const now = new Date();

@@ -20,6 +20,7 @@ import {
   TOOL_KEYS,
   createPendingAction,
   getConversationSummary,
+  getPendingSetup,
   addUnmetRequest,
   recordApiUsage,
   type ToolKey,
@@ -33,7 +34,7 @@ import { fetchQuotes, DEFAULT_SYMBOLS } from "../providers/markets.js";
 import { countTravelDays } from "../services/travelDays.js";
 import { findFreeSlots } from "../services/freeSlots.js";
 import { buildSpendingDigest } from "../services/spendingDigest.js";
-import { getBriefingSettings, saveBriefingSettings, hasBriefingSettings } from "../services/briefing.js";
+import { getBriefingSettings, saveBriefingSettings } from "../services/briefing.js";
 import { getXeroForwardingEmail, setXeroForwardingEmail } from "../services/xero.js";
 import {
   getPendingInvoiceForward,
@@ -1174,19 +1175,26 @@ export function buildSystemPrompt(ownerId: number, conversationSummary?: string)
     ? `Pending Xero invoice confirmation: a WhatsApp alert about "${pendingInvoice.subject}" asked the user to reply "yes" to forward it to Xero. If their latest message is answering that (yes/no/go ahead/skip), call respond_to_invoice_forward_prompt with confirm accordingly. If it's about something else, ignore this.`
     : "";
 
-  // This user has never saved briefing settings — they're mid-onboarding (just connected their
-  // account via WhatsApp). Settle briefing content first, then pivot to the open-ended tools
-  // question in the same reply, so it reads as one continuous conversation rather than two
-  // separate scripted prompts. Disappears the moment set_briefing_preferences is called for them
-  // (any time, not just onboarding), so a returning user never sees this again.
-  const onboardingNote = hasBriefingSettings(ownerId)
-    ? ""
-    : "The user just connected their account and hasn't configured their morning briefing yet. " +
-      "Once they tell you what they want in it (or say skip/no thanks), call set_briefing_preferences " +
-      "to save it, confirm briefly, and — in that same reply — ask what else they'd like help with " +
-      "day to day (e.g. Teams chat search, travel/Schengen tracking) and act on it via " +
-      "set_tool_enabled. If they already mentioned wanting one of those tools while answering the " +
-      "briefing question, don't ask again — just confirm you've turned it on.";
+  // Mid-onboarding context, keyed off the WhatsApp post-connect chain's own pending step
+  // (postConnectSetup.ts / db/store.ts's pending_setup) rather than whether briefing settings
+  // exist yet — that flag flips true the instant the yes/no briefing question is answered, before
+  // the user has actually answered the content question below it, which used to make this note
+  // disappear before it was ever useful. Each of these two free-text steps forwards the user's
+  // reply straight into this same runAssistantChat call (see postConnectSetup.ts's
+  // advancePastFreeTextStep), then sends the next scripted question itself once this reply is
+  // sent — the note only needs to shape this one turn, not chain anything further.
+  const pendingSetupStep = getPendingSetup(ownerId);
+  const onboardingNote =
+    pendingSetupStep === "ask_first_task"
+      ? "The user is mid-setup and was just asked if there's anything they'd like help with before " +
+        "finishing. Answer their request normally — a scripted setup question will follow " +
+        "automatically right after your reply, so don't try to ask it yourself."
+      : pendingSetupStep === "ask_briefing_content"
+        ? "The user is mid-setup, just said yes to a daily briefing, and was asked what to include " +
+          "(news, business headlines, weather). Call set_briefing_preferences with whatever they " +
+          "said and confirm briefly — a scripted setup question about other tools will follow " +
+          "automatically right after your reply, so don't ask about that yourself."
+        : "";
 
   return [
     `You are ${name}, a personal assistant that manages the user's connected accounts. Today's date is ${new Date().toDateString()}.`,

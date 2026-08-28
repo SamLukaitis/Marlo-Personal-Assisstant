@@ -10,10 +10,10 @@
 // One explicit future upgrade, not built here: Meta WhatsApp Flows (native in-chat forms) for the
 // name/email capture too.
 //
-// Everything past OAuth (briefing content, optional tools like Teams/travel tracking) is handled
-// by services/postConnectSetup.ts's own button chain, then handed off to the real, tool-calling
-// assistant (assistant.ts's set_briefing_preferences / set_tool_enabled tools) once the person has
-// a working hub. See docs/superpowers/specs/2026-08-20-whatsapp-onboarding-expansion-design.md.
+// Everything past OAuth (first-task check, briefing + content, Teams) is handled by
+// services/postConnectSetup.ts's own chain, which forwards real requests to the assistant
+// (assistant.ts's set_briefing_preferences / set_tool_enabled / send_feedback_to_admin tools)
+// along the way. See docs/superpowers/specs/2026-08-28-whatsapp-onboarding-redesign-design.md.
 import {
   getPendingRegistration,
   upsertPendingRegistration,
@@ -70,7 +70,7 @@ function currentStepPrompt(row: PendingRegistrationRow): string {
     case "awaiting_name":
       return "What should I call you?";
     case "awaiting_email":
-      return "Which email do you use?";
+      return "What's your email address?";
     case "awaiting_provider":
       return "Do you use Gmail or Outlook/Hotmail? Tap one of the buttons above.";
     case "awaiting_link_tap":
@@ -115,7 +115,7 @@ async function sendProviderLink(row: PendingRegistrationRow): Promise<void> {
   const link = `${SERVER_URL}${path}?token=${token}`;
   await sendWhatsAppCtaUrl(
     row.phone,
-    `Tap here to let me in — ${PROVIDER_LABEL[provider]} will ask if I can read your mail and write drafts, I can never send anything. This link works for ten minutes.`,
+    `Almost there — tap below to connect *${PROVIDER_LABEL[provider]}*. I'll be able to read your mail and draft replies, but I can never send anything without you approving it first. This link works for ten minutes.`,
     `Connect ${PROVIDER_LABEL[provider]}`,
     link
   );
@@ -139,7 +139,10 @@ export async function sendFirstValueAndBriefingPrompt(ownerId: number, phone: st
 async function handleAwaitingName(row: PendingRegistrationRow, text: string): Promise<void> {
   const name = text.trim().slice(0, 60);
   upsertPendingRegistration(row.phone, { step: "awaiting_email", name });
-  await reply(row.phone, `Nice to meet you, ${name}. Which email do you use?`);
+  await reply(
+    row.phone,
+    `Nice to meet you, ${name}! Let's connect your email so I can help with your inbox, calendar, and more — what's your email address?`
+  );
 }
 
 async function handleAwaitingEmail(row: PendingRegistrationRow, text: string): Promise<void> {
