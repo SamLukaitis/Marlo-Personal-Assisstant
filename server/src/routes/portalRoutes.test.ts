@@ -198,8 +198,8 @@ describe("usage", () => {
   it("breaks down recorded calls by purpose, separately from the day/channel/model table", async () => {
     const admin = makeAdmin("usage");
     const someUser = findOrCreateUserByEmail(uniqueEmail("usage-owner"));
-    recordApiUsage(someUser.id, "web", "claude-sonnet-5", "assistant_chat", 1000, 200);
-    recordApiUsage(someUser.id, "background", "claude-sonnet-5", "document_extraction", 3000, 500);
+    recordApiUsage(someUser.id, "web", "claude-sonnet-5", "assistant_chat", 1000, 200, 0, 0);
+    recordApiUsage(someUser.id, "background", "claude-sonnet-5", "document_extraction", 3000, 500, 0, 0);
     const app = buildTestApp(admin.id);
 
     const res = await request(app).get("/api/portal/usage?days=1");
@@ -217,10 +217,26 @@ describe("usage", () => {
     expect(dayRow.channel).toBe("web");
   });
 
+  it("prices cache reads at 10% of the input rate and 1h-TTL cache writes at 2x", async () => {
+    const admin = makeAdmin("usage-cache-pricing");
+    const someUser = findOrCreateUserByEmail(uniqueEmail("usage-cache-owner"));
+    // claude-sonnet-5: cacheRead $0.30/MTok, cacheWrite $6/MTok -> 1M reads + 500K writes = $3.30.
+    // No plain input/output tokens, so the whole estimate comes from the cache columns — this is
+    // the regression test for the original bug where cached tokens were invisible to the tracker.
+    recordApiUsage(someUser.id, "web", "claude-sonnet-5", "cache_pricing_test_marker", 0, 0, 1_000_000, 500_000);
+    const app = buildTestApp(admin.id);
+
+    const res = await request(app).get("/api/portal/usage?days=1");
+    expect(res.status).toBe(200);
+    const row = res.body.rows.find((r: { purpose: string }) => r.purpose === "cache_pricing_test_marker");
+    expect(row).toMatchObject({ cacheReadTokens: 1_000_000, cacheCreationTokens: 500_000 });
+    expect(row.estimatedCost).toBeCloseTo(3.3, 5);
+  });
+
   it("reports estimatedCost as null for a model with no entry in the price table", async () => {
     const admin = makeAdmin("usage-unknown-model");
     const someUser = findOrCreateUserByEmail(uniqueEmail("usage-owner-2"));
-    recordApiUsage(someUser.id, "web", "claude-some-future-model", "assistant_chat", 1000, 200);
+    recordApiUsage(someUser.id, "web", "claude-some-future-model", "assistant_chat", 1000, 200, 0, 0);
     const app = buildTestApp(admin.id);
 
     const res = await request(app).get("/api/portal/usage?days=1");
@@ -232,9 +248,9 @@ describe("usage", () => {
     const admin = makeAdmin("usage-owner-breakdown");
     const userA = findOrCreateUserByEmail(uniqueEmail("usage-owner-a"));
     const userB = findOrCreateUserByEmail(uniqueEmail("usage-owner-b"));
-    recordApiUsage(userA.id, "web", "claude-sonnet-5", "assistant_chat", 1000, 200);
-    recordApiUsage(userA.id, "background", "claude-haiku-4-5", "daily_briefing", 500, 100);
-    recordApiUsage(userB.id, "whatsapp", "claude-sonnet-5", "assistant_chat", 2000, 400);
+    recordApiUsage(userA.id, "web", "claude-sonnet-5", "assistant_chat", 1000, 200, 0, 0);
+    recordApiUsage(userA.id, "background", "claude-haiku-4-5", "daily_briefing", 500, 100, 0, 0);
+    recordApiUsage(userB.id, "whatsapp", "claude-sonnet-5", "assistant_chat", 2000, 400, 0, 0);
     const app = buildTestApp(admin.id);
 
     const res = await request(app).get("/api/portal/usage?days=1");
@@ -260,11 +276,11 @@ describe("usage", () => {
     try {
       vi.setSystemTime(new Date("2026-03-10T12:00:00Z"));
       // $3/Mtok input, $15/Mtok output for claude-sonnet-5 (see MODEL_PRICE_PER_MTOK) -> $0.06 that day.
-      recordApiUsage(someUser.id, "web", "claude-sonnet-5", "assistant_chat", 10_000, 2_000);
+      recordApiUsage(someUser.id, "web", "claude-sonnet-5", "assistant_chat", 10_000, 2_000, 0, 0);
 
       vi.setSystemTime(new Date("2026-03-11T09:00:00Z"));
       // Today's own (partial) usage must not be what gets projected.
-      recordApiUsage(someUser.id, "web", "claude-sonnet-5", "assistant_chat", 999_999, 999_999);
+      recordApiUsage(someUser.id, "web", "claude-sonnet-5", "assistant_chat", 999_999, 999_999, 0, 0);
 
       const app = buildTestApp(admin.id);
       const res = await request(app).get("/api/portal/usage?days=7");

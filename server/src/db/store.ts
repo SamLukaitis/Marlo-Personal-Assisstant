@@ -191,14 +191,16 @@ db.exec(`
   );
   CREATE INDEX IF NOT EXISTS idx_server_logs_created ON server_logs(created_at);
   CREATE TABLE IF NOT EXISTS api_usage (
-    id            INTEGER PRIMARY KEY AUTOINCREMENT,
-    owner_id      INTEGER REFERENCES users(id),
-    channel       TEXT NOT NULL,
-    model         TEXT NOT NULL,
-    purpose       TEXT NOT NULL DEFAULT 'assistant_chat',
-    input_tokens  INTEGER NOT NULL,
-    output_tokens INTEGER NOT NULL,
-    created_at    INTEGER NOT NULL
+    id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+    owner_id              INTEGER REFERENCES users(id),
+    channel               TEXT NOT NULL,
+    model                 TEXT NOT NULL,
+    purpose               TEXT NOT NULL DEFAULT 'assistant_chat',
+    input_tokens          INTEGER NOT NULL,
+    output_tokens         INTEGER NOT NULL,
+    cache_read_tokens     INTEGER NOT NULL DEFAULT 0,
+    cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
+    created_at            INTEGER NOT NULL
   );
   CREATE INDEX IF NOT EXISTS idx_api_usage_created ON api_usage(created_at);
   CREATE TABLE IF NOT EXISTS admin_todos (
@@ -253,6 +255,23 @@ if (!apiUsageColumns.includes("purpose")) {
     DROP TABLE api_usage;
     ALTER TABLE api_usage_new RENAME TO api_usage;
     CREATE INDEX IF NOT EXISTS idx_api_usage_created ON api_usage(created_at);
+  `);
+}
+
+// api_usage originally recorded only usage.input_tokens/output_tokens — but with prompt caching
+// active (ai/assistant.ts), input_tokens EXCLUDES all cached tokens, so the dominant token class
+// on the real Anthropic bill (cache reads/writes of the big tools+system prefix, re-sent on every
+// loop turn) was invisible here and the Usage tab's cost estimate understated real spend.
+// PRAGMA is re-read rather than reusing apiUsageColumns above: if the purpose rebuild just ran,
+// that snapshot is stale (and api_usage_new deliberately doesn't include these columns, so both
+// migration paths land here needing the ALTERs).
+const apiUsageColumnsNow = (db.prepare(`PRAGMA table_info(api_usage)`).all() as { name: string }[]).map(
+  (c) => c.name
+);
+if (!apiUsageColumnsNow.includes("cache_read_tokens")) {
+  db.exec(`
+    ALTER TABLE api_usage ADD COLUMN cache_read_tokens INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE api_usage ADD COLUMN cache_creation_tokens INTEGER NOT NULL DEFAULT 0;
   `);
 }
 
@@ -1873,18 +1892,26 @@ export function pruneOldServerLogs(maxAgeMs: number): void {
 // runExtraction) that's once per outer invocation with turns summed, not once per internal turn;
 // see each call site's own comment. ownerId is null for calls with no signed-in user yet (the
 // public help widget, the WhatsApp registration assistant, before an account exists).
+// cacheReadTokens/cacheCreationTokens come from usage.cache_read_input_tokens and
+// usage.cache_creation_input_tokens — with prompt caching active, usage.input_tokens excludes
+// both, so omitting them here is what made the Usage tab blind to most of the real bill. Every
+// call site passes them (0 for uncached calls) so a future caching change can't silently
+// reintroduce that gap.
 export function recordApiUsage(
   ownerId: number | null,
   channel: string,
   model: string,
   purpose: string,
   inputTokens: number,
-  outputTokens: number
+  outputTokens: number,
+  cacheReadTokens: number,
+  cacheCreationTokens: number
 ): void {
   db.prepare(
-    `INSERT INTO api_usage (owner_id, channel, model, purpose, input_tokens, output_tokens, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`
-  ).run(ownerId, channel, model, purpose, inputTokens, outputTokens, Date.now());
+    `INSERT INTO api_usage (owner_id, channel, model, purpose, input_tokens, output_tokens,
+                            cache_read_tokens, cache_creation_tokens, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  ).run(ownerId, channel, model, purpose, inputTokens, outputTokens, cacheReadTokens, cacheCreationTokens, Date.now());
 }
 
 export interface ApiUsageSummaryRow {
@@ -1895,6 +1922,8 @@ export interface ApiUsageSummaryRow {
   calls: number;
   inputTokens: number;
   outputTokens: number;
+  cacheReadTokens: number;
+  cacheCreationTokens: number;
 }
 
 // Grouped in SQL rather than fetched-and-reduced in JS — this table only grows over time, so
@@ -1909,7 +1938,9 @@ export function getApiUsageSummary(sinceMs: number): ApiUsageSummaryRow[] {
          purpose,
          COUNT(*) AS calls,
          SUM(input_tokens) AS inputTokens,
-         SUM(output_tokens) AS outputTokens
+         SUM(output_tokens) AS outputTokens,
+         SUM(cache_read_tokens) AS cacheReadTokens,
+         SUM(cache_creation_tokens) AS cacheCreationTokens
        FROM api_usage
        WHERE created_at >= ?
        GROUP BY day, channel, model, purpose
@@ -1923,6 +1954,8 @@ export interface ApiUsageByPurposeRow {
   calls: number;
   inputTokens: number;
   outputTokens: number;
+  cacheReadTokens: number;
+  cacheCreationTokens: number;
 }
 
 // A flatter "what's actually costing us tokens" view than getApiUsageSummary's day-by-day
@@ -1935,11 +1968,13 @@ export function getApiUsageByPurpose(sinceMs: number): ApiUsageByPurposeRow[] {
          purpose,
          COUNT(*) AS calls,
          SUM(input_tokens) AS inputTokens,
-         SUM(output_tokens) AS outputTokens
+         SUM(output_tokens) AS outputTokens,
+         SUM(cache_read_tokens) AS cacheReadTokens,
+         SUM(cache_creation_tokens) AS cacheCreationTokens
        FROM api_usage
        WHERE created_at >= ?
        GROUP BY purpose
-       ORDER BY (SUM(input_tokens) + SUM(output_tokens)) DESC`
+       ORDER BY (SUM(input_tokens) + SUM(output_tokens) + SUM(cache_read_tokens) + SUM(cache_creation_tokens)) DESC`
     )
     .all(sinceMs) as ApiUsageByPurposeRow[];
 }
@@ -1950,6 +1985,8 @@ export interface ApiUsageByOwnerModelRow {
   calls: number;
   inputTokens: number;
   outputTokens: number;
+  cacheReadTokens: number;
+  cacheCreationTokens: number;
 }
 
 // Grouped by owner AND model (not just owner) so the caller can apply per-model pricing before
@@ -1965,11 +2002,13 @@ export function getApiUsageByOwner(sinceMs: number): ApiUsageByOwnerModelRow[] {
          u.model,
          COUNT(*) AS calls,
          SUM(u.input_tokens) AS inputTokens,
-         SUM(u.output_tokens) AS outputTokens
+         SUM(u.output_tokens) AS outputTokens,
+         SUM(u.cache_read_tokens) AS cacheReadTokens,
+         SUM(u.cache_creation_tokens) AS cacheCreationTokens
        FROM api_usage u LEFT JOIN users us ON us.id = u.owner_id
        WHERE u.created_at >= ?
        GROUP BY u.owner_id, u.model
-       ORDER BY (SUM(u.input_tokens) + SUM(u.output_tokens)) DESC`
+       ORDER BY (SUM(u.input_tokens) + SUM(u.output_tokens) + SUM(u.cache_read_tokens) + SUM(u.cache_creation_tokens)) DESC`
     )
     .all(sinceMs) as ApiUsageByOwnerModelRow[];
 }
@@ -1982,6 +2021,8 @@ export interface ApiUsageCallRow {
   purpose: string;
   inputTokens: number;
   outputTokens: number;
+  cacheReadTokens: number;
+  cacheCreationTokens: number;
   createdAt: number;
 }
 
@@ -1993,7 +2034,9 @@ export function listRecentApiUsage(limit: number): ApiUsageCallRow[] {
   return db
     .prepare(
       `SELECT u.id, us.email AS ownerEmail, u.channel, u.model, u.purpose,
-              u.input_tokens AS inputTokens, u.output_tokens AS outputTokens, u.created_at AS createdAt
+              u.input_tokens AS inputTokens, u.output_tokens AS outputTokens,
+              u.cache_read_tokens AS cacheReadTokens, u.cache_creation_tokens AS cacheCreationTokens,
+              u.created_at AS createdAt
        FROM api_usage u LEFT JOIN users us ON us.id = u.owner_id
        ORDER BY u.created_at DESC, u.id DESC
        LIMIT ?`

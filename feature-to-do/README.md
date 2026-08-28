@@ -17,5 +17,6 @@ than deleted, since they still explain the reasoning behind what was built.
 - [marlowe-capabilities-ui.md](marlowe-capabilities-ui.md)
 - [document-deduplication.md](document-deduplication.md)
 - [tenant-isolation-audit.md](tenant-isolation-audit.md)
+- [token-cost-reduction.md](token-cost-reduction.md)
 - [done-admin-version-check.md](done-admin-version-check.md)
 - [done-admin-portal.md](done-admin-portal.md)

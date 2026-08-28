@@ -71,7 +71,9 @@ export async function maybeUpdateConversationSummary(phone: string): Promise<voi
       SUMMARY_MODEL,
       "conversation_summary",
       response.usage?.input_tokens ?? 0,
-      response.usage?.output_tokens ?? 0
+      response.usage?.output_tokens ?? 0,
+      response.usage?.cache_read_input_tokens ?? 0,
+      response.usage?.cache_creation_input_tokens ?? 0
     );
     const text = response.content.find((b) => b.type === "text")?.text;
     if (!text) return;

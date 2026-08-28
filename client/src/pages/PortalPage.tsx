@@ -399,6 +399,14 @@ function LogsTab() {
   );
 }
 
+// Shared cell styles for the usage tables. Numeric columns are right-aligned on BOTH the header
+// and body cells — browsers give <th> its own default alignment rather than inheriting the row's
+// textAlign, so setting it only on the <tr> leaves titles floating away from their numbers.
+const thText = { padding: "8px 12px", textAlign: "left", whiteSpace: "nowrap" } as const;
+const thNum = { padding: "8px 12px", textAlign: "right", whiteSpace: "nowrap" } as const;
+const tdText = { padding: "8px 12px" } as const;
+const tdNum = { padding: "8px 12px", textAlign: "right" } as const;
+
 function UsageTab() {
   const [rows, setRows] = useState<ApiUsageRow[]>([]);
   const [byPurpose, setByPurpose] = useState<ApiUsageByPurposeRow[]>([]);
@@ -424,7 +432,15 @@ function UsageTab() {
   useEffect(() => load(days), [days]);
 
   const totalCalls = rows.reduce((sum, r) => sum + r.calls, 0);
-  const totalTokens = rows.reduce((sum, r) => sum + r.inputTokens + r.outputTokens, 0);
+  // "Tokens" everywhere on this tab means ALL tokens, cached included — matching what the
+  // Anthropic console bills for. inputTokens alone excludes the cached prompt prefix, which is
+  // usually the biggest share by count (though the cheapest per token).
+  const totalTokens = rows.reduce(
+    (sum, r) => sum + r.inputTokens + r.outputTokens + r.cacheReadTokens + r.cacheCreationTokens,
+    0
+  );
+  const totalCacheRead = rows.reduce((sum, r) => sum + r.cacheReadTokens, 0);
+  const totalCacheWrite = rows.reduce((sum, r) => sum + r.cacheCreationTokens, 0);
   const totalCost = rows.reduce((sum, r) => sum + (r.estimatedCost ?? 0), 0);
 
   return (
@@ -453,6 +469,11 @@ function UsageTab() {
         <div className="stat-card">
           <span className="stat-label">Tokens</span>
           <span className="stat-value">{totalTokens.toLocaleString()}</span>
+          <span className="stat-note">
+            {totalCacheRead + totalCacheWrite > 0
+              ? `incl. ${totalCacheRead.toLocaleString()} cache reads (cheap) + ${totalCacheWrite.toLocaleString()} cache writes`
+              : "No cached tokens in this range"}
+          </span>
         </div>
         <div className="stat-card">
           <span className="stat-label">Est. cost</span>
@@ -478,7 +499,7 @@ function UsageTab() {
           ) : (
             <div className="card card-padded" style={{ marginBottom: 24 }}>
               {byPurpose.map((p) => {
-                const tokens = p.inputTokens + p.outputTokens;
+                const tokens = p.inputTokens + p.outputTokens + p.cacheReadTokens + p.cacheCreationTokens;
                 const share = totalTokens > 0 ? Math.round((tokens / totalTokens) * 100) : 0;
                 return (
                   <div key={p.purpose} style={{ marginBottom: 10 }}>
@@ -511,7 +532,7 @@ function UsageTab() {
           ) : (
             <div className="card card-padded" style={{ marginBottom: 24 }}>
               {byOwner.map((o) => {
-                const tokens = o.inputTokens + o.outputTokens;
+                const tokens = o.inputTokens + o.outputTokens + o.cacheReadTokens + o.cacheCreationTokens;
                 const share = totalTokens > 0 ? Math.round((tokens / totalTokens) * 100) : 0;
                 return (
                   <div key={o.ownerEmail ?? "(no user yet)"} style={{ marginBottom: 10 }}>
@@ -545,28 +566,32 @@ function UsageTab() {
             <div className="card" style={{ overflowX: "auto" }}>
               <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
                 <thead>
-                  <tr style={{ textAlign: "left" }}>
-                    <th style={{ padding: "8px 12px" }}>Day</th>
-                    <th style={{ padding: "8px 12px" }}>Purpose</th>
-                    <th style={{ padding: "8px 12px" }}>Channel</th>
-                    <th style={{ padding: "8px 12px" }}>Model</th>
-                    <th style={{ padding: "8px 12px" }}>Calls</th>
-                    <th style={{ padding: "8px 12px" }}>Input tok.</th>
-                    <th style={{ padding: "8px 12px" }}>Output tok.</th>
-                    <th style={{ padding: "8px 12px" }}>Est. cost</th>
+                  <tr>
+                    <th style={thText}>Day</th>
+                    <th style={thText}>Purpose</th>
+                    <th style={thText}>Channel</th>
+                    <th style={thText}>Model</th>
+                    <th style={thNum}>Calls</th>
+                    <th style={thNum}>Input tok.</th>
+                    <th style={thNum}>Output tok.</th>
+                    <th style={thNum}>Cache read</th>
+                    <th style={thNum}>Cache write</th>
+                    <th style={thNum}>Est. cost</th>
                   </tr>
                 </thead>
                 <tbody>
                   {rows.map((r, i) => (
                     <tr key={i} className="list-item">
-                      <td style={{ padding: "8px 12px" }}>{r.day}</td>
-                      <td style={{ padding: "8px 12px" }}>{usagePurposeLabel(r.purpose)}</td>
-                      <td style={{ padding: "8px 12px" }}>{r.channel}</td>
-                      <td style={{ padding: "8px 12px" }}>{r.model}</td>
-                      <td style={{ padding: "8px 12px" }}>{r.calls}</td>
-                      <td style={{ padding: "8px 12px" }}>{r.inputTokens.toLocaleString()}</td>
-                      <td style={{ padding: "8px 12px" }}>{r.outputTokens.toLocaleString()}</td>
-                      <td style={{ padding: "8px 12px" }}>{r.estimatedCost != null ? `$${r.estimatedCost.toFixed(3)}` : "—"}</td>
+                      <td style={tdText}>{r.day}</td>
+                      <td style={tdText}>{usagePurposeLabel(r.purpose)}</td>
+                      <td style={tdText}>{r.channel}</td>
+                      <td style={tdText}>{r.model}</td>
+                      <td style={tdNum}>{r.calls}</td>
+                      <td style={tdNum}>{r.inputTokens.toLocaleString()}</td>
+                      <td style={tdNum}>{r.outputTokens.toLocaleString()}</td>
+                      <td style={tdNum}>{r.cacheReadTokens.toLocaleString()}</td>
+                      <td style={tdNum}>{r.cacheCreationTokens.toLocaleString()}</td>
+                      <td style={tdNum}>{r.estimatedCost != null ? `$${r.estimatedCost.toFixed(3)}` : "—"}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -585,28 +610,32 @@ function UsageTab() {
             <div className="card" style={{ overflowX: "auto" }}>
               <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
                 <thead>
-                  <tr style={{ textAlign: "left" }}>
-                    <th style={{ padding: "8px 12px" }}>When</th>
-                    <th style={{ padding: "8px 12px" }}>Purpose</th>
-                    <th style={{ padding: "8px 12px" }}>Who</th>
-                    <th style={{ padding: "8px 12px" }}>Channel</th>
-                    <th style={{ padding: "8px 12px" }}>Model</th>
-                    <th style={{ padding: "8px 12px" }}>Input tok.</th>
-                    <th style={{ padding: "8px 12px" }}>Output tok.</th>
-                    <th style={{ padding: "8px 12px" }}>Est. cost</th>
+                  <tr>
+                    <th style={thText}>When</th>
+                    <th style={thText}>Purpose</th>
+                    <th style={thText}>Who</th>
+                    <th style={thText}>Channel</th>
+                    <th style={thText}>Model</th>
+                    <th style={thNum}>Input tok.</th>
+                    <th style={thNum}>Output tok.</th>
+                    <th style={thNum}>Cache read</th>
+                    <th style={thNum}>Cache write</th>
+                    <th style={thNum}>Est. cost</th>
                   </tr>
                 </thead>
                 <tbody>
                   {recent.map((r) => (
                     <tr key={r.id} className="list-item">
-                      <td style={{ padding: "8px 12px", whiteSpace: "nowrap" }}>{timeAgo(r.createdAt)}</td>
-                      <td style={{ padding: "8px 12px" }}>{usagePurposeLabel(r.purpose)}</td>
-                      <td style={{ padding: "8px 12px" }}>{r.ownerEmail ?? "—"}</td>
-                      <td style={{ padding: "8px 12px" }}>{r.channel}</td>
-                      <td style={{ padding: "8px 12px" }}>{r.model}</td>
-                      <td style={{ padding: "8px 12px" }}>{r.inputTokens.toLocaleString()}</td>
-                      <td style={{ padding: "8px 12px" }}>{r.outputTokens.toLocaleString()}</td>
-                      <td style={{ padding: "8px 12px" }}>{r.estimatedCost != null ? `$${r.estimatedCost.toFixed(3)}` : "—"}</td>
+                      <td style={{ ...tdText, whiteSpace: "nowrap" }}>{timeAgo(r.createdAt)}</td>
+                      <td style={tdText}>{usagePurposeLabel(r.purpose)}</td>
+                      <td style={tdText}>{r.ownerEmail ?? "—"}</td>
+                      <td style={tdText}>{r.channel}</td>
+                      <td style={tdText}>{r.model}</td>
+                      <td style={tdNum}>{r.inputTokens.toLocaleString()}</td>
+                      <td style={tdNum}>{r.outputTokens.toLocaleString()}</td>
+                      <td style={tdNum}>{r.cacheReadTokens.toLocaleString()}</td>
+                      <td style={tdNum}>{r.cacheCreationTokens.toLocaleString()}</td>
+                      <td style={tdNum}>{r.estimatedCost != null ? `$${r.estimatedCost.toFixed(3)}` : "—"}</td>
                     </tr>
                   ))}
                 </tbody>

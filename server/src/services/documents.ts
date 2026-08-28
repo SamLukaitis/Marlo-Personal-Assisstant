@@ -223,7 +223,9 @@ async function looksLikeGibberish(text: string, ownerId: number): Promise<boolea
     GIBBERISH_CHECK_MODEL,
     "pdf_gibberish_check",
     response.usage?.input_tokens ?? 0,
-    response.usage?.output_tokens ?? 0
+    response.usage?.output_tokens ?? 0,
+    response.usage?.cache_read_input_tokens ?? 0,
+    response.usage?.cache_creation_input_tokens ?? 0
   );
   const answer = response.content.find((b): b is Anthropic.TextBlock => b.type === "text")?.text ?? "";
   return answer.toUpperCase().includes("GIBBERISH");
@@ -279,7 +281,7 @@ async function runExtraction(
   const bookings: unknown[] = [];
   // Summed across every turn of this one extraction (up to 3) and recorded once below — mirrors
   // ai/assistant.ts's runAssistantChat, which records once per invocation, not once per turn.
-  const usageTotals = { inputTokens: 0, outputTokens: 0 };
+  const usageTotals = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0 };
 
   for (let turn = 0; turn < 3; turn++) {
     response = await getClient().messages.create({
@@ -294,6 +296,8 @@ async function runExtraction(
     });
     usageTotals.inputTokens += response.usage?.input_tokens ?? 0;
     usageTotals.outputTokens += response.usage?.output_tokens ?? 0;
+    usageTotals.cacheReadTokens += response.usage?.cache_read_input_tokens ?? 0;
+    usageTotals.cacheCreationTokens += response.usage?.cache_creation_input_tokens ?? 0;
 
     textBlock = response.content.find((b): b is Anthropic.TextBlock => b.type === "text");
     const toolUses = response.content.filter(
@@ -326,7 +330,9 @@ async function runExtraction(
     EXTRACTION_MODEL,
     "document_extraction",
     usageTotals.inputTokens,
-    usageTotals.outputTokens
+    usageTotals.outputTokens,
+    usageTotals.cacheReadTokens,
+    usageTotals.cacheCreationTokens
   );
 
   const nameInput = nameUse?.input as { title?: unknown; category?: unknown } | undefined;

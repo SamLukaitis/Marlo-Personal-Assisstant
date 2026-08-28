@@ -1238,10 +1238,19 @@ export async function runAssistantChat(
   // take up to 8 turns for one user message, e.g. several tool round-trips) and recorded once,
   // via finish() below, rather than once per turn — admins want "how many times was the assistant
   // actually asked something" and "how many tokens did that cost", not internal loop iterations.
-  const usageTotals = { inputTokens: 0, outputTokens: 0 };
+  const usageTotals = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0 };
   const channel = phone ? "whatsapp" : "web";
   function finish(reply: AssistantReply): AssistantReply {
-    recordApiUsage(ownerId, channel, model, "assistant_chat", usageTotals.inputTokens, usageTotals.outputTokens);
+    recordApiUsage(
+      ownerId,
+      channel,
+      model,
+      "assistant_chat",
+      usageTotals.inputTokens,
+      usageTotals.outputTokens,
+      usageTotals.cacheReadTokens,
+      usageTotals.cacheCreationTokens
+    );
     return reply;
   }
 
@@ -1258,6 +1267,10 @@ export async function runAssistantChat(
     // than letting a usage-tracking side effect break the actual conversation flow.
     usageTotals.inputTokens += response.usage?.input_tokens ?? 0;
     usageTotals.outputTokens += response.usage?.output_tokens ?? 0;
+    // input_tokens above is ONLY the uncached tail — the cached tools+system prefix this loop
+    // re-reads on every turn is reported separately here, and it's most of the real bill.
+    usageTotals.cacheReadTokens += response.usage?.cache_read_input_tokens ?? 0;
+    usageTotals.cacheCreationTokens += response.usage?.cache_creation_input_tokens ?? 0;
 
     const toolUses = response.content.filter(
       (block): block is Anthropic.ToolUseBlock => block.type === "tool_use"
@@ -1400,7 +1413,16 @@ export async function getHelpChatReply(history: HelpChatTurn[]): Promise<string>
       messages: history.map((turn) => ({ role: turn.role, content: turn.text })),
     });
     // No owner yet — this is the public marketing site, pre-sign-in.
-    recordApiUsage(null, "web", MODEL_SIMPLE, "help_widget", response.usage?.input_tokens ?? 0, response.usage?.output_tokens ?? 0);
+    recordApiUsage(
+      null,
+      "web",
+      MODEL_SIMPLE,
+      "help_widget",
+      response.usage?.input_tokens ?? 0,
+      response.usage?.output_tokens ?? 0,
+      response.usage?.cache_read_input_tokens ?? 0,
+      response.usage?.cache_creation_input_tokens ?? 0
+    );
     const text = response.content.find((b): b is Anthropic.TextBlock => b.type === "text");
     return text?.text ?? HELP_CHAT_FALLBACK;
   } catch (err) {
@@ -1422,7 +1444,16 @@ export async function getRegistrationAssistReply(
       messages: [{ role: "user", content: userText }],
     });
     // No owner yet — this fires mid-signup, before a users row exists for this phone number.
-    recordApiUsage(null, "whatsapp", MODEL_SIMPLE, "registration_assist", response.usage?.input_tokens ?? 0, response.usage?.output_tokens ?? 0);
+    recordApiUsage(
+      null,
+      "whatsapp",
+      MODEL_SIMPLE,
+      "registration_assist",
+      response.usage?.input_tokens ?? 0,
+      response.usage?.output_tokens ?? 0,
+      response.usage?.cache_read_input_tokens ?? 0,
+      response.usage?.cache_creation_input_tokens ?? 0
+    );
     const text = response.content.find((b): b is Anthropic.TextBlock => b.type === "text");
     return text?.text ?? REGISTRATION_ASSIST_FALLBACK[context];
   } catch (err) {

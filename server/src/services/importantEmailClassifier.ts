@@ -172,7 +172,9 @@ export async function classifyImportantEmails(
     CLASSIFY_MODEL,
     "email_importance_classifier",
     response.usage?.input_tokens ?? 0,
-    response.usage?.output_tokens ?? 0
+    response.usage?.output_tokens ?? 0,
+    response.usage?.cache_read_input_tokens ?? 0,
+    response.usage?.cache_creation_input_tokens ?? 0
   );
 
   if (response.stop_reason === "max_tokens") {

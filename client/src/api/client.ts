@@ -614,6 +614,9 @@ export const fetchServerLogs = (limit = 200) => getJson<ServerLog[]>(`/api/porta
 export const explainServerLog = (id: number) =>
   mutateJson<{ explanation: string; cached: boolean }>(`/api/portal/logs/${id}/explain`, "POST");
 
+// cacheReadTokens/cacheCreationTokens are the prompt-caching tokens (the tools+system prefix the
+// assistant re-reads on every internal turn) — inputTokens deliberately excludes them, matching
+// how the API reports usage, so the two must be added together for an "all tokens" figure.
 export interface ApiUsageRow {
   day: string;
   channel: string;
@@ -622,6 +625,8 @@ export interface ApiUsageRow {
   calls: number;
   inputTokens: number;
   outputTokens: number;
+  cacheReadTokens: number;
+  cacheCreationTokens: number;
   estimatedCost: number | null;
 }
 
@@ -630,6 +635,8 @@ export interface ApiUsageByPurposeRow {
   calls: number;
   inputTokens: number;
   outputTokens: number;
+  cacheReadTokens: number;
+  cacheCreationTokens: number;
   estimatedCost: number | null;
 }
 
@@ -638,6 +645,8 @@ export interface ApiUsageByOwnerRow {
   calls: number;
   inputTokens: number;
   outputTokens: number;
+  cacheReadTokens: number;
+  cacheCreationTokens: number;
   estimatedCost: number | null;
 }
 
@@ -655,6 +664,8 @@ export interface ApiUsageCallRow {
   purpose: string;
   inputTokens: number;
   outputTokens: number;
+  cacheReadTokens: number;
+  cacheCreationTokens: number;
   createdAt: number;
   estimatedCost: number | null;
 }

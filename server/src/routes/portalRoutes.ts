@@ -130,7 +130,9 @@ portalRoutes.post("/logs/:id/explain", async (req, res) => {
       MODEL_SIMPLE,
       "log_explanation",
       response.usage?.input_tokens ?? 0,
-      response.usage?.output_tokens ?? 0
+      response.usage?.output_tokens ?? 0,
+      response.usage?.cache_read_input_tokens ?? 0,
+      response.usage?.cache_creation_input_tokens ?? 0
     );
     const text = response.content.find((b): b is Anthropic.TextBlock => b.type === "text");
     const explanation = text?.text ?? "Couldn't generate an explanation for this one — try again.";
@@ -146,17 +148,34 @@ portalRoutes.post("/logs/:id/explain", async (req, res) => {
 
 // Approximate list pricing ($ per million tokens) — for a rough cost estimate only, not exact
 // billing. Update here if Anthropic's pricing changes; the Usage tab labels this "approximate".
-const MODEL_PRICE_PER_MTOK: Record<string, { input: number; output: number }> = {
-  "claude-haiku-4-5": { input: 1, output: 5 },
-  "claude-sonnet-5": { input: 3, output: 15 },
+// cacheRead is 10% of the input rate; cacheWrite is 2× because the app's only cache breakpoints
+// use the 1-hour TTL (ai/assistant.ts) — if a 5-minute-TTL breakpoint is ever added, its writes
+// cost 1.25× instead and this flat 2× will slightly overstate them.
+const MODEL_PRICE_PER_MTOK: Record<
+  string,
+  { input: number; output: number; cacheRead: number; cacheWrite: number }
+> = {
+  "claude-haiku-4-5": { input: 1, output: 5, cacheRead: 0.1, cacheWrite: 2 },
+  "claude-sonnet-5": { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 6 },
 };
 
 // estimatedCost is null for a model not in the price table above (e.g. one added after this
 // list was last updated) rather than silently reporting $0, which would understate real spend.
-function estimateCost(model: string, inputTokens: number, outputTokens: number): number | null {
+function estimateCost(
+  model: string,
+  inputTokens: number,
+  outputTokens: number,
+  cacheReadTokens: number,
+  cacheCreationTokens: number
+): number | null {
   const price = MODEL_PRICE_PER_MTOK[model];
   if (!price) return null;
-  return (inputTokens / 1_000_000) * price.input + (outputTokens / 1_000_000) * price.output;
+  return (
+    (inputTokens / 1_000_000) * price.input +
+    (outputTokens / 1_000_000) * price.output +
+    (cacheReadTokens / 1_000_000) * price.cacheRead +
+    (cacheCreationTokens / 1_000_000) * price.cacheWrite
+  );
 }
 
 portalRoutes.get("/usage", (req, res) => {
@@ -165,7 +184,7 @@ portalRoutes.get("/usage", (req, res) => {
 
   const rows = getApiUsageSummary(sinceMs).map((r) => ({
     ...r,
-    estimatedCost: estimateCost(r.model, r.inputTokens, r.outputTokens),
+    estimatedCost: estimateCost(r.model, r.inputTokens, r.outputTokens, r.cacheReadTokens, r.cacheCreationTokens),
   }));
 
   // A model-agnostic cost estimate per purpose — getApiUsageByPurpose() doesn't break down by
@@ -187,26 +206,40 @@ portalRoutes.get("/usage", (req, res) => {
   // here, then collapsed into one total per owner since an owner can span multiple models.
   const ownerTotals = new Map<
     string,
-    { ownerEmail: string | null; calls: number; inputTokens: number; outputTokens: number; estimatedCost: number | null }
+    {
+      ownerEmail: string | null;
+      calls: number;
+      inputTokens: number;
+      outputTokens: number;
+      cacheReadTokens: number;
+      cacheCreationTokens: number;
+      estimatedCost: number | null;
+    }
   >();
   for (const r of getApiUsageByOwner(sinceMs)) {
     const key = r.ownerEmail ?? " no-owner"; // sentinel so null-owner rows don't merge with a literal "null" email
-    const cost = estimateCost(r.model, r.inputTokens, r.outputTokens);
+    const cost = estimateCost(r.model, r.inputTokens, r.outputTokens, r.cacheReadTokens, r.cacheCreationTokens);
     const existing = ownerTotals.get(key) ?? {
       ownerEmail: r.ownerEmail,
       calls: 0,
       inputTokens: 0,
       outputTokens: 0,
+      cacheReadTokens: 0,
+      cacheCreationTokens: 0,
       estimatedCost: null as number | null,
     };
     existing.calls += r.calls;
     existing.inputTokens += r.inputTokens;
     existing.outputTokens += r.outputTokens;
+    existing.cacheReadTokens += r.cacheReadTokens;
+    existing.cacheCreationTokens += r.cacheCreationTokens;
     if (cost != null) existing.estimatedCost = (existing.estimatedCost ?? 0) + cost;
     ownerTotals.set(key, existing);
   }
   const byOwner = Array.from(ownerTotals.values()).sort(
-    (a, b) => b.inputTokens + b.outputTokens - (a.inputTokens + a.outputTokens)
+    (a, b) =>
+      b.inputTokens + b.outputTokens + b.cacheReadTokens + b.cacheCreationTokens -
+      (a.inputTokens + a.outputTokens + a.cacheReadTokens + a.cacheCreationTokens)
   );
 
   // "If every day looked like yesterday" — the question that actually matters when spend feels
@@ -240,7 +273,7 @@ portalRoutes.get("/usage", (req, res) => {
   const recentLimit = Math.min(Number(req.query.recentLimit) || 50, 200);
   const recent = listRecentApiUsage(recentLimit).map((r) => ({
     ...r,
-    estimatedCost: estimateCost(r.model, r.inputTokens, r.outputTokens),
+    estimatedCost: estimateCost(r.model, r.inputTokens, r.outputTokens, r.cacheReadTokens, r.cacheCreationTokens),
   }));
 
   res.json({ rows, byPurpose, byOwner, projection, recent, approx: true });
