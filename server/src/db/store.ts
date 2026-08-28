@@ -1878,11 +1878,16 @@ export function deletePendingRegistration(phone: string): void {
 }
 
 // ---------------------------------------------------------------------------
-// Post-connect setup — the yes/no button chain (daily briefing, Teams, Schengen
-// tracking) run right after OAuth connects. See services/postConnectSetup.ts.
+// Post-connect setup — the chain (first-task check, daily briefing + content, Teams) run right
+// after OAuth connects. ask_first_task and ask_briefing_content are free-text steps that wait for
+// a real reply (skip or otherwise) rather than a button tap. See services/postConnectSetup.ts.
 // ---------------------------------------------------------------------------
 
-export type PostConnectSetupStep = "ask_briefing" | "ask_teams" | "ask_travel";
+export type PostConnectSetupStep =
+  | "ask_first_task"
+  | "ask_briefing"
+  | "ask_briefing_content"
+  | "ask_teams";
 
 export function getPendingSetup(ownerId: number): PostConnectSetupStep | null {
   const row = db.prepare(`SELECT step FROM pending_setup WHERE owner_id = ?`).get(ownerId) as

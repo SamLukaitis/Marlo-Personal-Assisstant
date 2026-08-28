@@ -11,6 +11,11 @@ vi.mock("../services/hub.js", async (importOriginal) => {
   return { ...actual, hubGetMessage: (...args: unknown[]) => mockHubGetMessage(...args) };
 });
 
+const mockSendWhatsAppMessage = vi.fn().mockResolvedValue(undefined);
+vi.mock("../providers/whatsapp.js", () => ({
+  sendWhatsAppMessage: (...args: unknown[]) => mockSendWhatsAppMessage(...args),
+}));
+
 import { buildToolsForOwner, buildSystemPrompt, runTool, messageForModel } from "./assistant.js";
 import type { UnifiedMessage } from "../providers/types.js";
 import {
@@ -20,6 +25,9 @@ import {
   listMemoryNotes,
   addMemoryNote,
   markMemorySurfaced,
+  setPendingSetup,
+  addPhoneNumberForUser,
+  getAppOwnerUserId,
 } from "../db/store.js";
 import { getBriefingSettings, saveBriefingSettings, type BriefingSettings } from "../services/briefing.js";
 import { getXeroForwardingEmail } from "../services/xero.js";
@@ -357,27 +365,60 @@ describe("remember tool — triggerAt", () => {
 });
 
 describe("buildSystemPrompt onboarding paragraph", () => {
-  it("is present when the user has never saved briefing settings", () => {
-    const user = findOrCreateUserByEmail(uniqueEmail("prompt-onboarding-on"));
+  it("is present, mentioning set_briefing_preferences, while ask_briefing_content is pending", () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("prompt-onboarding-content"));
+    setPendingSetup(user.id, "ask_briefing_content");
     const prompt = buildSystemPrompt(user.id);
     expect(prompt).toContain("set_briefing_preferences");
   });
 
-  it("is absent once briefing settings have been saved", () => {
+  it("is present, without mentioning set_briefing_preferences, while ask_first_task is pending", () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("prompt-onboarding-first-task"));
+    setPendingSetup(user.id, "ask_first_task");
+    const prompt = buildSystemPrompt(user.id);
+    expect(prompt).toContain("mid-setup");
+    expect(prompt).not.toContain("set_briefing_preferences");
+  });
+
+  it("is absent once the post-connect chain isn't pending, even for a user with no saved briefing settings", () => {
     const user = findOrCreateUserByEmail(uniqueEmail("prompt-onboarding-off"));
-    saveBriefingSettings(user.id, {
-      enabled: true,
-      includeNews: false,
-      topics: [],
-      includeMarkets: false,
-      tickers: [],
-      includeWeather: false,
-      weatherLocation: "",
-      proactive: false,
-      sendTime: "07:30",
-    });
     const prompt = buildSystemPrompt(user.id);
     expect(prompt).not.toContain("set_briefing_preferences");
+    expect(prompt).not.toContain("mid-setup");
+  });
+
+  it("is absent for ask_briefing/ask_teams (the button-only steps)", () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("prompt-onboarding-buttons"));
+    setPendingSetup(user.id, "ask_briefing");
+    expect(buildSystemPrompt(user.id)).not.toContain("mid-setup");
+  });
+});
+
+describe("send_feedback_to_admin", () => {
+  beforeEach(() => {
+    mockSendWhatsAppMessage.mockClear();
+  });
+
+  it("sends a WhatsApp message to the app owner's registered number(s), tagged with the reporter's email", async () => {
+    // Uses the real app owner account (APP_OWNER_EMAIL, see db/store.ts) rather than mocking
+    // getAppOwnerUserId — it's a plain lookup over an env var, not worth mocking here.
+    const adminId = getAppOwnerUserId();
+    addPhoneNumberForUser(adminId, "447000009999");
+    const reporter = findOrCreateUserByEmail(uniqueEmail("feedback-reporter"));
+
+    const result = await runTool(reporter.id, "send_feedback_to_admin", {
+      summary: "The briefing skips weather even though I turned it on",
+    });
+
+    expect(result).toEqual({ ok: true });
+    expect(mockSendWhatsAppMessage).toHaveBeenCalledWith(
+      "447000009999",
+      expect.stringContaining(reporter.email)
+    );
+    expect(mockSendWhatsAppMessage).toHaveBeenCalledWith(
+      "447000009999",
+      expect.stringContaining("weather even though")
+    );
   });
 });
 

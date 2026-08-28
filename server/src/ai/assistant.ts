@@ -20,6 +20,10 @@ import {
   TOOL_KEYS,
   createPendingAction,
   getConversationSummary,
+  getPendingSetup,
+  getUser,
+  getAppOwnerUserId,
+  listPhoneNumbersForUser,
   type ToolKey,
   type DocumentRow,
 } from "../db/store.js";
@@ -28,10 +32,11 @@ import { listLocalFolders } from "../providers/local.js";
 import { fetchHeadlines, NEWS_TOPICS, type NewsTopic } from "../providers/news.js";
 import { fetchWeather } from "../providers/weather.js";
 import { fetchQuotes, DEFAULT_SYMBOLS } from "../providers/markets.js";
+import { sendWhatsAppMessage } from "../providers/whatsapp.js";
 import { countTravelDays } from "../services/travelDays.js";
 import { findFreeSlots } from "../services/freeSlots.js";
 import { buildSpendingDigest } from "../services/spendingDigest.js";
-import { getBriefingSettings, saveBriefingSettings, hasBriefingSettings } from "../services/briefing.js";
+import { getBriefingSettings, saveBriefingSettings } from "../services/briefing.js";
 import { getXeroForwardingEmail, setXeroForwardingEmail } from "../services/xero.js";
 import {
   getPendingInvoiceForward,
@@ -520,6 +525,21 @@ const ALWAYS_ON_TOOLS: Anthropic.Tool[] = [
     },
   },
   {
+    name: "send_feedback_to_admin",
+    description:
+      "Relay a bug report, complaint, or feature request from the user to the developers (Sam and Jake). Call this whenever the user asks you to pass something along, report an issue, or explicitly says something like 'tell Sam' / 'send this to admin'. Not for routine questions — only for something they clearly want a human to see.",
+    input_schema: {
+      type: "object",
+      properties: {
+        summary: {
+          type: "string",
+          description: "A concise summary of the feedback/request/bug, in the user's own terms.",
+        },
+      },
+      required: ["summary"],
+    },
+  },
+  {
     name: "connect_xero",
     description:
       "Save the user's Xero forwarding email address. Once this is saved, receipts they send that get filed under the 'receipts' category and yield a recognized expense are automatically emailed to this address in the background (via their connected Gmail) — no further action needed from them or from you. Call this ONLY once the user has actually told you the address in this conversation — never guess or invent one. If they ask to 'connect Xero' / 'set up Xero' and haven't given the address yet, first explain that Xero gives every account its own unique forwarding email (in Xero: Business > Bills to pay, or Accounting > Bills, look for the 'email bills to this address' address) and ask them to paste it — then call this tool with exactly what they send.",
@@ -833,6 +853,31 @@ export async function runTool(ownerId: number, name: string, input: Record<strin
       setToolEnabled(ownerId, tool as ToolKey, !!input.enabled);
       return { ok: true };
     }
+    case "send_feedback_to_admin": {
+      const summary = input.summary as string;
+      const reporter = getUser(ownerId);
+      const adminId = getAppOwnerUserId();
+      const adminNumbers = listPhoneNumbersForUser(adminId).map((r) => r.phone);
+      const text = `*Feedback from ${reporter?.email ?? `user #${ownerId}`}:*\n${summary}`;
+      if (adminNumbers.length === 0) {
+        console.error(
+          `send_feedback_to_admin: no WhatsApp number registered for the app owner (user ${adminId}) — feedback logged only`,
+          { ownerId, summary }
+        );
+      } else {
+        await Promise.all(
+          adminNumbers.map((phone) =>
+            sendWhatsAppMessage(phone, text).catch((err) =>
+              console.error("send_feedback_to_admin: failed to notify admin", err)
+            )
+          )
+        );
+      }
+      // Never fails the tool call itself — a delivery failure is logged server-side only, same
+      // as every other outbound WhatsApp send in this codebase; the model still confirms to the
+      // user rather than surfacing an internal error.
+      return { ok: true };
+    }
     case "connect_xero": {
       try {
         setXeroForwardingEmail(ownerId, input.forwarding_email as string);
@@ -1104,19 +1149,26 @@ export function buildSystemPrompt(ownerId: number, conversationSummary?: string)
     ? `Pending Xero invoice confirmation: a WhatsApp alert about "${pendingInvoice.subject}" asked the user to reply "yes" to forward it to Xero. If their latest message is answering that (yes/no/go ahead/skip), call respond_to_invoice_forward_prompt with confirm accordingly. If it's about something else, ignore this.`
     : "";
 
-  // This user has never saved briefing settings — they're mid-onboarding (just connected their
-  // account via WhatsApp). Settle briefing content first, then pivot to the open-ended tools
-  // question in the same reply, so it reads as one continuous conversation rather than two
-  // separate scripted prompts. Disappears the moment set_briefing_preferences is called for them
-  // (any time, not just onboarding), so a returning user never sees this again.
-  const onboardingNote = hasBriefingSettings(ownerId)
-    ? ""
-    : "The user just connected their account and hasn't configured their morning briefing yet. " +
-      "Once they tell you what they want in it (or say skip/no thanks), call set_briefing_preferences " +
-      "to save it, confirm briefly, and — in that same reply — ask what else they'd like help with " +
-      "day to day (e.g. Teams chat search, travel/Schengen tracking) and act on it via " +
-      "set_tool_enabled. If they already mentioned wanting one of those tools while answering the " +
-      "briefing question, don't ask again — just confirm you've turned it on.";
+  // Mid-onboarding context, keyed off the WhatsApp post-connect chain's own pending step
+  // (postConnectSetup.ts / db/store.ts's pending_setup) rather than whether briefing settings
+  // exist yet — that flag flips true the instant the yes/no briefing question is answered, before
+  // the user has actually answered the content question below it, which used to make this note
+  // disappear before it was ever useful. Each of these two free-text steps forwards the user's
+  // reply straight into this same runAssistantChat call (see postConnectSetup.ts's
+  // advancePastFreeTextStep), then sends the next scripted question itself once this reply is
+  // sent — the note only needs to shape this one turn, not chain anything further.
+  const pendingSetupStep = getPendingSetup(ownerId);
+  const onboardingNote =
+    pendingSetupStep === "ask_first_task"
+      ? "The user is mid-setup and was just asked if there's anything they'd like help with before " +
+        "finishing. Answer their request normally — a scripted setup question will follow " +
+        "automatically right after your reply, so don't try to ask it yourself."
+      : pendingSetupStep === "ask_briefing_content"
+        ? "The user is mid-setup, just said yes to a daily briefing, and was asked what to include " +
+          "(news, business headlines, weather). Call set_briefing_preferences with whatever they " +
+          "said and confirm briefly — a scripted setup question about other tools will follow " +
+          "automatically right after your reply, so don't ask about that yourself."
+        : "";
 
   return [
     `You are ${name}, a personal assistant that manages the user's connected accounts. Today's date is ${new Date().toDateString()}.`,

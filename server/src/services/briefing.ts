@@ -4,6 +4,7 @@ import { hubListMessages, hubListEvents, hubFlaggedMessages } from "./hub.js";
 import { fetchHeadlines, type NewsTopic } from "../providers/news.js";
 import { fetchWeather, type WeatherReport } from "../providers/weather.js";
 import { fetchQuotes, DEFAULT_SYMBOLS, type Quote } from "../providers/markets.js";
+import { todayKey } from "./dateKey.js";
 
 // Briefing synthesis is a once-a-day, moderately complex writeup — the richer assistant tier
 // is the right fit, same as assistant.ts's routing, rather than the flat Opus default this
@@ -19,13 +20,6 @@ function getClient(): Anthropic {
     client = new Anthropic();
   }
   return client;
-}
-
-function todayKey(): string {
-  const now = new Date();
-  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(
-    now.getDate()
-  ).padStart(2, "0")}`;
 }
 
 export interface BriefingSettings {
