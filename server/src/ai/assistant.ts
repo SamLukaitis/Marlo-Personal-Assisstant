@@ -694,6 +694,19 @@ function forModel(doc: DocumentRow) {
 // index instead (matching display order) sidesteps the problem entirely — a single digit can't
 // be mistyped the same way, and extract_email_attachment resolves the index back to the real id
 // server-side.
+// list_recent_messages/search_messages results are for scanning, not reading — the model can
+// always call get_message for the full body (see messageForModel below, which is deliberately
+// NOT applied here since it would also touch get_message's single-message result). Sending 30
+// full-length snippets, then resending them at full price on every later turn of the same
+// message's tool loop (see runAssistantChat), was the single biggest driver of assistant token
+// cost — see feature-to-do/token-cost-reduction.md #1.
+// Exported for its own unit test — same reasoning as messageForModel below.
+export const LIST_SNIPPET_MAX_LENGTH = 150;
+export function trimSnippetForList(message: UnifiedMessage): UnifiedMessage {
+  if (message.snippet.length <= LIST_SNIPPET_MAX_LENGTH) return message;
+  return { ...message, snippet: message.snippet.slice(0, LIST_SNIPPET_MAX_LENGTH) + "…" };
+}
+
 // Exported for its own unit test — same reasoning as forModel/resolveDocumentCategory
 // elsewhere: this is the one bit of pure logic worth testing directly, without needing a live
 // hub/provider call in the loop.
@@ -731,16 +744,20 @@ export async function runTool(
   }
   switch (name) {
     case "list_recent_messages":
-      return hubListMessages(ownerId, {
-        accountId: input.account_id as number | undefined,
-        limit: (input.limit as number | undefined) ?? LIST_RECENT_MESSAGES_DEFAULT_LIMIT,
-      });
+      return (
+        await hubListMessages(ownerId, {
+          accountId: input.account_id as number | undefined,
+          limit: (input.limit as number | undefined) ?? LIST_RECENT_MESSAGES_DEFAULT_LIMIT,
+        })
+      ).map(trimSnippetForList);
     case "search_messages":
-      return hubListMessages(ownerId, {
-        query: input.query as string,
-        accountId: input.account_id as number | undefined,
-        limit: (input.limit as number | undefined) ?? SEARCH_MESSAGES_DEFAULT_LIMIT,
-      });
+      return (
+        await hubListMessages(ownerId, {
+          query: input.query as string,
+          accountId: input.account_id as number | undefined,
+          limit: (input.limit as number | undefined) ?? SEARCH_MESSAGES_DEFAULT_LIMIT,
+        })
+      ).map(trimSnippetForList);
     case "get_message":
       return messageForModel(
         await hubGetMessage(ownerId, input.account_id as number, input.message_id as string)
@@ -1217,6 +1234,26 @@ export function buildSystemPrompt(ownerId: number, conversationSummary?: string)
     .join("\n\n");
 }
 
+// The tools+system prefix is already cached (buildToolsForOwner / the system block below), but
+// `messages` itself is not — within one runAssistantChat's loop, every turn otherwise re-pays
+// full input price for every earlier turn's tool results, which is the real cost driver (see
+// feature-to-do/token-cost-reduction.md #2). Rebuilding from the original `messages` each call
+// (rather than mutating it) means it never carries cache_control itself, so there's never more
+// than the one breakpoint added here — no risk of exceeding Anthropic's max breakpoints per
+// request (2 already used by tools + system) as the array grows turn over turn. Because each
+// turn only APPENDS to `messages`, the prefix up to this breakpoint stays byte-identical to what
+// the previous turn cached, so it's read back at the cached (not full) rate.
+function withMessagesCacheBreakpoint(messages: Anthropic.MessageParam[]): Anthropic.MessageParam[] {
+  if (messages.length === 0) return messages;
+  const last = messages[messages.length - 1];
+  const blocks = typeof last.content === "string" ? [{ type: "text" as const, text: last.content }] : last.content;
+  if (blocks.length === 0) return messages;
+  const cachedBlocks = blocks.map((block, i) =>
+    i === blocks.length - 1 ? { ...block, cache_control: { type: "ephemeral" as const, ttl: "1h" as const } } : block
+  );
+  return [...messages.slice(0, -1), { ...last, content: cachedBlocks }];
+}
+
 // phone is optional and WhatsApp-only (web chat/eval callers omit it) — when given, it's used
 // purely to look up the rolling conversation summary (services/conversationSummary.ts writes it,
 // keyed by phone) to fold into the system prompt. Not otherwise used in this function.
@@ -1269,7 +1306,7 @@ export async function runAssistantChat(
       ...(useThinking ? { thinking: { type: "adaptive" as const } } : {}),
       system: [{ type: "text", text: system, cache_control: { type: "ephemeral", ttl: "1h" } }],
       tools: buildToolsForOwner(ownerId),
-      messages,
+      messages: withMessagesCacheBreakpoint(messages),
     });
     // response.usage is absent in some existing tests' mocked responses — tolerate that rather
     // than letting a usage-tracking side effect break the actual conversation flow.
