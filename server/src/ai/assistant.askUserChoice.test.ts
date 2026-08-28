@@ -10,6 +10,12 @@ vi.mock("@anthropic-ai/sdk", () => {
   return { __esModule: true, default: MockAnthropic };
 });
 
+const mockHubDeleteEvent = vi.fn();
+vi.mock("../services/hub.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../services/hub.js")>();
+  return { ...actual, hubDeleteEvent: (...args: unknown[]) => mockHubDeleteEvent(...args) };
+});
+
 import { runAssistantChat } from "./assistant.js";
 import { findOrCreateUserByEmail } from "../db/store.js";
 
@@ -21,6 +27,7 @@ function uniqueEmail(prefix: string): string {
 
 beforeEach(() => {
   mockCreate.mockReset();
+  mockHubDeleteEvent.mockReset();
   process.env.ANTHROPIC_API_KEY = "test-key";
 });
 
@@ -78,5 +85,42 @@ describe("runAssistantChat — ask_user_choice", () => {
     const reply = await runAssistantChat(user.id, [{ role: "user", content: "hi" }]);
 
     expect(reply).toEqual({ text: "Sure, done." });
+  });
+});
+
+describe("runAssistantChat — confirm-required tools can't be called directly", () => {
+  it("rejects a direct delete_calendar_event call instead of executing it", async () => {
+    mockCreate
+      .mockResolvedValueOnce(
+        toolUseResponse("delete_calendar_event", { account_id: 1, event_id: "evt_1" })
+      )
+      .mockResolvedValueOnce({ content: [{ type: "text", text: "I'll confirm first." }] });
+    const user = findOrCreateUserByEmail(uniqueEmail("confirm-required-delete"));
+
+    const reply = await runAssistantChat(user.id, [{ role: "user", content: "delete my 3pm event" }]);
+
+    expect(mockHubDeleteEvent).not.toHaveBeenCalled();
+    expect(mockCreate).toHaveBeenCalledTimes(2);
+    expect(reply).toEqual({ text: "I'll confirm first." });
+
+    // The second turn's request must carry back an error result telling the model why, and to
+    // use ask_user_choice instead — not a silent/blank rejection it can't act on.
+    const secondCallMessages = mockCreate.mock.calls[1][0].messages;
+    const toolResultMessage = secondCallMessages[secondCallMessages.length - 1];
+    const toolResult = toolResultMessage.content[0];
+    expect(toolResult.is_error).toBe(true);
+    expect(toolResult.content).toContain("ask_user_choice");
+  });
+
+  it("still executes delete_calendar_event once actually confirmed via ask_user_choice", async () => {
+    // This is the legitimate path: ask_user_choice stages the pending action; a "Yes" tap calls
+    // runTool directly from actionHandlers.ts, never through this loop. Confirming that path is
+    // unaffected by the new gate — runTool itself isn't gated, only the live-turn loop is.
+    const { runTool } = await import("./assistant.js");
+    const user = findOrCreateUserByEmail(uniqueEmail("confirm-required-delete-confirmed"));
+
+    await runTool(user.id, "delete_calendar_event", { account_id: 1, event_id: "evt_1" });
+
+    expect(mockHubDeleteEvent).toHaveBeenCalledWith(user.id, 1, "evt_1");
   });
 });

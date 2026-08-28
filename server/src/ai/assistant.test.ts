@@ -382,6 +382,36 @@ describe("remember tool — triggerAt", () => {
   });
 });
 
+describe("search_memory tool", () => {
+  it("is always available, same as remember", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("search-memory-toollist"));
+    const names = buildToolsForOwner(user.id).map((t) => t.name);
+    expect(names).toContain("search_memory");
+  });
+
+  it("finds a remembered note outside runTool's own prompt-injection window", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("search-memory-basic"));
+    await runTool(user.id, "remember", { note: "Allergic to shellfish" });
+    await runTool(user.id, "remember", { note: "Prefers window seats on flights" });
+
+    const results = (await runTool(user.id, "search_memory", { query: "shellfish" })) as {
+      content: string;
+    }[];
+    expect(results).toHaveLength(1);
+    expect(results[0].content).toBe("Allergic to shellfish");
+  });
+
+  it("passes a caller-supplied limit through to the store", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("search-memory-limit"));
+    await runTool(user.id, "remember", { note: "Trip note alpha" });
+    await runTool(user.id, "remember", { note: "Trip note beta" });
+    await runTool(user.id, "remember", { note: "Trip note gamma" });
+
+    const results = (await runTool(user.id, "search_memory", { query: "trip", limit: 2 })) as unknown[];
+    expect(results).toHaveLength(2);
+  });
+});
+
 describe("buildSystemPrompt onboarding paragraph", () => {
   it("is present, mentioning set_briefing_preferences, while ask_briefing_content is pending", () => {
     const user = findOrCreateUserByEmail(uniqueEmail("prompt-onboarding-content"));

@@ -685,6 +685,30 @@ if (!memoryNoteColumns.includes("last_surfaced_at")) {
 }
 db.exec(`CREATE INDEX IF NOT EXISTS idx_memory_notes_trigger ON memory_notes (owner_id, trigger_at)`);
 
+// Full-text index over memory notes, backing searchMemoryNotes() below. The system prompt only
+// ever injects the most recent N notes (listRecentMemoryNotes) — this is how the assistant reaches
+// older notes on demand instead of losing them once they age out of that window. External-content
+// FTS5 table (content='memory_notes') so the indexed text isn't duplicated in the DB; triggers keep
+// it in sync with inserts/deletes (no update trigger — memory_notes rows are never content-edited,
+// only inserted or removed).
+const ftsExistedBefore = !!db
+  .prepare(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'memory_notes_fts'`)
+  .get();
+db.exec(`
+  CREATE VIRTUAL TABLE IF NOT EXISTS memory_notes_fts USING fts5(
+    content, content='memory_notes', content_rowid='id'
+  );
+  CREATE TRIGGER IF NOT EXISTS memory_notes_fts_ai AFTER INSERT ON memory_notes BEGIN
+    INSERT INTO memory_notes_fts(rowid, content) VALUES (new.id, new.content);
+  END;
+  CREATE TRIGGER IF NOT EXISTS memory_notes_fts_ad AFTER DELETE ON memory_notes BEGIN
+    INSERT INTO memory_notes_fts(memory_notes_fts, rowid, content) VALUES ('delete', old.id, old.content);
+  END;
+`);
+if (!ftsExistedBefore) {
+  db.exec(`INSERT INTO memory_notes_fts(rowid, content) SELECT id, content FROM memory_notes`);
+}
+
 // When a number last sent us a message — powers the outbound-message-type decision in
 // outbound.ts (WhatsApp only allows free-form replies within 24h of the user's last message;
 // past that, a proactive push has to go out as a pre-approved template or Meta rejects it with
@@ -979,7 +1003,8 @@ export function listMemoryNotes(ownerId: number): MemoryNoteRow[] {
 // Used when building the assistant's system prompt (unlike listMemoryNotes, which the Setup
 // page uses to show the full vault) — caps how many notes get resent as tokens on every single
 // call so the prompt doesn't grow forever as the vault accumulates facts over months of use.
-export function listRecentMemoryNotes(ownerId: number, limit = 40): MemoryNoteRow[] {
+// Anything older than this window is still reachable via searchMemoryNotes() below, on demand.
+export function listRecentMemoryNotes(ownerId: number, limit = 30): MemoryNoteRow[] {
   return db
     .prepare(`SELECT ${MEMORY_NOTE_COLUMNS} FROM memory_notes WHERE owner_id = ? ORDER BY id DESC LIMIT ?`)
     .all(ownerId, limit) as MemoryNoteRow[];
@@ -1004,6 +1029,30 @@ export function addMemoryNote(ownerId: number, content: string, triggerAt?: stri
 
 export function removeMemoryNote(ownerId: number, id: number): void {
   db.prepare(`DELETE FROM memory_notes WHERE id = ? AND owner_id = ?`).run(id, ownerId);
+}
+
+// On-demand lookup for notes outside the recency window listRecentMemoryNotes injects into every
+// prompt. Query terms are extracted and re-quoted rather than passed to MATCH raw — FTS5's query
+// syntax treats quotes/colons/NOT/OR etc. as operators, and a note-search phrase from the model
+// (or forwarded user text) containing any of those would otherwise throw instead of just matching
+// literally. Terms are ANDed: every term must appear (in any column-equivalent position) for a note
+// to match, which keeps multi-word queries from over-matching on any single common word.
+export function searchMemoryNotes(ownerId: number, query: string, limit = 10): MemoryNoteRow[] {
+  const terms = query.match(/[\p{L}\p{N}]+/gu) ?? [];
+  if (terms.length === 0) return [];
+
+  const matchQuery = terms.map((t) => `"${t.replace(/"/g, '""')}"`).join(" AND ");
+  return db
+    .prepare(
+      `SELECT m.id, m.content, m.created_at AS createdAt, m.trigger_at AS triggerAt,
+              m.last_surfaced_at AS lastSurfacedAt
+       FROM memory_notes_fts f
+       JOIN memory_notes m ON m.id = f.rowid
+       WHERE f.memory_notes_fts MATCH ? AND m.owner_id = ?
+       ORDER BY rank
+       LIMIT ?`
+    )
+    .all(matchQuery, ownerId, limit) as MemoryNoteRow[];
 }
 
 // Indexed lookup (idx_memory_notes_trigger, see the migration above), not a scan — cost stays

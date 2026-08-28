@@ -4,6 +4,7 @@ import {
   getSetting,
   listRecentMemoryNotes,
   addMemoryNote,
+  searchMemoryNotes,
   searchDocuments,
   listDocuments,
   listCheckins,
@@ -98,6 +99,16 @@ export const MAX_HISTORY_MESSAGES = 24;
 // docs/superpowers/specs/2026-08-26-email-search-depth-and-attachment-extraction-design.md.
 export const SEARCH_MESSAGES_DEFAULT_LIMIT = 30;
 export const LIST_RECENT_MESSAGES_DEFAULT_LIMIT = 20;
+export const SEARCH_MEMORY_DEFAULT_LIMIT = 10;
+
+// Tools whose effect can't be undone once run. The model may reach these only via a user-confirmed
+// ask_user_choice(mode="confirm") pending action (see buildChoiceReply below and actionHandlers.ts,
+// which is the only other caller of runTool for one of these) — never by calling them directly in
+// a live turn. Enforced in the loop below rather than left to the tool's own description text, so
+// it holds even if the model skips that instruction under an unusual conversational branch or
+// prompt injection from message content it's reading. Extend this set as more irreversible-action
+// tools are added; a tool not in it behaves exactly as before (reversible actions don't need this).
+const CONFIRM_REQUIRED_TOOLS = new Set<string>(["delete_calendar_event"]);
 
 let client: Anthropic | null = null;
 // Exported so portalRoutes.ts's log-explain endpoint can reuse the same lazily-created client
@@ -371,6 +382,23 @@ const ALWAYS_ON_TOOLS: Anthropic.Tool[] = [
         label: { type: "string" },
       },
       required: ["account_id", "message_id", "label"],
+    },
+  },
+  {
+    name: "search_memory",
+    description:
+      "Search everything you've ever remembered about the user via the remember tool, not just " +
+      "what's listed in 'Things you remember about the user' above — that list only shows the most " +
+      "recent notes, so an older fact (something from months ago) won't be there but is still " +
+      "searchable here. Call this when the user references something they told you before that you " +
+      "don't see in your current context, e.g. 'what did I say my allergy was'.",
+    input_schema: {
+      type: "object",
+      properties: {
+        query: { type: "string", description: "Keyword(s) to search for" },
+        limit: { type: "number", description: "Max notes to return, default 10" },
+      },
+      required: ["query"],
     },
   },
   {
@@ -807,6 +835,12 @@ export async function runTool(
     case "remember":
       addMemoryNote(ownerId, input.note as string, input.triggerAt as string | undefined);
       return { ok: true };
+    case "search_memory":
+      return searchMemoryNotes(
+        ownerId,
+        input.query as string,
+        (input.limit as number | undefined) ?? SEARCH_MEMORY_DEFAULT_LIMIT
+      );
     case "flag_unmet_request":
       addUnmetRequest(ownerId, input.summary as string, phone ? "whatsapp" : "web");
       return { ok: true };
@@ -1317,6 +1351,17 @@ export async function runAssistantChat(
 
     const toolResults: Anthropic.ToolResultBlockParam[] = await Promise.all(
       toolUses.map(async (toolUse) => {
+        if (CONFIRM_REQUIRED_TOOLS.has(toolUse.name)) {
+          return {
+            type: "tool_result" as const,
+            tool_use_id: toolUse.id,
+            content:
+              `Error: ${toolUse.name} requires user confirmation before it can run — it was not ` +
+              `executed. Call ask_user_choice(mode="confirm", confirm_tool="${toolUse.name}", ` +
+              `confirm_input=<the same input>) instead of calling this tool directly.`,
+            is_error: true,
+          };
+        }
         try {
           const result = await runTool(ownerId, toolUse.name, toolUse.input as Record<string, unknown>, phone);
           return {
