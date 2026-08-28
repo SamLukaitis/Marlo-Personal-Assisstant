@@ -11,6 +11,7 @@ import {
   setServerLogExplanation,
   getApiUsageSummary,
   getApiUsageByPurpose,
+  listRecentApiUsage,
   recordApiUsage,
   listAdminTodos,
   addAdminTodo,
@@ -179,7 +180,17 @@ portalRoutes.get("/usage", (req, res) => {
     estimatedCost: costByPurpose.get(r.purpose) ?? null,
   }));
 
-  res.json({ rows, byPurpose, approx: true });
+  // Individual calls with an exact timestamp — the day/purpose breakdowns above are aggregated,
+  // which isn't specific enough to see exactly when something happened. Not filtered by the
+  // `days` window (it's "most recent N calls", not "calls in this range") since that's the more
+  // useful question for a live activity feed.
+  const recentLimit = Math.min(Number(req.query.recentLimit) || 50, 200);
+  const recent = listRecentApiUsage(recentLimit).map((r) => ({
+    ...r,
+    estimatedCost: estimateCost(r.model, r.inputTokens, r.outputTokens),
+  }));
+
+  res.json({ rows, byPurpose, recent, approx: true });
 });
 
 // --- To-do list -----------------------------------------------------------------------------

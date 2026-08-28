@@ -1944,6 +1944,33 @@ export function getApiUsageByPurpose(sinceMs: number): ApiUsageByPurposeRow[] {
     .all(sinceMs) as ApiUsageByPurposeRow[];
 }
 
+export interface ApiUsageCallRow {
+  id: number;
+  ownerEmail: string | null;
+  channel: string;
+  model: string;
+  purpose: string;
+  inputTokens: number;
+  outputTokens: number;
+  createdAt: number;
+}
+
+// Individual calls with an exact timestamp, newest first — getApiUsageSummary/getApiUsageByPurpose
+// only aggregate down to the day, which isn't specific enough to tell exactly when something
+// happened (e.g. tracking down what caused a cost spike). LEFT JOIN, not JOIN — owner_id is
+// nullable (calls with no signed-in user yet, e.g. the public help widget).
+export function listRecentApiUsage(limit: number): ApiUsageCallRow[] {
+  return db
+    .prepare(
+      `SELECT u.id, us.email AS ownerEmail, u.channel, u.model, u.purpose,
+              u.input_tokens AS inputTokens, u.output_tokens AS outputTokens, u.created_at AS createdAt
+       FROM api_usage u LEFT JOIN users us ON us.id = u.owner_id
+       ORDER BY u.created_at DESC, u.id DESC
+       LIMIT ?`
+    )
+    .all(limit) as ApiUsageCallRow[];
+}
+
 export interface AdminTodoRow {
   id: number;
   text: string;

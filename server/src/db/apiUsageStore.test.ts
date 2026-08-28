@@ -1,5 +1,11 @@
 import { describe, it, expect } from "vitest";
-import { findOrCreateUserByEmail, recordApiUsage, getApiUsageSummary, getApiUsageByPurpose } from "./store.js";
+import {
+  findOrCreateUserByEmail,
+  recordApiUsage,
+  getApiUsageSummary,
+  getApiUsageByPurpose,
+  listRecentApiUsage,
+} from "./store.js";
 
 let counter = 0;
 function uniqueEmail(prefix: string): string {
@@ -37,5 +43,23 @@ describe("recordApiUsage / getApiUsageSummary / getApiUsageByPurpose", () => {
     const rows = getApiUsageByPurpose(sinceMs - 1000);
     const marker = rows.find((r) => r.purpose === "conversation_summary_test_marker");
     expect(marker).toMatchObject({ calls: 2, inputTokens: 3000, outputTokens: 300 });
+  });
+
+  it("listRecentApiUsage returns individual calls newest-first with an exact timestamp and owner email", () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("usage-recent"));
+    recordApiUsage(user.id, "web", "claude-sonnet-5", "recent_calls_test_marker", 111, 22);
+    recordApiUsage(null, "web", "claude-haiku-4-5", "recent_calls_test_marker_anon", 5, 5);
+
+    const recent = listRecentApiUsage(200);
+    const ownedCall = recent.find((r) => r.purpose === "recent_calls_test_marker");
+    const anonCall = recent.find((r) => r.purpose === "recent_calls_test_marker_anon");
+    expect(ownedCall).toMatchObject({ ownerEmail: user.email, inputTokens: 111, outputTokens: 22 });
+    expect(typeof ownedCall?.createdAt).toBe("number");
+    expect(anonCall?.ownerEmail).toBeNull();
+
+    // Newest-first: the second recorded call (anonCall) should not sort after the first.
+    const ownedIndex = recent.findIndex((r) => r.purpose === "recent_calls_test_marker");
+    const anonIndex = recent.findIndex((r) => r.purpose === "recent_calls_test_marker_anon");
+    expect(anonIndex).toBeLessThan(ownedIndex);
   });
 });

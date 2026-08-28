@@ -23,6 +23,7 @@ import {
   type ServerLog,
   type ApiUsageRow,
   type ApiUsageByPurposeRow,
+  type ApiUsageCallRow,
   type AdminTodo,
   type PosterNote,
 } from "../api/client";
@@ -399,6 +400,7 @@ function LogsTab() {
 function UsageTab() {
   const [rows, setRows] = useState<ApiUsageRow[]>([]);
   const [byPurpose, setByPurpose] = useState<ApiUsageByPurposeRow[]>([]);
+  const [recent, setRecent] = useState<ApiUsageCallRow[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [days, setDays] = useState(30);
 
@@ -408,6 +410,7 @@ function UsageTab() {
       .then((r) => {
         setRows(r.rows);
         setByPurpose(r.byPurpose);
+        setRecent(r.recent);
       })
       .finally(() => setLoaded(true));
   }
@@ -515,6 +518,46 @@ function UsageTab() {
                       <td style={{ padding: "8px 12px" }}>{r.channel}</td>
                       <td style={{ padding: "8px 12px" }}>{r.model}</td>
                       <td style={{ padding: "8px 12px" }}>{r.calls}</td>
+                      <td style={{ padding: "8px 12px" }}>{r.inputTokens.toLocaleString()}</td>
+                      <td style={{ padding: "8px 12px" }}>{r.outputTokens.toLocaleString()}</td>
+                      <td style={{ padding: "8px 12px" }}>{r.estimatedCost != null ? `$${r.estimatedCost.toFixed(3)}` : "—"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+
+          <h2 style={{ fontSize: 15, marginTop: 24, marginBottom: 10 }}>Recent calls</h2>
+          <p className="muted" style={{ marginTop: -6, marginBottom: 10, fontSize: 12 }}>
+            The last {recent.length} individual calls with an exact time — the day-by-day table
+            above only groups down to the day.
+          </p>
+          {recent.length === 0 ? (
+            <p className="muted">No assistant activity yet.</p>
+          ) : (
+            <div className="card" style={{ overflowX: "auto" }}>
+              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+                <thead>
+                  <tr style={{ textAlign: "left" }}>
+                    <th style={{ padding: "8px 12px" }}>When</th>
+                    <th style={{ padding: "8px 12px" }}>Purpose</th>
+                    <th style={{ padding: "8px 12px" }}>Who</th>
+                    <th style={{ padding: "8px 12px" }}>Channel</th>
+                    <th style={{ padding: "8px 12px" }}>Model</th>
+                    <th style={{ padding: "8px 12px" }}>Input tok.</th>
+                    <th style={{ padding: "8px 12px" }}>Output tok.</th>
+                    <th style={{ padding: "8px 12px" }}>Est. cost</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {recent.map((r) => (
+                    <tr key={r.id} className="list-item">
+                      <td style={{ padding: "8px 12px", whiteSpace: "nowrap" }}>{timeAgo(r.createdAt)}</td>
+                      <td style={{ padding: "8px 12px" }}>{usagePurposeLabel(r.purpose)}</td>
+                      <td style={{ padding: "8px 12px" }}>{r.ownerEmail ?? "—"}</td>
+                      <td style={{ padding: "8px 12px" }}>{r.channel}</td>
+                      <td style={{ padding: "8px 12px" }}>{r.model}</td>
                       <td style={{ padding: "8px 12px" }}>{r.inputTokens.toLocaleString()}</td>
                       <td style={{ padding: "8px 12px" }}>{r.outputTokens.toLocaleString()}</td>
                       <td style={{ padding: "8px 12px" }}>{r.estimatedCost != null ? `$${r.estimatedCost.toFixed(3)}` : "—"}</td>

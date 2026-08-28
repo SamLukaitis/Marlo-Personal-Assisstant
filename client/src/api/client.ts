@@ -633,6 +633,18 @@ export interface ApiUsageByPurposeRow {
   estimatedCost: number | null;
 }
 
+export interface ApiUsageCallRow {
+  id: number;
+  ownerEmail: string | null;
+  channel: string;
+  model: string;
+  purpose: string;
+  inputTokens: number;
+  outputTokens: number;
+  createdAt: number;
+  estimatedCost: number | null;
+}
+
 // Maps the internal purpose tags (assistant.ts, documents.ts, etc.) to what an admin actually
 // reads — keep this in sync whenever a new call site starts calling recordApiUsage.
 export const USAGE_PURPOSE_LABELS: Record<string, string> = {
@@ -651,9 +663,9 @@ export function usagePurposeLabel(purpose: string): string {
   return USAGE_PURPOSE_LABELS[purpose] ?? purpose;
 }
 
-export const fetchUsageSummary = (days = 30) =>
-  getJson<{ rows: ApiUsageRow[]; byPurpose: ApiUsageByPurposeRow[]; approx: true }>(
-    `/api/portal/usage?days=${days}`
+export const fetchUsageSummary = (days = 30, recentLimit = 50) =>
+  getJson<{ rows: ApiUsageRow[]; byPurpose: ApiUsageByPurposeRow[]; recent: ApiUsageCallRow[]; approx: true }>(
+    `/api/portal/usage?days=${days}&recentLimit=${recentLimit}`
   );
 
 export interface AdminTodo {
