@@ -23,6 +23,8 @@ import {
   type ServerLog,
   type ApiUsageRow,
   type ApiUsageByPurposeRow,
+  type ApiUsageByOwnerRow,
+  type ApiUsageProjection,
   type ApiUsageCallRow,
   type AdminTodo,
   type PosterNote,
@@ -400,6 +402,8 @@ function LogsTab() {
 function UsageTab() {
   const [rows, setRows] = useState<ApiUsageRow[]>([]);
   const [byPurpose, setByPurpose] = useState<ApiUsageByPurposeRow[]>([]);
+  const [byOwner, setByOwner] = useState<ApiUsageByOwnerRow[]>([]);
+  const [projection, setProjection] = useState<ApiUsageProjection | null>(null);
   const [recent, setRecent] = useState<ApiUsageCallRow[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [days, setDays] = useState(30);
@@ -410,6 +414,8 @@ function UsageTab() {
       .then((r) => {
         setRows(r.rows);
         setByPurpose(r.byPurpose);
+        setByOwner(r.byOwner);
+        setProjection(r.projection);
         setRecent(r.recent);
       })
       .finally(() => setLoaded(true));
@@ -453,6 +459,13 @@ function UsageTab() {
           <span className="stat-value">${totalCost.toFixed(2)}</span>
           <span className="stat-note">Approximate, based on list pricing</span>
         </div>
+        <div className="stat-card">
+          <span className="stat-label">If every day looked like {projection ? projection.day : "yesterday"}</span>
+          <span className="stat-value">{projection ? `$${projection.projectedMonthlyCost.toFixed(2)}/mo` : "—"}</span>
+          <span className="stat-note">
+            {projection ? `Based on $${projection.dayCost.toFixed(2)} that day × 30` : "Not enough history yet"}
+          </span>
+        </div>
       </div>
 
       {!loaded ? (
@@ -474,6 +487,39 @@ function UsageTab() {
                       <span className="muted">
                         {p.calls} call{p.calls === 1 ? "" : "s"} · {tokens.toLocaleString()} tok.
                         {p.estimatedCost != null ? ` · $${p.estimatedCost.toFixed(3)}` : ""}
+                      </span>
+                    </div>
+                    <div style={{ background: "var(--border-soft)", borderRadius: 4, height: 6, marginTop: 4 }}>
+                      <div
+                        style={{
+                          width: `${share}%`,
+                          background: "var(--accent)",
+                          borderRadius: 4,
+                          height: "100%",
+                        }}
+                      />
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          <h2 style={{ fontSize: 15, marginBottom: 10 }}>Who's using it</h2>
+          {byOwner.length === 0 ? (
+            <p className="muted">No assistant activity in this range.</p>
+          ) : (
+            <div className="card card-padded" style={{ marginBottom: 24 }}>
+              {byOwner.map((o) => {
+                const tokens = o.inputTokens + o.outputTokens;
+                const share = totalTokens > 0 ? Math.round((tokens / totalTokens) * 100) : 0;
+                return (
+                  <div key={o.ownerEmail ?? "(no user yet)"} style={{ marginBottom: 10 }}>
+                    <div className="row" style={{ justifyContent: "space-between", fontSize: 13 }}>
+                      <span>{o.ownerEmail ?? "(no user yet — e.g. WhatsApp sign-up in progress)"}</span>
+                      <span className="muted">
+                        {o.calls} call{o.calls === 1 ? "" : "s"} · {tokens.toLocaleString()} tok.
+                        {o.estimatedCost != null ? ` · $${o.estimatedCost.toFixed(3)}` : ""}
                       </span>
                     </div>
                     <div style={{ background: "var(--border-soft)", borderRadius: 4, height: 6, marginTop: 4 }}>

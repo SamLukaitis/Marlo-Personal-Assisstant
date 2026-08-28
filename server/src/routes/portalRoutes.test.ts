@@ -227,4 +227,53 @@ describe("usage", () => {
     const row = res.body.rows.find((r: { model: string }) => r.model === "claude-some-future-model");
     expect(row.estimatedCost).toBeNull();
   });
+
+  it("breaks down recorded calls by owner, collapsing across purposes and models", async () => {
+    const admin = makeAdmin("usage-owner-breakdown");
+    const userA = findOrCreateUserByEmail(uniqueEmail("usage-owner-a"));
+    const userB = findOrCreateUserByEmail(uniqueEmail("usage-owner-b"));
+    recordApiUsage(userA.id, "web", "claude-sonnet-5", "assistant_chat", 1000, 200);
+    recordApiUsage(userA.id, "background", "claude-haiku-4-5", "daily_briefing", 500, 100);
+    recordApiUsage(userB.id, "whatsapp", "claude-sonnet-5", "assistant_chat", 2000, 400);
+    const app = buildTestApp(admin.id);
+
+    const res = await request(app).get("/api/portal/usage?days=1");
+    expect(res.status).toBe(200);
+
+    const ownerA = res.body.byOwner.find((o: { ownerEmail: string }) => o.ownerEmail === userA.email);
+    const ownerB = res.body.byOwner.find((o: { ownerEmail: string }) => o.ownerEmail === userB.email);
+    expect(ownerA).toMatchObject({ calls: 2, inputTokens: 1500, outputTokens: 300 });
+    expect(ownerB).toMatchObject({ calls: 1, inputTokens: 2000, outputTokens: 400 });
+    // Sorted by total tokens descending — userB's single call (2400 tok) outweighs userA's
+    // combined two (1800 tok). Checked by relative position, not index 0: other tests in this
+    // file share the same underlying table and may record more-tokens-having owners of their own.
+    const indexA = res.body.byOwner.findIndex((o: { ownerEmail: string }) => o.ownerEmail === userA.email);
+    const indexB = res.body.byOwner.findIndex((o: { ownerEmail: string }) => o.ownerEmail === userB.email);
+    expect(indexB).toBeLessThan(indexA);
+  });
+
+  it('projects a monthly cost from the most recent COMPLETE day, never from today (always partial)', async () => {
+    const admin = makeAdmin("usage-projection");
+    const someUser = findOrCreateUserByEmail(uniqueEmail("usage-projection-owner"));
+
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date("2026-03-10T12:00:00Z"));
+      // $3/Mtok input, $15/Mtok output for claude-sonnet-5 (see MODEL_PRICE_PER_MTOK) -> $0.06 that day.
+      recordApiUsage(someUser.id, "web", "claude-sonnet-5", "assistant_chat", 10_000, 2_000);
+
+      vi.setSystemTime(new Date("2026-03-11T09:00:00Z"));
+      // Today's own (partial) usage must not be what gets projected.
+      recordApiUsage(someUser.id, "web", "claude-sonnet-5", "assistant_chat", 999_999, 999_999);
+
+      const app = buildTestApp(admin.id);
+      const res = await request(app).get("/api/portal/usage?days=7");
+      expect(res.status).toBe(200);
+      expect(res.body.projection.day).toBe("2026-03-10");
+      expect(res.body.projection.dayCost).toBeCloseTo(0.06, 5);
+      expect(res.body.projection.projectedMonthlyCost).toBeCloseTo(1.8, 5);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });

@@ -1944,6 +1944,36 @@ export function getApiUsageByPurpose(sinceMs: number): ApiUsageByPurposeRow[] {
     .all(sinceMs) as ApiUsageByPurposeRow[];
 }
 
+export interface ApiUsageByOwnerModelRow {
+  ownerEmail: string | null;
+  model: string;
+  calls: number;
+  inputTokens: number;
+  outputTokens: number;
+}
+
+// Grouped by owner AND model (not just owner) so the caller can apply per-model pricing before
+// collapsing to one total per owner — mirrors how getApiUsageSummary's rows feed byPurpose's
+// cost totals in portalRoutes.ts, for the same reason (a blended rate across models would be
+// wrong). ownerEmail is null both for pre-login WhatsApp calls (no owner yet) and for a user
+// since deleted (e.g. via reset-test-phone) — LEFT JOIN, not JOIN.
+export function getApiUsageByOwner(sinceMs: number): ApiUsageByOwnerModelRow[] {
+  return db
+    .prepare(
+      `SELECT
+         us.email AS ownerEmail,
+         u.model,
+         COUNT(*) AS calls,
+         SUM(u.input_tokens) AS inputTokens,
+         SUM(u.output_tokens) AS outputTokens
+       FROM api_usage u LEFT JOIN users us ON us.id = u.owner_id
+       WHERE u.created_at >= ?
+       GROUP BY u.owner_id, u.model
+       ORDER BY (SUM(u.input_tokens) + SUM(u.output_tokens)) DESC`
+    )
+    .all(sinceMs) as ApiUsageByOwnerModelRow[];
+}
+
 export interface ApiUsageCallRow {
   id: number;
   ownerEmail: string | null;

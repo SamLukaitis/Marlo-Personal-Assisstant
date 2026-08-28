@@ -633,6 +633,20 @@ export interface ApiUsageByPurposeRow {
   estimatedCost: number | null;
 }
 
+export interface ApiUsageByOwnerRow {
+  ownerEmail: string | null;
+  calls: number;
+  inputTokens: number;
+  outputTokens: number;
+  estimatedCost: number | null;
+}
+
+export interface ApiUsageProjection {
+  day: string;
+  dayCost: number;
+  projectedMonthlyCost: number;
+}
+
 export interface ApiUsageCallRow {
   id: number;
   ownerEmail: string | null;
@@ -664,9 +678,14 @@ export function usagePurposeLabel(purpose: string): string {
 }
 
 export const fetchUsageSummary = (days = 30, recentLimit = 50) =>
-  getJson<{ rows: ApiUsageRow[]; byPurpose: ApiUsageByPurposeRow[]; recent: ApiUsageCallRow[]; approx: true }>(
-    `/api/portal/usage?days=${days}&recentLimit=${recentLimit}`
-  );
+  getJson<{
+    rows: ApiUsageRow[];
+    byPurpose: ApiUsageByPurposeRow[];
+    byOwner: ApiUsageByOwnerRow[];
+    projection: ApiUsageProjection | null;
+    recent: ApiUsageCallRow[];
+    approx: true;
+  }>(`/api/portal/usage?days=${days}&recentLimit=${recentLimit}`);
 
 export interface AdminTodo {
   id: number;

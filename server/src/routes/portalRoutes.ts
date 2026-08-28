@@ -11,6 +11,7 @@ import {
   setServerLogExplanation,
   getApiUsageSummary,
   getApiUsageByPurpose,
+  getApiUsageByOwner,
   listRecentApiUsage,
   recordApiUsage,
   listAdminTodos,
@@ -180,6 +181,58 @@ portalRoutes.get("/usage", (req, res) => {
     estimatedCost: costByPurpose.get(r.purpose) ?? null,
   }));
 
+  // Same idea as byPurpose above (answers "who's driving the bill", not just "what for"), but
+  // getApiUsageByOwner groups by owner+model directly (there's no cheaper existing row set to
+  // derive it from the way byPurpose reuses `rows`) — so cost is computed per owner+model row
+  // here, then collapsed into one total per owner since an owner can span multiple models.
+  const ownerTotals = new Map<
+    string,
+    { ownerEmail: string | null; calls: number; inputTokens: number; outputTokens: number; estimatedCost: number | null }
+  >();
+  for (const r of getApiUsageByOwner(sinceMs)) {
+    const key = r.ownerEmail ?? " no-owner"; // sentinel so null-owner rows don't merge with a literal "null" email
+    const cost = estimateCost(r.model, r.inputTokens, r.outputTokens);
+    const existing = ownerTotals.get(key) ?? {
+      ownerEmail: r.ownerEmail,
+      calls: 0,
+      inputTokens: 0,
+      outputTokens: 0,
+      estimatedCost: null as number | null,
+    };
+    existing.calls += r.calls;
+    existing.inputTokens += r.inputTokens;
+    existing.outputTokens += r.outputTokens;
+    if (cost != null) existing.estimatedCost = (existing.estimatedCost ?? 0) + cost;
+    ownerTotals.set(key, existing);
+  }
+  const byOwner = Array.from(ownerTotals.values()).sort(
+    (a, b) => b.inputTokens + b.outputTokens - (a.inputTokens + a.outputTokens)
+  );
+
+  // "If every day looked like yesterday" — the question that actually matters when spend feels
+  // worrying, and the day-by-day table alone doesn't answer it. Deliberately uses the most
+  // recent COMPLETE day, not today: today is always partial (however far through it we are),
+  // so using it would understate a projection checked in the morning and overstate one checked
+  // at midnight. Dates are UTC to match SQLite's date(created_at/1000,'unixepoch') above.
+  const costByDay = new Map<string, number>();
+  for (const r of rows) {
+    if (r.estimatedCost == null) continue;
+    costByDay.set(r.day, (costByDay.get(r.day) ?? 0) + r.estimatedCost);
+  }
+  const todayUtc = new Date().toISOString().slice(0, 10);
+  const lastFullDay = Array.from(costByDay.keys())
+    .filter((d) => d < todayUtc)
+    .sort()
+    .pop();
+  const projection =
+    lastFullDay !== undefined
+      ? {
+          day: lastFullDay,
+          dayCost: costByDay.get(lastFullDay)!,
+          projectedMonthlyCost: costByDay.get(lastFullDay)! * 30,
+        }
+      : null;
+
   // Individual calls with an exact timestamp — the day/purpose breakdowns above are aggregated,
   // which isn't specific enough to see exactly when something happened. Not filtered by the
   // `days` window (it's "most recent N calls", not "calls in this range") since that's the more
@@ -190,7 +243,7 @@ portalRoutes.get("/usage", (req, res) => {
     estimatedCost: estimateCost(r.model, r.inputTokens, r.outputTokens),
   }));
 
-  res.json({ rows, byPurpose, recent, approx: true });
+  res.json({ rows, byPurpose, byOwner, projection, recent, approx: true });
 });
 
 // --- To-do list -----------------------------------------------------------------------------
