@@ -116,6 +116,56 @@ describe("runAssistantChat — react_to_message", () => {
   });
 });
 
+describe("runAssistantChat — multi-block text responses", () => {
+  it("concatenates every text block, not just the first, around a web_search server-tool result", async () => {
+    // web_search is a server tool: Anthropic runs it and folds server_tool_use /
+    // web_search_tool_result blocks into this same response, with the model's prose split into
+    // multiple text blocks around them (a preamble, then the real answer). Taking only the first
+    // block — what this used to do — returned "Let me look that up." and silently dropped the
+    // entire answer.
+    mockCreate.mockResolvedValueOnce({
+      stop_reason: "end_turn",
+      content: [
+        { type: "text", text: "Let me look that up. " },
+        { type: "server_tool_use", id: "srvtoolu_1", name: "web_search", input: { query: "hotels near Big Ben" } },
+        {
+          type: "web_search_tool_result",
+          tool_use_id: "srvtoolu_1",
+          content: [{ type: "web_search_result", title: "Hotels", url: "https://example.com" }],
+        },
+        { type: "text", text: "There are three hotels within a short walk." },
+      ],
+    });
+    const user = findOrCreateUserByEmail(uniqueEmail("multi-text-block"));
+
+    const reply = await runAssistantChat(user.id, [{ role: "user", content: "hotels near big ben?" }]);
+
+    expect(mockCreate).toHaveBeenCalledTimes(1);
+    expect(reply).toEqual({
+      text: "Let me look that up. There are three hotels within a short walk.",
+    });
+  });
+
+  it("feeds a paused server-tool turn back instead of returning its partial text", async () => {
+    // Anthropic pauses long-running server-tool turns with stop_reason "pause_turn". Returning
+    // here would hand WhatsApp a partial (here: empty) body, which Meta rejects.
+    mockCreate
+      .mockResolvedValueOnce({ stop_reason: "pause_turn", content: [{ type: "text", text: "" }] })
+      .mockResolvedValueOnce({ stop_reason: "end_turn", content: [{ type: "text", text: "Found it." }] });
+    const user = findOrCreateUserByEmail(uniqueEmail("pause-turn"));
+
+    const reply = await runAssistantChat(user.id, [{ role: "user", content: "what's on at the barbican?" }]);
+
+    expect(mockCreate).toHaveBeenCalledTimes(2);
+    expect(reply).toEqual({ text: "Found it." });
+
+    // The paused response must go back verbatim as an assistant turn for the model to continue
+    // from — not be dropped or re-sent as a fresh user message.
+    const secondCallMessages = mockCreate.mock.calls[1][0].messages;
+    expect(secondCallMessages[secondCallMessages.length - 1].role).toBe("assistant");
+  });
+});
+
 describe("runAssistantChat — confirm-required tools can't be called directly", () => {
   it("rejects a direct delete_calendar_event call instead of executing it", async () => {
     mockCreate

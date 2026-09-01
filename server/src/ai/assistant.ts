@@ -123,7 +123,7 @@ export function getClient(): Anthropic {
   return client;
 }
 
-const ALWAYS_ON_TOOLS: Anthropic.Tool[] = [
+const ALWAYS_ON_TOOLS: Anthropic.ToolUnion[] = [
   {
     name: "list_recent_messages",
     description:
@@ -646,6 +646,20 @@ const ALWAYS_ON_TOOLS: Anthropic.Tool[] = [
       required: ["emoji"],
     },
   },
+  // Anthropic's built-in web search — this is a *server* tool, not a custom one: Anthropic runs
+  // the search itself and folds a web_search_tool_result block into this same response, so it
+  // never produces a client-side tool_use block and never reaches runTool's switch below. Always
+  // on for every user (no per-owner flag, unlike teams/travel) — see buildRules for when the
+  // model should reach for it.
+  // max_uses caps how many searches a single user message can trigger — a blast-radius/cost
+  // guardrail, since each search is billed per use and a confused model can otherwise loop on
+  // reformulated queries. 5 is comfortably above what a normal "find me a hotel near X" answer
+  // needs.
+  {
+    name: "web_search",
+    type: "web_search_20250305",
+    max_uses: 5,
+  },
 ];
 
 const CONDITIONAL_TOOLS: Record<ToolKey, Anthropic.Tool[]> = {
@@ -703,7 +717,7 @@ const CONDITIONAL_TOOLS: Record<ToolKey, Anthropic.Tool[]> = {
   ],
 };
 
-export function buildToolsForOwner(ownerId: number): Anthropic.Tool[] {
+export function buildToolsForOwner(ownerId: number): Anthropic.ToolUnion[] {
   const enabled = getEnabledTools(ownerId);
   const result = [...ALWAYS_ON_TOOLS];
   for (const key of TOOL_KEYS) {
@@ -1187,6 +1201,7 @@ function buildRules(enabled: Set<ToolKey>): string {
     "- Use get_weather and get_markets for weather and stock/index questions. The same rule applies: report only what the tool returned. Never state a price, a percentage move, or a forecast you didn't just fetch.",
     "- If the user asks to connect/set up Xero: Xero gives each account a unique forwarding email (in Xero: Business > Bills to pay, or Accounting > Bills — the 'email bills to this address' address). Ask them to paste it, then call connect_xero with exactly what they send — never guess or fill in an address yourself. Once connected, receipts they send that are filed under 'receipts' and yield a recognized expense are forwarded to Xero automatically in the background — this already works, don't tell the user it's unbuilt or manual.",
     "- There are TWO separate paths to Xero, both already built: (1) a WhatsApp photo/PDF filed as a receipt forwards automatically, no confirmation needed. (2) Email is scanned periodically (every few minutes) for invoice-looking automated mail; ONLY when that scan actually flags one do you get a pending confirmation to offer 'reply yes to forward' (see below) — the scan hasn't necessarily run yet or matched a given email, so no pending confirmation does NOT mean email invoices are unsupported. If the user asks about a specific email invoice with nothing pending, never claim this feature only works for WhatsApp — instead offer to call extract_email_attachment on it directly, which also triggers the same automatic Xero forwarding once it's saved as a receipt with a real expense, just without the alert/confirm step.",
+    "- Use web_search for questions you don't have another tool for — nearby places (hotels, restaurants, attractions), current prices/events, or anything else that needs a live answer from the web rather than what you already know. Say plainly that you searched the web rather than presenting the answer as verified fact. When you recommend a specific place, include a Google Maps link built as https://www.google.com/maps/search/?api=1&query=<url-encoded name and address/area> so the user can open it directly — never invent coordinates, and never claim you've sent a location pin (you haven't).",
   ];
   const travel = [
     "- Use list_travel_checkins for questions about where the user has physically been or when they arrived somewhere — this is automatic location history, separate from documents.",
@@ -1303,6 +1318,19 @@ function withMessagesCacheBreakpoint(messages: Anthropic.MessageParam[]): Anthro
   return [...messages.slice(0, -1), { ...last, content: cachedBlocks }];
 }
 
+// A response's visible reply is every text block joined, not just the first one. Picking only the
+// first (what this used to do) silently dropped most of a web_search answer: web_search is a
+// server tool, so Anthropic folds server_tool_use/web_search_tool_result blocks into the same
+// response and the model's prose arrives as MULTIPLE text blocks around them — a short preamble
+// ("let me look that up"), then the real answer, itself chunked one block per cited span when
+// citations are attached. Joining is also correct for the ordinary single-block case.
+function joinTextBlocks(content: Anthropic.ContentBlock[]): string {
+  return content
+    .filter((b): b is Anthropic.TextBlock => b.type === "text")
+    .map((b) => b.text)
+    .join("");
+}
+
 // phone is optional and WhatsApp-only (web chat/eval callers omit it) — when given, it's used
 // purely to look up the rolling conversation summary (services/conversationSummary.ts writes it,
 // keyed by phone) to fold into the system prompt. Not otherwise used in this function.
@@ -1370,11 +1398,20 @@ export async function runAssistantChat(
       (block): block is Anthropic.ToolUseBlock => block.type === "tool_use"
     );
 
+    // Anthropic pauses a long-running server-tool turn (web_search) with stop_reason "pause_turn"
+    // rather than finishing it — the content so far is complete and valid, and feeding it straight
+    // back continues the same turn where it left off. Without this it would fall into the
+    // no-tool_use branch below and return whatever partial (often empty) text had been emitted so
+    // far, which then reaches sendAssistantReply → whatsappReply.ts's splitIntoChunks as an
+    // empty-body send that Meta rejects. Guarded on toolUses.length === 0 so a normal client-side
+    // tool_use turn is never diverted here; the existing 8-turn cap already bounds the loop.
+    if (toolUses.length === 0 && response.stop_reason === "pause_turn") {
+      messages.push({ role: "assistant", content: response.content });
+      continue;
+    }
+
     if (toolUses.length === 0) {
-      const text = response.content.find(
-        (b): b is Anthropic.TextBlock => b.type === "text"
-      );
-      return finish({ text: text?.text ?? "" });
+      return finish({ text: joinTextBlocks(response.content) });
     }
 
     // ask_user_choice is a hard stop, not a tool result to feed back to the model — the system
@@ -1392,11 +1429,9 @@ export async function runAssistantChat(
     // say (same reasoning as the flag_unmet_request + text case below).
     const reactionUse = toolUses.find((t) => t.name === "react_to_message");
     if (reactionUse) {
-      const reactionTextBlock = response.content.find(
-        (b): b is Anthropic.TextBlock => b.type === "text"
-      );
-      if (reactionTextBlock) {
-        return finish({ text: reactionTextBlock.text });
+      const reactionText = joinTextBlocks(response.content);
+      if (reactionText) {
+        return finish({ text: reactionText });
       }
       const input = reactionUse.input as Record<string, unknown>;
       return finish({ text: "", reaction: { emoji: input.emoji as string } });
@@ -1410,10 +1445,10 @@ export async function runAssistantChat(
     // get the model to repeat itself as plain text — doubling the API cost of every single
     // capability-gap decline. Bug found 2026-08-28, introduced the same day this tool shipped.
     const flagUse = toolUses.find((t) => t.name === "flag_unmet_request");
-    const textBlock = response.content.find((b): b is Anthropic.TextBlock => b.type === "text");
-    if (flagUse && textBlock && toolUses.length === 1) {
+    const flagText = joinTextBlocks(response.content);
+    if (flagUse && flagText && toolUses.length === 1) {
       await runTool(ownerId, "flag_unmet_request", flagUse.input as Record<string, unknown>, phone);
-      return finish({ text: textBlock.text });
+      return finish({ text: flagText });
     }
 
     messages.push({ role: "assistant", content: response.content });

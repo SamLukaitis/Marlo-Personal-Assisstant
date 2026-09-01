@@ -151,15 +151,64 @@ describe("handleIncoming — unsupported message types", () => {
   it("logs the raw type and replies with a friendly one-liner, without touching the assistant", async () => {
     const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
 
-    await handleIncoming({ kind: "unsupported", from: "447900000009", messageId: "m9", type: "location" });
+    await handleIncoming({ kind: "unsupported", from: "447900000009", messageId: "m9", type: "sticker" });
 
-    expect(logSpy).toHaveBeenCalledWith(expect.stringContaining("unsupported"), expect.objectContaining({ type: "location" }));
+    expect(logSpy).toHaveBeenCalledWith(expect.stringContaining("unsupported"), expect.objectContaining({ type: "sticker" }));
     expect(runAssistantChat).not.toHaveBeenCalled();
     expect(sendWhatsAppMessage).toHaveBeenCalledWith(
       "447900000009",
       "I can't read that message type yet — text me instead."
     );
     logSpy.mockRestore();
+  });
+});
+
+describe("handleIncoming — location messages", () => {
+  it("folds a dropped pin (with name/address) into history and runs it through the assistant", async () => {
+    vi.mocked(runAssistantChat).mockResolvedValue({ text: "Here are a few hotels nearby." });
+
+    await handleIncoming({
+      kind: "location",
+      from: "447900000020",
+      messageId: "m20",
+      latitude: 51.5074,
+      longitude: -0.1278,
+      name: "Big Ben",
+      address: "London SW1A 0AA",
+    });
+
+    expect(vi.mocked(appendWhatsAppMessage).mock.calls[0]).toEqual([
+      42,
+      "447900000020",
+      "user",
+      "[User shared their location: 51.5074, -0.1278 (Big Ben, London SW1A 0AA)]",
+    ]);
+    expect(runAssistantChat).toHaveBeenCalled();
+    expect(sendAssistantReply).toHaveBeenCalledWith(
+      42,
+      "447900000020",
+      { text: "Here are a few hotels nearby." },
+      "m20"
+    );
+  });
+
+  it("still works for a raw pin with no name/address", async () => {
+    vi.mocked(runAssistantChat).mockResolvedValue({ text: "Got it." });
+
+    await handleIncoming({
+      kind: "location",
+      from: "447900000021",
+      messageId: "m21",
+      latitude: 51.5,
+      longitude: -0.1,
+    });
+
+    expect(vi.mocked(appendWhatsAppMessage).mock.calls[0]).toEqual([
+      42,
+      "447900000021",
+      "user",
+      "[User shared their location: 51.5, -0.1]",
+    ]);
   });
 });
 
