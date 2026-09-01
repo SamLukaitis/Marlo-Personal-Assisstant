@@ -4,9 +4,11 @@
 // the OAuth consent screen itself — Google/Microsoft don't allow sign-in inside an embedded
 // webview, so a one-time link is sent instead (see authRoutes.ts's "whatsapp_register" intent).
 //
-// Name/email capture stays plain conversational text. Provider choice (Gmail vs. Outlook) is
-// tappable buttons instead of two links in one message, since WhatsApp only allows one URL
-// button per message — see sendWhatsAppReplyButtons/sendWhatsAppCtaUrl in providers/whatsapp.ts.
+// Name/email capture stays plain conversational text. Provider is inferred from the typed
+// email's domain (detectProviderFromEmail) whenever it's unambiguous, so most people are never
+// asked at all; only a custom/work domain falls back to the explicit question, shown as tappable
+// buttons instead of two links in one message, since WhatsApp only allows one URL button per
+// message — see sendWhatsAppReplyButtons/sendWhatsAppCtaUrl in providers/whatsapp.ts.
 // One explicit future upgrade, not built here: Meta WhatsApp Flows (native in-chat forms) for the
 // name/email capture too.
 //
@@ -39,7 +41,7 @@ const lastTokenIssuedAt = new Map<string, number>();
 // both the very first message a new number ever sees and the answer to "help"/"menu" at any
 // point later (pre- or post-registration), so there's exactly one copy of it to keep accurate.
 export const MARLOWE_HELP_TEXT =
-  "Hi! I'm Marlowe, your personal assistant. Here's what I do:\n\n" +
+  "👋 *Welcome to the Marlowe testing beta!* I'm Marlowe, your personal assistant. Here's what I do:\n\n" +
   "• Read your email & calendar, help you reply and schedule\n" +
   "• Send a morning update each day\n" +
   "• Answer questions like \"what's on today?\"\n" +
@@ -61,6 +63,23 @@ const PROVIDER_LABEL: Record<RegistrationProvider, string> = {
   google: "Gmail",
   microsoft: "Outlook",
 };
+
+// Most people's email address already says which provider they're on — asking anyway feels like
+// a redundant extra step right after they just typed it. Only the ambiguous case (a custom/work
+// domain that could be either Google Workspace or Microsoft 365) still gets the explicit question.
+const PROVIDER_EMAIL_DOMAINS: Record<RegistrationProvider, string[]> = {
+  google: ["gmail.com", "googlemail.com"],
+  microsoft: ["outlook.com", "hotmail.com", "live.com", "msn.com"],
+};
+
+function detectProviderFromEmail(email: string): RegistrationProvider | null {
+  const domain = email.split("@")[1]?.toLowerCase();
+  if (!domain) return null;
+  for (const provider of Object.keys(PROVIDER_EMAIL_DOMAINS) as RegistrationProvider[]) {
+    if (PROVIDER_EMAIL_DOMAINS[provider].includes(domain)) return provider;
+  }
+  return null;
+}
 
 // What to say again after a help interruption, so the person lands back where they were
 // instead of getting stuck. `awaiting_name` reuses the tail of the first-contact message since
@@ -178,6 +197,14 @@ async function handleAwaitingEmail(row: PendingRegistrationRow, text: string): P
   }
 
   const updated = upsertPendingRegistration(row.phone, { typedEmail: email });
+
+  const detectedProvider = detectProviderFromEmail(email);
+  if (detectedProvider) {
+    const withProvider = upsertPendingRegistration(row.phone, { provider: detectedProvider });
+    await sendProviderLink(withProvider);
+    return;
+  }
+
   await askProvider(updated);
 }
 
