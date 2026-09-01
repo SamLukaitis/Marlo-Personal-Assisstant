@@ -102,6 +102,25 @@ describe("deleteUserCompletely", () => {
     expect(() => deleteUserCompletely(replier.id)).not.toThrow();
     expect(getUser(replier.id)).toBeNull();
   });
+
+  // Regression test for the OTHER direction of the same bug: a to-do THIS owner created (not one
+  // they replied to) that someone else replied to and read. Deleting admin_todos WHERE
+  // created_by = ownerId removes the parent row while the other person's admin_todo_replies/
+  // admin_todo_reply_reads rows still point at it via todo_id — violating THEIR FK, not this
+  // owner's. This is the real production shape: a prolific to-do creator whose to-dos other
+  // admins interacted with.
+  it("does not throw when someone else replied to (and read) this owner's own admin_todos row", () => {
+    const todoOwner = findOrCreateUserByEmail(uniqueEmail("todo-owner-2"));
+    const otherAdmin = findOrCreateUserByEmail(uniqueEmail("other-admin"));
+    const todoText = uniqueEmail("todo-text-2");
+    addAdminTodo(todoText, todoOwner.id);
+    const todo = listAdminTodos(todoOwner.id).find((t) => t.text === todoText)!;
+    addAdminTodoReply(todo.id, otherAdmin.id, "reply text");
+    markAdminTodoRepliesRead(todo.id, otherAdmin.id);
+
+    expect(() => deleteUserCompletely(todoOwner.id)).not.toThrow();
+    expect(getUser(todoOwner.id)).toBeNull();
+  });
 });
 
 describe("findRemainingOwnerReferences", () => {

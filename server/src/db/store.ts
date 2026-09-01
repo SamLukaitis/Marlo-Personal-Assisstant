@@ -2309,13 +2309,19 @@ export function deleteUserCompletely(ownerId: number): { deletedDocumentPaths: s
     // the final DELETE FROM users below violated the foreign key.
     //
     // admin_todo_replies.author_id and admin_todo_reply_reads.user_id are the same shape again,
-    // one generation later (threaded to-do replies, commit c16615f): deleting admin_todos by
-    // created_by never touched a reply this owner left on someone ELSE's still-existing to-do, or
-    // their own read-tracking row — reported as the same bare "FOREIGN KEY constraint failed" on
-    // a real, actively-used account. Children before parent, same manual-cascade order as
-    // deleteAdminTodo above, since admin_todo_replies.todo_id itself references admin_todos(id).
-    db.prepare(`DELETE FROM admin_todo_reply_reads WHERE user_id = ?`).run(ownerId);
-    db.prepare(`DELETE FROM admin_todo_replies WHERE author_id = ?`).run(ownerId);
+    // one generation later (threaded to-do replies, commit c16615f) — but two-directional, unlike
+    // every fix above: this owner's own replies/reads on someone ELSE's to-do (author_id/user_id
+    // = ownerId) AND every reply/read left by someone ELSE on a to-do THIS owner created, which
+    // the DELETE FROM admin_todos below is about to remove as the parent row (todo_id IN ... ).
+    // The first attempt at this fix only handled the first direction and still threw "FOREIGN KEY
+    // constraint failed" in production — a real to-do creator whose to-dos other admins had
+    // replied to/read. Children before parent, same manual-cascade order as deleteAdminTodo above.
+    db.prepare(
+      `DELETE FROM admin_todo_reply_reads WHERE user_id = ? OR todo_id IN (SELECT id FROM admin_todos WHERE created_by = ?)`
+    ).run(ownerId, ownerId);
+    db.prepare(
+      `DELETE FROM admin_todo_replies WHERE author_id = ? OR todo_id IN (SELECT id FROM admin_todos WHERE created_by = ?)`
+    ).run(ownerId, ownerId);
     db.prepare(`DELETE FROM admin_todos WHERE created_by = ?`).run(ownerId);
     db.prepare(`DELETE FROM poster_notes WHERE author_id = ?`).run(ownerId);
     db.prepare(`DELETE FROM user_phone_numbers WHERE user_id = ?`).run(ownerId);
