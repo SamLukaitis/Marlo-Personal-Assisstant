@@ -132,7 +132,37 @@ describe("extractIncomingMessages — interactive button replies", () => {
 });
 
 describe("extractIncomingMessages — unsupported message types", () => {
-  it("parses a location message into an IncomingUnsupportedMessage carrying its raw type", () => {
+  it("parses a sticker message into an IncomingUnsupportedMessage carrying its raw type", () => {
+    const payload = {
+      entry: [
+        {
+          changes: [
+            {
+              value: {
+                messages: [{ from: "447000000001", id: "wamid.sticker1", type: "sticker" }],
+              },
+            },
+          ],
+        },
+      ],
+    };
+
+    expect(extractIncomingMessages(payload)).toEqual([
+      { kind: "unsupported", from: "447000000001", messageId: "wamid.sticker1", type: "sticker" },
+    ]);
+  });
+
+  it("drops a message missing both from and id rather than producing an unusable entry", () => {
+    const payload = {
+      entry: [{ changes: [{ value: { messages: [{ type: "location" }] } }] }],
+    };
+
+    expect(extractIncomingMessages(payload)).toEqual([]);
+  });
+});
+
+describe("extractIncomingMessages — location", () => {
+  it("parses a dropped pin with a name and address into an IncomingLocationMessage", () => {
     const payload = {
       entry: [
         {
@@ -144,6 +174,46 @@ describe("extractIncomingMessages — unsupported message types", () => {
                     from: "447000000001",
                     id: "wamid.loc",
                     type: "location",
+                    location: {
+                      latitude: 51.5074,
+                      longitude: -0.1278,
+                      name: "Big Ben",
+                      address: "London SW1A 0AA",
+                    },
+                  },
+                ],
+              },
+            },
+          ],
+        },
+      ],
+    };
+
+    expect(extractIncomingMessages(payload)).toEqual([
+      {
+        kind: "location",
+        from: "447000000001",
+        messageId: "wamid.loc",
+        latitude: 51.5074,
+        longitude: -0.1278,
+        name: "Big Ben",
+        address: "London SW1A 0AA",
+      },
+    ]);
+  });
+
+  it("parses a raw pin with no name/address", () => {
+    const payload = {
+      entry: [
+        {
+          changes: [
+            {
+              value: {
+                messages: [
+                  {
+                    from: "447000000001",
+                    id: "wamid.loc2",
+                    type: "location",
                     location: { latitude: 51.5, longitude: -0.1 },
                   },
                 ],
@@ -154,36 +224,20 @@ describe("extractIncomingMessages — unsupported message types", () => {
       ],
     };
 
-    const messages = extractIncomingMessages(payload);
-
-    expect(messages).toEqual([
-      { kind: "unsupported", from: "447000000001", messageId: "wamid.loc", type: "location" },
+    expect(extractIncomingMessages(payload)).toEqual([
+      { kind: "location", from: "447000000001", messageId: "wamid.loc2", latitude: 51.5, longitude: -0.1 },
     ]);
   });
 
-  it("parses a sticker message the same way", () => {
+  it("drops a location message missing coordinates rather than falling back to unsupported", () => {
     const payload = {
       entry: [
         {
           changes: [
-            {
-              value: {
-                messages: [{ from: "447000000001", id: "wamid.sticker", type: "sticker" }],
-              },
-            },
+            { value: { messages: [{ from: "447000000001", id: "wamid.loc3", type: "location", location: {} }] } },
           ],
         },
       ],
-    };
-
-    expect(extractIncomingMessages(payload)).toEqual([
-      { kind: "unsupported", from: "447000000001", messageId: "wamid.sticker", type: "sticker" },
-    ]);
-  });
-
-  it("drops a message missing both from and id rather than producing an unusable entry", () => {
-    const payload = {
-      entry: [{ changes: [{ value: { messages: [{ type: "location" }] } }] }],
     };
 
     expect(extractIncomingMessages(payload)).toEqual([]);

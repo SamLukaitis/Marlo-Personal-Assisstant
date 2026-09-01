@@ -433,6 +433,19 @@ export interface IncomingReactionMessage {
   emoji: string;
 }
 
+// A location the user dropped as a pin (or picked from a saved/named place). WhatsApp always
+// sends latitude/longitude; name/address are only present when the user picked a named place
+// rather than dropping a raw pin.
+export interface IncomingLocationMessage {
+  kind: "location";
+  from: string;
+  messageId: string;
+  latitude: number;
+  longitude: number;
+  name?: string;
+  address?: string;
+}
+
 // Any inbound message type we don't have a real handler for yet (location, audio/voice, sticker,
 // contacts, video, ...). `type` is Meta's raw type string, kept so the caller can log what
 // actually came in rather than a generic "something unsupported".
@@ -448,6 +461,7 @@ export type IncomingWhatsAppMessage =
   | IncomingMediaMessage
   | IncomingInteractiveMessage
   | IncomingReactionMessage
+  | IncomingLocationMessage
   | IncomingUnsupportedMessage;
 
 interface WebhookPayload {
@@ -462,6 +476,7 @@ interface WebhookPayload {
           image?: { id?: string; mime_type?: string; caption?: string };
           document?: { id?: string; mime_type?: string; filename?: string; caption?: string };
           reaction?: { message_id?: string; emoji?: string };
+          location?: { latitude?: number; longitude?: number; name?: string; address?: string };
           interactive?: {
             type?: string;
             button_reply?: { id?: string; title?: string };
@@ -473,7 +488,7 @@ interface WebhookPayload {
   }>;
 }
 
-const HANDLED_TYPES = new Set(["text", "image", "document", "interactive", "reaction"]);
+const HANDLED_TYPES = new Set(["text", "image", "document", "interactive", "reaction", "location"]);
 
 export function extractIncomingMessages(payload: WebhookPayload): IncomingWhatsAppMessage[] {
   const messages: IncomingWhatsAppMessage[] = [];
@@ -500,6 +515,22 @@ export function extractIncomingMessages(payload: WebhookPayload): IncomingWhatsA
             mimeType: m.document.mime_type,
             filename: m.document.filename,
             caption: m.document.caption,
+          });
+        } else if (
+          m.type === "location" &&
+          m.from &&
+          m.id &&
+          m.location?.latitude !== undefined &&
+          m.location.longitude !== undefined
+        ) {
+          messages.push({
+            kind: "location",
+            from: m.from,
+            messageId: m.id,
+            latitude: m.location.latitude,
+            longitude: m.location.longitude,
+            name: m.location.name,
+            address: m.location.address,
           });
         } else if (
           m.type === "interactive" &&
