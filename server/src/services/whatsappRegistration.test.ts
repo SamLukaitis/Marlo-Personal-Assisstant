@@ -24,7 +24,26 @@ describe("handlePendingRegistration — unsupported message types", () => {
       kind: "unsupported",
       from: PHONE,
       messageId: "m1",
-      type: "location",
+      type: "sticker",
+    });
+
+    expect(sendWhatsAppMessage).toHaveBeenCalledWith(
+      PHONE,
+      "Let's finish setting you up first — what should I call you?"
+    );
+  });
+
+  // A location pin is a fully handled type once someone is registered (handleLocation), but
+  // mid-registration there's no ownerId and no registration state a pin could advance, so it
+  // takes the same redirect as media/unsupported/reaction rather than falling through to the
+  // text branch and crashing on a missing .text.
+  it("redirects to setup for a location pin sent mid-registration", async () => {
+    await handlePendingRegistration({
+      kind: "location",
+      from: PHONE,
+      messageId: "m2",
+      latitude: 51.5074,
+      longitude: -0.1278,
     });
 
     expect(sendWhatsAppMessage).toHaveBeenCalledWith(

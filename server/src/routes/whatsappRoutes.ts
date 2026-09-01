@@ -170,9 +170,9 @@ export async function handleIncoming(message: IncomingWhatsAppMessage): Promise<
       const label = message.emoji ? message.emoji : "(removed)";
       appendWhatsAppMessage(ownerId, message.from, "user", `[reacted ${label} to a message]`);
     } else if (message.kind === "unsupported") {
-      // Location, voice/audio, sticker, contacts, video, etc. — nothing reads these yet. Tell the
-      // user plainly rather than staying silent, and log the raw type so it's visible which ones
-      // are actually showing up in practice.
+      // Voice/audio, sticker, contacts, video, etc. — nothing reads these yet. Tell the user
+      // plainly rather than staying silent, and log the raw type so it's visible which ones are
+      // actually showing up in practice.
       console.log("whatsapp: unsupported message type", { ownerId, type: message.type });
       const reply = "I can't read that message type yet — text me instead.";
       appendWhatsAppMessage(ownerId, message.from, "assistant", reply);

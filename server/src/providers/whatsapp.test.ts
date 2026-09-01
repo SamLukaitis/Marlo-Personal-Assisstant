@@ -154,7 +154,7 @@ describe("extractIncomingMessages — unsupported message types", () => {
 
   it("drops a message missing both from and id rather than producing an unusable entry", () => {
     const payload = {
-      entry: [{ changes: [{ value: { messages: [{ type: "location" }] } }] }],
+      entry: [{ changes: [{ value: { messages: [{ type: "sticker" }] } }] }],
     };
 
     expect(extractIncomingMessages(payload)).toEqual([]);

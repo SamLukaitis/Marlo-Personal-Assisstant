@@ -151,9 +151,9 @@ describe("handleIncoming — unsupported message types", () => {
   it("logs the raw type and replies with a friendly one-liner, without touching the assistant", async () => {
     const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
 
-    await handleIncoming({ kind: "unsupported", from: "447900000009", messageId: "m9", type: "location" });
+    await handleIncoming({ kind: "unsupported", from: "447900000009", messageId: "m9", type: "sticker" });
 
-    expect(logSpy).toHaveBeenCalledWith(expect.stringContaining("unsupported"), expect.objectContaining({ type: "location" }));
+    expect(logSpy).toHaveBeenCalledWith(expect.stringContaining("unsupported"), expect.objectContaining({ type: "sticker" }));
     expect(runAssistantChat).not.toHaveBeenCalled();
     expect(sendWhatsAppMessage).toHaveBeenCalledWith(
       "447900000009",

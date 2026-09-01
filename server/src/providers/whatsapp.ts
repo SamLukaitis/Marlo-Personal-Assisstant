@@ -446,9 +446,9 @@ export interface IncomingLocationMessage {
   address?: string;
 }
 
-// Any inbound message type we don't have a real handler for yet (location, audio/voice, sticker,
-// contacts, video, ...). `type` is Meta's raw type string, kept so the caller can log what
-// actually came in rather than a generic "something unsupported".
+// Any inbound message type we don't have a real handler for yet (audio/voice, sticker, contacts,
+// video, ...). `type` is Meta's raw type string, kept so the caller can log what actually came in
+// rather than a generic "something unsupported".
 export interface IncomingUnsupportedMessage {
   kind: "unsupported";
   from: string;
@@ -576,10 +576,10 @@ export function extractIncomingMessages(payload: WebhookPayload): IncomingWhatsA
             emoji: m.reaction.emoji,
           });
         } else if (m.from && m.id && !HANDLED_TYPES.has(m.type ?? "")) {
-          // A genuinely different message type we don't have a real handler for (location,
-          // audio/voice, sticker, contacts, reaction, video, ...) — routed somewhere rather than
-          // silently dropped, as long as we at least know who to reply to. See handleIncoming's
-          // "unsupported" branch. Deliberately excludes text/image/document/interactive: a
+          // A genuinely different message type we don't have a real handler for (audio/voice,
+          // sticker, contacts, video, ...) — routed somewhere rather than silently dropped, as
+          // long as we at least know who to reply to. See handleIncoming's "unsupported" branch.
+          // Deliberately excludes text/image/document/interactive: a
           // malformed payload of a type we DO handle (missing a required nested field) stays
           // silently dropped rather than surfacing a confusing "can't read that" reply for what's
           // really a corrupt button tap or the like.
