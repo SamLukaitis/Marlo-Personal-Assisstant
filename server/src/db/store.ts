@@ -2307,6 +2307,15 @@ export function deleteUserCompletely(ownerId: number): { deletedDocumentPaths: s
     // pending_actions and document_match_keys fixes above: an admin (including the app owner
     // being reset here) who'd used their own to-do list or poster board left a row behind, and
     // the final DELETE FROM users below violated the foreign key.
+    //
+    // admin_todo_replies.author_id and admin_todo_reply_reads.user_id are the same shape again,
+    // one generation later (threaded to-do replies, commit c16615f): deleting admin_todos by
+    // created_by never touched a reply this owner left on someone ELSE's still-existing to-do, or
+    // their own read-tracking row — reported as the same bare "FOREIGN KEY constraint failed" on
+    // a real, actively-used account. Children before parent, same manual-cascade order as
+    // deleteAdminTodo above, since admin_todo_replies.todo_id itself references admin_todos(id).
+    db.prepare(`DELETE FROM admin_todo_reply_reads WHERE user_id = ?`).run(ownerId);
+    db.prepare(`DELETE FROM admin_todo_replies WHERE author_id = ?`).run(ownerId);
     db.prepare(`DELETE FROM admin_todos WHERE created_by = ?`).run(ownerId);
     db.prepare(`DELETE FROM poster_notes WHERE author_id = ?`).run(ownerId);
     db.prepare(`DELETE FROM user_phone_numbers WHERE user_id = ?`).run(ownerId);

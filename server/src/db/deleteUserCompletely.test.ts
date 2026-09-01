@@ -9,6 +9,9 @@ import {
   saveMatchKeys,
   addAdminTodo,
   addPosterNote,
+  addAdminTodoReply,
+  markAdminTodoRepliesRead,
+  listAdminTodos,
   findRemainingOwnerReferences,
 } from "./store.js";
 
@@ -80,6 +83,24 @@ describe("deleteUserCompletely", () => {
 
     expect(() => deleteUserCompletely(user.id)).not.toThrow();
     expect(getUser(user.id)).toBeNull();
+  });
+
+  // Regression test: admin_todo_replies.author_id and admin_todo_reply_reads.user_id both declare
+  // NOT NULL REFERENCES users(id) (threaded to-do replies, commit c16615f). deleteUserCompletely
+  // only ever cleared admin_todos WHERE created_by = ownerId, which doesn't touch a reply this
+  // owner left on someone ELSE's still-existing to-do, or their own read-tracking row — same bug
+  // shape as the admin_todos/poster_notes case above, one table generation later.
+  it("does not throw when the owner has replied to (and read) someone else's admin_todos row", () => {
+    const todoOwner = findOrCreateUserByEmail(uniqueEmail("todo-owner"));
+    const replier = findOrCreateUserByEmail(uniqueEmail("todo-replier"));
+    const todoText = uniqueEmail("todo-text"); // unique text to find this exact todo below
+    addAdminTodo(todoText, todoOwner.id);
+    const todo = listAdminTodos(todoOwner.id).find((t) => t.text === todoText)!;
+    addAdminTodoReply(todo.id, replier.id, "reply text");
+    markAdminTodoRepliesRead(todo.id, replier.id);
+
+    expect(() => deleteUserCompletely(replier.id)).not.toThrow();
+    expect(getUser(replier.id)).toBeNull();
   });
 });
 
