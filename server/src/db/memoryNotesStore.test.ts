@@ -1,5 +1,12 @@
 import { describe, it, expect } from "vitest";
-import { findOrCreateUserByEmail, addMemoryNote, listDueMemoryReminders, markMemorySurfaced } from "./store.js";
+import {
+  findOrCreateUserByEmail,
+  addMemoryNote,
+  listDueMemoryReminders,
+  markMemorySurfaced,
+  removeMemoryNote,
+  searchMemoryNotes,
+} from "./store.js";
 
 let counter = 0;
 function uniqueEmail(prefix: string): string {
@@ -82,5 +89,74 @@ describe("listDueMemoryReminders", () => {
     addMemoryNote(userA.id, "A's reminder", past);
 
     expect(listDueMemoryReminders(userB.id, Date.now())).toHaveLength(0);
+  });
+});
+
+describe("searchMemoryNotes", () => {
+  it("finds a note containing the query term", () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("search-basic"));
+    addMemoryNote(user.id, "Allergic to shellfish");
+    addMemoryNote(user.id, "Prefers window seats on flights");
+
+    const results = searchMemoryNotes(user.id, "shellfish");
+    expect(results).toHaveLength(1);
+    expect(results[0].content).toBe("Allergic to shellfish");
+  });
+
+  it("requires all query terms to match (AND semantics)", () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("search-and"));
+    addMemoryNote(user.id, "Allergic to shellfish");
+    addMemoryNote(user.id, "Allergic to peanuts");
+
+    const results = searchMemoryNotes(user.id, "allergic shellfish");
+    expect(results).toHaveLength(1);
+    expect(results[0].content).toBe("Allergic to shellfish");
+  });
+
+  it("returns no results when nothing matches", () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("search-none"));
+    addMemoryNote(user.id, "Prefers window seats on flights");
+
+    expect(searchMemoryNotes(user.id, "shellfish")).toHaveLength(0);
+  });
+
+  it("scopes results to the owner", () => {
+    const userA = findOrCreateUserByEmail(uniqueEmail("search-owner-a"));
+    const userB = findOrCreateUserByEmail(uniqueEmail("search-owner-b"));
+    addMemoryNote(userA.id, "Allergic to shellfish");
+
+    expect(searchMemoryNotes(userB.id, "shellfish")).toHaveLength(0);
+  });
+
+  it("no longer matches a note after it's removed", () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("search-removed"));
+    const note = addMemoryNote(user.id, "Allergic to shellfish");
+
+    removeMemoryNote(user.id, note.id);
+
+    expect(searchMemoryNotes(user.id, "shellfish")).toHaveLength(0);
+  });
+
+  it("doesn't throw on FTS special characters in the query", () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("search-special"));
+    addMemoryNote(user.id, "Visa expires 2026-09-12");
+
+    expect(() => searchMemoryNotes(user.id, '"quoted" OR NOT * weird:query')).not.toThrow();
+  });
+
+  it("returns an empty array for a blank query instead of matching everything", () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("search-blank"));
+    addMemoryNote(user.id, "Allergic to shellfish");
+
+    expect(searchMemoryNotes(user.id, "   ")).toHaveLength(0);
+  });
+
+  it("respects the limit parameter", () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("search-limit"));
+    addMemoryNote(user.id, "Trip note alpha");
+    addMemoryNote(user.id, "Trip note beta");
+    addMemoryNote(user.id, "Trip note gamma");
+
+    expect(searchMemoryNotes(user.id, "trip", 2)).toHaveLength(2);
   });
 });
