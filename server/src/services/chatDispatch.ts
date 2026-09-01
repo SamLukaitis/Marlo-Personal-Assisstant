@@ -37,7 +37,7 @@ function linkFailureMessage(reason: FetchFailureReason): string {
   }
 }
 
-async function handleLink(ownerId: number, from: string, url: string): Promise<void> {
+async function handleLink(ownerId: number, from: string, url: string, messageId: string): Promise<void> {
   const result = await ingestWhatsAppLink({ ownerId, phone: from, url });
 
   if (!result.ok) {
@@ -63,10 +63,15 @@ async function handleLink(ownerId: number, from: string, url: string): Promise<v
   }
 
   const reply = await runAssistantChat(ownerId, history, from);
-  await sendAssistantReply(ownerId, from, reply);
+  await sendAssistantReply(ownerId, from, reply, messageId);
 }
 
-export async function handleText(ownerId: number, from: string, text: string): Promise<void> {
+export async function handleText(
+  ownerId: number,
+  from: string,
+  text: string,
+  messageId: string
+): Promise<void> {
   appendWhatsAppMessage(ownerId, from, "user", text);
 
   // "help"/"menu" short-circuits straight to the same canned overview used at first contact —
@@ -94,7 +99,7 @@ export async function handleText(ownerId: number, from: string, text: string): P
   // document store; a false negative just means the user re-sends the bare link).
   const url = findSaveableUrl(text);
   if (url) {
-    await handleLink(ownerId, from, url);
+    await handleLink(ownerId, from, url, messageId);
     return;
   }
 
@@ -104,5 +109,5 @@ export async function handleText(ownerId: number, from: string, text: string): P
   }));
 
   const reply = await runAssistantChat(ownerId, history, from);
-  await sendAssistantReply(ownerId, from, reply);
+  await sendAssistantReply(ownerId, from, reply, messageId);
 }

@@ -132,7 +132,7 @@ async function advancePastFreeTextStep(
   if (isSkip(message.text)) {
     await reply(phone, skipReply);
   } else {
-    await handleText(ownerId, phone, message.text);
+    await handleText(ownerId, phone, message.text, message.messageId);
   }
   await next(ownerId, phone);
 }

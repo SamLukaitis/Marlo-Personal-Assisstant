@@ -88,6 +88,34 @@ describe("runAssistantChat — ask_user_choice", () => {
   });
 });
 
+describe("runAssistantChat — react_to_message", () => {
+  it("ends the turn immediately with a reaction, no text, and no second API call", async () => {
+    mockCreate.mockResolvedValueOnce(toolUseResponse("react_to_message", { emoji: "👍" }));
+    const user = findOrCreateUserByEmail(uniqueEmail("react-to-message"));
+
+    const reply = await runAssistantChat(user.id, [{ role: "user", content: "ok thanks" }]);
+
+    expect(mockCreate).toHaveBeenCalledTimes(1);
+    expect(reply).toEqual({ text: "", reaction: { emoji: "👍" } });
+  });
+
+  it("is ignored if the model also produced text in the same turn — text wins", async () => {
+    // Mirrors ask_user_choice's own "call it alone" contract: if the model didn't follow that,
+    // prefer the visible text over a silent, unreadable reaction.
+    mockCreate.mockResolvedValueOnce({
+      content: [
+        { type: "text", text: "Got it!" },
+        { type: "tool_use", id: "tool_1", name: "react_to_message", input: { emoji: "👍" } },
+      ],
+    });
+    const user = findOrCreateUserByEmail(uniqueEmail("react-to-message-with-text"));
+
+    const reply = await runAssistantChat(user.id, [{ role: "user", content: "ok thanks" }]);
+
+    expect(reply).toEqual({ text: "Got it!" });
+  });
+});
+
 describe("runAssistantChat — confirm-required tools can't be called directly", () => {
   it("rejects a direct delete_calendar_event call instead of executing it", async () => {
     mockCreate
