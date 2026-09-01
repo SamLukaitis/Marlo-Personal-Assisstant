@@ -133,6 +133,6 @@ describe("handlePendingActionReply", () => {
       "(User selected: Sarah Chen <sarah.chen@acme.com>)"
     );
     expect(runAssistantChat).toHaveBeenCalledWith(1, expect.anything(), "44700");
-    expect(sendAssistantReply).toHaveBeenCalledWith(1, "44700", { text: "Drafted an email to Sarah Chen." });
+    expect(sendAssistantReply).toHaveBeenCalledWith(1, "44700", { text: "Drafted an email to Sarah Chen." }, "m6");
   });
 });

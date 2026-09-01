@@ -110,7 +110,7 @@ describe("handleFirstTaskReply", () => {
     const handled = await handleFirstTaskReply(ownerId, text("reply to John's email for me"));
 
     expect(handled).toBe(true);
-    expect(handleText).toHaveBeenCalledWith(ownerId, PHONE, "reply to John's email for me");
+    expect(handleText).toHaveBeenCalledWith(ownerId, PHONE, "reply to John's email for me", expect.any(String));
     expect(getPendingSetup(ownerId)).toBe("ask_briefing");
   });
 });
@@ -230,7 +230,7 @@ describe("handleBriefingContentReply", () => {
     const handled = await handleBriefingContentReply(ownerId, text("news and weather please"));
 
     expect(handled).toBe(true);
-    expect(handleText).toHaveBeenCalledWith(ownerId, PHONE, "news and weather please");
+    expect(handleText).toHaveBeenCalledWith(ownerId, PHONE, "news and weather please", expect.any(String));
     expect(getPendingSetup(ownerId)).toBe("ask_teams");
   });
 });

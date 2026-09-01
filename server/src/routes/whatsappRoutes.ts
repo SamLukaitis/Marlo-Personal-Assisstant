@@ -57,6 +57,7 @@ async function handleMedia(
   from: string,
   mediaId: string,
   mimeType: string,
+  messageId: string,
   filename?: string,
   caption?: string
 ): Promise<void> {
@@ -89,7 +90,7 @@ async function handleMedia(
   }
 
   const reply = await runAssistantChat(ownerId, history, from);
-  await sendAssistantReply(ownerId, from, reply);
+  await sendAssistantReply(ownerId, from, reply, messageId);
 }
 
 export async function handleIncoming(message: IncomingWhatsAppMessage): Promise<void> {
@@ -140,13 +141,28 @@ export async function handleIncoming(message: IncomingWhatsAppMessage): Promise<
 
   try {
     if (message.kind === "text") {
-      await handleText(ownerId, message.from, message.text);
+      await handleText(ownerId, message.from, message.text, message.messageId);
     } else if (message.kind === "media") {
-      await handleMedia(ownerId, message.from, message.mediaId, message.mimeType, message.filename, message.caption);
+      await handleMedia(
+        ownerId,
+        message.from,
+        message.mediaId,
+        message.mimeType,
+        message.messageId,
+        message.filename,
+        message.caption
+      );
+    } else if (message.kind === "reaction") {
+      // A reaction to something Marlowe sent (or its removal) — recorded to history so it's not
+      // silently dropped, but deliberately does NOT trigger a full assistant turn/reply: a
+      // reaction on its own essentially never needs a response, and every one skipped here is a
+      // full API call not spent.
+      const label = message.emoji ? message.emoji : "(removed)";
+      appendWhatsAppMessage(ownerId, message.from, "user", `[reacted ${label} to a message]`);
     } else if (message.kind === "unsupported") {
-      // Location, voice/audio, sticker, contacts, reaction, video, etc. — nothing reads these
-      // yet. Tell the user plainly rather than staying silent, and log the raw type so it's
-      // visible which ones are actually showing up in practice.
+      // Location, voice/audio, sticker, contacts, video, etc. — nothing reads these yet. Tell the
+      // user plainly rather than staying silent, and log the raw type so it's visible which ones
+      // are actually showing up in practice.
       console.log("whatsapp: unsupported message type", { ownerId, type: message.type });
       const reply = "I can't read that message type yet — text me instead.";
       appendWhatsAppMessage(ownerId, message.from, "assistant", reply);

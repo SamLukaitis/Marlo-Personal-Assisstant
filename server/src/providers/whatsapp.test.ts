@@ -5,6 +5,7 @@ import {
   sendWhatsAppListMessage,
   sendChoiceMessage,
   sendWhatsAppMediaFromBuffer,
+  sendWhatsAppReaction,
   extractIncomingMessages,
   WhatsAppSendError,
 } from "./whatsapp.js";
@@ -280,6 +281,124 @@ describe("sendWhatsAppMediaFromBuffer", () => {
     await expect(
       sendWhatsAppMediaFromBuffer("447000000001", Buffer.from("x"), "image/jpeg", "a.jpg")
     ).rejects.toThrow(WhatsAppSendError);
+  });
+});
+
+describe("sendWhatsAppReaction", () => {
+  it("posts a reaction message targeting the given message id", async () => {
+    const fetchMock = mockFetchOk();
+
+    await sendWhatsAppReaction("447000000001", "wamid.original", "👍");
+
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body);
+    expect(body.type).toBe("reaction");
+    expect(body.reaction).toEqual({ message_id: "wamid.original", emoji: "👍" });
+  });
+
+  it("throws a WhatsAppSendError on a non-ok response", async () => {
+    global.fetch = vi
+      .fn()
+      .mockResolvedValue({ ok: false, status: 400, text: async () => '{"error":{"code":100}}' }) as unknown as typeof fetch;
+
+    await expect(sendWhatsAppReaction("447000000001", "wamid.original", "👍")).rejects.toThrow(
+      WhatsAppSendError
+    );
+  });
+});
+
+describe("extractIncomingMessages — reactions", () => {
+  it("parses a reaction into an IncomingReactionMessage", () => {
+    const payload = {
+      entry: [
+        {
+          changes: [
+            {
+              value: {
+                messages: [
+                  {
+                    from: "447000000001",
+                    id: "wamid.reaction1",
+                    type: "reaction",
+                    reaction: { message_id: "wamid.original", emoji: "👍" },
+                  },
+                ],
+              },
+            },
+          ],
+        },
+      ],
+    };
+
+    const messages = extractIncomingMessages(payload);
+
+    expect(messages).toEqual([
+      {
+        kind: "reaction",
+        from: "447000000001",
+        messageId: "wamid.reaction1",
+        reactedToMessageId: "wamid.original",
+        emoji: "👍",
+      },
+    ]);
+  });
+
+  it("parses a reaction removal (empty emoji) rather than dropping it", () => {
+    const payload = {
+      entry: [
+        {
+          changes: [
+            {
+              value: {
+                messages: [
+                  {
+                    from: "447000000001",
+                    id: "wamid.reaction2",
+                    type: "reaction",
+                    reaction: { message_id: "wamid.original", emoji: "" },
+                  },
+                ],
+              },
+            },
+          ],
+        },
+      ],
+    };
+
+    expect(extractIncomingMessages(payload)).toEqual([
+      {
+        kind: "reaction",
+        from: "447000000001",
+        messageId: "wamid.reaction2",
+        reactedToMessageId: "wamid.original",
+        emoji: "",
+      },
+    ]);
+  });
+
+  it("no longer falls into the generic unsupported bucket", () => {
+    const payload = {
+      entry: [
+        {
+          changes: [
+            {
+              value: {
+                messages: [
+                  {
+                    from: "447000000001",
+                    id: "wamid.reaction3",
+                    type: "reaction",
+                    reaction: { message_id: "wamid.original", emoji: "🎉" },
+                  },
+                ],
+              },
+            },
+          ],
+        },
+      ],
+    };
+
+    const messages = extractIncomingMessages(payload);
+    expect(messages.every((m) => m.kind !== "unsupported")).toBe(true);
   });
 });
 

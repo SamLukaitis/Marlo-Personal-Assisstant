@@ -634,6 +634,18 @@ const ALWAYS_ON_TOOLS: Anthropic.Tool[] = [
       required: ["question", "mode"],
     },
   },
+  {
+    name: "react_to_message",
+    description:
+      "React to the user's message/upload with a single emoji instead of sending a text reply — use for a low-signal acknowledgment that doesn't need a response (e.g. \"ok\", \"thanks\", \"👍\", a short confirmation) where a full reply would feel unnecessary. Call this ALONE, as the only tool call and with no other text in your turn — if you have anything to say, say it as a normal text reply instead of calling this.",
+    input_schema: {
+      type: "object",
+      properties: {
+        emoji: { type: "string", description: "A single emoji, e.g. \"👍\"." },
+      },
+      required: ["emoji"],
+    },
+  },
 ];
 
 const CONDITIONAL_TOOLS: Record<ToolKey, Anthropic.Tool[]> = {
@@ -1093,6 +1105,9 @@ export interface AssistantReply {
     mode: "confirm" | "resume";
     buttons: PendingChoiceButton[];
   };
+  reaction?: {
+    emoji: string;
+  };
 }
 
 // Builds the AssistantReply for an ask_user_choice tool call and persists the pending_actions
@@ -1368,6 +1383,23 @@ export async function runAssistantChat(
     const choiceUse = toolUses.find((t) => t.name === "ask_user_choice");
     if (choiceUse) {
       return finish(buildChoiceReply(ownerId, choiceUse.input as Record<string, unknown>));
+    }
+
+    // react_to_message is also a hard stop, same shape as ask_user_choice above — one API call
+    // in, a reaction out, no tool_result round-trip. Its own instructions tell the model to call
+    // it alone; if the model broke that and also wrote text this turn, prefer the visible text
+    // over a silent reaction — the user should never see nothing when the model had something to
+    // say (same reasoning as the flag_unmet_request + text case below).
+    const reactionUse = toolUses.find((t) => t.name === "react_to_message");
+    if (reactionUse) {
+      const reactionTextBlock = response.content.find(
+        (b): b is Anthropic.TextBlock => b.type === "text"
+      );
+      if (reactionTextBlock) {
+        return finish({ text: reactionTextBlock.text });
+      }
+      const input = reactionUse.input as Record<string, unknown>;
+      return finish({ text: "", reaction: { emoji: input.emoji as string } });
     }
 
     // flag_unmet_request is a fire-and-forget log, not a tool whose result the model needs fed

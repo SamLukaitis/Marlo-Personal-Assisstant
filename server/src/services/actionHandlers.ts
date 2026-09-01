@@ -89,6 +89,6 @@ export async function handlePendingActionReply(
     content: m.content,
   }));
   const reply = await runAssistantChat(ownerId, history, phone);
-  await sendAssistantReply(ownerId, phone, reply);
+  await sendAssistantReply(ownerId, phone, reply, message.messageId);
   return true;
 }

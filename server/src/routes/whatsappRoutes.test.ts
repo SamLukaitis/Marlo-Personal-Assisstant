@@ -53,7 +53,7 @@ vi.mock("../services/conversationSummary.js", () => ({
 }));
 
 const { sendWhatsAppMessage } = await import("../providers/whatsapp.js");
-const { resolveOwnerByPhone } = await import("../db/store.js");
+const { resolveOwnerByPhone, appendWhatsAppMessage } = await import("../db/store.js");
 const { runAssistantChat } = await import("../ai/assistant.js");
 const { handleFirstTaskReply, handlePostConnectSetupReply, handleBriefingContentReply } = await import(
   "../services/postConnectSetup.js"
@@ -67,6 +67,7 @@ beforeEach(() => {
   vi.mocked(sendWhatsAppMessage).mockClear();
   vi.mocked(runAssistantChat).mockClear();
   vi.mocked(resolveOwnerByPhone).mockReturnValue(42);
+  vi.mocked(appendWhatsAppMessage).mockClear();
   vi.mocked(handleFirstTaskReply).mockReset().mockResolvedValue(false);
   vi.mocked(handlePostConnectSetupReply).mockReset().mockResolvedValue(false);
   vi.mocked(handleBriefingContentReply).mockReset().mockResolvedValue(false);
@@ -162,13 +163,48 @@ describe("handleIncoming — unsupported message types", () => {
   });
 });
 
+describe("handleIncoming — reactions", () => {
+  it("logs a reaction to history but never calls the assistant or sends a reply", async () => {
+    await handleIncoming({
+      kind: "reaction",
+      from: "447900000010",
+      messageId: "m10",
+      reactedToMessageId: "wamid.original",
+      emoji: "👍",
+    });
+
+    expect(appendWhatsAppMessage).toHaveBeenCalledWith(42, "447900000010", "user", expect.stringContaining("👍"));
+    expect(runAssistantChat).not.toHaveBeenCalled();
+    expect(sendWhatsAppMessage).not.toHaveBeenCalled();
+    expect(sendAssistantReply).not.toHaveBeenCalled();
+  });
+
+  it("logs a removed reaction (empty emoji) distinctly rather than as a blank", async () => {
+    await handleIncoming({
+      kind: "reaction",
+      from: "447900000011",
+      messageId: "m11",
+      reactedToMessageId: "wamid.original",
+      emoji: "",
+    });
+
+    expect(appendWhatsAppMessage).toHaveBeenCalledWith(
+      42,
+      "447900000011",
+      "user",
+      expect.stringContaining("removed")
+    );
+    expect(runAssistantChat).not.toHaveBeenCalled();
+  });
+});
+
 describe("handleIncoming — routes runAssistantChat's result through sendAssistantReply", () => {
   it("passes the full AssistantReply through, not just .text", async () => {
     vi.mocked(runAssistantChat).mockResolvedValue({ text: "a real reply" });
 
     await handleIncoming({ kind: "text", from: "447900000005", text: "what's on my calendar today?", messageId: "m6" });
 
-    expect(sendAssistantReply).toHaveBeenCalledWith(42, "447900000005", { text: "a real reply" });
+    expect(sendAssistantReply).toHaveBeenCalledWith(42, "447900000005", { text: "a real reply" }, "m6");
   });
 });
 

@@ -256,7 +256,10 @@ export async function handlePendingRegistration(message: IncomingWhatsAppMessage
     return;
   }
 
-  if (message.kind === "media" || message.kind === "unsupported") {
+  // Media, unsupported types (location, voice, sticker, ...), and reactions all get the same
+  // redirect — there's no registration state to advance from any of these, and nobody's
+  // registered yet for a reaction to even mean anything.
+  if (message.kind === "media" || message.kind === "unsupported" || message.kind === "reaction") {
     await redirectToSetup(phone);
     return;
   }

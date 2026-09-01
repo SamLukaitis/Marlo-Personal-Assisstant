@@ -338,6 +338,34 @@ export async function sendWhatsAppTemplate(
   }
 }
 
+// Reacts to a message with a single emoji instead of sending a text reply — used when a full
+// reply isn't warranted (see assistant.ts's react_to_message tool). `emoji: ""` removes a
+// reaction previously sent to this message id; not used by any caller yet, but free to support
+// since it's the same Graph call shape.
+export async function sendWhatsAppReaction(to: string, messageId: string, emoji: string): Promise<void> {
+  const phoneNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID;
+  const token = process.env.WHATSAPP_TOKEN;
+  const res = await fetch(
+    `https://graph.facebook.com/${GRAPH_VERSION}/${phoneNumberId}/messages`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        messaging_product: "whatsapp",
+        to,
+        type: "reaction",
+        reaction: { message_id: messageId, emoji },
+      }),
+    }
+  );
+  if (!res.ok) {
+    throw await buildSendError("WhatsApp reaction send failed", res);
+  }
+}
+
 // Marks the incoming message read and shows WhatsApp's native "..." typing indicator to the
 // user — Meta shows it for up to 25 seconds or until we actually reply, whichever comes first.
 // Best-effort by design (callers fire-and-forget this): a full assistant turn with tool calls
@@ -393,9 +421,21 @@ export interface IncomingInteractiveMessage {
   buttonId: string;
 }
 
+// A tap/removal of an emoji reaction on a message we sent — emoji is "" when the person removed
+// a reaction they'd previously left, not a malformed payload, so it's parsed the same as a
+// present reaction rather than dropped. reactedToMessageId is the original message's wamid, not
+// this event's own id (messageId, below).
+export interface IncomingReactionMessage {
+  kind: "reaction";
+  from: string;
+  messageId: string;
+  reactedToMessageId: string;
+  emoji: string;
+}
+
 // Any inbound message type we don't have a real handler for yet (location, audio/voice, sticker,
-// contacts, reaction, video, ...). `type` is Meta's raw type string, kept so the caller can log
-// what actually came in rather than a generic "something unsupported".
+// contacts, video, ...). `type` is Meta's raw type string, kept so the caller can log what
+// actually came in rather than a generic "something unsupported".
 export interface IncomingUnsupportedMessage {
   kind: "unsupported";
   from: string;
@@ -407,6 +447,7 @@ export type IncomingWhatsAppMessage =
   | IncomingTextMessage
   | IncomingMediaMessage
   | IncomingInteractiveMessage
+  | IncomingReactionMessage
   | IncomingUnsupportedMessage;
 
 interface WebhookPayload {
@@ -420,6 +461,7 @@ interface WebhookPayload {
           text?: { body?: string };
           image?: { id?: string; mime_type?: string; caption?: string };
           document?: { id?: string; mime_type?: string; filename?: string; caption?: string };
+          reaction?: { message_id?: string; emoji?: string };
           interactive?: {
             type?: string;
             button_reply?: { id?: string; title?: string };
@@ -431,7 +473,7 @@ interface WebhookPayload {
   }>;
 }
 
-const HANDLED_TYPES = new Set(["text", "image", "document", "interactive"]);
+const HANDLED_TYPES = new Set(["text", "image", "document", "interactive", "reaction"]);
 
 export function extractIncomingMessages(payload: WebhookPayload): IncomingWhatsAppMessage[] {
   const messages: IncomingWhatsAppMessage[] = [];
@@ -484,6 +526,23 @@ export function extractIncomingMessages(payload: WebhookPayload): IncomingWhatsA
             from: m.from,
             messageId: m.id,
             buttonId: m.interactive.list_reply.id,
+          });
+        } else if (
+          m.type === "reaction" &&
+          m.from &&
+          m.id &&
+          m.reaction?.message_id &&
+          m.reaction.emoji !== undefined
+        ) {
+          // emoji === "" means the person removed a reaction they'd left earlier — a real event,
+          // not a malformed payload, so it's parsed the same as a present emoji rather than
+          // falling through to the unsupported branch below.
+          messages.push({
+            kind: "reaction",
+            from: m.from,
+            messageId: m.id,
+            reactedToMessageId: m.reaction.message_id,
+            emoji: m.reaction.emoji,
           });
         } else if (m.from && m.id && !HANDLED_TYPES.has(m.type ?? "")) {
           // A genuinely different message type we don't have a real handler for (location,
