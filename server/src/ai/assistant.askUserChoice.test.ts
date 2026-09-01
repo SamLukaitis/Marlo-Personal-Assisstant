@@ -58,6 +58,33 @@ describe("runAssistantChat — ask_user_choice", () => {
     expect(reply.text).toContain("Archive 3 emails from Nike?");
   });
 
+  it("supports an editable confirm with custom labels and a decline_tool, rendering Edit/Send/Leave in Drafts", async () => {
+    mockCreate.mockResolvedValueOnce(
+      toolUseResponse("ask_user_choice", {
+        question: "To: jane@x.com\nSubject: Hi\n\nBody text\n\nReady to send this?",
+        mode: "confirm",
+        confirm_tool: "send_email",
+        confirm_input: { account_id: 1, to: "jane@x.com", subject: "Hi", body: "Body text" },
+        editable: true,
+        yes_label: "Send",
+        no_label: "Leave in Drafts",
+        decline_tool: "create_email_draft",
+        decline_input: { account_id: 1, to: "jane@x.com", subject: "Hi", body: "Body text" },
+      })
+    );
+    const user = findOrCreateUserByEmail(uniqueEmail("editable-confirm"));
+
+    const reply = await runAssistantChat(user.id, [{ role: "user", content: "email jane" }]);
+
+    expect(reply.choice?.mode).toBe("confirm");
+    expect(reply.choice?.buttons).toEqual([
+      { key: "edit", label: "Edit" },
+      { key: "yes", label: "Send" },
+      { key: "no", label: "Leave in Drafts" },
+    ]);
+    expect(reply.choice?.question).toContain("Ready to send this?");
+  });
+
   it("ends the turn immediately on a resume choice, with one button per option", async () => {
     mockCreate.mockResolvedValueOnce(
       toolUseResponse("ask_user_choice", {
@@ -188,6 +215,24 @@ describe("runAssistantChat — confirm-required tools can't be called directly",
     const toolResult = toolResultMessage.content[0];
     expect(toolResult.is_error).toBe(true);
     expect(toolResult.content).toContain("ask_user_choice");
+  });
+
+  it("rejects a direct send_email call instead of executing it", async () => {
+    mockCreate
+      .mockResolvedValueOnce(
+        toolUseResponse("send_email", { account_id: 1, to: "jane@x.com", subject: "Hi", body: "..." })
+      )
+      .mockResolvedValueOnce({ content: [{ type: "text", text: "I'll confirm first." }] });
+    const user = findOrCreateUserByEmail(uniqueEmail("confirm-required-send"));
+
+    const reply = await runAssistantChat(user.id, [{ role: "user", content: "email jane" }]);
+
+    expect(mockCreate).toHaveBeenCalledTimes(2);
+    expect(reply).toEqual({ text: "I'll confirm first." });
+    const secondCallMessages = mockCreate.mock.calls[1][0].messages;
+    const toolResultMessage = secondCallMessages[secondCallMessages.length - 1];
+    expect(toolResultMessage.content[0].is_error).toBe(true);
+    expect(toolResultMessage.content[0].content).toContain("ask_user_choice");
   });
 
   it("still executes delete_calendar_event once actually confirmed via ask_user_choice", async () => {

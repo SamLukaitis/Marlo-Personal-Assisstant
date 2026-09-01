@@ -64,17 +64,22 @@ describe("buildClassifyPrompt", () => {
 });
 
 describe("parseClassifyMatches", () => {
-  it("returns a Map of index to category for well-formed matches", () => {
+  it("returns a Map of index to category+summary for well-formed matches", () => {
     const result = parseClassifyMatches([
-      { index: 0, category: "flight_change" },
-      { index: 2, category: "invoice_due" },
+      { index: 0, category: "flight_change", summary: "Your gate moved to B12." },
+      { index: 2, category: "invoice_due", summary: "£120 is due 1 Sep." },
     ]);
     expect(result).toEqual(
       new Map([
-        [0, "flight_change"],
-        [2, "invoice_due"],
+        [0, { category: "flight_change", summary: "Your gate moved to B12." }],
+        [2, { category: "invoice_due", summary: "£120 is due 1 Sep." }],
       ])
     );
+  });
+
+  it("defaults summary to an empty string when missing or non-string", () => {
+    const result = parseClassifyMatches([{ index: 0, category: "flight_change" }]);
+    expect(result.get(0)).toEqual({ category: "flight_change", summary: "" });
   });
 
   it("skips entries with an unknown category", () => {

@@ -108,6 +108,109 @@ describe("handlePendingActionReply", () => {
     expect(sendWhatsAppMessage).toHaveBeenCalledWith("44700", "Cancelled.");
   });
 
+  it("confirm + no with a decline_tool: runs the decline tool instead of just cancelling", async () => {
+    vi.mocked(consumePendingAction).mockReturnValue({
+      id: "abc-123",
+      ownerId: 1,
+      mode: "confirm",
+      question: "Ready to send this?",
+      contextJson: JSON.stringify({
+        tool: "send_email",
+        input: { account_id: 1, to: "jane@x.com", subject: "Hi", body: "..." },
+        declineTool: "create_email_draft",
+        declineInput: { account_id: 1, to: "jane@x.com", subject: "Hi", body: "..." },
+      }),
+    });
+    vi.mocked(runTool).mockResolvedValue({ draftId: "d1" });
+
+    const result = await handlePendingActionReply(1, {
+      kind: "interactive",
+      from: "44700",
+      messageId: "m7",
+      buttonId: "pa:abc-123:no",
+    });
+
+    expect(result).toBe(true);
+    expect(runTool).toHaveBeenCalledWith(
+      1,
+      "create_email_draft",
+      { account_id: 1, to: "jane@x.com", subject: "Hi", body: "..." },
+      "44700"
+    );
+    expect(sendWhatsAppMessage).toHaveBeenCalledWith("44700", "📝 Saved as a draft — nothing was sent.");
+  });
+
+  it("confirm + yes: runs send_email and reports it sent", async () => {
+    vi.mocked(consumePendingAction).mockReturnValue({
+      id: "abc-123",
+      ownerId: 1,
+      mode: "confirm",
+      question: "Ready to send this?",
+      contextJson: JSON.stringify({
+        tool: "send_email",
+        input: { account_id: 1, to: "jane@x.com", subject: "Hi", body: "..." },
+        declineTool: "create_email_draft",
+        declineInput: {},
+      }),
+    });
+    vi.mocked(runTool).mockResolvedValue({ messageId: "m1" });
+
+    const result = await handlePendingActionReply(1, {
+      kind: "interactive",
+      from: "44700",
+      messageId: "m8",
+      buttonId: "pa:abc-123:yes",
+    });
+
+    expect(result).toBe(true);
+    expect(runTool).toHaveBeenCalledWith(
+      1,
+      "send_email",
+      { account_id: 1, to: "jane@x.com", subject: "Hi", body: "..." },
+      "44700"
+    );
+    expect(sendWhatsAppMessage).toHaveBeenCalledWith("44700", "✓ Sent.");
+  });
+
+  it("confirm + edit: routes back through the model instead of running either tool", async () => {
+    vi.mocked(consumePendingAction).mockReturnValue({
+      id: "abc-123",
+      ownerId: 1,
+      mode: "confirm",
+      question: "Ready to send this?",
+      contextJson: JSON.stringify({
+        tool: "send_email",
+        input: { account_id: 1, to: "jane@x.com", subject: "Hi", body: "..." },
+        declineTool: "create_email_draft",
+        declineInput: {},
+      }),
+    });
+    vi.mocked(runAssistantChat).mockResolvedValue({ text: "What would you like to change?" });
+
+    const result = await handlePendingActionReply(1, {
+      kind: "interactive",
+      from: "44700",
+      messageId: "m9",
+      buttonId: "pa:abc-123:edit",
+    });
+
+    expect(result).toBe(true);
+    expect(runTool).not.toHaveBeenCalled();
+    expect(appendWhatsAppMessage).toHaveBeenCalledWith(
+      1,
+      "44700",
+      "user",
+      "(User wants to edit this before continuing.)"
+    );
+    expect(runAssistantChat).toHaveBeenCalledWith(1, expect.anything(), "44700");
+    expect(sendAssistantReply).toHaveBeenCalledWith(
+      1,
+      "44700",
+      { text: "What would you like to change?" },
+      "m9"
+    );
+  });
+
   it("resume: injects a synthetic user message and forwards runAssistantChat's reply", async () => {
     vi.mocked(consumePendingAction).mockReturnValue({
       id: "abc-123",
