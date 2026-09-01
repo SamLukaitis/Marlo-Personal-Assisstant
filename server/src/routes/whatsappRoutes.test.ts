@@ -163,6 +163,55 @@ describe("handleIncoming — unsupported message types", () => {
   });
 });
 
+describe("handleIncoming — location messages", () => {
+  it("folds a dropped pin (with name/address) into history and runs it through the assistant", async () => {
+    vi.mocked(runAssistantChat).mockResolvedValue({ text: "Here are a few hotels nearby." });
+
+    await handleIncoming({
+      kind: "location",
+      from: "447900000020",
+      messageId: "m20",
+      latitude: 51.5074,
+      longitude: -0.1278,
+      name: "Big Ben",
+      address: "London SW1A 0AA",
+    });
+
+    expect(vi.mocked(appendWhatsAppMessage).mock.calls[0]).toEqual([
+      42,
+      "447900000020",
+      "user",
+      "[User shared their location: 51.5074, -0.1278 (Big Ben, London SW1A 0AA)]",
+    ]);
+    expect(runAssistantChat).toHaveBeenCalled();
+    expect(sendAssistantReply).toHaveBeenCalledWith(
+      42,
+      "447900000020",
+      { text: "Here are a few hotels nearby." },
+      "m20"
+    );
+  });
+
+  it("still works for a raw pin with no name/address", async () => {
+    vi.mocked(runAssistantChat).mockResolvedValue({ text: "Got it." });
+
+    await handleIncoming({
+      kind: "location",
+      from: "447900000021",
+      messageId: "m21",
+      latitude: 51.5,
+      longitude: -0.1,
+    });
+
+    expect(vi.mocked(appendWhatsAppMessage).mock.calls[0]).toEqual([
+      42,
+      "447900000021",
+      "user",
+      "[User shared their location: 51.5, -0.1]",
+    ]);
+  });
+});
+
 describe("handleIncoming — reactions", () => {
   it("logs a reaction to history but never calls the assistant or sends a reply", async () => {
     await handleIncoming({

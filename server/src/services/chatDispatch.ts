@@ -66,6 +66,33 @@ async function handleLink(ownerId: number, from: string, url: string, messageId:
   await sendAssistantReply(ownerId, from, reply, messageId);
 }
 
+// Folds a dropped WhatsApp pin into the conversation the same way handleLink folds in a saved
+// page — except the content here is always just a couple of numbers (and maybe a name/address),
+// so unlike handleLink/handleMedia's docContext there's no need to persist a short placeholder
+// and swap in a longer version just for the model: the full location line is short enough to
+// store as-is and reuse for both.
+export async function handleLocation(
+  ownerId: number,
+  from: string,
+  latitude: number,
+  longitude: number,
+  messageId: string,
+  name?: string,
+  address?: string
+): Promise<void> {
+  const label = name ? `${name}${address ? `, ${address}` : ""}` : undefined;
+  const locationText = `[User shared their location: ${latitude}, ${longitude}${label ? ` (${label})` : ""}]`;
+  appendWhatsAppMessage(ownerId, from, "user", locationText);
+
+  const history = getWhatsAppHistory(from, MAX_HISTORY_MESSAGES).map((m) => ({
+    role: m.role,
+    content: m.content,
+  }));
+
+  const reply = await runAssistantChat(ownerId, history, from);
+  await sendAssistantReply(ownerId, from, reply, messageId);
+}
+
 export async function handleText(
   ownerId: number,
   from: string,

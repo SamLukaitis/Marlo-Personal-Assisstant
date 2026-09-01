@@ -27,7 +27,7 @@ import {
 import { sendAssistantReply } from "../services/whatsappReply.js";
 import { handlePendingActionReply } from "../services/actionHandlers.js";
 import { maybeUpdateConversationSummary } from "../services/conversationSummary.js";
-import { handleText } from "../services/chatDispatch.js";
+import { handleText, handleLocation } from "../services/chatDispatch.js";
 
 export const whatsappRoutes = Router();
 
@@ -151,6 +151,16 @@ export async function handleIncoming(message: IncomingWhatsAppMessage): Promise<
         message.messageId,
         message.filename,
         message.caption
+      );
+    } else if (message.kind === "location") {
+      await handleLocation(
+        ownerId,
+        message.from,
+        message.latitude,
+        message.longitude,
+        message.messageId,
+        message.name,
+        message.address
       );
     } else if (message.kind === "reaction") {
       // A reaction to something Marlowe sent (or its removal) — recorded to history so it's not
