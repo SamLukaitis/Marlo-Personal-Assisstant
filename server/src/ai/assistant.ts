@@ -651,9 +651,14 @@ const ALWAYS_ON_TOOLS: Anthropic.ToolUnion[] = [
   // never produces a client-side tool_use block and never reaches runTool's switch below. Always
   // on for every user (no per-owner flag, unlike teams/travel) — see buildRules for when the
   // model should reach for it.
+  // max_uses caps how many searches a single user message can trigger — a blast-radius/cost
+  // guardrail, since each search is billed per use and a confused model can otherwise loop on
+  // reformulated queries. 5 is comfortably above what a normal "find me a hotel near X" answer
+  // needs.
   {
     name: "web_search",
     type: "web_search_20250305",
+    max_uses: 5,
   },
 ];
 
@@ -1313,6 +1318,19 @@ function withMessagesCacheBreakpoint(messages: Anthropic.MessageParam[]): Anthro
   return [...messages.slice(0, -1), { ...last, content: cachedBlocks }];
 }
 
+// A response's visible reply is every text block joined, not just the first one. Picking only the
+// first (what this used to do) silently dropped most of a web_search answer: web_search is a
+// server tool, so Anthropic folds server_tool_use/web_search_tool_result blocks into the same
+// response and the model's prose arrives as MULTIPLE text blocks around them — a short preamble
+// ("let me look that up"), then the real answer, itself chunked one block per cited span when
+// citations are attached. Joining is also correct for the ordinary single-block case.
+function joinTextBlocks(content: Anthropic.ContentBlock[]): string {
+  return content
+    .filter((b): b is Anthropic.TextBlock => b.type === "text")
+    .map((b) => b.text)
+    .join("");
+}
+
 // phone is optional and WhatsApp-only (web chat/eval callers omit it) — when given, it's used
 // purely to look up the rolling conversation summary (services/conversationSummary.ts writes it,
 // keyed by phone) to fold into the system prompt. Not otherwise used in this function.
@@ -1380,11 +1398,20 @@ export async function runAssistantChat(
       (block): block is Anthropic.ToolUseBlock => block.type === "tool_use"
     );
 
+    // Anthropic pauses a long-running server-tool turn (web_search) with stop_reason "pause_turn"
+    // rather than finishing it — the content so far is complete and valid, and feeding it straight
+    // back continues the same turn where it left off. Without this it would fall into the
+    // no-tool_use branch below and return whatever partial (often empty) text had been emitted so
+    // far, which then reaches sendAssistantReply → whatsappReply.ts's splitIntoChunks as an
+    // empty-body send that Meta rejects. Guarded on toolUses.length === 0 so a normal client-side
+    // tool_use turn is never diverted here; the existing 8-turn cap already bounds the loop.
+    if (toolUses.length === 0 && response.stop_reason === "pause_turn") {
+      messages.push({ role: "assistant", content: response.content });
+      continue;
+    }
+
     if (toolUses.length === 0) {
-      const text = response.content.find(
-        (b): b is Anthropic.TextBlock => b.type === "text"
-      );
-      return finish({ text: text?.text ?? "" });
+      return finish({ text: joinTextBlocks(response.content) });
     }
 
     // ask_user_choice is a hard stop, not a tool result to feed back to the model — the system
@@ -1402,11 +1429,9 @@ export async function runAssistantChat(
     // say (same reasoning as the flag_unmet_request + text case below).
     const reactionUse = toolUses.find((t) => t.name === "react_to_message");
     if (reactionUse) {
-      const reactionTextBlock = response.content.find(
-        (b): b is Anthropic.TextBlock => b.type === "text"
-      );
-      if (reactionTextBlock) {
-        return finish({ text: reactionTextBlock.text });
+      const reactionText = joinTextBlocks(response.content);
+      if (reactionText) {
+        return finish({ text: reactionText });
       }
       const input = reactionUse.input as Record<string, unknown>;
       return finish({ text: "", reaction: { emoji: input.emoji as string } });
@@ -1420,10 +1445,10 @@ export async function runAssistantChat(
     // get the model to repeat itself as plain text — doubling the API cost of every single
     // capability-gap decline. Bug found 2026-08-28, introduced the same day this tool shipped.
     const flagUse = toolUses.find((t) => t.name === "flag_unmet_request");
-    const textBlock = response.content.find((b): b is Anthropic.TextBlock => b.type === "text");
-    if (flagUse && textBlock && toolUses.length === 1) {
+    const flagText = joinTextBlocks(response.content);
+    if (flagUse && flagText && toolUses.length === 1) {
       await runTool(ownerId, "flag_unmet_request", flagUse.input as Record<string, unknown>, phone);
-      return finish({ text: textBlock.text });
+      return finish({ text: flagText });
     }
 
     messages.push({ role: "assistant", content: response.content });
