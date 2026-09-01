@@ -123,7 +123,7 @@ export function getClient(): Anthropic {
   return client;
 }
 
-const ALWAYS_ON_TOOLS: Anthropic.Tool[] = [
+const ALWAYS_ON_TOOLS: Anthropic.ToolUnion[] = [
   {
     name: "list_recent_messages",
     description:
@@ -646,6 +646,15 @@ const ALWAYS_ON_TOOLS: Anthropic.Tool[] = [
       required: ["emoji"],
     },
   },
+  // Anthropic's built-in web search — this is a *server* tool, not a custom one: Anthropic runs
+  // the search itself and folds a web_search_tool_result block into this same response, so it
+  // never produces a client-side tool_use block and never reaches runTool's switch below. Always
+  // on for every user (no per-owner flag, unlike teams/travel) — see buildRules for when the
+  // model should reach for it.
+  {
+    name: "web_search",
+    type: "web_search_20250305",
+  },
 ];
 
 const CONDITIONAL_TOOLS: Record<ToolKey, Anthropic.Tool[]> = {
@@ -703,7 +712,7 @@ const CONDITIONAL_TOOLS: Record<ToolKey, Anthropic.Tool[]> = {
   ],
 };
 
-export function buildToolsForOwner(ownerId: number): Anthropic.Tool[] {
+export function buildToolsForOwner(ownerId: number): Anthropic.ToolUnion[] {
   const enabled = getEnabledTools(ownerId);
   const result = [...ALWAYS_ON_TOOLS];
   for (const key of TOOL_KEYS) {
@@ -1187,6 +1196,7 @@ function buildRules(enabled: Set<ToolKey>): string {
     "- Use get_weather and get_markets for weather and stock/index questions. The same rule applies: report only what the tool returned. Never state a price, a percentage move, or a forecast you didn't just fetch.",
     "- If the user asks to connect/set up Xero: Xero gives each account a unique forwarding email (in Xero: Business > Bills to pay, or Accounting > Bills — the 'email bills to this address' address). Ask them to paste it, then call connect_xero with exactly what they send — never guess or fill in an address yourself. Once connected, receipts they send that are filed under 'receipts' and yield a recognized expense are forwarded to Xero automatically in the background — this already works, don't tell the user it's unbuilt or manual.",
     "- There are TWO separate paths to Xero, both already built: (1) a WhatsApp photo/PDF filed as a receipt forwards automatically, no confirmation needed. (2) Email is scanned periodically (every few minutes) for invoice-looking automated mail; ONLY when that scan actually flags one do you get a pending confirmation to offer 'reply yes to forward' (see below) — the scan hasn't necessarily run yet or matched a given email, so no pending confirmation does NOT mean email invoices are unsupported. If the user asks about a specific email invoice with nothing pending, never claim this feature only works for WhatsApp — instead offer to call extract_email_attachment on it directly, which also triggers the same automatic Xero forwarding once it's saved as a receipt with a real expense, just without the alert/confirm step.",
+    "- Use web_search for questions you don't have another tool for — nearby places (hotels, restaurants, attractions), current prices/events, or anything else that needs a live answer from the web rather than what you already know. Say plainly that you searched the web rather than presenting the answer as verified fact. When you recommend a specific place, include a Google Maps link built as https://www.google.com/maps/search/?api=1&query=<url-encoded name and address/area> so the user can open it directly — never invent coordinates, and never claim you've sent a location pin (you haven't).",
   ];
   const travel = [
     "- Use list_travel_checkins for questions about where the user has physically been or when they arrived somewhere — this is automatic location history, separate from documents.",

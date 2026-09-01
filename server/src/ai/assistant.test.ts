@@ -70,6 +70,12 @@ describe("buildToolsForOwner", () => {
     expect(names).toContain("count_travel_days");
   });
 
+  it("includes web_search for every user, regardless of which conditional tools are enabled", () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("web-search"));
+    const names = buildToolsForOwner(user.id).map((t) => t.name);
+    expect(names).toContain("web_search");
+  });
+
   it("puts the cache_control breakpoint on the last tool in the array, whichever one that is", () => {
     const userNoTools = findOrCreateUserByEmail(uniqueEmail("cache-none"));
     const noToolsResult = buildToolsForOwner(userNoTools.id);
@@ -361,6 +367,15 @@ describe("buildSystemPrompt Xero status", () => {
     expect(prompt).toContain("TWO separate paths to Xero");
     expect(prompt).toContain("does NOT mean email invoices are unsupported");
     expect(prompt).not.toContain("Pending Xero invoice confirmation");
+  });
+});
+
+describe("buildSystemPrompt web_search guidance", () => {
+  it("tells the model when to use web_search and how to present a place recommendation", () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("web-search-rule"));
+    const prompt = buildSystemPrompt(user.id);
+    expect(prompt).toContain("web_search");
+    expect(prompt).toContain("google.com/maps/search");
   });
 });
 
