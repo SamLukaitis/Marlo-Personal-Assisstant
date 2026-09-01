@@ -2333,6 +2333,27 @@ export function deleteUserCompletely(ownerId: number): { deletedDocumentPaths: s
   return { deletedDocumentPaths: documentPaths };
 }
 
+// A lighter alternative to deleteUserCompletely, for replaying the WhatsApp onboarding UX on an
+// account you actually want to keep (usage, to-dos, poster board, documents, memory, chat
+// history — everything data-bearing stays put). Clears only the state that gates onboarding:
+// - accounts: forces a real OAuth reconnect rather than silently reusing the old tokens.
+// - pending_setup: restarts the post-connect chain (first-task/briefing/Teams/closing) from
+//   its first step instead of resuming mid-way.
+// - user_phone_numbers: unbinds every phone this owner had, so resolveOwnerByPhone(phone)
+//   returns null again and the next inbound WhatsApp message from it re-enters
+//   handlePendingRegistration instead of going straight to normal chat.
+// handleAwaitingEmail (whatsappRegistration.ts) is the other half of this: it only lets a typed
+// email that already belongs to an account through when that account currently has zero phones
+// bound, which is exactly the state this function leaves it in.
+export function resetOnboardingConnectionState(ownerId: number): void {
+  const reset = db.transaction(() => {
+    db.prepare(`DELETE FROM accounts WHERE owner_id = ?`).run(ownerId);
+    db.prepare(`DELETE FROM pending_setup WHERE owner_id = ?`).run(ownerId);
+    db.prepare(`DELETE FROM user_phone_numbers WHERE user_id = ?`).run(ownerId);
+  });
+  reset();
+}
+
 // Introspects the live schema (rather than a hand-maintained table list) to find every column
 // that declares REFERENCES users(id), and reports which of them still hold a row for this owner.
 // deleteUserCompletely has needed this exact class of fix three times now (pending_setup/

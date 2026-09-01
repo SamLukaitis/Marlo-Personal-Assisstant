@@ -10,6 +10,8 @@ import {
   deletePendingRegistration,
   normalizePhone,
   findRemainingOwnerReferences,
+  listPhoneNumbersForUser,
+  resetOnboardingConnectionState,
 } from "../db/store.js";
 import type { AuthedRequest } from "../middleware/auth.js";
 
@@ -98,4 +100,25 @@ adminRoutes.post("/api/admin/reset-test-phone", (req, res) => {
   }
 
   res.json({ ok: true, hadAccount: ownerId !== null });
+});
+
+// For replaying the WhatsApp onboarding UX end-to-end on an account you actually want to keep —
+// unlike reset-test-phone above, this never touches data-bearing tables (usage, to-dos, poster
+// board, documents, memory, chat history all stay put). Always targets the CALLER's own account,
+// never an arbitrary phone/owner, since it's for testing your own signup flow, not resetting
+// someone else's. Genuinely revokes the connected mail/calendar access (OAuth tokens are
+// deleted), so reconnecting for real afterward does require going through OAuth again — see
+// resetOnboardingConnectionState's own comment for exactly what is and isn't cleared.
+adminRoutes.post("/api/admin/replay-onboarding", (req, res) => {
+  const userId = (req as unknown as AuthedRequest).userId;
+  if (!isAppOwner(userId)) {
+    res.status(403).json({ error: "not allowed" });
+    return;
+  }
+  const phones = listPhoneNumbersForUser(userId);
+  for (const p of phones) {
+    deletePendingRegistration(p.phone);
+  }
+  resetOnboardingConnectionState(userId);
+  res.json({ ok: true, unboundPhones: phones.map((p) => p.phone) });
 });

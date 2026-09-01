@@ -573,6 +573,20 @@ export async function resetTestPhone(phone: string): Promise<{ ok: true; hadAcco
   return res.json();
 }
 
+// Replays the WhatsApp onboarding UX on your OWN account without losing your data — unlike
+// resetTestPhone above, this never deletes usage, to-dos, poster board, documents, memory, or
+// chat history. It only unbinds your phone number(s) and clears the OAuth connection + post-
+// connect setup state, so the next message from that number re-enters the onboarding flow and
+// reconnects the SAME account once it goes through OAuth again.
+export async function replayOnboarding(): Promise<{ ok: true; unboundPhones: string[] }> {
+  const res = await fetch(`${API_BASE}/api/admin/replay-onboarding`, withCredentials({ method: "POST" }));
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.error ?? "failed to reset onboarding state");
+  }
+  return res.json();
+}
+
 // --- Admin Portal -----------------------------------------------------------------------------
 
 export interface AdminCandidate {
