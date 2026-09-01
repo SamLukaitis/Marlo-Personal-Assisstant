@@ -20,6 +20,8 @@ const CONFIRM_RESULT_LABEL: Record<string, (result: unknown) => string> = {
       : "✓ Done.";
   },
   delete_calendar_event: () => "✓ Deleted.",
+  send_email: () => "✓ Sent.",
+  create_email_draft: () => "📝 Saved as a draft — nothing was sent.",
 };
 
 function describeToolResult(tool: string, result: unknown): string {
@@ -52,18 +54,44 @@ export async function handlePendingActionReply(
   }
 
   if (action.mode === "confirm") {
-    if (parsed.key !== "yes") {
+    const {
+      tool,
+      input,
+      declineTool,
+      declineInput,
+    } = JSON.parse(action.contextJson) as {
+      tool: string;
+      input: Record<string, unknown>;
+      declineTool?: string;
+      declineInput?: Record<string, unknown>;
+    };
+
+    // Edit isn't a yes/no outcome at all — nothing runs. Route the tap back through the model as
+    // a normal follow-up, same pattern as a resume tap below, so it can ask what to change.
+    if (parsed.key === "edit") {
+      appendWhatsAppMessage(ownerId, phone, "user", "(User wants to edit this before continuing.)");
+      const history = getWhatsAppHistory(phone, MAX_HISTORY_MESSAGES).map((m) => ({
+        role: m.role,
+        content: m.content,
+      }));
+      const reply = await runAssistantChat(ownerId, history, phone);
+      await sendAssistantReply(ownerId, phone, reply, message.messageId);
+      return true;
+    }
+
+    // No a tool/input to run on decline (the common case): just cancel, unchanged from before.
+    // A decline_tool (e.g. create_email_draft when declining to send) runs instead, below.
+    if (parsed.key !== "yes" && !declineTool) {
       appendWhatsAppMessage(ownerId, phone, "assistant", "Cancelled.");
       await sendWhatsAppMessage(phone, "Cancelled.");
       return true;
     }
-    const { tool, input } = JSON.parse(action.contextJson) as {
-      tool: string;
-      input: Record<string, unknown>;
-    };
+
+    const runTarget = parsed.key === "yes" ? tool : (declineTool as string);
+    const runInput = parsed.key === "yes" ? input : (declineInput ?? {});
     try {
-      const result = await runTool(ownerId, tool, input, phone);
-      const confirmText = describeToolResult(tool, result);
+      const result = await runTool(ownerId, runTarget, runInput, phone);
+      const confirmText = describeToolResult(runTarget, result);
       appendWhatsAppMessage(ownerId, phone, "assistant", confirmText);
       await sendWhatsAppMessage(phone, confirmText);
     } catch (err) {

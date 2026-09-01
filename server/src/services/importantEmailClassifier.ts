@@ -92,14 +92,26 @@ export function buildClassifyPrompt(candidates: ClassifyCandidate[]): string {
     "categories. Only include emails that are a clear, confident match — skip anything " +
     "ambiguous, promotional, or a generic automated notice that isn't one of these categories " +
     "(newsletters, marketing, app notifications with no action needed). Omit indices that don't " +
-    `match.\n\n${emailList}`
+    "match. For each match, also write a one-sentence plain-English summary of what the email " +
+    "actually says (the concrete fact — what changed, what's due, what to expect) in your own " +
+    "words. Never copy the snippet verbatim — it may be truncated mid-sentence or contain raw " +
+    `HTML entities.\n\n${emailList}`
   );
 }
 
+export interface ClassifyMatch {
+  category: ImportantEmailCategory;
+  // One-sentence plain-English summary the model wrote from the subject/snippet, replacing the
+  // raw Gmail/Outlook snippet (HTML-entity-encoded, truncated mid-sentence) in the WhatsApp alert.
+  summary: string;
+}
+
 // Pure — turns the tool call's raw `matches` input into a validated Map, dropping anything
-// malformed rather than throwing (an LLM tool call is not a type-checked boundary).
-export function parseClassifyMatches(matches: unknown): Map<number, ImportantEmailCategory> {
-  const result = new Map<number, ImportantEmailCategory>();
+// malformed rather than throwing (an LLM tool call is not a type-checked boundary). An entry
+// with no usable summary still counts as a category match — formatImportantEmailAlert falls
+// back to the subject line rather than losing the alert entirely.
+export function parseClassifyMatches(matches: unknown): Map<number, ClassifyMatch> {
+  const result = new Map<number, ClassifyMatch>();
   if (!Array.isArray(matches)) return result;
   for (const entry of matches) {
     if (
@@ -110,10 +122,11 @@ export function parseClassifyMatches(matches: unknown): Map<number, ImportantEma
         (entry as { category?: unknown }).category as string
       )
     ) {
-      result.set(
-        (entry as { index: number }).index,
-        (entry as { category: ImportantEmailCategory }).category
-      );
+      const summary = (entry as { summary?: unknown }).summary;
+      result.set((entry as { index: number }).index, {
+        category: (entry as { category: ImportantEmailCategory }).category,
+        summary: typeof summary === "string" ? summary.trim() : "",
+      });
     }
   }
   return result;
@@ -142,8 +155,14 @@ const CLASSIFY_TOOL: Anthropic.Tool = {
           properties: {
             index: { type: "number", description: "The email's number from the list above" },
             category: { type: "string", enum: [...IMPORTANT_EMAIL_CATEGORIES] },
+            summary: {
+              type: "string",
+              description:
+                "One plain-English sentence summarizing what the email actually says — your own " +
+                "words, not the raw snippet.",
+            },
           },
-          required: ["index", "category"],
+          required: ["index", "category", "summary"],
         },
       },
     },
@@ -156,7 +175,7 @@ const CLASSIFY_TOOL: Anthropic.Tool = {
 export async function classifyImportantEmails(
   candidates: ClassifyCandidate[],
   ownerId: number
-): Promise<Map<number, ImportantEmailCategory>> {
+): Promise<Map<number, ClassifyMatch>> {
   if (candidates.length === 0) return new Map();
 
   const response = await getClient().messages.create({

@@ -764,8 +764,11 @@ db.exec(`
 
 // Backs ask_user_choice (assistant.ts): a closed-set question rendered as WhatsApp buttons/a
 // list, tapped later. 'confirm' rows store the exact tool+args to run on a Yes tap (executed
-// directly, no further LLM call); 'resume' rows store the option labels to inject back into the
-// conversation as a synthetic user message. See actionHandlers.ts for the consuming side.
+// directly, no further LLM call), and optionally a decline tool+args to run instead of just
+// cancelling on a No tap (e.g. create_email_draft when declining to send an email); an Edit tap
+// runs neither and instead routes back into the conversation, same as a resume tap. 'resume' rows
+// store the option labels to inject back into the conversation as a synthetic user message. See
+// actionHandlers.ts for the consuming side.
 db.exec(`
   CREATE TABLE IF NOT EXISTS pending_actions (
     id TEXT PRIMARY KEY,

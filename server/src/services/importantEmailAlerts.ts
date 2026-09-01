@@ -9,7 +9,12 @@ import { hubListMessages, hubGetMessage, AUTOMATED_SENDER_PATTERN } from "./hub.
 import { hasAlerted, markAlerted, getSetting, setSetting, listPhoneNumbersForUser } from "../db/store.js";
 import { isWhatsAppConfigured } from "../providers/whatsapp.js";
 import { sendProactiveMessage } from "./outbound.js";
-import { classifyImportantEmails, CATEGORY_INFO, type ImportantEmailCategory } from "./importantEmailClassifier.js";
+import {
+  classifyImportantEmails,
+  CATEGORY_INFO,
+  type ClassifyMatch,
+  type ImportantEmailCategory,
+} from "./importantEmailClassifier.js";
 import { getXeroForwardingEmail } from "./xero.js";
 import { setPendingInvoiceForward } from "./xeroInvoiceConfirmation.js";
 import type { UnifiedMessage } from "../providers/types.js";
@@ -25,9 +30,16 @@ function messageKey(m: UnifiedMessage): string {
   return `important-email:${m.accountId}:${m.id}`;
 }
 
-export function formatImportantEmailAlert(m: UnifiedMessage, category: ImportantEmailCategory): string {
+export function formatImportantEmailAlert(
+  m: UnifiedMessage,
+  category: ImportantEmailCategory,
+  summary?: string
+): string {
   const { emoji, label } = CATEGORY_INFO[category];
-  return `${emoji} ${label}: "${m.subject}" from ${m.from}\n${m.snippet}`;
+  // Prefer the model's plain-English summary over the raw snippet — the snippet is
+  // HTML-entity-encoded and truncated mid-sentence straight from the Gmail/Graph API.
+  const body = summary?.trim() || m.snippet;
+  return `${emoji} ${label}: "${m.subject}" from ${m.from}\n${body}`;
 }
 
 // Returns whether every registered number actually got the message — callers must only mark a
@@ -79,7 +91,7 @@ export async function checkForImportantEmails(ownerId: number): Promise<void> {
   const numbers = listPhoneNumbersForUser(ownerId).map((r) => r.phone);
   if (numbers.length === 0) return;
 
-  let classified: Map<number, ImportantEmailCategory>;
+  let classified: Map<number, ClassifyMatch>;
   try {
     classified = await classifyImportantEmails(
       unscanned.map((m, index) => ({ index, subject: m.subject, snippet: m.snippet })),
@@ -97,16 +109,17 @@ export async function checkForImportantEmails(ownerId: number): Promise<void> {
   }
 
   const matches = unscanned
-    .map((m, index) => ({ m, category: classified.get(index) }))
-    .filter((x): x is { m: UnifiedMessage; category: ImportantEmailCategory } => !!x.category);
+    .map((m, index) => ({ m, match: classified.get(index) }))
+    .filter((x): x is { m: UnifiedMessage; match: ClassifyMatch } => !!x.match);
   if (matches.length === 0) return;
 
   const toSend = matches.slice(0, MAX_ALERTS_PER_CHECK);
   // At most one invoice_due match per tick gets the "reply yes" offer — there's only one pending
   // confirmation slot per owner (see xeroInvoiceConfirmation.ts), by design, not an oversight.
   let offeredInvoiceConfirm = false;
-  for (const { m, category } of toSend) {
-    let text = formatImportantEmailAlert(m, category);
+  for (const { m, match } of toSend) {
+    const { category, summary } = match;
+    let text = formatImportantEmailAlert(m, category, summary);
     let confirmable: { accountId: number; messageId: string; subject: string } | null = null;
 
     if (category === "invoice_due" && !offeredInvoiceConfirm && getXeroForwardingEmail(ownerId)) {

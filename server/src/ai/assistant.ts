@@ -48,6 +48,7 @@ import {
   hubListEvents,
   hubSearchFiles,
   hubCreateDraft,
+  hubSendMessage,
   hubListChats,
   hubSearchChats,
   hubCreateEvent,
@@ -108,7 +109,7 @@ export const SEARCH_MEMORY_DEFAULT_LIMIT = 10;
 // it holds even if the model skips that instruction under an unusual conversational branch or
 // prompt injection from message content it's reading. Extend this set as more irreversible-action
 // tools are added; a tool not in it behaves exactly as before (reversible actions don't need this).
-const CONFIRM_REQUIRED_TOOLS = new Set<string>(["delete_calendar_event"]);
+const CONFIRM_REQUIRED_TOOLS = new Set<string>(["delete_calendar_event", "send_email"]);
 
 let client: Anthropic | null = null;
 // Exported so portalRoutes.ts's log-explain endpoint can reuse the same lazily-created client
@@ -284,11 +285,26 @@ const ALWAYS_ON_TOOLS: Anthropic.Tool[] = [
   {
     name: "create_email_draft",
     description:
-      "Create an email DRAFT in the user's mailbox (Gmail or Outlook). The draft is never sent automatically — the user reviews and sends it themselves. Call this when the user asks you to write, draft, or reply to an email. Confirm recipient and content in conversation first if ambiguous.",
+      "Save an email as a DRAFT in the user's mailbox (Gmail or Outlook) without sending it. Call this yourself, with no confirmation needed, only when the user explicitly asks to leave something in drafts rather than send it. For a normal 'write/draft/reply to an email' request, write the content and use ask_user_choice as described in the send_email rule instead — don't call create_email_draft first.",
     input_schema: {
       type: "object",
       properties: {
         account_id: { type: "number", description: "Which connected account to draft from" },
+        to: { type: "string", description: "Recipient email address" },
+        subject: { type: "string" },
+        body: { type: "string", description: "Plain-text email body" },
+      },
+      required: ["account_id", "to", "subject", "body"],
+    },
+  },
+  {
+    name: "send_email",
+    description:
+      "Send an email from the user's own mailbox. This is irreversible — you can only reach it through a user-confirmed ask_user_choice(mode=\"confirm\") pending action (see the rules), never by calling it directly. Gmail accounts only for now; Outlook accounts can't send yet.",
+    input_schema: {
+      type: "object",
+      properties: {
+        account_id: { type: "number", description: "Which connected account to send from" },
         to: { type: "string", description: "Recipient email address" },
         subject: { type: "string" },
         body: { type: "string", description: "Plain-text email body" },
@@ -606,7 +622,7 @@ const ALWAYS_ON_TOOLS: Anthropic.Tool[] = [
   {
     name: "ask_user_choice",
     description:
-      "Ask the user a closed-set question and get back a real tappable answer (WhatsApp buttons or a list) instead of free text. Call this ALONE — the only tool call in your turn — after you already have whatever information you need (e.g. call search_contacts first, look at the results, then call ask_user_choice in your NEXT turn once you can see them). Use mode='confirm' before a bulk or destructive action: pass confirm_tool and confirm_input set to the exact tool call you'd make if the user says yes — you do not execute it yourself, it only runs if they tap Yes. Use mode='resume' to disambiguate between 2-10 candidates (e.g. multiple contacts matching a name): pass one option per candidate; whichever one is tapped comes back to you as a normal follow-up message.",
+      "Ask the user a closed-set question and get back a real tappable answer (WhatsApp buttons or a list) instead of free text. Call this ALONE — the only tool call in your turn — after you already have whatever information you need (e.g. call search_contacts first, look at the results, then call ask_user_choice in your NEXT turn once you can see them). Use mode='confirm' before a bulk or destructive action: pass confirm_tool and confirm_input set to the exact tool call you'd make if the user taps Yes — you do not execute it yourself, it only runs if they tap it. By default this renders Yes/No buttons and a No tap just cancels; pass decline_tool/decline_input to run a different tool instead of cancelling (e.g. save as a draft instead of sending), and yes_label/no_label to relabel the buttons for what they actually do (e.g. 'Send'/'Leave in Drafts'). Pass editable=true to add a third 'Edit' button for anything the user might want to revise instead of just accepting or declining (e.g. sending an email) — tapping it comes back to you as a normal follow-up message asking what to change, same as a resume tap. Use mode='resume' to disambiguate between 2-10 candidates (e.g. multiple contacts matching a name): pass one option per candidate; whichever one is tapped comes back to you as a normal follow-up message.",
     input_schema: {
       type: "object",
       properties: {
@@ -615,7 +631,7 @@ const ALWAYS_ON_TOOLS: Anthropic.Tool[] = [
         options: {
           type: "array",
           description:
-            "Required for mode='resume': 2-10 choices to present. Not used for mode='confirm' (always rendered as Yes/No).",
+            "Required for mode='resume': 2-10 choices to present. Not used for mode='confirm'.",
           items: {
             type: "object",
             properties: { label: { type: "string" } },
@@ -630,6 +646,21 @@ const ALWAYS_ON_TOOLS: Anthropic.Tool[] = [
           type: "object",
           description: "Required for mode='confirm': the exact input to pass to confirm_tool if the user taps Yes.",
         },
+        decline_tool: {
+          type: "string",
+          description:
+            "mode='confirm' only, optional: a tool to call if the user taps No, instead of just cancelling — e.g. create_email_draft when declining to send.",
+        },
+        decline_input: {
+          type: "object",
+          description: "The input to pass to decline_tool if given.",
+        },
+        editable: {
+          type: "boolean",
+          description: "mode='confirm' only, optional: adds a third 'Edit' button. Default false.",
+        },
+        yes_label: { type: "string", description: "mode='confirm' only, optional: overrides the 'Yes' button label." },
+        no_label: { type: "string", description: "mode='confirm' only, optional: overrides the 'No' button label." },
       },
       required: ["question", "mode"],
     },
@@ -822,6 +853,14 @@ export async function runTool(
       return hubSearchChats(ownerId, input.query as string);
     case "create_email_draft":
       return hubCreateDraft(
+        ownerId,
+        input.account_id as number,
+        input.to as string,
+        input.subject as string,
+        input.body as string
+      );
+    case "send_email":
+      return hubSendMessage(
         ownerId,
         input.account_id as number,
         input.to as string,
@@ -1121,23 +1160,33 @@ function buildChoiceReply(ownerId: number, input: Record<string, unknown>): Assi
   if (mode === "confirm") {
     const tool = input.confirm_tool as string;
     const confirmInput = (input.confirm_input as Record<string, unknown>) ?? {};
+    const declineTool = input.decline_tool as string | undefined;
+    const declineInput = (input.decline_input as Record<string, unknown>) ?? {};
+    const editable = input.editable === true;
+    const yesLabel = (input.yes_label as string | undefined) || "Yes";
+    const noLabel = (input.no_label as string | undefined) || "No";
     const actionId = createPendingAction(
       ownerId,
       "confirm",
       question,
-      JSON.stringify({ tool, input: confirmInput })
+      JSON.stringify({ tool, input: confirmInput, declineTool, declineInput })
     );
+    const buttons: PendingChoiceButton[] = [
+      ...(editable ? [{ key: "edit", label: "Edit" }] : []),
+      { key: "yes", label: yesLabel },
+      { key: "no", label: noLabel },
+    ];
+    // Only the plain default (no custom labels, no edit option — every confirm-required tool
+    // other than send_email) keeps the original terse "Reply yes or no." phrasing verbatim, so
+    // existing callers/tests see byte-identical text. Anything customized gets the numbered-list
+    // phrasing resume mode already uses, since "yes or no" no longer describes the buttons.
+    const text =
+      !editable && yesLabel === "Yes" && noLabel === "No"
+        ? `${question} Reply yes or no.`
+        : `${question}\n${buttons.map((b, i) => `${i + 1}. ${b.label}`).join("\n")}`;
     return {
-      text: `${question} Reply yes or no.`,
-      choice: {
-        actionId,
-        question,
-        mode: "confirm",
-        buttons: [
-          { key: "yes", label: "Yes" },
-          { key: "no", label: "No" },
-        ],
-      },
+      text,
+      choice: { actionId, question, mode: "confirm", buttons },
     };
   }
 
@@ -1172,7 +1221,7 @@ function buildRules(enabled: Set<ToolKey>): string {
     "- After re-running a tool in response to pushback, check what it actually returned before deciding how to respond: if it confirms your original answer was correct, just say so plainly (e.g. \"confirmed — it's still Feb 8\") and move on. Don't apologize or claim you were reciting/guessing/pulling from context you shouldn't have relied on when the tool result backs up what you said — that's confusing and untrue when the original answer was grounded. Reserve the apology for when re-checking actually turns up something different from what you first said.",
     "- list_bookings/list_expenses only cover confirmations and receipts that were already saved as a document AND successfully extracted into a structured record — they do NOT search email. Before telling the user there's no hotel, flight, car rental, invoice, or payment due, also check search_messages/list_recent_messages: the confirmation or invoice email may exist even though nothing has been extracted into list_bookings/list_expenses yet. An empty list_bookings/list_expenses result on its own is not enough to say something doesn't exist.",
     "- For a broad or topic-level search (a country, region, or trip name — e.g. \"South America\", \"my Lisbon trip\"), call search_messages multiple times with different concrete sub-terms — city/place names, likely vendor names (airlines, hotels, booking sites), reference codes you already know — before concluding nothing was found. A single broad query is not sufficient; a broad topic phrase rarely appears verbatim in a real subject line.",
-    "- You can create email drafts but can never send email. After creating a draft, tell the user to review and send it from their mailbox.",
+    '- Whenever you write an email on the user\'s behalf (a new email, or a reply), never send or draft it silently. Instead call ask_user_choice ALONE with the full draft shown IN the question text itself (any other text you write this same turn is discarded — see ask_user_choice\'s own description) — e.g. question="To: jane@x.com\\nSubject: Re: Thursday\\n\\n<body>\\n\\nReady to send this?" — with mode="confirm", confirm_tool="send_email", confirm_input={account_id, to, subject, body}, editable=true, yes_label="Send", no_label="Leave in Drafts", decline_tool="create_email_draft", decline_input={account_id, to, subject, body}. That renders Edit / Send / Leave in Drafts. Send it only if they tap Send — Leave in Drafts saves it in their mailbox without sending, and Edit comes back to you as a follow-up message asking what to change (draft the revised content and ask again the same way). send_email only works for Gmail accounts — for an Outlook account, skip the ask and call create_email_draft directly instead, telling the user Outlook sending isn\'t supported yet so it\'s saved as a draft for them to send themselves.',
     "- You can create, edit, and delete calendar events directly on the user's own calendar — these are low-risk and reversible. You can never invite other people to an event; calendar events you create are personal-only.",
     '- You can archive emails and apply labels/categories directly — archiving is fully reversible (the email is just removed from the inbox, never deleted) so you don\'t need to ask permission first, but when the query is broad or ambiguous (e.g. "archive everything" with no filter), confirm first with ask_user_choice(mode="confirm", confirm_tool="archive_messages", confirm_input=<the exact call>) instead of asking in prose.',
     "- Use search_contacts to resolve a name to an email address before drafting to someone when you don't already have their address.",

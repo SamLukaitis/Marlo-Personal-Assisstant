@@ -138,7 +138,9 @@ describe("checkForImportantEmails", () => {
     mockHubListMessages.mockResolvedValueOnce([
       fakeMessage({ id: "flight-1", subject: "Your flight changed" }),
     ]);
-    mockClassify.mockResolvedValueOnce(new Map([[0, "flight_change"]]));
+    mockClassify.mockResolvedValueOnce(
+      new Map([[0, { category: "flight_change", summary: "Your gate moved to B12." }]])
+    );
 
     await checkForImportantEmails(user.id);
 
@@ -147,6 +149,7 @@ describe("checkForImportantEmails", () => {
     expect(sentTo).toBe(phone);
     expect(text).toContain("✈️");
     expect(text).toContain("Your flight changed");
+    expect(text).toContain("Your gate moved to B12.");
     expect(hasAlerted(user.id, "important-email:1:flight-1")).toBe(true);
   });
 
@@ -156,7 +159,7 @@ describe("checkForImportantEmails", () => {
     await baseline(user.id);
 
     mockHubListMessages.mockResolvedValue([fakeMessage({ id: "flight-2" })]);
-    mockClassify.mockResolvedValue(new Map([[0, "flight_change"]]));
+    mockClassify.mockResolvedValue(new Map([[0, { category: "flight_change", summary: "" }]]));
 
     await checkForImportantEmails(user.id);
     await checkForImportantEmails(user.id);
@@ -201,7 +204,7 @@ describe("checkForImportantEmails", () => {
     await baseline(user.id);
 
     mockHubListMessages.mockResolvedValueOnce([fakeMessage({ id: "fail-1" })]);
-    mockClassify.mockResolvedValueOnce(new Map([[0, "invoice_due"]]));
+    mockClassify.mockResolvedValueOnce(new Map([[0, { category: "invoice_due", summary: "" }]]));
     vi.mocked(sendWhatsAppMessage).mockRejectedValueOnce(new Error("network down"));
 
     await checkForImportantEmails(user.id);
@@ -214,7 +217,7 @@ describe("checkForImportantEmails", () => {
     await baseline(user.id);
 
     mockHubListMessages.mockResolvedValueOnce([fakeMessage({ id: "noconfig-1" })]);
-    mockClassify.mockResolvedValueOnce(new Map([[0, "invoice_due"]]));
+    mockClassify.mockResolvedValueOnce(new Map([[0, { category: "invoice_due", summary: "" }]]));
     vi.mocked(isWhatsAppConfigured).mockReturnValue(false);
 
     await checkForImportantEmails(user.id);
@@ -228,7 +231,7 @@ describe("checkForImportantEmails", () => {
     await baseline(user.id);
 
     mockHubListMessages.mockResolvedValueOnce([fakeMessage({ id: "nonum-1" })]);
-    mockClassify.mockResolvedValueOnce(new Map([[0, "invoice_due"]]));
+    mockClassify.mockResolvedValueOnce(new Map([[0, { category: "invoice_due", summary: "" }]]));
 
     await checkForImportantEmails(user.id);
 
@@ -246,8 +249,8 @@ describe("checkForImportantEmails", () => {
       fakeMessage({ id: `cap-${i}`, subject: `Notice ${i}` })
     );
     mockHubListMessages.mockResolvedValueOnce(messages);
-    const classified = new Map<number, "invoice_due">();
-    for (let i = 0; i < 6; i++) classified.set(i, "invoice_due");
+    const classified = new Map<number, { category: "invoice_due"; summary: string }>();
+    for (let i = 0; i < 6; i++) classified.set(i, { category: "invoice_due", summary: "" });
     mockClassify.mockResolvedValueOnce(classified);
 
     await checkForImportantEmails(user.id);
@@ -272,7 +275,7 @@ describe("checkForImportantEmails — invoice forward offer", () => {
     mockHubListMessages.mockResolvedValueOnce([
       fakeMessage({ id: "inv-1", subject: "Invoice from Acme" }),
     ]);
-    mockClassify.mockResolvedValueOnce(new Map([[0, "invoice_due"]]));
+    mockClassify.mockResolvedValueOnce(new Map([[0, { category: "invoice_due", summary: "" }]]));
     mockHubGetMessage.mockResolvedValueOnce({
       attachments: [{ id: "att-1", filename: "invoice.pdf", mimeType: "application/pdf", size: 100 }],
     });
@@ -294,7 +297,7 @@ describe("checkForImportantEmails — invoice forward offer", () => {
     await baseline(user.id);
 
     mockHubListMessages.mockResolvedValueOnce([fakeMessage({ id: "inv-2" })]);
-    mockClassify.mockResolvedValueOnce(new Map([[0, "invoice_due"]]));
+    mockClassify.mockResolvedValueOnce(new Map([[0, { category: "invoice_due", summary: "" }]]));
 
     await checkForImportantEmails(user.id);
 
@@ -311,7 +314,7 @@ describe("checkForImportantEmails — invoice forward offer", () => {
     await baseline(user.id);
 
     mockHubListMessages.mockResolvedValueOnce([fakeMessage({ id: "inv-3" })]);
-    mockClassify.mockResolvedValueOnce(new Map([[0, "invoice_due"]]));
+    mockClassify.mockResolvedValueOnce(new Map([[0, { category: "invoice_due", summary: "" }]]));
     mockHubGetMessage.mockResolvedValueOnce({ attachments: [] });
 
     await checkForImportantEmails(user.id);
@@ -330,7 +333,7 @@ describe("checkForImportantEmails — invoice forward offer", () => {
     await baseline(user.id);
 
     mockHubListMessages.mockResolvedValueOnce([fakeMessage({ id: "inv-text", subject: "Your receipt" })]);
-    mockClassify.mockResolvedValueOnce(new Map([[0, "invoice_due"]]));
+    mockClassify.mockResolvedValueOnce(new Map([[0, { category: "invoice_due", summary: "" }]]));
     mockHubGetMessage.mockResolvedValueOnce({ attachments: [], body: "Thanks for your payment of £22.80." });
 
     await checkForImportantEmails(user.id);
@@ -350,7 +353,12 @@ describe("checkForImportantEmails — invoice forward offer", () => {
       fakeMessage({ id: "inv-a", subject: "Invoice A" }),
       fakeMessage({ id: "inv-b", subject: "Invoice B" }),
     ]);
-    mockClassify.mockResolvedValueOnce(new Map([[0, "invoice_due"], [1, "invoice_due"]]));
+    mockClassify.mockResolvedValueOnce(
+      new Map([
+        [0, { category: "invoice_due", summary: "" }],
+        [1, { category: "invoice_due", summary: "" }],
+      ])
+    );
     mockHubGetMessage.mockResolvedValue({
       attachments: [{ id: "att-1", filename: "invoice.pdf", mimeType: "application/pdf", size: 100 }],
     });
@@ -370,7 +378,7 @@ describe("checkForImportantEmails — invoice forward offer", () => {
     await baseline(user.id);
 
     mockHubListMessages.mockResolvedValueOnce([fakeMessage({ id: "inv-4" })]);
-    mockClassify.mockResolvedValueOnce(new Map([[0, "invoice_due"]]));
+    mockClassify.mockResolvedValueOnce(new Map([[0, { category: "invoice_due", summary: "" }]]));
     mockHubGetMessage.mockResolvedValueOnce({
       attachments: [{ id: "att-1", filename: "invoice.pdf", mimeType: "application/pdf", size: 100 }],
     });
@@ -383,7 +391,7 @@ describe("checkForImportantEmails — invoice forward offer", () => {
 });
 
 describe("formatImportantEmailAlert", () => {
-  it("includes the category emoji, label, subject, sender, and snippet", () => {
+  it("falls back to the raw snippet when no summary is given", () => {
     const text = formatImportantEmailAlert(
       fakeMessage({
         subject: "Your invoice is due",
@@ -397,5 +405,19 @@ describe("formatImportantEmailAlert", () => {
     expect(text).toContain("Your invoice is due");
     expect(text).toContain("billing@vendor.com");
     expect(text).toContain("£120 due 1 Sep");
+  });
+
+  it("prefers the model-written summary over the raw snippet when given", () => {
+    const text = formatImportantEmailAlert(
+      fakeMessage({
+        subject: "Your invoice is due",
+        from: "billing@vendor.com",
+        snippet: "You&#39;ve got an invoice&hellip; view it here...",
+      }),
+      "invoice_due",
+      "£120 is due on 1 September."
+    );
+    expect(text).toContain("£120 is due on 1 September.");
+    expect(text).not.toContain("&#39;");
   });
 });
