@@ -24,6 +24,7 @@ import {
   deletePendingRegistration,
   isEmailInvited,
   getUserByEmail,
+  listPhoneNumbersForUser,
   type PendingRegistrationRow,
   type RegistrationProvider,
 } from "../db/store.js";
@@ -188,13 +189,18 @@ async function handleAwaitingEmail(row: PendingRegistrationRow, text: string): P
   }
 
   const existingUser = getUserByEmail(email);
-  if (existingUser) {
+  if (existingUser && listPhoneNumbersForUser(existingUser.id).length > 0) {
     await reply(
       row.phone,
       "That email's already connected to a Marlowe account. Add this WhatsApp number from Settings on the website instead of starting again here."
     );
     return; // deliberately stop advancing — do not silently rebind an existing account's phone
   }
+  // existingUser with zero phones bound means the account was deliberately disconnected via
+  // Settings > "replay onboarding" (resetOnboardingConnectionState) to re-test this exact flow
+  // without losing data — fall through and let it reconnect. Still safe against a stranger typing
+  // someone else's email: OAuth re-verifies the real address (isEmailInvited(auth.email) in
+  // authRoutes.ts) before anything is bound, same as the brand-new-account path below.
 
   const updated = upsertPendingRegistration(row.phone, { typedEmail: email });
 

@@ -13,6 +13,15 @@ import {
   markAdminTodoRepliesRead,
   listAdminTodos,
   findRemainingOwnerReferences,
+  resetOnboardingConnectionState,
+  addPhoneNumberForUser,
+  listPhoneNumbersForUser,
+  getPendingSetup,
+  upsertAccount,
+  listAccounts,
+  recordApiUsage,
+  listRecentApiUsage,
+  listPosterNotes,
 } from "./store.js";
 
 let counter = 0;
@@ -140,5 +149,46 @@ describe("findRemainingOwnerReferences", () => {
     deleteUserCompletely(user.id);
 
     expect(findRemainingOwnerReferences(user.id)).toEqual([]);
+  });
+});
+
+describe("resetOnboardingConnectionState", () => {
+  // The whole point: replaying onboarding must not touch data-bearing tables. Only the
+  // connection state (accounts, pending_setup, user_phone_numbers) should move.
+  it("clears connection state but leaves data-bearing tables (usage, to-dos, poster board) alone", () => {
+    const email = uniqueEmail("keep-data");
+    const user = findOrCreateUserByEmail(email);
+    addPhoneNumberForUser(user.id, "447900000111");
+    upsertAccount(user.id, {
+      provider: "google",
+      email,
+      accessToken: "tok",
+      refreshToken: "refresh",
+      expiryDate: Date.now() + 3600_000,
+    });
+    setPendingSetup(user.id, "ask_briefing");
+    const todoText = uniqueEmail("todo-keep");
+    addAdminTodo(todoText, user.id);
+    const noteText = uniqueEmail("note-keep");
+    addPosterNote(user.id, noteText);
+    recordApiUsage(user.id, "whatsapp", "claude-sonnet-5", "chat", 10, 5, 0, 0);
+
+    resetOnboardingConnectionState(user.id);
+
+    // Connection state: gone.
+    expect(listPhoneNumbersForUser(user.id)).toEqual([]);
+    expect(listAccounts(user.id)).toEqual([]);
+    expect(getPendingSetup(user.id)).toBeNull();
+
+    // Data: untouched.
+    expect(getUser(user.id)).not.toBeNull();
+    expect(listAdminTodos(user.id).some((t) => t.text === todoText)).toBe(true);
+    expect(listPosterNotes(50).some((n) => n.text === noteText)).toBe(true);
+    expect(listRecentApiUsage(50).some((u) => u.ownerEmail === email)).toBe(true);
+  });
+
+  it("does not throw when the owner has no accounts, phones, or pending setup yet", () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("bare"));
+    expect(() => resetOnboardingConnectionState(user.id)).not.toThrow();
   });
 });

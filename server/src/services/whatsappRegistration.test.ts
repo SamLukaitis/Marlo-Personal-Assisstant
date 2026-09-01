@@ -8,7 +8,8 @@ vi.mock("../providers/whatsapp.js", () => ({
 
 const { sendWhatsAppMessage, sendWhatsAppReplyButtons, sendWhatsAppCtaUrl } = await import("../providers/whatsapp.js");
 const { handlePendingRegistration } = await import("./whatsappRegistration.js");
-const { addInvitedEmail, upsertPendingRegistration, getPendingRegistration } = await import("../db/store.js");
+const { addInvitedEmail, upsertPendingRegistration, getPendingRegistration, findOrCreateUserByEmail, addPhoneNumberForUser } =
+  await import("../db/store.js");
 
 const PHONE = "447000003001";
 
@@ -93,5 +94,43 @@ describe("handlePendingRegistration — awaiting_email provider auto-detect", ()
       { id: "register_microsoft", title: "Outlook" },
     ]);
     expect(getPendingRegistration(phone)?.step).toBe("awaiting_provider");
+  });
+});
+
+describe("handlePendingRegistration — awaiting_email reconnecting an existing account", () => {
+  it("blocks when the existing account still has a phone bound (unchanged behavior)", async () => {
+    const phone = freshPhone();
+    const email = `stillbound-${phone}@gmail.com`;
+    addInvitedEmail(email);
+    const existing = findOrCreateUserByEmail(email);
+    addPhoneNumberForUser(existing.id, "447900009999"); // some other number, still connected
+
+    upsertPendingRegistration(phone, { step: "awaiting_email", name: "Margaret" });
+    await handlePendingRegistration({ kind: "text", from: phone, text: email, messageId: "m1" });
+
+    expect(sendWhatsAppMessage).toHaveBeenCalledWith(
+      phone,
+      "That email's already connected to a Marlowe account. Add this WhatsApp number from Settings on the website instead of starting again here."
+    );
+    expect(sendWhatsAppCtaUrl).not.toHaveBeenCalled();
+  });
+
+  it("lets it through when the existing account has zero phones bound (e.g. after replay-onboarding)", async () => {
+    const phone = freshPhone();
+    const email = `replay-${phone}@gmail.com`;
+    addInvitedEmail(email);
+    findOrCreateUserByEmail(email); // account exists but no phone bound — matches resetOnboardingConnectionState's result
+
+    upsertPendingRegistration(phone, { step: "awaiting_email", name: "Margaret" });
+    await handlePendingRegistration({ kind: "text", from: phone, text: email, messageId: "m1" });
+
+    // Falls through to the normal auto-detect path instead of the "already connected" block.
+    expect(sendWhatsAppCtaUrl).toHaveBeenCalledWith(
+      phone,
+      expect.stringContaining("*Gmail*"),
+      "Connect Gmail",
+      expect.stringContaining("/auth/google/register")
+    );
+    expect(getPendingRegistration(phone)?.step).toBe("awaiting_link_tap");
   });
 });

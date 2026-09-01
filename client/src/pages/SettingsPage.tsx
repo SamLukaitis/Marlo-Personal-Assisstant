@@ -24,6 +24,7 @@ import {
   addInvite,
   removeInvite,
   resetTestPhone,
+  replayOnboarding,
   DEFAULT_BRIEFING_SETTINGS,
   type ProviderInfo,
   type Account,
@@ -35,7 +36,7 @@ import {
   type ImportantEmailAlertSettings,
   type InvitedEmail,
 } from "../api/client";
-import { IconTrash, IconPlus } from "../components/icons";
+import { IconTrash, IconPlus, IconRefresh } from "../components/icons";
 import { useTools } from "../context/ToolsContext";
 import { useAuth } from "../context/AuthContext";
 import { BriefingSourcePicker } from "../components/BriefingSourcePicker";
@@ -98,6 +99,8 @@ export function SettingsPage() {
   const [resetPhone, setResetPhone] = useState("");
   const [resetting, setResetting] = useState(false);
   const [resetMessage, setResetMessage] = useState<string | null>(null);
+  const [replaying, setReplaying] = useState(false);
+  const [replayMessage, setReplayMessage] = useState<string | null>(null);
 
   const { tools, setEnabled } = useTools();
   const { user } = useAuth();
@@ -249,6 +252,30 @@ export function SettingsPage() {
       setResetMessage((err as Error).message);
     } finally {
       setResetting(false);
+    }
+  }
+
+  async function handleReplayOnboarding() {
+    if (
+      !window.confirm(
+        "This reconnects your mail/calendar via OAuth again and replays the setup questions, but keeps everything already on your portal (usage, to-dos, poster board, documents, memory). Continue?"
+      )
+    ) {
+      return;
+    }
+    setReplaying(true);
+    setReplayMessage(null);
+    try {
+      const result = await replayOnboarding();
+      setReplayMessage(
+        result.unboundPhones.length > 0
+          ? `Done — message Marlowe from ${result.unboundPhones.join(", ")} to walk through onboarding again. Your existing data is untouched.`
+          : "Done — no phone was bound yet, but the connection is cleared."
+      );
+    } catch (err) {
+      setReplayMessage((err as Error).message);
+    } finally {
+      setReplaying(false);
     }
   }
 
@@ -755,6 +782,26 @@ export function SettingsPage() {
                   {resetMessage && (
                     <p className="muted" style={{ marginTop: 8 }}>
                       {resetMessage}
+                    </p>
+                  )}
+                </div>
+
+                <h2>Replay onboarding on your own account</h2>
+                <p className="settings-section-intro">
+                  For re-testing the WhatsApp onboarding UX on your own real account without
+                  losing anything — unlike the reset above, this keeps your usage, to-dos, poster
+                  board, documents, and memory exactly as they are. It only disconnects your mail
+                  account and unbinds your phone number(s), so the next message you send Marlowe
+                  starts onboarding fresh and reconnects this same account once you finish OAuth.
+                </p>
+                <div className="card card-padded">
+                  <button className="btn-secondary" onClick={handleReplayOnboarding} disabled={replaying}>
+                    <IconRefresh />
+                    Replay onboarding
+                  </button>
+                  {replayMessage && (
+                    <p className="muted" style={{ marginTop: 8 }}>
+                      {replayMessage}
                     </p>
                   )}
                 </div>
