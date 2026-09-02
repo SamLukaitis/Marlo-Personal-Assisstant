@@ -38,6 +38,26 @@ describe("splitIntoChunks", () => {
     expect(chunks.join(" ")).toBe(longParagraph);
   });
 
+  it("never splits in the middle of a list line, even when the list overflows the cap", () => {
+    // Reproduces a real Marlowe reply: a markdown bullet list (single \n between items, so it's
+    // one "paragraph") long enough to need splitting. Each bullet ends with a sentence and then a
+    // trailing Map link — sentence-boundary packing alone can land a chunk break between a
+    // bullet's prose and its own link, or glue a link onto the next bullet.
+    const lines = [
+      '- *Garota de Ipanema* — classic Brazilian, the famous spot the "Girl from Ipanema" was written about, just a block from the beach. One reviewer noted it\'s "located literally a block away from the Ipanema beach in Ipanema Food is great and because it\'s close to the beach it\'s got that vibe". [Map](https://www.google.com/maps/search/?api=1&query=Garota+de+Ipanema+Rio+de+Janeiro)',
+      '- *Zazá Bistrô Tropical* — Brazilian/tropical fusion, popular bistro. [Map](https://www.google.com/maps/search/?api=1&query=Zaz%C3%A1+Bistr%C3%B4+Tropical+Rio+de+Janeiro)',
+      "- *Teva Ipanema* — good for starting an evening out, known for a high-quality cocktail menu, the kind of place you'd begin a big Ipanema night out. [Map](https://www.google.com/maps/search/?api=1&query=Teva+Ipanema+Rio+de+Janeiro)",
+      "- *Braseiro* — classic churrasco/grilled meats spot.",
+    ];
+    const text = lines.join("\n");
+    expect(text.length).toBeGreaterThan(600); // sanity: this must actually require splitting
+
+    const chunks = splitIntoChunks(text);
+    for (const line of lines) {
+      expect(chunks.some((chunk) => chunk.includes(line))).toBe(true);
+    }
+  });
+
   it("hard-splits on word boundaries when a run has no sentence-ending punctuation", () => {
     const longRun = Array.from({ length: 120 }, (_, i) => `word${i}`).join(" "); // no punctuation
     const chunks = splitIntoChunks(longRun);
