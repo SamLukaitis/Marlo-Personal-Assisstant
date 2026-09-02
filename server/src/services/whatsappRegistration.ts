@@ -38,10 +38,13 @@ const IDLE_RESET_MS = 24 * 60 * 60 * 1000; // a week-old half-finished conversat
 const RESEND_COOLDOWN_MS = 60 * 1000; // advisory UX throttle, not the security boundary
 const lastTokenIssuedAt = new Map<string, number>();
 
-// Short, plain-language rundown aimed at someone who isn't very tech-savvy — this doubles as
-// both the very first message a new number ever sees and the answer to "help"/"menu" at any
-// point later (pre- or post-registration), so there's exactly one copy of it to keep accurate.
-export const MARLOWE_HELP_TEXT =
+// Short, plain-language rundown aimed at someone who isn't very tech-savvy. Used as the very
+// first message a brand-new number ever sees, and as the answer to "help"/"menu" while
+// registration is still in progress — both cases end with the name question because that's the
+// actual next step for someone who isn't registered yet. See MARLOWE_HELP_TEXT below for the
+// separate post-registration version (chatDispatch.ts) — the two used to be one shared constant,
+// which meant an already-registered user asking "help" got asked their name again.
+export const MARLOWE_FIRST_CONTACT_TEXT =
   "👋 *Welcome to the Marlowe testing beta!* I'm Marlowe, your personal assistant. Here's what I do:\n\n" +
   "• Read your email & calendar, help you reply and schedule\n" +
   "• Send a morning update each day\n" +
@@ -49,6 +52,18 @@ export const MARLOWE_HELP_TEXT =
   "• Save photos of tickets/receipts/documents\n" +
   "• Text \"help\" anytime for this list again\n\n" +
   "What should I call you?";
+
+// The "help"/"menu" reply for an already-registered user (chatDispatch.ts's handleText) — same
+// capabilities rundown, but asks what they need instead of re-asking their name, since they're
+// long past that step.
+export const MARLOWE_HELP_TEXT =
+  "👋 Here's what I can do:\n\n" +
+  "• Read your email & calendar, help you reply and schedule\n" +
+  "• Send a morning update each day\n" +
+  "• Answer questions like \"what's on today?\"\n" +
+  "• Save photos of tickets/receipts/documents\n" +
+  "• Text \"help\" anytime for this list again\n\n" +
+  "What do you need?";
 
 const HELP_TRIGGERS = new Set(["help", "menu", "what can you do"]);
 export function isHelpTrigger(text: string): boolean {
@@ -304,12 +319,12 @@ export async function handlePendingRegistration(message: IncomingWhatsAppMessage
 
   if (!row) {
     row = upsertPendingRegistration(phone, { step: "awaiting_name" });
-    await reply(phone, MARLOWE_HELP_TEXT);
+    await reply(phone, MARLOWE_FIRST_CONTACT_TEXT);
     return;
   }
 
   if (row.step !== "completed" && isHelpTrigger(message.text)) {
-    await reply(phone, MARLOWE_HELP_TEXT);
+    await reply(phone, MARLOWE_FIRST_CONTACT_TEXT);
     await reply(phone, currentStepPrompt(row));
     return;
   }

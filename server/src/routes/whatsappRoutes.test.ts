@@ -85,6 +85,19 @@ describe("handleIncoming — help trigger for already-registered users", () => {
     expect(vi.mocked(sendWhatsAppMessage).mock.calls[0][0]).toBe("447900000000");
   });
 
+  // Regression: an already-registered user asking "help" used to get the brand-new-number
+  // welcome message verbatim, ending in "What should I call you?" — the registration question,
+  // asked again of someone long past registration. See whatsappRegistration.ts's
+  // MARLOWE_HELP_TEXT (post-registration) vs. MARLOWE_FIRST_CONTACT_TEXT (pre-registration).
+  it("asks what the user needs, not their name — that's only the pre-registration greeting", async () => {
+    await handleIncoming({ kind: "text", from: "447900000013", text: "help", messageId: "m13" });
+
+    const text = vi.mocked(sendWhatsAppMessage).mock.calls[0][1];
+    expect(text).not.toContain("What should I call you?");
+    expect(text).not.toContain("Welcome to the Marlowe testing beta");
+    expect(text).toContain("What do you need?");
+  });
+
   it("still routes an ordinary message to the real assistant", async () => {
     vi.mocked(runAssistantChat).mockResolvedValue({ text: "a real reply" });
 
