@@ -30,12 +30,24 @@ const TEMPLATE_BY_KIND: Record<ProactiveMessageKind, WhatsAppTemplateName> = {
 // track each template's exact prefix length here.
 const MAX_TEMPLATE_PARAM_LENGTH = 1000;
 
+// Unlike a free-form send, a template *parameter* value is rejected by Meta outright if it
+// contains a newline, a tab, or a run of more than one space — callers (formatImportantEmailAlert
+// et al.) format their text assuming a normal chat bubble, so this is the one place that has to
+// flatten it back down before it can go in a template. Collapses any run of newlines/tabs to a
+// single space first (so "a\n\nb" doesn't become "a  b"), then collapses any remaining multi-space
+// run — including ones that were already there, e.g. in a raw email snippet.
+function sanitizeForTemplateParam(text: string): string {
+  return text.replace(/[\r\n\t]+/g, " ").replace(/ {2,}/g, " ").trim();
+}
+
 // Only appends `continuation` when truncation actually happened — a message that already fits
-// goes through untouched.
+// goes through untouched (aside from the same sanitizing every template param gets).
 export function truncateForTemplate(text: string, continuation?: string): string {
-  if (text.length <= MAX_TEMPLATE_PARAM_LENGTH) return text;
+  const sanitized = sanitizeForTemplateParam(text);
+  if (sanitized.length <= MAX_TEMPLATE_PARAM_LENGTH) return sanitized;
   const budget = MAX_TEMPLATE_PARAM_LENGTH - (continuation?.length ?? 0);
-  return text.slice(0, Math.max(0, budget)).trimEnd() + (continuation ?? "");
+  const truncated = sanitized.slice(0, Math.max(0, budget)).trimEnd() + (continuation ?? "");
+  return sanitizeForTemplateParam(truncated);
 }
 
 function isWithinCustomerServiceWindow(phone: string): boolean {
@@ -58,7 +70,7 @@ export async function sendProactiveMessage(
   const templateName = TEMPLATE_BY_KIND[kind];
   // Only the digest is routinely long enough to actually get truncated — the alert template's
   // {{1}} is already a short line in practice, so it never needs the "open the app" pointer.
-  const continuation = kind === "digest" ? "\n…open the app for the rest." : undefined;
+  const continuation = kind === "digest" ? " …open the app for the rest." : undefined;
   const templateParam = truncateForTemplate(text, continuation);
 
   if (isWithinCustomerServiceWindow(phone)) {
