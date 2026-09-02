@@ -200,4 +200,41 @@ describe("remember → entities bridge", () => {
     const user = findOrCreateUserByEmail(uniqueEmail("find-by-name-miss"));
     expect(findEntityByName(user.id, "Nobody")).toBeNull();
   });
+
+  it("findEntityByName: ignores a same-owner entity with no name field at all, without throwing", () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("find-by-name-no-name-field"));
+    saveEntity(user.id, {
+      type: "travel_checkin",
+      data: { country: "France", city: "Paris", checkedInAt: Date.now() },
+    });
+    const sarah = findOrCreateEntity(user.id, "person", "Sarah");
+
+    expect(() => findEntityByName(user.id, "Sarah")).not.toThrow();
+    expect(findEntityByName(user.id, "Sarah")?.id).toBe(sarah.id);
+    expect(findEntityByName(user.id, "France")).toBeNull();
+  });
+
+  it("findEntityByName: never returns a booking, even though it structurally has a name string", () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("find-by-name-booking"));
+    saveEntity(user.id, {
+      type: "booking",
+      data: { kind: "hotel", name: "Hotel Eva", reference: "ABC", startDate: "2026-01-01", endDate: null },
+    });
+    findOrCreateEntity(user.id, "person", "Sarah");
+
+    expect(findEntityByName(user.id, "Hotel Eva")).toBeNull();
+  });
+
+  it("find-or-create: rejects a blank or whitespace-only name", () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("findorcreate-blank"));
+    expect(() => findOrCreateEntity(user.id, "person", "")).toThrow();
+    expect(() => findOrCreateEntity(user.id, "person", "   ")).toThrow();
+  });
+
+  it("findEntityByName: returns null (not a throw, not a false match) for a blank name", () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("find-by-name-blank"));
+    findOrCreateEntity(user.id, "person", "Sarah");
+    expect(findEntityByName(user.id, "")).toBeNull();
+    expect(findEntityByName(user.id, "   ")).toBeNull();
+  });
 });

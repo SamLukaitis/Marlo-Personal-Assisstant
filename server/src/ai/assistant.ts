@@ -15,6 +15,7 @@ import {
   saveEntity,
   linkRecords,
   getLinksTo,
+  getLinksFrom,
   getRelatedEntities,
   findOrCreateEntity,
   appendEntityNote,
@@ -978,8 +979,8 @@ export async function runTool(
       const note = input.note as string;
       addMemoryNote(ownerId, note, input.triggerAt as string | undefined);
 
-      const entityName = input.entity_name as string | undefined;
-      const entityType = input.entity_type as string | undefined;
+      const entityName = (input.entity_name as string | undefined)?.trim();
+      const entityType = (input.entity_type as string | undefined)?.trim();
       if (entityName && entityType) {
         const entity = findOrCreateEntity(ownerId, entityType, entityName);
         appendEntityNote(ownerId, entity.id, note);
@@ -987,7 +988,11 @@ export async function runTool(
         const relatesTo = (input.relates_to as string[] | undefined) ?? [];
         for (const otherName of relatesTo) {
           const other = findEntityByName(ownerId, otherName);
-          if (other) {
+          if (!other) continue;
+          const alreadyLinked = getLinksFrom(ownerId, "entity", entity.id).some(
+            (link) => link.relation === "relates_to" && link.toType === "entity" && link.toId === other.id
+          );
+          if (!alreadyLinked) {
             linkRecords(ownerId, {
               relation: "relates_to",
               from: { type: "entity", id: entity.id },

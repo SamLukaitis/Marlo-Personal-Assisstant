@@ -1837,9 +1837,11 @@ export function findOrCreateEntity(
 ): EntityRow<RememberedEntityData> {
   const existing = findEntityByName(ownerId, name, type);
   if (existing) return existing;
+  const trimmed = name.trim();
+  if (!trimmed) throw new Error("findOrCreateEntity: name must not be blank");
   return saveEntity<RememberedEntityData>(ownerId, {
     type,
-    data: { name: name.trim(), notes: [] },
+    data: { name: trimmed, notes: [] },
   });
 }
 
@@ -1856,6 +1858,20 @@ export function appendEntityNote(
   });
 }
 
+// Narrows an entity's untyped `data` down to RememberedEntityData shape — required because
+// listEntities(ownerId, {}) (no type filter) returns entities of every type for this owner,
+// including pre-existing document-extracted ones (travel_checkin, trip, expense, booking)
+// whose data shape is unrelated. A `name` string alone isn't enough to tell them apart
+// (booking also has one) — requiring `notes` too is what no pre-existing type has.
+function isRememberedEntity(data: unknown): data is RememberedEntityData {
+  return (
+    typeof data === "object" &&
+    data !== null &&
+    typeof (data as RememberedEntityData).name === "string" &&
+    Array.isArray((data as RememberedEntityData).notes)
+  );
+}
+
 // Case-insensitive exact-name lookup, optionally narrowed to one type — used both by
 // findOrCreateEntity's dedupe check and by remember's relates_to / recall_entity.
 export function findEntityByName(
@@ -1864,8 +1880,13 @@ export function findEntityByName(
   type?: string
 ): EntityRow<RememberedEntityData> | null {
   const normalized = normalizeEntityName(name);
-  const candidates = listEntities<RememberedEntityData>(ownerId, type ? { type } : {});
-  return candidates.find((e) => normalizeEntityName(e.data.name) === normalized) ?? null;
+  if (!normalized) return null;
+  return (
+    listEntities<unknown>(ownerId, type ? { type } : {}).find(
+      (e): e is EntityRow<RememberedEntityData> =>
+        isRememberedEntity(e.data) && normalizeEntityName(e.data.name) === normalized
+    ) ?? null
+  );
 }
 
 // ---------------------------------------------------------------------------

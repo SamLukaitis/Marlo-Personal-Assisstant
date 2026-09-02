@@ -36,6 +36,7 @@ import {
   getRelatedEntities,
   linkRecords,
   appendWhatsAppMessage,
+  saveEntity,
 } from "../db/store.js";
 import { getBriefingSettings, saveBriefingSettings, type BriefingSettings } from "../services/briefing.js";
 import { getXeroForwardingEmail } from "../services/xero.js";
@@ -486,6 +487,54 @@ describe("remember tool — entity linking", () => {
     expect(getRelatedEntities(user.id, { type: "entity", id: sarah!.id })).toEqual([]);
     expect(findEntityByName(user.id, "Nonexistent Project")).toBeNull();
   });
+
+  it("relates_to never matches a non-remember entity, even one with a matching name", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("remember-relates-to-nonremember"));
+    saveEntity(user.id, {
+      type: "travel_checkin",
+      data: { country: "France", city: "Paris", checkedInAt: Date.now() },
+    });
+
+    const result = await runTool(user.id, "remember", {
+      note: "Loves French cuisine",
+      entity_name: "Sarah",
+      entity_type: "person",
+      relates_to: ["France"],
+    });
+    expect(result).toEqual({ ok: true });
+
+    const sarah = findEntityByName(user.id, "Sarah", "person");
+    expect(getRelatedEntities(user.id, { type: "entity", id: sarah!.id })).toEqual([]);
+  });
+
+  it("calling remember twice with the same entity_name/entity_type/relates_to does not duplicate links", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("remember-relates-to-dedupe"));
+    await runTool(user.id, "remember", {
+      note: "Kickoff is next week",
+      entity_name: "Project Falcon",
+      entity_type: "project",
+    });
+    const call = {
+      note: "Leads Project Falcon",
+      entity_name: "Sarah",
+      entity_type: "person",
+      relates_to: ["Project Falcon"],
+    };
+    await runTool(user.id, "remember", call);
+    await runTool(user.id, "remember", call);
+
+    const sarah = findEntityByName(user.id, "Sarah", "person");
+    const related = getRelatedEntities(user.id, { type: "entity", id: sarah!.id });
+    expect(related).toHaveLength(1);
+    expect(related[0].data.name).toBe("Project Falcon");
+  });
+
+  it("entity_name without entity_type falls back to the flat-note-only path", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("remember-entityname-only"));
+    const result = await runTool(user.id, "remember", { note: "Prefers window seats", entity_name: "Sarah" });
+    expect(result).toEqual({ ok: true });
+    expect(findEntityByName(user.id, "Sarah")).toBeNull();
+  });
 });
 
 describe("recall_entity tool", () => {
@@ -543,6 +592,62 @@ describe("recall_entity tool", () => {
     const user = findOrCreateUserByEmail(uniqueEmail("recall-entity-miss"));
     const result = await runTool(user.id, "recall_entity", { entity_name: "Nobody" });
     expect(result).toEqual({ error: 'no entity found matching "Nobody"' });
+  });
+
+  it("finds a genuinely remembered entity without throwing or false-matching a non-remember entity present for the same owner", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("recall-entity-mixed-owner"));
+    saveEntity(user.id, {
+      type: "booking",
+      data: { kind: "hotel", name: "Hotel Eva", reference: "ABC", startDate: "2026-01-01", endDate: null },
+    });
+    await runTool(user.id, "remember", {
+      note: "Handles invoicing",
+      entity_name: "Sarah",
+      entity_type: "person",
+    });
+
+    const hit = (await runTool(user.id, "recall_entity", { entity_name: "Sarah" })) as {
+      entity: { data: { name: string; notes: { text: string }[] } };
+    };
+    expect(hit.entity.data.name).toBe("Sarah");
+    expect(hit.entity.data.notes.map((n) => n.text)).toEqual(["Handles invoicing"]);
+
+    const miss = await runTool(user.id, "recall_entity", { entity_name: "Hotel Eva" });
+    expect(miss).toEqual({ error: 'no entity found matching "Hotel Eva"' });
+  });
+});
+
+describe("remember + recall_entity end-to-end", () => {
+  it("remembers an entity across multiple notes and calls, resolves relates_to, and recalls both notes plus the related entity", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("remember-recall-e2e"));
+
+    await runTool(user.id, "remember", {
+      note: "Handles invoicing",
+      entity_name: "Sarah",
+      entity_type: "person",
+    });
+    await runTool(user.id, "remember", {
+      note: "Prefers email over calls",
+      entity_name: "Sarah",
+      entity_type: "person",
+    });
+    await runTool(user.id, "remember", {
+      note: "Kickoff is next week",
+      entity_name: "Project Falcon",
+      entity_type: "project",
+      relates_to: ["Sarah"],
+    });
+
+    const result = (await runTool(user.id, "recall_entity", { entity_name: "Sarah" })) as {
+      entity: { data: { name: string; notes: { text: string }[] } };
+      related: { data: { name: string } }[];
+    };
+    expect(result.entity.data.name).toBe("Sarah");
+    expect(result.entity.data.notes.map((n) => n.text)).toEqual([
+      "Handles invoicing",
+      "Prefers email over calls",
+    ]);
+    expect(result.related.map((e) => e.data.name)).toEqual(["Project Falcon"]);
   });
 });
 
