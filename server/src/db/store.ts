@@ -717,9 +717,22 @@ if (!ftsExistedBefore) {
 // duplicated in the DB; triggers keep it in sync with inserts/deletes (no update trigger —
 // whatsapp_messages rows are never content-edited, only inserted or removed, e.g. by
 // deleteUserCompletely).
-const whatsappFtsExistedBefore = !!db
-  .prepare(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'whatsapp_messages_fts'`)
-  .get();
+//
+// The initial backfill is deliberately keyed off "is the FTS table empty right now" rather than
+// "did it already exist before this boot" — CREATE VIRTUAL TABLE and a backfill INSERT are two
+// separate implicit transactions, and this table can hold the entire WhatsApp transcript, so a
+// process killed between them (e.g. a slow boot hitting a platform health-check timeout) would
+// leave a table that "exists" but was never populated, and an existence check would then skip the
+// backfill forever on every future boot — silently missing everything from before that boot, and
+// later corrupting the index when deleteUserCompletely's bulk DELETE fires the delete trigger for
+// rows the index never actually held. Checking emptiness instead is self-healing: any interrupted
+// first boot just looks empty again next time and gets rebuilt. Using FTS5's 'rebuild' command
+// (rather than re-running the plain backfill INSERT) also makes the recovery itself atomic and
+// idempotent — it re-derives the whole index from whatsapp_messages in one shot and can't leave it
+// partially populated either. A legitimately empty whatsapp_messages table (fresh install, zero
+// messages) will re-run 'rebuild' on every boot until the first message arrives; that's harmless —
+// 'rebuild' against an empty base table is a cheap no-op — and it settles into a normal
+// single-run-then-stable pattern the moment real content exists.
 db.exec(`
   CREATE VIRTUAL TABLE IF NOT EXISTS whatsapp_messages_fts USING fts5(
     content, content='whatsapp_messages', content_rowid='id'
@@ -731,8 +744,9 @@ db.exec(`
     INSERT INTO whatsapp_messages_fts(whatsapp_messages_fts, rowid, content) VALUES ('delete', old.id, old.content);
   END;
 `);
-if (!whatsappFtsExistedBefore) {
-  db.exec(`INSERT INTO whatsapp_messages_fts(rowid, content) SELECT id, content FROM whatsapp_messages`);
+const whatsappFtsIsEmpty = !db.prepare(`SELECT 1 FROM whatsapp_messages_fts LIMIT 1`).get();
+if (whatsappFtsIsEmpty) {
+  db.exec(`INSERT INTO whatsapp_messages_fts(whatsapp_messages_fts) VALUES('rebuild')`);
 }
 
 // When a number last sent us a message — powers the outbound-message-type decision in

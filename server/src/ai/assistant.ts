@@ -484,7 +484,9 @@ const ALWAYS_ON_TOOLS: Anthropic.Tool[] = [
       "and the rolling summary already in your context — call this when the user references " +
       "something they told you earlier (a name, a decision, a date, a specific fact) that isn't in " +
       "what you can currently see, instead of saying you don't have it or guessing. Only available " +
-      "in a WhatsApp conversation.",
+      "in a WhatsApp conversation. Every term in the query must appear in the same message to " +
+      "match, so one or two distinctive keywords (a name, a place, a specific number) works far " +
+      "better than a full sentence — a whole natural-language question will usually match nothing.",
     input_schema: {
       type: "object",
       properties: {
@@ -900,12 +902,14 @@ export async function runTool(
       if (!phone) {
         return { error: "Searching conversation history is only available in a WhatsApp conversation." };
       }
-      return searchWhatsAppHistory(
-        ownerId,
-        phone,
-        input.query as string,
-        (input.limit as number | undefined) ?? SEARCH_CONVERSATION_HISTORY_DEFAULT_LIMIT
+      // input.limit is model-supplied and untrusted: SQLite treats a negative LIMIT as
+      // "unbounded", and whatsapp_messages grows forever on a long-running account, so clamp
+      // to a sane range rather than passing it straight through.
+      const clampedLimit = Math.min(
+        Math.max(1, Number(input.limit) || SEARCH_CONVERSATION_HISTORY_DEFAULT_LIMIT),
+        50
       );
+      return searchWhatsAppHistory(ownerId, phone, input.query as string, clampedLimit);
     }
     case "extract_email_attachment": {
       const result = await ingestEmailAttachment({
@@ -1194,7 +1198,7 @@ function buildRules(enabled: Set<ToolKey>): string {
     "- Use flag_unmet_request whenever you have to tell the user you can't do something — call it in the same turn as your reply, don't wait to be asked.",
     '- Use search_documents/list_recent_documents when the user asks about something they photographed or sent via WhatsApp (boarding passes, licenses, tickets, receipts) — e.g. "when did I fly to X" or "what\'s the code on my license".',
     "- If the user wants the actual photo/file back rather than just its details (e.g. \"send me that photo again\", \"can I get the original image\"), find the right document with search_documents/list_recent_documents first, then call send_document with its id.",
-    "- Use search_conversation_history when the user references something they told you earlier (a name, a decision, a date, a specific fact) that isn't in your current context — the visible recent messages or the conversation summary above — instead of saying you don't have it or guessing. WhatsApp-only, same as send_document.",
+    "- Use search_conversation_history when the user references something they told you earlier (a name, a decision, a date, a specific fact) that isn't in your current context — the visible recent messages or the conversation summary above — instead of saying you don't have it or guessing. WhatsApp-only, same as send_document. Every term must appear in the same message to match, so a full sentence often returns nothing even when the fact is there — if a call comes back empty, retry with different single keywords pulled from the user's question (a name, a place, a specific number) before telling them you don't have it.",
     "- When the user asks about a trip, booking, or receipt and get_message shows a relevant attachment (ticket, confirmation, visa, invoice), call extract_email_attachment on it yourself, immediately, without asking first — the same way you'd read the email body without asking. Do this for every relevant attachment you find in the same turn, not one at a time. Only ask first if there are an unusually large number of attachments (10+) to extract at once. Don't just describe the attachment's filename and stop there, and don't stop to ask permission to do something this low-risk and reversible.",
     "- If extract_email_attachment fails for an attachment, don't just relay a generic failure to the user — retry it once, and if it still fails, say so plainly with the vendor/subject so they know exactly which one needs a manual forward, rather than leaving them to guess.",
     "- Use get_news for news/current-events questions. Only report headlines the tool actually returned — never supplement with your own general knowledge or training data, even for well-known ongoing events. Fabricating a headline is a serious error, same as with any other tool's data.",
