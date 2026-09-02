@@ -15,7 +15,11 @@ import {
   saveEntity,
   linkRecords,
   getLinksTo,
+  getLinksFrom,
   getRelatedEntities,
+  findOrCreateEntity,
+  appendEntityNote,
+  findEntityByName,
   getDocument,
   getEnabledTools,
   setToolEnabled,
@@ -436,8 +440,44 @@ const ALWAYS_ON_TOOLS: Anthropic.ToolUnion[] = [
             "the user a WhatsApp message at that time, so only set it when they'd genuinely want to " +
             "be reminded — and mention to them that you've set a reminder.",
         },
+        entity_name: {
+          type: "string",
+          description:
+            "Optional. Only set this when the note is about a specific, nameable, recurring subject " +
+            "the user might ask about again by name (a person, place, project, etc) — not for " +
+            "one-off preferences with no clear subject. The name to file this note under.",
+        },
+        entity_type: {
+          type: "string",
+          description:
+            "Required if entity_name is set. Free-text category for the subject, e.g. 'person', " +
+            "'place', 'project' — your own words, no fixed list.",
+        },
+        relates_to: {
+          type: "array",
+          items: { type: "string" },
+          description:
+            "Optional. Names of other entities this one relates to. Only existing entities are " +
+            "linked; names that don't match anything are ignored.",
+        },
       },
       required: ["note"],
+    },
+  },
+  {
+    name: "recall_entity",
+    description:
+      "Look up everything remembered about a specific person, place, project, or other named subject in one call — the entity's accumulated notes plus everything linked to it (via remember's relates_to). Use this instead of search_memory when the user asks about a specific named thing, e.g. 'what do you know about Sarah'.",
+    input_schema: {
+      type: "object",
+      properties: {
+        entity_name: { type: "string", description: "The name of the person/place/project/etc to look up" },
+        entity_type: {
+          type: "string",
+          description: "Optional — narrow the search to this type (e.g. 'person', 'place', 'project') if known",
+        },
+      },
+      required: ["entity_name"],
     },
   },
   {
@@ -935,15 +975,47 @@ export async function runTool(
     case "label_message":
       await hubAddLabel(ownerId, input.account_id as number, input.message_id as string, input.label as string);
       return { ok: true };
-    case "remember":
-      addMemoryNote(ownerId, input.note as string, input.triggerAt as string | undefined);
+    case "remember": {
+      const note = input.note as string;
+      addMemoryNote(ownerId, note, input.triggerAt as string | undefined);
+
+      const entityName = (input.entity_name as string | undefined)?.trim();
+      const entityType = (input.entity_type as string | undefined)?.trim();
+      if (entityName && entityType) {
+        const entity = findOrCreateEntity(ownerId, entityType, entityName);
+        appendEntityNote(ownerId, entity.id, note);
+
+        const relatesTo = (input.relates_to as string[] | undefined) ?? [];
+        for (const otherName of relatesTo) {
+          const other = findEntityByName(ownerId, otherName);
+          if (!other) continue;
+          const alreadyLinked = getLinksFrom(ownerId, "entity", entity.id).some(
+            (link) => link.relation === "relates_to" && link.toType === "entity" && link.toId === other.id
+          );
+          if (!alreadyLinked) {
+            linkRecords(ownerId, {
+              relation: "relates_to",
+              from: { type: "entity", id: entity.id },
+              to: { type: "entity", id: other.id },
+            });
+          }
+        }
+      }
       return { ok: true };
+    }
     case "search_memory":
       return searchMemoryNotes(
         ownerId,
         input.query as string,
         (input.limit as number | undefined) ?? SEARCH_MEMORY_DEFAULT_LIMIT
       );
+    case "recall_entity": {
+      const entityName = input.entity_name as string;
+      const entityType = input.entity_type as string | undefined;
+      const entity = findEntityByName(ownerId, entityName, entityType);
+      if (!entity) return { error: `no entity found matching "${entityName}"` };
+      return { entity, related: getRelatedEntities(ownerId, { type: "entity", id: entity.id }) };
+    }
     case "flag_unmet_request":
       addUnmetRequest(ownerId, input.summary as string, phone ? "whatsapp" : "web");
       return { ok: true };
@@ -1275,6 +1347,7 @@ function buildRules(enabled: Set<ToolKey>): string {
     "- Use search_contacts to resolve a name to an email address before drafting to someone when you don't already have their address.",
     "- If search_contacts (or any lookup) returns more than one plausible match and it's not obvious which one is meant, use ask_user_choice(mode=\"resume\") with one option per candidate instead of listing them in prose and waiting for a typed reply.",
     "- Use the remember tool proactively whenever the user shares something worth recalling later (preferences, which account is which, standing instructions) — don't wait to be asked.",
+    "- When a remember note is about a specific, nameable, recurring subject (a person, place, project, etc) the user might ask about again by name, pass entity_name + entity_type on that same remember call so it files onto a lookup-able entity instead of only a flat note — don't do this for one-off preferences with no clear subject. Use recall_entity (not search_memory) when the user later asks about that subject by name — it returns the entity's notes plus everything linked to it in one call.",
     "- Use flag_unmet_request whenever you have to tell the user you can't do something — call it in the same turn as your reply, don't wait to be asked.",
     '- Use search_documents/list_recent_documents when the user asks about something they photographed or sent via WhatsApp (boarding passes, licenses, tickets, receipts) — e.g. "when did I fly to X" or "what\'s the code on my license".',
     "- If the user wants the actual photo/file back rather than just its details (e.g. \"send me that photo again\", \"can I get the original image\"), find the right document with search_documents/list_recent_documents first, then call send_document with its id.",
