@@ -32,6 +32,9 @@ import {
   markMemorySurfaced,
   setPendingSetup,
   listUnmetRequests,
+  findEntityByName,
+  getRelatedEntities,
+  linkRecords,
   appendWhatsAppMessage,
 } from "../db/store.js";
 import { getBriefingSettings, saveBriefingSettings, type BriefingSettings } from "../services/briefing.js";
@@ -401,6 +404,87 @@ describe("remember tool — triggerAt", () => {
 
     const [saved] = listMemoryNotes(user.id);
     expect(saved.triggerAt).toBeNull();
+  });
+});
+
+describe("remember tool — entity linking", () => {
+  it("without entity_name/entity_type: behaves exactly as before, no entity created", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("remember-no-entity"));
+    const result = await runTool(user.id, "remember", { note: "Prefers window seats" });
+    expect(result).toEqual({ ok: true });
+    expect(findEntityByName(user.id, "Prefers window seats")).toBeNull();
+    const [saved] = listMemoryNotes(user.id);
+    expect(saved.content).toBe("Prefers window seats");
+  });
+
+  it("with entity_name+entity_type: creates the entity and files the note onto it", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("remember-new-entity"));
+    const result = await runTool(user.id, "remember", {
+      note: "Handles invoicing",
+      entity_name: "Sarah",
+      entity_type: "person",
+    });
+    expect(result).toEqual({ ok: true });
+
+    const entity = findEntityByName(user.id, "Sarah", "person");
+    expect(entity?.data.notes).toEqual([expect.objectContaining({ text: "Handles invoicing" })]);
+    // Still also writes the flat memory_notes row — remember's core behavior is unchanged.
+    const [saved] = listMemoryNotes(user.id);
+    expect(saved.content).toBe("Handles invoicing");
+  });
+
+  it("a second remember call for the same name appends onto the same entity", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("remember-append-entity"));
+    await runTool(user.id, "remember", {
+      note: "Handles invoicing",
+      entity_name: "Sarah",
+      entity_type: "person",
+    });
+    await runTool(user.id, "remember", {
+      note: "Prefers email over calls",
+      entity_name: "sarah",
+      entity_type: "person",
+    });
+
+    const entity = findEntityByName(user.id, "Sarah", "person");
+    expect(entity?.data.notes.map((n) => n.text)).toEqual([
+      "Handles invoicing",
+      "Prefers email over calls",
+    ]);
+  });
+
+  it("relates_to links to an existing entity by name", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("remember-relates-to"));
+    await runTool(user.id, "remember", {
+      note: "Kickoff is next week",
+      entity_name: "Project Falcon",
+      entity_type: "project",
+    });
+    await runTool(user.id, "remember", {
+      note: "Leads Project Falcon",
+      entity_name: "Sarah",
+      entity_type: "person",
+      relates_to: ["Project Falcon"],
+    });
+
+    const sarah = findEntityByName(user.id, "Sarah", "person");
+    const related = getRelatedEntities(user.id, { type: "entity", id: sarah!.id });
+    expect(related.map((e) => e.data.name)).toEqual(["Project Falcon"]);
+  });
+
+  it("relates_to silently ignores a name with no match — no error, nothing created", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("remember-relates-to-miss"));
+    const result = await runTool(user.id, "remember", {
+      note: "Leads a project",
+      entity_name: "Sarah",
+      entity_type: "person",
+      relates_to: ["Nonexistent Project"],
+    });
+    expect(result).toEqual({ ok: true });
+
+    const sarah = findEntityByName(user.id, "Sarah", "person");
+    expect(getRelatedEntities(user.id, { type: "entity", id: sarah!.id })).toEqual([]);
+    expect(findEntityByName(user.id, "Nonexistent Project")).toBeNull();
   });
 });
 
