@@ -130,6 +130,40 @@ describe("checkForImportantEmails", () => {
     expect(candidates).toEqual([{ index: 0, subject: "Flight change", snippet: "" }]);
   });
 
+  // Google/Microsoft's "an app was granted access" notification fires for Marlowe's own OAuth
+  // connect/reconnect too — expected and self-caused, not a security event — but the classifier
+  // can't tell that apart from a real new-sign-in alert from subject/snippet alone.
+  it("filters out a notification about our own app being granted access, before it reaches the classifier", async () => {
+    const originalServerUrl = process.env.SERVER_URL;
+    process.env.SERVER_URL = "https://marlowe.up.railway.app";
+    try {
+      const user = findOrCreateUserByEmail(uniqueEmail("own-app"));
+      registerActivePhone(user.id);
+      await baseline(user.id);
+
+      mockHubListMessages.mockResolvedValueOnce([
+        fakeMessage({
+          id: "own-app-1",
+          from: "no-reply@accounts.google.com",
+          subject: "Security alert",
+          snippet:
+            "Someone (possibly unauthorized) granted an app called marlowe.up.railway.app access to your Google Account data.",
+        }),
+        fakeMessage({ id: "real-alert", from: "no-reply@accounts.google.com", subject: "New sign-in" }),
+      ]);
+
+      await checkForImportantEmails(user.id);
+
+      expect(mockClassify).toHaveBeenCalledTimes(1);
+      const [candidates] = mockClassify.mock.calls[0];
+      expect(candidates.map((c: { index: number }) => c.index)).toEqual([0]);
+      expect(candidates[0]).not.toMatchObject({ subject: "Security alert" });
+      expect(hasAlerted(user.id, "important-email:1:own-app-1")).toBe(false);
+    } finally {
+      process.env.SERVER_URL = originalServerUrl;
+    }
+  });
+
   it("sends a WhatsApp alert for a classified match, formatted with the category", async () => {
     const user = findOrCreateUserByEmail(uniqueEmail("match"));
     const phone = registerActivePhone(user.id);

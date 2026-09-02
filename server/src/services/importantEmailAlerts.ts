@@ -22,6 +22,29 @@ import type { UnifiedMessage } from "../providers/types.js";
 const MAX_ALERTS_PER_CHECK = 5;
 const BASELINE_KEY = "important_email_baseline_set";
 
+// Google/Microsoft send an automated "an app was granted access to your account" notification
+// every time the user connects (or reconnects) their mailbox — including to Marlowe itself during
+// onboarding. That's expected, self-caused, and not a security event, but the classifier only
+// sees a subject/snippet and has no way to know "marlowe.up.railway.app" in one of those refers to
+// us rather than some other third-party app, so it reads exactly like a real new-sign-in alert
+// (security_alert's own description: "new sign-in, password changed, suspicious activity").
+// Filtered out here, before candidates ever reach the classifier — cheap and deterministic, same
+// precedent as the isWhatsAppConfigured/numbers.length gates below. Read directly from the env
+// var (not config.ts's SERVER_URL) so it reflects whatever's current at call time.
+function ownAppHost(): string | null {
+  try {
+    return new URL(process.env.SERVER_URL ?? "http://localhost:4000").hostname.toLowerCase();
+  } catch {
+    return null;
+  }
+}
+
+function mentionsOwnApp(m: UnifiedMessage): boolean {
+  const host = ownAppHost();
+  if (!host) return false;
+  return `${m.subject} ${m.snippet}`.toLowerCase().includes(host);
+}
+
 // Namespaced so this ledger entry can never collide with alerts.ts's bare `${accountId}:${id}`
 // key on the same alerted_messages table — the two features filter for opposite sender types
 // today (real people vs. automated), but the prefix keeps that true by construction, not by
@@ -68,7 +91,9 @@ async function notifyAll(numbers: string[], text: string): Promise<boolean> {
 // are deliberately decoupled; revisit only if this proves annoying in practice.
 export async function checkForImportantEmails(ownerId: number): Promise<void> {
   const messages = await hubListMessages(ownerId, { limit: 50 });
-  const candidates = messages.filter((m) => m.unread && m.from && AUTOMATED_SENDER_PATTERN.test(m.from));
+  const candidates = messages.filter(
+    (m) => m.unread && m.from && AUTOMATED_SENDER_PATTERN.test(m.from) && !mentionsOwnApp(m)
+  );
 
   // First-ever run: baseline the current inbox instead of alerting on everything already sitting
   // there — same precedent as alerts.ts's BASELINE_KEY, doubly important here since this feature
