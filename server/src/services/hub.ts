@@ -77,11 +77,38 @@ function requireAccount(ownerId: number, accountId: number): AccountRow {
   return account;
 }
 
+// Per-inbox Read/Send/Delete toggles (Settings page "Accounts" section). "delete" here means
+// archiving — Marlowe never truly deletes mail, see hubArchiveMessages — the permission just
+// gates that existing, reversible action.
+const PERMISSION_LABEL: Record<"read" | "send" | "delete", string> = {
+  read: "Reading",
+  send: "Sending",
+  delete: "Archiving/deleting",
+};
+
+function requirePermission(account: AccountRow, action: "read" | "send" | "delete"): void {
+  const allowed = action === "read" ? account.canRead : action === "send" ? account.canSend : account.canDelete;
+  if (!allowed) {
+    throw new Error(
+      `${PERMISSION_LABEL[action]} is turned off for ${account.email} — enable it on the Settings page under Accounts.`
+    );
+  }
+}
+
 export async function hubListMessages(
   ownerId: number,
   opts: { query?: string; limit?: number; accountId?: number }
 ): Promise<UnifiedMessage[]> {
-  const accounts = opts.accountId ? [requireAccount(ownerId, opts.accountId)] : listAccounts(ownerId);
+  let accounts: AccountRow[];
+  if (opts.accountId) {
+    const account = requireAccount(ownerId, opts.accountId);
+    requirePermission(account, "read");
+    accounts = [account];
+  } else {
+    // Aggregate "all accounts" call (briefing, alerts, "what's unread") — silently exclude
+    // read-restricted accounts rather than erroring, same posture as auth-broken accounts below.
+    accounts = listAccounts(ownerId).filter((a) => a.canRead);
+  }
   const results = await Promise.allSettled(
     accounts.map((a) =>
       a.provider === "google"
@@ -98,6 +125,7 @@ export async function hubGetMessage(
   messageId: string
 ): Promise<UnifiedMessage | null> {
   const account = requireAccount(ownerId, accountId);
+  requirePermission(account, "read");
   return account.provider === "google"
     ? g.googleGetMessage(account, messageId)
     : ms.microsoftGetMessage(account, messageId);
@@ -110,6 +138,7 @@ export async function hubGetAttachment(
   attachmentId: string
 ): Promise<{ data: Buffer } | null> {
   const account = requireAccount(ownerId, accountId);
+  requirePermission(account, "read");
   return account.provider === "google"
     ? g.googleGetAttachment(account, messageId, attachmentId)
     : ms.microsoftGetAttachment(account, messageId, attachmentId);
@@ -181,6 +210,7 @@ export async function hubSendMessage(
       `Sending email isn't set up yet for Microsoft accounts (${account.email}) — only Gmail accounts can send right now.`
     );
   }
+  requirePermission(account, "send");
   return g.googleSendMessage(account, to, subject, body, attachment);
 }
 
@@ -220,6 +250,7 @@ export async function hubArchiveMessages(
   limit = 50
 ): Promise<number> {
   const account = requireAccount(ownerId, accountId);
+  requirePermission(account, "delete");
   return account.provider === "google"
     ? g.googleArchiveMessages(account, query, limit)
     : ms.microsoftArchiveMessages(account, query, limit);

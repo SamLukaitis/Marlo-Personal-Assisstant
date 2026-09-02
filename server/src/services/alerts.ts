@@ -50,7 +50,7 @@ export async function checkForNewImportantMessages(ownerId: number): Promise<voi
   for (const m of toSend) {
     await notify(
       numbers,
-      `📬 New message that might need attention:\n"${m.subject}" from ${m.from}\n${m.snippet}`
+      `[${m.accountEmail}] 📬 New message that might need attention:\n"${m.subject}" from ${m.from}\n${m.snippet}`
     );
     markAlerted(ownerId, messageKey(m));
   }

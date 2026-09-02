@@ -417,6 +417,16 @@ describe("buildMatchNotification", () => {
     const msg = buildMatchNotification("Hotel Booking", { referenceCode: "K4X9QP" });
     expect(msg).not.toContain("undefined");
   });
+
+  it("prefixes the message with the source inbox when an account email is given", () => {
+    const msg = buildMatchNotification("Hotel Booking", { referenceCode: "K4X9QP" }, "jake.work@gmail.com");
+    expect(msg.startsWith("[jake.work@gmail.com] ")).toBe(true);
+  });
+
+  it("omits the inbox prefix when no account email is given", () => {
+    const msg = buildMatchNotification("Hotel Booking", { referenceCode: "K4X9QP" });
+    expect(msg.startsWith("[")).toBe(false);
+  });
 });
 
 describe("reconciliation scan depth", () => {

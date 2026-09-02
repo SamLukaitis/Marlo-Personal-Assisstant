@@ -62,7 +62,7 @@ export function formatImportantEmailAlert(
   // Prefer the model's plain-English summary over the raw snippet — the snippet is
   // HTML-entity-encoded and truncated mid-sentence straight from the Gmail/Graph API.
   const body = summary?.trim() || m.snippet;
-  return `${emoji} ${label}: "${m.subject}" from ${m.from}\n${body}`;
+  return `[${m.accountEmail}] ${emoji} ${label}: "${m.subject}" from ${m.from}\n${body}`;
 }
 
 // Returns whether every registered number actually got the message — callers must only mark a

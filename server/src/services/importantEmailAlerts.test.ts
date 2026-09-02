@@ -441,6 +441,14 @@ describe("formatImportantEmailAlert", () => {
     expect(text).toContain("£120 due 1 Sep");
   });
 
+  it("prefixes the message with the source inbox's email address", () => {
+    const text = formatImportantEmailAlert(
+      fakeMessage({ subject: "Your invoice is due" }),
+      "invoice_due"
+    );
+    expect(text.startsWith("[test@example.com] ")).toBe(true);
+  });
+
   it("prefers the model-written summary over the raw snippet when given", () => {
     const text = formatImportantEmailAlert(
       fakeMessage({

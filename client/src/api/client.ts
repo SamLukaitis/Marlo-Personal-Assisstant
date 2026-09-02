@@ -28,6 +28,9 @@ export interface Account {
   email: string;
   authBroken: boolean;
   authBrokenAt: number | null;
+  canRead: boolean;
+  canSend: boolean;
+  canDelete: boolean;
 }
 
 export interface Me {
@@ -221,6 +224,8 @@ export interface StoredDocument {
   /** Assigned during extraction, same call as title. Null predates this feature or wasn't analyzable. */
   category: DocumentCategory | null;
   createdAt: number;
+  /** Set only for documents extracted from a connected inbox — which one, by email address. */
+  emailAccountEmail: string | null;
 }
 
 /** What to show as a document's headline: its title, else its filename, else its type. */
@@ -358,6 +363,20 @@ export async function sendHelpChatMessage(message: string, history: HelpChatTurn
 
 export async function disconnectAccount(id: number): Promise<void> {
   await fetch(`${API_BASE}/api/accounts/${id}`, withCredentials({ method: "DELETE" }));
+}
+
+export async function updateAccountPermissions(
+  id: number,
+  patch: Partial<{ canRead: boolean; canSend: boolean; canDelete: boolean }>
+): Promise<void> {
+  await fetch(
+    `${API_BASE}/api/accounts/${id}/permissions`,
+    withCredentials({
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(patch),
+    })
+  );
 }
 
 export async function saveSettings(settings: Settings): Promise<void> {

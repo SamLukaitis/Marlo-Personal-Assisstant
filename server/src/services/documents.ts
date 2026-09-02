@@ -460,23 +460,29 @@ export function buildDerivedEntities(
 }
 
 // The storage half: one entity row + one extracted_from link per validated item. Same shape as
-// the movementToCheckins/saveCheckin flow below it in the ingest functions.
+// the movementToCheckins/saveCheckin flow below it in the ingest functions. Takes the freshly-
+// saved document (not just its id) so an email-sourced document's inbox tag
+// (emailAccountEmail — see the store.ts migration) can be stamped onto each derived entity's
+// own JSON `data`, not just reachable via the extracted_from link.
 function storeDerivedEntities(
   ownerId: number,
-  documentId: number,
+  doc: Pick<DocumentRow, "id" | "emailAccountEmail">,
   derived: ReturnType<typeof buildDerivedEntities>
 ): void {
   for (const item of derived) {
+    const data = doc.emailAccountEmail
+      ? { ...item.data, sourceAccountEmail: doc.emailAccountEmail }
+      : item.data;
     const entity = saveEntity(ownerId, {
       type: item.type,
-      data: item.data,
+      data,
       confidence: item.confidence,
       status: item.status,
     });
     linkRecords(ownerId, {
       relation: "extracted_from",
       from: { type: "entity", id: entity.id },
-      to: { type: "document", id: documentId },
+      to: { type: "document", id: doc.id },
     });
   }
 }
@@ -725,7 +731,7 @@ async function finalizeIngestedFile(
       });
     }
   }
-  storeDerivedEntities(ownerId, doc.id, derivedEntities);
+  storeDerivedEntities(ownerId, doc, derivedEntities);
 
   if (doc.category === "receipts" && derivedEntities.some((e) => e.type === "expense" && e.status === "active")) {
     void forwardReceiptToXero(ownerId, doc, buffer).catch((err) =>
@@ -889,7 +895,7 @@ export async function ingestEmailBodyReceipt(params: {
     throw err;
   }
 
-  storeDerivedEntities(params.ownerId, doc.id, derivedEntities);
+  storeDerivedEntities(params.ownerId, doc, derivedEntities);
 
   if (doc.category === "receipts") {
     // Same fire-and-forget posture as ingestWhatsAppMedia/ingestEmailAttachment — the "attachment"
@@ -982,7 +988,7 @@ export async function ingestWhatsAppLink(params: {
       });
     }
   }
-  storeDerivedEntities(params.ownerId, doc.id, derivedEntities);
+  storeDerivedEntities(params.ownerId, doc, derivedEntities);
 
   if (matchKeys) {
     saveMatchKeys(params.ownerId, doc.id, matchKeys);

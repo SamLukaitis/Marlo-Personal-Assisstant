@@ -1,0 +1,155 @@
+import { describe, it, expect, vi, beforeEach } from "vitest";
+
+// hub.ts's own permission logic is what's under test here — the actual Google/Microsoft API
+// calls are mocked out entirely, same posture as reconciliation.test.ts/xeroForwarding.test.ts
+// mocking whatsapp.ts.
+const mockGoogleListMessages = vi.fn();
+const mockGoogleSendMessage = vi.fn();
+const mockGoogleArchiveMessages = vi.fn();
+vi.mock("../providers/google.js", () => ({
+  googleListMessages: (...args: unknown[]) => mockGoogleListMessages(...args),
+  googleSendMessage: (...args: unknown[]) => mockGoogleSendMessage(...args),
+  googleArchiveMessages: (...args: unknown[]) => mockGoogleArchiveMessages(...args),
+}));
+vi.mock("../providers/microsoft.js", () => ({}));
+
+const { findOrCreateUserByEmail, upsertAccount, updateAccountPermissions } = await import("../db/store.js");
+const { hubListMessages, hubSendMessage, hubArchiveMessages, hubGetMessage } = await import("./hub.js");
+
+let counter = 0;
+function uniqueEmail(prefix: string): string {
+  counter += 1;
+  return `${prefix}-${Date.now()}-${counter}@example.com`;
+}
+
+function fakeMessage(accountId: number, id: string) {
+  return {
+    id,
+    accountId,
+    accountEmail: `acct-${accountId}@example.com`,
+    provider: "google" as const,
+    subject: "Subject",
+    from: "someone@example.com",
+    snippet: "snippet",
+    receivedAt: new Date().toISOString(),
+    unread: true,
+  };
+}
+
+beforeEach(() => {
+  mockGoogleListMessages.mockReset();
+  mockGoogleSendMessage.mockReset();
+  mockGoogleArchiveMessages.mockReset();
+});
+
+describe("per-account permission enforcement", () => {
+  it("hubSendMessage throws when the account's canSend is turned off", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("hub-send-off"));
+    const account = upsertAccount(user.id, {
+      provider: "google",
+      email: uniqueEmail("inbox-send-off"),
+      accessToken: "t",
+      refreshToken: "r",
+      expiryDate: null,
+    });
+    updateAccountPermissions(user.id, account.id, { canSend: false });
+
+    await expect(
+      hubSendMessage(user.id, account.id, "to@example.com", "Subject", "Body")
+    ).rejects.toThrow(/[Ss]ending is turned off/);
+    expect(mockGoogleSendMessage).not.toHaveBeenCalled();
+  });
+
+  it("hubSendMessage succeeds when canSend is on (the default)", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("hub-send-on"));
+    const account = upsertAccount(user.id, {
+      provider: "google",
+      email: uniqueEmail("inbox-send-on"),
+      accessToken: "t",
+      refreshToken: "r",
+      expiryDate: null,
+    });
+    mockGoogleSendMessage.mockResolvedValue({ messageId: "m1", provider: "google", accountEmail: account.email });
+
+    await expect(
+      hubSendMessage(user.id, account.id, "to@example.com", "Subject", "Body")
+    ).resolves.toMatchObject({ messageId: "m1" });
+    expect(mockGoogleSendMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it("hubArchiveMessages throws when the account's canDelete is turned off", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("hub-archive-off"));
+    const account = upsertAccount(user.id, {
+      provider: "google",
+      email: uniqueEmail("inbox-archive-off"),
+      accessToken: "t",
+      refreshToken: "r",
+      expiryDate: null,
+    });
+    updateAccountPermissions(user.id, account.id, { canDelete: false });
+
+    await expect(hubArchiveMessages(user.id, account.id, "from:nike")).rejects.toThrow(
+      /[Aa]rchiving\/deleting is turned off/
+    );
+    expect(mockGoogleArchiveMessages).not.toHaveBeenCalled();
+  });
+
+  it("hubGetMessage throws when the account's canRead is turned off", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("hub-read-off"));
+    const account = upsertAccount(user.id, {
+      provider: "google",
+      email: uniqueEmail("inbox-read-off"),
+      accessToken: "t",
+      refreshToken: "r",
+      expiryDate: null,
+    });
+    updateAccountPermissions(user.id, account.id, { canRead: false });
+
+    await expect(hubGetMessage(user.id, account.id, "msg-1")).rejects.toThrow(/[Rr]eading is turned off/);
+  });
+
+  it("hubListMessages with no accountId silently excludes read-restricted accounts from the aggregate", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("hub-list-agg"));
+    const readable = upsertAccount(user.id, {
+      provider: "google",
+      email: uniqueEmail("inbox-readable"),
+      accessToken: "t",
+      refreshToken: "r",
+      expiryDate: null,
+    });
+    const restricted = upsertAccount(user.id, {
+      provider: "google",
+      email: uniqueEmail("inbox-restricted"),
+      accessToken: "t",
+      refreshToken: "r",
+      expiryDate: null,
+    });
+    updateAccountPermissions(user.id, restricted.id, { canRead: false });
+
+    mockGoogleListMessages.mockImplementation(async (account: { id: number }) => [
+      fakeMessage(account.id, `msg-${account.id}`),
+    ]);
+
+    const results = await hubListMessages(user.id, {});
+    expect(results).toHaveLength(1);
+    expect(results[0].accountId).toBe(readable.id);
+    expect(mockGoogleListMessages).toHaveBeenCalledTimes(1);
+  });
+
+  it("hubListMessages with an explicit accountId still throws for a read-restricted account", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("hub-list-explicit"));
+    const account = upsertAccount(user.id, {
+      provider: "google",
+      email: uniqueEmail("inbox-explicit-off"),
+      accessToken: "t",
+      refreshToken: "r",
+      expiryDate: null,
+    });
+    updateAccountPermissions(user.id, account.id, { canRead: false });
+
+    await expect(hubListMessages(user.id, { accountId: account.id })).rejects.toThrow(
+      /[Rr]eading is turned off/
+    );
+    expect(mockGoogleListMessages).not.toHaveBeenCalled();
+  });
+});

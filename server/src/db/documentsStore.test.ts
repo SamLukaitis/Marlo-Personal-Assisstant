@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { findOrCreateUserByEmail, saveDocument, listDocuments } from "./store.js";
+import { findOrCreateUserByEmail, saveDocument, listDocuments, upsertAccount } from "./store.js";
 
 let counter = 0;
 function uniqueEmail(prefix: string): string {
@@ -54,5 +54,43 @@ describe("documents category", () => {
 
     const all = listDocuments(user.id, 10);
     expect(all).toHaveLength(2);
+  });
+});
+
+// Requirement: documents/entities derived from an email carry which inbox they came from — see
+// feature-to-do plan "Multi-inbox Gmail: permissions, attribution, and inbox tagging".
+describe("documents emailAccountEmail", () => {
+  it("snapshots the connected account's email address when emailAccountId is given", () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("email-tag-set"));
+    const account = upsertAccount(user.id, {
+      provider: "google",
+      email: uniqueEmail("inbox"),
+      accessToken: "t",
+      refreshToken: "r",
+      expiryDate: null,
+    });
+
+    const doc = saveDocument(user.id, {
+      phone: `email:${account.id}`,
+      filename: null,
+      mimeType: "text/plain",
+      storedPath: "/tmp/fake",
+      caption: null,
+      title: "Receipt",
+      extractedText: "text",
+      category: "receipts",
+      source: "email",
+      emailAccountId: account.id,
+      emailMessageId: "msg-1",
+      emailAttachmentId: null,
+    });
+
+    expect(doc.emailAccountEmail).toBe(account.email);
+  });
+
+  it("leaves emailAccountEmail null for a WhatsApp-sourced document", () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("email-tag-null"));
+    const doc = saveTestDoc(user.id, "travel");
+    expect(doc.emailAccountEmail).toBeNull();
   });
 });

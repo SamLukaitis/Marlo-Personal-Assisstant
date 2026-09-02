@@ -314,6 +314,17 @@ if (!accountColumns.includes("auth_broken")) {
 if (!accountColumns.includes("auth_broken_at")) {
   db.exec(`ALTER TABLE accounts ADD COLUMN auth_broken_at INTEGER`);
 }
+// Per-inbox permission toggles (Settings page "Accounts" section). Default to 1 (allowed) so
+// every already-connected account keeps its current full access until explicitly restricted.
+if (!accountColumns.includes("can_read")) {
+  db.exec(`ALTER TABLE accounts ADD COLUMN can_read INTEGER NOT NULL DEFAULT 1`);
+}
+if (!accountColumns.includes("can_send")) {
+  db.exec(`ALTER TABLE accounts ADD COLUMN can_send INTEGER NOT NULL DEFAULT 1`);
+}
+if (!accountColumns.includes("can_delete")) {
+  db.exec(`ALTER TABLE accounts ADD COLUMN can_delete INTEGER NOT NULL DEFAULT 1`);
+}
 
 // travel_checkins originally required lat/long (phone GPS check-ins only). Document-derived
 // entries (a boarding pass's arrival city) don't have exact coordinates, so lat/long need to
@@ -397,12 +408,15 @@ if (!hasOwnerId) {
         expiry_date INTEGER,
         auth_broken INTEGER NOT NULL DEFAULT 0,
         auth_broken_at INTEGER,
+        can_read INTEGER NOT NULL DEFAULT 1,
+        can_send INTEGER NOT NULL DEFAULT 1,
+        can_delete INTEGER NOT NULL DEFAULT 1,
         UNIQUE(owner_id, provider, email)
       );
     `);
     db.prepare(
-      `INSERT INTO accounts_new (id, owner_id, provider, email, access_token, refresh_token, expiry_date, auth_broken, auth_broken_at)
-       SELECT id, ?, provider, email, access_token, refresh_token, expiry_date, auth_broken, auth_broken_at FROM accounts`
+      `INSERT INTO accounts_new (id, owner_id, provider, email, access_token, refresh_token, expiry_date, auth_broken, auth_broken_at, can_read, can_send, can_delete)
+       SELECT id, ?, provider, email, access_token, refresh_token, expiry_date, auth_broken, auth_broken_at, can_read, can_send, can_delete FROM accounts`
     ).run(ownerId);
     db.exec(`DROP TABLE accounts; ALTER TABLE accounts_new RENAME TO accounts;`);
 
@@ -622,6 +636,11 @@ if (!documentColumns.includes("email_message_id")) {
 }
 if (!documentColumns.includes("email_attachment_id")) {
   db.exec(`ALTER TABLE documents ADD COLUMN email_attachment_id TEXT`);
+}
+// Human-readable inbox tag, snapshotted at save time so it survives the account later being
+// disconnected (email_account_id alone would go stale/unresolvable in that case).
+if (!documentColumns.includes("email_account_email")) {
+  db.exec(`ALTER TABLE documents ADD COLUMN email_account_email TEXT`);
 }
 
 // One-time relabel: 'receipts_bookings' was split into 'receipts' (booking confirmations moved
@@ -865,6 +884,9 @@ export interface AccountRow {
   expiryDate: number | null;
   authBroken: boolean;
   authBrokenAt: number | null;
+  canRead: boolean;
+  canSend: boolean;
+  canDelete: boolean;
 }
 
 // ownerId travels on the row itself (not just as a query filter) so code that already has an
@@ -873,7 +895,8 @@ export interface AccountRow {
 // through every provider function that takes an AccountRow.
 const rowSelect = `id, owner_id AS ownerId, provider, email, access_token AS accessToken,
                    refresh_token AS refreshToken, expiry_date AS expiryDate,
-                   auth_broken AS authBroken, auth_broken_at AS authBrokenAt`;
+                   auth_broken AS authBroken, auth_broken_at AS authBrokenAt,
+                   can_read AS canRead, can_send AS canSend, can_delete AS canDelete`;
 
 // Tokens written before encryption was added are still plaintext in the DB. Rather than a
 // one-shot migration script (easy to miss on a host you don't shell into), decrypt lazily and
@@ -890,10 +913,18 @@ function tryDecrypt(value: string | null): string | null {
 }
 
 function toAccountRow(raw: unknown): AccountRow {
-  const row = raw as Omit<AccountRow, "authBroken"> & { authBroken: number };
+  const row = raw as Omit<AccountRow, "authBroken" | "canRead" | "canSend" | "canDelete"> & {
+    authBroken: number;
+    canRead: number;
+    canSend: number;
+    canDelete: number;
+  };
   return {
     ...row,
     authBroken: !!row.authBroken,
+    canRead: !!row.canRead,
+    canSend: !!row.canSend,
+    canDelete: !!row.canDelete,
     accessToken: tryDecrypt(row.accessToken),
     refreshToken: tryDecrypt(row.refreshToken),
   };
@@ -964,6 +995,29 @@ export function markAccountAuthHealthy(ownerId: number, id: number): void {
   db.prepare(
     `UPDATE accounts SET auth_broken = 0, auth_broken_at = NULL WHERE id = ? AND owner_id = ? AND auth_broken = 1`
   ).run(id, ownerId);
+}
+
+// Backs the Settings page's per-inbox Read/Send/Delete toggles. Only the fields present in
+// `patch` are touched — COALESCE keeps the rest at their current value, same idiom as
+// updateAccountTokens's refresh_token handling above.
+export function updateAccountPermissions(
+  ownerId: number,
+  id: number,
+  patch: { canRead?: boolean; canSend?: boolean; canDelete?: boolean }
+): void {
+  db.prepare(
+    `UPDATE accounts SET
+       can_read = COALESCE(@canRead, can_read),
+       can_send = COALESCE(@canSend, can_send),
+       can_delete = COALESCE(@canDelete, can_delete)
+     WHERE id = @id AND owner_id = @ownerId`
+  ).run({
+    id,
+    ownerId,
+    canRead: patch.canRead === undefined ? null : patch.canRead ? 1 : 0,
+    canSend: patch.canSend === undefined ? null : patch.canSend ? 1 : 0,
+    canDelete: patch.canDelete === undefined ? null : patch.canDelete ? 1 : 0,
+  });
 }
 
 export function listAccounts(ownerId: number, provider?: Provider): AccountRow[] {
@@ -1377,12 +1431,14 @@ export interface DocumentRow {
   emailAccountId: number | null;
   emailMessageId: string | null;
   emailAttachmentId: string | null;
+  emailAccountEmail: string | null;
 }
 
 const DOCUMENT_COLUMNS = `id, phone, filename, mime_type AS mimeType, stored_path AS storedPath,
   caption, title, extracted_text AS extractedText, category, created_at AS createdAt,
   xero_forwarded_at AS xeroForwardedAt, source, email_account_id AS emailAccountId,
-  email_message_id AS emailMessageId, email_attachment_id AS emailAttachmentId`;
+  email_message_id AS emailMessageId, email_attachment_id AS emailAttachmentId,
+  email_account_email AS emailAccountEmail`;
 
 export function saveDocument(
   ownerId: number,
@@ -1401,10 +1457,13 @@ export function saveDocument(
     emailAttachmentId?: string | null;
   }
 ): DocumentRow {
+  // Snapshotted at save time (not resolved on read) so the tag survives the account later
+  // being disconnected — see the email_account_email migration comment above.
+  const emailAccountEmail = doc.emailAccountId ? getAccount(ownerId, doc.emailAccountId)?.email ?? null : null;
   const info = db
     .prepare(
-      `INSERT INTO documents (owner_id, phone, filename, mime_type, stored_path, caption, title, extracted_text, category, created_at, source, email_account_id, email_message_id, email_attachment_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO documents (owner_id, phone, filename, mime_type, stored_path, caption, title, extracted_text, category, created_at, source, email_account_id, email_message_id, email_attachment_id, email_account_email)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
       ownerId,
@@ -1420,7 +1479,8 @@ export function saveDocument(
       doc.source ?? "whatsapp",
       doc.emailAccountId ?? null,
       doc.emailMessageId ?? null,
-      doc.emailAttachmentId ?? null
+      doc.emailAttachmentId ?? null,
+      emailAccountEmail
     );
   return db
     .prepare(`SELECT ${DOCUMENT_COLUMNS} FROM documents WHERE id = ?`)

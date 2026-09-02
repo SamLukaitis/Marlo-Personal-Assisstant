@@ -43,10 +43,11 @@ export function matchTier(keys: MatchKeys, text: string): "strong" | null {
   return null;
 }
 
-export function buildMatchNotification(docTitle: string, keys: MatchKeys): string {
+export function buildMatchNotification(docTitle: string, keys: MatchKeys, accountEmail?: string): string {
   const identifier = keys.referenceCode ?? keys.flightNumber ?? "";
   const datePart = keys.eventDate ? `, ${keys.eventDate}` : "";
-  return `📎 Heads up — an email about "${docTitle}" (${identifier}${datePart}) just came in. Worth a look?`;
+  const prefix = accountEmail ? `[${accountEmail}] ` : "";
+  return `${prefix}📎 Heads up — an email about "${docTitle}" (${identifier}${datePart}) just came in. Worth a look?`;
 }
 
 const MAX_MATCH_NOTIFICATIONS_PER_RUN = 3;
@@ -101,7 +102,7 @@ export async function checkDocumentAgainstRecentEmails(
     const matchKey = `recon-match:${documentId}:${m.accountId}:${m.id}`;
     if (hasAlerted(ownerId, matchKey)) continue;
 
-    const delivered = await notifyMatch(ownerId, buildMatchNotification(docTitle, keys));
+    const delivered = await notifyMatch(ownerId, buildMatchNotification(docTitle, keys, m.accountEmail));
     if (!delivered) continue; // leave this match retriable — don't mark or count it
 
     markAlerted(ownerId, matchKey);
@@ -163,7 +164,10 @@ export async function checkNewEmailsAgainstRecentDocuments(ownerId: number): Pro
       const matchKey = `recon-match:${row.documentId}:${m.accountId}:${m.id}`;
       if (hasAlerted(ownerId, matchKey)) continue;
 
-      const delivered = await notifyMatch(ownerId, buildMatchNotification(row.docTitle ?? "a saved document", keys));
+      const delivered = await notifyMatch(
+        ownerId,
+        buildMatchNotification(row.docTitle ?? "a saved document", keys, m.accountEmail)
+      );
       if (!delivered) {
         hadUndeliveredMatch = true;
         continue; // leave this match retriable — don't mark or count it, but still check other candidates

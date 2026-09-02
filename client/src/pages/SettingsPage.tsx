@@ -4,6 +4,7 @@ import {
   fetchProviders,
   fetchAccounts,
   disconnectAccount,
+  updateAccountPermissions,
   loginUrl,
   fetchLocalFolders,
   addLocalFolder,
@@ -287,6 +288,15 @@ export function SettingsPage() {
     }
   }
 
+  async function handleTogglePermission(
+    accountId: number,
+    field: "canRead" | "canSend" | "canDelete",
+    value: boolean
+  ) {
+    await updateAccountPermissions(accountId, { [field]: value });
+    load();
+  }
+
   async function handleAddNumber(e: React.FormEvent) {
     e.preventDefault();
     if (!newNumber.trim()) return;
@@ -374,6 +384,34 @@ export function SettingsPage() {
                             . Reconnect to bring this account's mail, calendar, and files back.
                           </p>
                         )}
+                        <div className="row" style={{ gap: 16, marginTop: 10, flexWrap: "wrap" }}>
+                          <label className="check-row" style={{ width: "auto" }}>
+                            <input
+                              type="checkbox"
+                              checked={a.canRead}
+                              onChange={(e) => handleTogglePermission(a.id, "canRead", e.target.checked)}
+                            />
+                            <span className="check-row-title">Read</span>
+                          </label>
+                          {a.provider === "google" && (
+                            <label className="check-row" style={{ width: "auto" }}>
+                              <input
+                                type="checkbox"
+                                checked={a.canSend}
+                                onChange={(e) => handleTogglePermission(a.id, "canSend", e.target.checked)}
+                              />
+                              <span className="check-row-title">Send</span>
+                            </label>
+                          )}
+                          <label className="check-row" style={{ width: "auto" }}>
+                            <input
+                              type="checkbox"
+                              checked={a.canDelete}
+                              onChange={(e) => handleTogglePermission(a.id, "canDelete", e.target.checked)}
+                            />
+                            <span className="check-row-title">Delete (archive)</span>
+                          </label>
+                        </div>
                       </div>
                     );
                   })}

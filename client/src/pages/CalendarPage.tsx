@@ -1,6 +1,18 @@
 import { useEffect, useState } from "react";
 import { fetchEvents, type CalendarEvent } from "../api/client";
 
+// 11 colors so the mapping lines up conceptually with Google Calendar's own 11 event colors
+// (server/src/providers/google.ts's colorForAccount uses the same `% 11` idea for the colorId
+// it sets on events Marlowe creates) — not the same hex values, just the same account → slot
+// idea, applied here to every account (Google and Microsoft) so the whole page is consistent.
+const ACCOUNT_COLORS = [
+  "#e74c3c", "#e67e22", "#f1c40f", "#2ecc71", "#1abc9c",
+  "#3498db", "#9b59b6", "#e84393", "#16a085", "#d35400", "#34495e",
+];
+function colorForAccount(accountId: number): string {
+  return ACCOUNT_COLORS[accountId % ACCOUNT_COLORS.length];
+}
+
 function fmt(iso: string): string {
   if (!iso) return "";
   const d = new Date(iso);
@@ -59,7 +71,19 @@ export function CalendarPage() {
               <a href={e.link} target="_blank" rel="noreferrer" style={{ padding: "0 16px" }}>
                 <div className="list-title">
                   <span>{e.title}</span>
-                  <span className="badge-pill">{e.accountEmail}</span>
+                  <span className="badge-pill" style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+                    <span
+                      aria-hidden="true"
+                      style={{
+                        width: 8,
+                        height: 8,
+                        borderRadius: "50%",
+                        background: colorForAccount(e.accountId),
+                        flexShrink: 0,
+                      }}
+                    />
+                    {e.accountEmail}
+                  </span>
                 </div>
                 <div className="list-sub">
                   {fmt(e.start)} → {fmt(e.end)}

@@ -115,7 +115,8 @@ export function FilesPage() {
                 month: "short",
                 year: "numeric",
               })}
-            </span>
+            </span>{" "}
+            {d.emailAccountEmail && <span className="badge-pill">{d.emailAccountEmail}</span>}
             {d.caption && <div className="doc-caption">“{d.caption}”</div>}
           </div>
           <div className="row" style={{ gap: 8 }}>

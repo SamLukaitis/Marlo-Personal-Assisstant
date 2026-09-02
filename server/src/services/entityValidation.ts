@@ -119,6 +119,7 @@ export interface ExpenseData {
   amountPence: number; // integer minor units of `currency` (pence, cents, yen…)
   currency: string; // ISO 4217, uppercase
   date: string; // YYYY-MM-DD
+  sourceAccountEmail?: string; // which connected inbox this was extracted from, if any (documents.ts)
 }
 
 export function validateExpense(data: unknown, ctx: { uploadedAt: Date }): ValidationResult {
@@ -255,6 +256,7 @@ export interface BookingData {
   reference: string | null; // confirmation/PNR code if legible
   startDate: string; // YYYY-MM-DD — flight date / hotel check-in
   endDate: string | null; // hotel check-out; usually null for flights
+  sourceAccountEmail?: string; // which connected inbox this was extracted from, if any (documents.ts)
 }
 
 export function validateBooking(data: unknown, ctx: { uploadedAt: Date }): ValidationResult {
