@@ -464,6 +464,22 @@ const ALWAYS_ON_TOOLS: Anthropic.ToolUnion[] = [
     },
   },
   {
+    name: "recall_entity",
+    description:
+      "Look up everything remembered about a specific person, place, project, or other named subject in one call — the entity's accumulated notes plus everything linked to it (via remember's relates_to). Use this instead of search_memory when the user asks about a specific named thing, e.g. 'what do you know about Sarah'.",
+    input_schema: {
+      type: "object",
+      properties: {
+        entity_name: { type: "string", description: "The name of the person/place/project/etc to look up" },
+        entity_type: {
+          type: "string",
+          description: "Optional — narrow the search to this type (e.g. 'person', 'place', 'project') if known",
+        },
+      },
+      required: ["entity_name"],
+    },
+  },
+  {
     name: "flag_unmet_request",
     description:
       "Call this (alongside your normal honest reply to the user, same turn) whenever the user asked for something you genuinely can't do with your current tools/capabilities — not for things you can do but haven't yet, and not for ordinary clarifying questions. Give a one-sentence summary of what they wanted and why you couldn't help, so the team can see what to build next.",
@@ -988,6 +1004,13 @@ export async function runTool(
         input.query as string,
         (input.limit as number | undefined) ?? SEARCH_MEMORY_DEFAULT_LIMIT
       );
+    case "recall_entity": {
+      const entityName = input.entity_name as string;
+      const entityType = input.entity_type as string | undefined;
+      const entity = findEntityByName(ownerId, entityName, entityType);
+      if (!entity) return { error: `no entity found matching "${entityName}"` };
+      return { entity, related: getRelatedEntities(ownerId, { type: "entity", id: entity.id }) };
+    }
     case "flag_unmet_request":
       addUnmetRequest(ownerId, input.summary as string, phone ? "whatsapp" : "web");
       return { ok: true };

@@ -488,6 +488,64 @@ describe("remember tool — entity linking", () => {
   });
 });
 
+describe("recall_entity tool", () => {
+  it("is always available, same as remember", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("recall-entity-toollist"));
+    const names = buildToolsForOwner(user.id).map((t) => t.name);
+    expect(names).toContain("recall_entity");
+  });
+
+  it("returns the entity plus everything linked to it", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("recall-entity-found"));
+    await runTool(user.id, "remember", {
+      note: "Kickoff is next week",
+      entity_name: "Project Falcon",
+      entity_type: "project",
+    });
+    await runTool(user.id, "remember", {
+      note: "Leads Project Falcon",
+      entity_name: "Sarah",
+      entity_type: "person",
+      relates_to: ["Project Falcon"],
+    });
+
+    const result = (await runTool(user.id, "recall_entity", { entity_name: "Sarah" })) as {
+      entity: { data: { name: string; notes: { text: string }[] } };
+      related: { data: { name: string } }[];
+    };
+    expect(result.entity.data.name).toBe("Sarah");
+    expect(result.entity.data.notes.map((n) => n.text)).toEqual(["Leads Project Falcon"]);
+    expect(result.related.map((e) => e.data.name)).toEqual(["Project Falcon"]);
+  });
+
+  it("respects an optional entity_type filter", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("recall-entity-type-filter"));
+    await runTool(user.id, "remember", {
+      note: "A city, not a person",
+      entity_name: "Lisbon",
+      entity_type: "place",
+    });
+
+    const wrongType = (await runTool(user.id, "recall_entity", {
+      entity_name: "Lisbon",
+      entity_type: "project",
+    })) as { error: string };
+    expect(wrongType.error).toContain("Lisbon");
+
+    const rightType = (await runTool(user.id, "recall_entity", {
+      entity_name: "Lisbon",
+      entity_type: "place",
+    })) as { entity: { data: { name: string } } };
+    expect(rightType.entity.data.name).toBe("Lisbon");
+  });
+
+  it("returns an error object (not a throw) when nothing matches", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("recall-entity-miss"));
+    const result = await runTool(user.id, "recall_entity", { entity_name: "Nobody" });
+    expect(result).toEqual({ error: 'no entity found matching "Nobody"' });
+  });
+});
+
 describe("search_memory tool", () => {
   it("is always available, same as remember", async () => {
     const user = findOrCreateUserByEmail(uniqueEmail("search-memory-toollist"));
