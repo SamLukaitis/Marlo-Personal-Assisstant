@@ -104,17 +104,46 @@ describe("sendProactiveMessage", () => {
 
 describe("truncateForTemplate", () => {
   it("returns short text unchanged, with no continuation appended", () => {
-    expect(truncateForTemplate("short", "\n…more")).toBe("short");
+    expect(truncateForTemplate("short", " …more")).toBe("short");
   });
 
   it("truncates long text and appends the continuation within budget", () => {
-    const result = truncateForTemplate("z".repeat(1500), "\n…more");
+    const result = truncateForTemplate("z".repeat(1500), " …more");
     expect(result.length).toBe(1000);
-    expect(result.endsWith("\n…more")).toBe(true);
+    expect(result.endsWith(" …more")).toBe(true);
   });
 
   it("truncates to the full budget when there's no continuation", () => {
     const result = truncateForTemplate("z".repeat(1500));
     expect(result).toBe("z".repeat(1000));
+  });
+
+  // WhatsApp rejects a template parameter outright if it contains a newline, a tab, or a run of
+  // more than one space (Meta error #132000) — see formatImportantEmailAlert, which deliberately
+  // embeds "\n" and "\n\n" for the free-form chat bubble path.
+  it("collapses newlines to a single space", () => {
+    expect(truncateForTemplate("line one\nline two")).toBe("line one line two");
+  });
+
+  it("collapses a run of blank lines to a single space, not one space per line", () => {
+    expect(truncateForTemplate("line one\n\nline two")).toBe("line one line two");
+  });
+
+  it("collapses tabs to a single space", () => {
+    expect(truncateForTemplate("a\tb")).toBe("a b");
+  });
+
+  it("collapses runs of more than one space to a single space", () => {
+    expect(truncateForTemplate("a    b")).toBe("a b");
+  });
+
+  it("trims leading/trailing whitespace left over from collapsing", () => {
+    expect(truncateForTemplate("\n  a\n")).toBe("a");
+  });
+
+  it("sanitizes a continuation that reintroduces disallowed whitespace after truncation", () => {
+    const result = truncateForTemplate("z".repeat(1500), "\n…more");
+    expect(result).not.toMatch(/[\r\n\t]|  /);
+    expect(result.endsWith(" …more")).toBe(true);
   });
 });
