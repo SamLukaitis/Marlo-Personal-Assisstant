@@ -32,6 +32,7 @@ import {
   markMemorySurfaced,
   setPendingSetup,
   listUnmetRequests,
+  appendWhatsAppMessage,
 } from "../db/store.js";
 import { getBriefingSettings, saveBriefingSettings, type BriefingSettings } from "../services/briefing.js";
 import { getXeroForwardingEmail } from "../services/xero.js";
@@ -615,6 +616,79 @@ describe("send_document dispatch", () => {
     const result = await runTool(user.id, "send_document", { document_id: 7 }, "447000000001");
 
     expect(result).toEqual({ error: expect.stringContaining("no original photo") });
+  });
+});
+
+describe("search_conversation_history tool", () => {
+  it("is always available, same as send_document", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("search-history-toollist"));
+    const names = buildToolsForOwner(user.id).map((t) => t.name);
+    expect(names).toContain("search_conversation_history");
+  });
+
+  it("refuses without a phone (web chat/eval callers)", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("search-history-no-phone"));
+
+    const result = await runTool(user.id, "search_conversation_history", { query: "passport" });
+
+    expect(result).toEqual({ error: expect.stringContaining("WhatsApp conversation") });
+  });
+
+  it("finds an older message outside the visible window, scoped to the calling phone", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("search-history-hit"));
+    const phone = "447700000123";
+    // Seed directly via the store's own append path used by the WhatsApp route, not runTool —
+    // there's no "send a WhatsApp message" tool; messages land in the table via the webhook.
+    appendWhatsAppMessage(user.id, phone, "user", "My passport number is X1234567");
+
+    const result = (await runTool(user.id, "search_conversation_history", { query: "passport" }, phone)) as unknown[];
+
+    expect(result).toHaveLength(1);
+  });
+
+  it("returns an empty array, not an error, when nothing matches", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("search-history-miss"));
+    const phone = "447700000124";
+
+    const result = await runTool(user.id, "search_conversation_history", { query: "nonexistent-topic" }, phone);
+
+    expect(result).toEqual([]);
+  });
+
+  it("misses a message under AND semantics when the query is a full natural-language sentence (known, tested contract, not a bug)", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("search-history-and-semantics"));
+    const phone = "447700000125";
+    appendWhatsAppMessage(user.id, phone, "user", "My sister's passport is in the blue drawer");
+
+    // Every extracted term must appear in the same message, so a realistic multi-word question
+    // built from the same facts doesn't match — the message doesn't contain "what", "did", "I",
+    // "say", or "about" together with the rest. This documents the current AND behavior; it is
+    // not something a prompt-only fix can change.
+    const result = await runTool(
+      user.id,
+      "search_conversation_history",
+      { query: "what did I say about my sister's passport" },
+      phone
+    );
+
+    expect(result).toEqual([]);
+  });
+
+  it("clamps an out-of-range model-supplied limit instead of returning the whole matching transcript", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("search-history-limit-clamp"));
+    const phone = "447700000126";
+    for (let i = 0; i < 60; i++) {
+      appendWhatsAppMessage(user.id, phone, "user", `passport note number ${i}`);
+    }
+
+    const result = (await runTool(
+      user.id,
+      "search_conversation_history",
+      { query: "passport", limit: 9999 },
+      phone
+    )) as unknown[];
+
+    expect(result.length).toBeLessThanOrEqual(50);
   });
 });
 

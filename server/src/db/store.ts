@@ -726,6 +726,46 @@ if (!ftsExistedBefore) {
   db.exec(`INSERT INTO memory_notes_fts(rowid, content) SELECT id, content FROM memory_notes`);
 }
 
+// Full-text index over the raw WhatsApp transcript, backing searchWhatsAppHistory() below — the
+// system prompt only ever includes the most recent MAX_HISTORY_MESSAGES messages plus a rolling
+// summary of whatever fell out of that window (services/conversationSummary.ts). This is how the
+// assistant reaches a specific older fact on demand instead of relying on the summary having kept
+// it. External-content FTS5 table (content='whatsapp_messages') so the indexed text isn't
+// duplicated in the DB; triggers keep it in sync with inserts/deletes (no update trigger —
+// whatsapp_messages rows are never content-edited, only inserted or removed, e.g. by
+// deleteUserCompletely).
+//
+// The initial backfill is deliberately keyed off "is the FTS table empty right now" rather than
+// "did it already exist before this boot" — CREATE VIRTUAL TABLE and a backfill INSERT are two
+// separate implicit transactions, and this table can hold the entire WhatsApp transcript, so a
+// process killed between them (e.g. a slow boot hitting a platform health-check timeout) would
+// leave a table that "exists" but was never populated, and an existence check would then skip the
+// backfill forever on every future boot — silently missing everything from before that boot, and
+// later corrupting the index when deleteUserCompletely's bulk DELETE fires the delete trigger for
+// rows the index never actually held. Checking emptiness instead is self-healing: any interrupted
+// first boot just looks empty again next time and gets rebuilt. Using FTS5's 'rebuild' command
+// (rather than re-running the plain backfill INSERT) also makes the recovery itself atomic and
+// idempotent — it re-derives the whole index from whatsapp_messages in one shot and can't leave it
+// partially populated either. A legitimately empty whatsapp_messages table (fresh install, zero
+// messages) will re-run 'rebuild' on every boot until the first message arrives; that's harmless —
+// 'rebuild' against an empty base table is a cheap no-op — and it settles into a normal
+// single-run-then-stable pattern the moment real content exists.
+db.exec(`
+  CREATE VIRTUAL TABLE IF NOT EXISTS whatsapp_messages_fts USING fts5(
+    content, content='whatsapp_messages', content_rowid='id'
+  );
+  CREATE TRIGGER IF NOT EXISTS whatsapp_messages_fts_ai AFTER INSERT ON whatsapp_messages BEGIN
+    INSERT INTO whatsapp_messages_fts(rowid, content) VALUES (new.id, new.content);
+  END;
+  CREATE TRIGGER IF NOT EXISTS whatsapp_messages_fts_ad AFTER DELETE ON whatsapp_messages BEGIN
+    INSERT INTO whatsapp_messages_fts(whatsapp_messages_fts, rowid, content) VALUES ('delete', old.id, old.content);
+  END;
+`);
+const whatsappFtsIsEmpty = !db.prepare(`SELECT 1 FROM whatsapp_messages_fts LIMIT 1`).get();
+if (whatsappFtsIsEmpty) {
+  db.exec(`INSERT INTO whatsapp_messages_fts(whatsapp_messages_fts) VALUES('rebuild')`);
+}
+
 // When a number last sent us a message — powers the outbound-message-type decision in
 // outbound.ts (WhatsApp only allows free-form replies within 24h of the user's last message;
 // past that, a proactive push has to go out as a pre-approved template or Meta rejects it with
@@ -1138,6 +1178,35 @@ export function appendWhatsAppMessage(
   db.prepare(
     `INSERT INTO whatsapp_messages (owner_id, phone, role, content, created_at) VALUES (?, ?, ?, ?, ?)`
   ).run(ownerId, phone, role, content, Date.now());
+}
+
+// Reaches the full raw transcript, not just the MAX_HISTORY_MESSAGES window the assistant sees by
+// default — same tokenize-and-MATCH approach as searchMemoryNotes (store.ts:1040) above. Filters
+// by both phone (the natural key for "this conversation thread") and owner_id (defense in depth,
+// matching searchMemoryNotes's convention) — phone alone should already be unique per owner, but
+// scoping by both means a lookup can never cross an owner boundary even if that ever stopped
+// holding. Terms are ANDed, same reasoning as searchMemoryNotes: keeps multi-word queries from
+// over-matching on any single common word.
+export function searchWhatsAppHistory(
+  ownerId: number,
+  phone: string,
+  query: string,
+  limit = 20
+): WhatsAppMessageRow[] {
+  const terms = query.match(/[\p{L}\p{N}]+/gu) ?? [];
+  if (terms.length === 0) return [];
+
+  const matchQuery = terms.map((t) => `"${t.replace(/"/g, '""')}"`).join(" AND ");
+  return db
+    .prepare(
+      `SELECT w.id, w.phone, w.role, w.content, w.created_at AS createdAt
+       FROM whatsapp_messages_fts f
+       JOIN whatsapp_messages w ON w.id = f.rowid
+       WHERE f.whatsapp_messages_fts MATCH ? AND w.phone = ? AND w.owner_id = ?
+       ORDER BY rank
+       LIMIT ?`
+    )
+    .all(matchQuery, phone, ownerId, limit) as WhatsAppMessageRow[];
 }
 
 export interface ConversationSummaryRow {
