@@ -5,6 +5,7 @@ import {
   listRecentMemoryNotes,
   addMemoryNote,
   searchMemoryNotes,
+  searchWhatsAppHistory,
   searchDocuments,
   listDocuments,
   listCheckins,
@@ -100,6 +101,7 @@ export const MAX_HISTORY_MESSAGES = 24;
 export const SEARCH_MESSAGES_DEFAULT_LIMIT = 30;
 export const LIST_RECENT_MESSAGES_DEFAULT_LIMIT = 20;
 export const SEARCH_MEMORY_DEFAULT_LIMIT = 10;
+export const SEARCH_CONVERSATION_HISTORY_DEFAULT_LIMIT = 20;
 
 // Tools whose effect can't be undone once run. The model may reach these only via a user-confirmed
 // ask_user_choice(mode="confirm") pending action (see buildChoiceReply below and actionHandlers.ts,
@@ -473,6 +475,23 @@ const ALWAYS_ON_TOOLS: Anthropic.Tool[] = [
         document_id: { type: "number", description: "The document's id, from search_documents/list_recent_documents" },
       },
       required: ["document_id"],
+    },
+  },
+  {
+    name: "search_conversation_history",
+    description:
+      "Search the full WhatsApp conversation history with the user, not just the recent messages " +
+      "and the rolling summary already in your context — call this when the user references " +
+      "something they told you earlier (a name, a decision, a date, a specific fact) that isn't in " +
+      "what you can currently see, instead of saying you don't have it or guessing. Only available " +
+      "in a WhatsApp conversation.",
+    input_schema: {
+      type: "object",
+      properties: {
+        query: { type: "string", description: "Keyword(s) to search for" },
+        limit: { type: "number", description: "Max messages to return, default 20" },
+      },
+      required: ["query"],
     },
   },
   {
@@ -877,6 +896,17 @@ export async function runTool(
       }
       return { ok: true };
     }
+    case "search_conversation_history": {
+      if (!phone) {
+        return { error: "Searching conversation history is only available in a WhatsApp conversation." };
+      }
+      return searchWhatsAppHistory(
+        ownerId,
+        phone,
+        input.query as string,
+        (input.limit as number | undefined) ?? SEARCH_CONVERSATION_HISTORY_DEFAULT_LIMIT
+      );
+    }
     case "extract_email_attachment": {
       const result = await ingestEmailAttachment({
         ownerId,
@@ -1164,6 +1194,7 @@ function buildRules(enabled: Set<ToolKey>): string {
     "- Use flag_unmet_request whenever you have to tell the user you can't do something — call it in the same turn as your reply, don't wait to be asked.",
     '- Use search_documents/list_recent_documents when the user asks about something they photographed or sent via WhatsApp (boarding passes, licenses, tickets, receipts) — e.g. "when did I fly to X" or "what\'s the code on my license".',
     "- If the user wants the actual photo/file back rather than just its details (e.g. \"send me that photo again\", \"can I get the original image\"), find the right document with search_documents/list_recent_documents first, then call send_document with its id.",
+    "- Use search_conversation_history when the user references something they told you earlier (a name, a decision, a date, a specific fact) that isn't in your current context — the visible recent messages or the conversation summary above — instead of saying you don't have it or guessing. WhatsApp-only, same as send_document.",
     "- When the user asks about a trip, booking, or receipt and get_message shows a relevant attachment (ticket, confirmation, visa, invoice), call extract_email_attachment on it yourself, immediately, without asking first — the same way you'd read the email body without asking. Do this for every relevant attachment you find in the same turn, not one at a time. Only ask first if there are an unusually large number of attachments (10+) to extract at once. Don't just describe the attachment's filename and stop there, and don't stop to ask permission to do something this low-risk and reversible.",
     "- If extract_email_attachment fails for an attachment, don't just relay a generic failure to the user — retry it once, and if it still fails, say so plainly with the vendor/subject so they know exactly which one needs a manual forward, rather than leaving them to guess.",
     "- Use get_news for news/current-events questions. Only report headlines the tool actually returned — never supplement with your own general knowledge or training data, even for well-known ongoing events. Fabricating a headline is a serious error, same as with any other tool's data.",

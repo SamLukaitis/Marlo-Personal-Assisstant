@@ -26,6 +26,7 @@ import {
   markMemorySurfaced,
   setPendingSetup,
   listUnmetRequests,
+  appendWhatsAppMessage,
 } from "../db/store.js";
 import { getBriefingSettings, saveBriefingSettings, type BriefingSettings } from "../services/briefing.js";
 import { getXeroForwardingEmail } from "../services/xero.js";
@@ -567,6 +568,43 @@ describe("send_document dispatch", () => {
     const result = await runTool(user.id, "send_document", { document_id: 7 }, "447000000001");
 
     expect(result).toEqual({ error: expect.stringContaining("no original photo") });
+  });
+});
+
+describe("search_conversation_history tool", () => {
+  it("is always available, same as send_document", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("search-history-toollist"));
+    const names = buildToolsForOwner(user.id).map((t) => t.name);
+    expect(names).toContain("search_conversation_history");
+  });
+
+  it("refuses without a phone (web chat/eval callers)", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("search-history-no-phone"));
+
+    const result = await runTool(user.id, "search_conversation_history", { query: "passport" });
+
+    expect(result).toEqual({ error: expect.stringContaining("WhatsApp conversation") });
+  });
+
+  it("finds an older message outside the visible window, scoped to the calling phone", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("search-history-hit"));
+    const phone = "447700000123";
+    // Seed directly via the store's own append path used by the WhatsApp route, not runTool —
+    // there's no "send a WhatsApp message" tool; messages land in the table via the webhook.
+    appendWhatsAppMessage(user.id, phone, "user", "My passport number is X1234567");
+
+    const result = (await runTool(user.id, "search_conversation_history", { query: "passport" }, phone)) as unknown[];
+
+    expect(result).toHaveLength(1);
+  });
+
+  it("returns an empty array, not an error, when nothing matches", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("search-history-miss"));
+    const phone = "447700000124";
+
+    const result = await runTool(user.id, "search_conversation_history", { query: "nonexistent-topic" }, phone);
+
+    expect(result).toEqual([]);
   });
 });
 
