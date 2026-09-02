@@ -546,6 +546,14 @@ describe("recall_entity tool", () => {
   });
 });
 
+describe("buildSystemPrompt recall_entity guidance", () => {
+  it("mentions recall_entity alongside the remember rule", () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("prompt-recall-entity"));
+    const prompt = buildSystemPrompt(user.id);
+    expect(prompt).toContain("recall_entity");
+  });
+});
+
 describe("search_memory tool", () => {
   it("is always available, same as remember", async () => {
     const user = findOrCreateUserByEmail(uniqueEmail("search-memory-toollist"));
