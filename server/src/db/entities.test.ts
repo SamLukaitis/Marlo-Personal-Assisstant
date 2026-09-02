@@ -8,6 +8,9 @@ import {
   updateEntity,
   linkRecords,
   getRelatedEntities,
+  findOrCreateEntity,
+  appendEntityNote,
+  findEntityByName,
 } from "./store.js";
 
 let counter = 0;
@@ -130,5 +133,108 @@ describe("generic entity + link store", () => {
     const related = getRelatedEntities(user.id, { type: "entity", id: trip.id });
     expect(related).toHaveLength(1);
     expect(related[0].id).toBe(expense.id);
+  });
+});
+
+describe("remember → entities bridge", () => {
+  it("find-or-create: creates a new entity on first call", () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("findorcreate-new"));
+    const entity = findOrCreateEntity(user.id, "person", "Sarah");
+    expect(entity.type).toBe("person");
+    expect(entity.data).toEqual({ name: "Sarah", notes: [] });
+  });
+
+  it("find-or-create: dedupes by owner+type+lowercased name, ignoring case/whitespace", () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("findorcreate-dedupe"));
+    const first = findOrCreateEntity(user.id, "person", "Sarah");
+    const second = findOrCreateEntity(user.id, "person", "  sarah ");
+    expect(second.id).toBe(first.id);
+    expect(listEntities(user.id, { type: "person" })).toHaveLength(1);
+  });
+
+  it("find-or-create: same name under a different type is a different entity", () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("findorcreate-difftype"));
+    const person = findOrCreateEntity(user.id, "person", "Lisbon");
+    const place = findOrCreateEntity(user.id, "place", "Lisbon");
+    expect(person.id).not.toBe(place.id);
+  });
+
+  it("find-or-create: scopes by owner — one user's entity is invisible to another", () => {
+    const userA = findOrCreateUserByEmail(uniqueEmail("findorcreate-owner-a"));
+    const userB = findOrCreateUserByEmail(uniqueEmail("findorcreate-owner-b"));
+    const a = findOrCreateEntity(userA.id, "person", "Sarah");
+    const b = findOrCreateEntity(userB.id, "person", "Sarah");
+    expect(b.id).not.toBe(a.id);
+  });
+
+  it("appendEntityNote: appends a timestamped note without clobbering prior ones", () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("append-note"));
+    const entity = findOrCreateEntity(user.id, "person", "Sarah");
+    const afterFirst = appendEntityNote(user.id, entity.id, "Handles invoicing");
+    expect(afterFirst.data.notes).toHaveLength(1);
+    expect(afterFirst.data.notes[0].text).toBe("Handles invoicing");
+    expect(typeof afterFirst.data.notes[0].at).toBe("number");
+
+    const afterSecond = appendEntityNote(user.id, entity.id, "Prefers email over calls");
+    expect(afterSecond.data.notes).toHaveLength(2);
+    expect(afterSecond.data.notes[0].text).toBe("Handles invoicing");
+    expect(afterSecond.data.notes[1].text).toBe("Prefers email over calls");
+  });
+
+  it("findEntityByName: matches case-insensitively and trims whitespace", () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("find-by-name"));
+    const entity = findOrCreateEntity(user.id, "person", "Sarah");
+    const found = findEntityByName(user.id, "  SARAH  ");
+    expect(found?.id).toBe(entity.id);
+  });
+
+  it("findEntityByName: respects an optional type filter", () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("find-by-name-type"));
+    findOrCreateEntity(user.id, "person", "Lisbon");
+    const place = findOrCreateEntity(user.id, "place", "Lisbon");
+    expect(findEntityByName(user.id, "Lisbon", "place")?.id).toBe(place.id);
+    expect(findEntityByName(user.id, "Lisbon", "project")).toBeNull();
+  });
+
+  it("findEntityByName: returns null when nothing matches", () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("find-by-name-miss"));
+    expect(findEntityByName(user.id, "Nobody")).toBeNull();
+  });
+
+  it("findEntityByName: ignores a same-owner entity with no name field at all, without throwing", () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("find-by-name-no-name-field"));
+    saveEntity(user.id, {
+      type: "travel_checkin",
+      data: { country: "France", city: "Paris", checkedInAt: Date.now() },
+    });
+    const sarah = findOrCreateEntity(user.id, "person", "Sarah");
+
+    expect(() => findEntityByName(user.id, "Sarah")).not.toThrow();
+    expect(findEntityByName(user.id, "Sarah")?.id).toBe(sarah.id);
+    expect(findEntityByName(user.id, "France")).toBeNull();
+  });
+
+  it("findEntityByName: never returns a booking, even though it structurally has a name string", () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("find-by-name-booking"));
+    saveEntity(user.id, {
+      type: "booking",
+      data: { kind: "hotel", name: "Hotel Eva", reference: "ABC", startDate: "2026-01-01", endDate: null },
+    });
+    findOrCreateEntity(user.id, "person", "Sarah");
+
+    expect(findEntityByName(user.id, "Hotel Eva")).toBeNull();
+  });
+
+  it("find-or-create: rejects a blank or whitespace-only name", () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("findorcreate-blank"));
+    expect(() => findOrCreateEntity(user.id, "person", "")).toThrow();
+    expect(() => findOrCreateEntity(user.id, "person", "   ")).toThrow();
+  });
+
+  it("findEntityByName: returns null (not a throw, not a false match) for a blank name", () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("find-by-name-blank"));
+    findOrCreateEntity(user.id, "person", "Sarah");
+    expect(findEntityByName(user.id, "")).toBeNull();
+    expect(findEntityByName(user.id, "   ")).toBeNull();
   });
 });

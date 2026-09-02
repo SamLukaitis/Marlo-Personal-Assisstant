@@ -1814,6 +1814,82 @@ export function getRelatedEntities<T = unknown>(
 }
 
 // ---------------------------------------------------------------------------
+// remember → entities bridge: what lets the assistant's `remember` tool optionally file
+// a note onto a named, recurring subject instead of only ever writing a flat memory_notes
+// row. Reuses the generic entity/link CRUD above — no new tables.
+// ---------------------------------------------------------------------------
+
+export interface RememberedEntityData {
+  name: string;
+  notes: { text: string; at: number }[];
+}
+
+function normalizeEntityName(name: string): string {
+  return name.trim().toLowerCase();
+}
+
+// Dedupes by owner+type+lowercased name so the same subject mentioned across separate
+// remember calls accumulates onto one entity instead of spawning near-duplicate rows.
+export function findOrCreateEntity(
+  ownerId: number,
+  type: string,
+  name: string
+): EntityRow<RememberedEntityData> {
+  const existing = findEntityByName(ownerId, name, type);
+  if (existing) return existing;
+  const trimmed = name.trim();
+  if (!trimmed) throw new Error("findOrCreateEntity: name must not be blank");
+  return saveEntity<RememberedEntityData>(ownerId, {
+    type,
+    data: { name: trimmed, notes: [] },
+  });
+}
+
+export function appendEntityNote(
+  ownerId: number,
+  entityId: number,
+  text: string
+): EntityRow<RememberedEntityData> {
+  const entity = getEntity<RememberedEntityData>(ownerId, entityId);
+  if (!entity) throw new Error(`entity ${entityId} not found`);
+  const notes = [...entity.data.notes, { text, at: Date.now() }];
+  return updateEntity<RememberedEntityData>(ownerId, entityId, {
+    data: { ...entity.data, notes },
+  });
+}
+
+// Narrows an entity's untyped `data` down to RememberedEntityData shape — required because
+// listEntities(ownerId, {}) (no type filter) returns entities of every type for this owner,
+// including pre-existing document-extracted ones (travel_checkin, trip, expense, booking)
+// whose data shape is unrelated. A `name` string alone isn't enough to tell them apart
+// (booking also has one) — requiring `notes` too is what no pre-existing type has.
+function isRememberedEntity(data: unknown): data is RememberedEntityData {
+  return (
+    typeof data === "object" &&
+    data !== null &&
+    typeof (data as RememberedEntityData).name === "string" &&
+    Array.isArray((data as RememberedEntityData).notes)
+  );
+}
+
+// Case-insensitive exact-name lookup, optionally narrowed to one type — used both by
+// findOrCreateEntity's dedupe check and by remember's relates_to / recall_entity.
+export function findEntityByName(
+  ownerId: number,
+  name: string,
+  type?: string
+): EntityRow<RememberedEntityData> | null {
+  const normalized = normalizeEntityName(name);
+  if (!normalized) return null;
+  return (
+    listEntities<unknown>(ownerId, type ? { type } : {}).find(
+      (e): e is EntityRow<RememberedEntityData> =>
+        isRememberedEntity(e.data) && normalizeEntityName(e.data.name) === normalized
+    ) ?? null
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Users, invites, sessions — the identity layer. Everything above this line is
 // per-tenant *data*; everything below is what determines which tenant a request belongs to.
 // ---------------------------------------------------------------------------
