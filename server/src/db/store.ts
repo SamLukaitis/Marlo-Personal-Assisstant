@@ -1814,6 +1814,61 @@ export function getRelatedEntities<T = unknown>(
 }
 
 // ---------------------------------------------------------------------------
+// remember → entities bridge: what lets the assistant's `remember` tool optionally file
+// a note onto a named, recurring subject instead of only ever writing a flat memory_notes
+// row. Reuses the generic entity/link CRUD above — no new tables.
+// ---------------------------------------------------------------------------
+
+export interface RememberedEntityData {
+  name: string;
+  notes: { text: string; at: number }[];
+}
+
+function normalizeEntityName(name: string): string {
+  return name.trim().toLowerCase();
+}
+
+// Dedupes by owner+type+lowercased name so the same subject mentioned across separate
+// remember calls accumulates onto one entity instead of spawning near-duplicate rows.
+export function findOrCreateEntity(
+  ownerId: number,
+  type: string,
+  name: string
+): EntityRow<RememberedEntityData> {
+  const existing = findEntityByName(ownerId, name, type);
+  if (existing) return existing;
+  return saveEntity<RememberedEntityData>(ownerId, {
+    type,
+    data: { name: name.trim(), notes: [] },
+  });
+}
+
+export function appendEntityNote(
+  ownerId: number,
+  entityId: number,
+  text: string
+): EntityRow<RememberedEntityData> {
+  const entity = getEntity<RememberedEntityData>(ownerId, entityId);
+  if (!entity) throw new Error(`entity ${entityId} not found`);
+  const notes = [...entity.data.notes, { text, at: Date.now() }];
+  return updateEntity<RememberedEntityData>(ownerId, entityId, {
+    data: { ...entity.data, notes },
+  });
+}
+
+// Case-insensitive exact-name lookup, optionally narrowed to one type — used both by
+// findOrCreateEntity's dedupe check and by remember's relates_to / recall_entity.
+export function findEntityByName(
+  ownerId: number,
+  name: string,
+  type?: string
+): EntityRow<RememberedEntityData> | null {
+  const normalized = normalizeEntityName(name);
+  const candidates = listEntities<RememberedEntityData>(ownerId, type ? { type } : {});
+  return candidates.find((e) => normalizeEntityName(e.data.name) === normalized) ?? null;
+}
+
+// ---------------------------------------------------------------------------
 // Users, invites, sessions — the identity layer. Everything above this line is
 // per-tenant *data*; everything below is what determines which tenant a request belongs to.
 // ---------------------------------------------------------------------------
