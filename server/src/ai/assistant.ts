@@ -13,6 +13,7 @@ import {
   listEntities,
   getEntity,
   saveEntity,
+  deleteEntity,
   linkRecords,
   getLinksTo,
   getLinksFrom,
@@ -115,7 +116,7 @@ export const SEARCH_CONVERSATION_HISTORY_DEFAULT_LIMIT = 20;
 // it holds even if the model skips that instruction under an unusual conversational branch or
 // prompt injection from message content it's reading. Extend this set as more irreversible-action
 // tools are added; a tool not in it behaves exactly as before (reversible actions don't need this).
-const CONFIRM_REQUIRED_TOOLS = new Set<string>(["delete_calendar_event", "send_email"]);
+const CONFIRM_REQUIRED_TOOLS = new Set<string>(["delete_calendar_event", "send_email", "undo_expense"]);
 
 let client: Anthropic | null = null;
 // Exported so portalRoutes.ts's log-explain endpoint can reuse the same lazily-created client
@@ -216,6 +217,18 @@ const ALWAYS_ON_TOOLS: Anthropic.ToolUnion[] = [
       properties: {
         limit: { type: "number", description: "Max expenses, default 50" },
       },
+    },
+  },
+  {
+    name: "undo_expense",
+    description:
+      "Permanently remove an incorrectly logged expense — e.g. a receipt that was misread, double-counted, or isn't actually an expense. Get the expense_id from list_expenses first. This is irreversible — confirm with the user via ask_user_choice(mode=\"confirm\") before deleting unless they were explicit about which expense — don't ask in prose.",
+    input_schema: {
+      type: "object",
+      properties: {
+        expense_id: { type: "number", description: "id of the expense to remove, from list_expenses" },
+      },
+      required: ["expense_id"],
     },
   },
   {
@@ -1158,6 +1171,13 @@ export async function runTool(
       return listEntities<ExpenseData>(ownerId, { type: "expense" })
         .slice(0, (input.limit as number | undefined) ?? 50)
         .map((e) => ({ id: e.id, ...e.data, status: e.status, confidence: e.confidence }));
+    case "undo_expense": {
+      const id = input.expense_id as number;
+      const entity = getEntity<ExpenseData>(ownerId, id);
+      if (!entity || entity.type !== "expense") return { error: `No expense with id ${id}.` };
+      deleteEntity(ownerId, id);
+      return { ok: true, deleted: { id: entity.id, ...entity.data } };
+    }
     case "list_bookings": {
       const rows = listEntities<BookingData>(ownerId, { type: "booking" });
       const kind = input.kind as string | undefined;

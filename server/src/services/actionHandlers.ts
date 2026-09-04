@@ -21,6 +21,16 @@ const CONFIRM_RESULT_LABEL: Record<string, (result: unknown) => string> = {
   },
   delete_calendar_event: () => "✓ Deleted.",
   send_email: () => "✓ Sent.",
+  undo_expense: (result) => {
+    const deleted = (result as { deleted?: { vendor?: string; amountPence?: number; currency?: string } } | undefined)
+      ?.deleted;
+    if (!deleted) return "✓ Removed.";
+    const amount =
+      typeof deleted.amountPence === "number" && deleted.currency
+        ? ` (${(deleted.amountPence / 100).toFixed(2)} ${deleted.currency})`
+        : "";
+    return `✓ Removed the expense${deleted.vendor ? ` for ${deleted.vendor}` : ""}${amount}.`;
+  },
   create_email_draft: () => "📝 Saved as a draft — nothing was sent.",
 };
 

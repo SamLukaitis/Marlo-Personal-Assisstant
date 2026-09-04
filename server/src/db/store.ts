@@ -1808,6 +1808,21 @@ export function updateEntity<T>(
   return getEntity<T>(ownerId, id)!;
 }
 
+// Hard delete, owner-scoped — mirrors deleteDocument. Also drops any links rows pointing at this
+// entity (e.g. an expense's "extracted_from" link to its source document, or a "belongs_to" link
+// to a trip) so undoing an expense doesn't leave a dangling reference for get_trip_contents etc.
+// to trip over. links has no FK to entities (see deleteUserCompletely), so this is for data
+// consistency, not to satisfy a constraint.
+export function deleteEntity(ownerId: number, id: number): void {
+  const purge = db.transaction(() => {
+    db.prepare(
+      `DELETE FROM links WHERE owner_id = ? AND ((from_type = 'entity' AND from_id = ?) OR (to_type = 'entity' AND to_id = ?))`
+    ).run(ownerId, id, id);
+    db.prepare(`DELETE FROM entities WHERE id = ? AND owner_id = ?`).run(id, ownerId);
+  });
+  purge();
+}
+
 export type LinkableType = "entity" | "document";
 
 export interface LinkRow {

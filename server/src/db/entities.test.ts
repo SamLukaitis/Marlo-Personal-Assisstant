@@ -6,6 +6,7 @@ import {
   getEntity,
   listEntities,
   updateEntity,
+  deleteEntity,
   linkRecords,
   getRelatedEntities,
   findOrCreateEntity,
@@ -133,6 +134,35 @@ describe("generic entity + link store", () => {
     const related = getRelatedEntities(user.id, { type: "entity", id: trip.id });
     expect(related).toHaveLength(1);
     expect(related[0].id).toBe(expense.id);
+  });
+
+  it("deleteEntity: removes the row and any links pointing at it", () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("entities-delete"));
+    const trip = saveEntity(user.id, { type: "trip", data: { label: "Lisbon" } });
+    const expense = saveEntity(user.id, {
+      type: "expense",
+      data: { vendor: "Hotel Eva", amountPence: 1850, currency: "EUR", date: "2026-06-12" },
+    });
+    linkRecords(user.id, {
+      relation: "belongs_to",
+      from: { type: "entity", id: expense.id },
+      to: { type: "entity", id: trip.id },
+    });
+
+    deleteEntity(user.id, expense.id);
+
+    expect(getEntity(user.id, expense.id)).toBeNull();
+    expect(getRelatedEntities(user.id, { type: "entity", id: trip.id })).toHaveLength(0);
+  });
+
+  it("deleteEntity: is owner-scoped — cannot delete another owner's entity", () => {
+    const userA = findOrCreateUserByEmail(uniqueEmail("entities-delete-owner-a"));
+    const userB = findOrCreateUserByEmail(uniqueEmail("entities-delete-owner-b"));
+    const entity = saveEntity(userA.id, { type: "expense", data: { vendor: "A" } });
+
+    deleteEntity(userB.id, entity.id);
+
+    expect(getEntity(userA.id, entity.id)).not.toBeNull();
   });
 });
 
