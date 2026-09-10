@@ -95,20 +95,34 @@ function requirePermission(account: AccountRow, action: "read" | "send" | "delet
   }
 }
 
-export async function hubListMessages(
-  ownerId: number,
-  opts: { query?: string; limit?: number; accountId?: number }
+// Per-tick request cache for hubListMessages's aggregate (no accountId) call. alerts.ts and
+// importantEmailAlerts.ts each independently fetch the identical {limit:50} inbox window on
+// every scheduler tick (scheduler.ts) — same owner, same query, same limit — so without this
+// they pay for that Gmail fetch (and its messages.get fan-out, see google.ts) twice for no
+// reason. Keyed on the exact (ownerId, query, limit) triple rather than trying to serve a
+// smaller request from a larger cached one: a multi-account owner gets up to `limit` messages
+// *per account* (this function never caps the merged total), so slicing a merged/sorted result
+// would silently shortchange whichever account sorted lower — worse than just not deduping that
+// case. reconciliation.ts's 150-message scan therefore isn't deduped against the two 50-message
+// calls, but its own per-call cost was already fixed at the source (google.ts's concurrency cap).
+//
+// Explicitly opt-in via withMessageCache so interactive callers — the assistant's tools, the
+// Assistant page — always see a freshly-fetched inbox; the cache only exists for the duration of
+// one withMessageCache(...) call.
+let messageCache: Map<string, Promise<UnifiedMessage[]>> | null = null;
+
+export function withMessageCache<T>(fn: () => Promise<T>): Promise<T> {
+  const isOutermost = messageCache === null;
+  if (isOutermost) messageCache = new Map();
+  return fn().finally(() => {
+    if (isOutermost) messageCache = null;
+  });
+}
+
+async function fetchMessages(
+  accounts: AccountRow[],
+  opts: { query?: string; limit?: number }
 ): Promise<UnifiedMessage[]> {
-  let accounts: AccountRow[];
-  if (opts.accountId) {
-    const account = requireAccount(ownerId, opts.accountId);
-    requirePermission(account, "read");
-    accounts = [account];
-  } else {
-    // Aggregate "all accounts" call (briefing, alerts, "what's unread") — silently exclude
-    // read-restricted accounts rather than erroring, same posture as auth-broken accounts below.
-    accounts = listAccounts(ownerId).filter((a) => a.canRead);
-  }
   const results = await Promise.allSettled(
     accounts.map((a) =>
       a.provider === "google"
@@ -117,6 +131,32 @@ export async function hubListMessages(
     )
   );
   return settleForAccounts(accounts, results).sort((a, b) => (a.receivedAt < b.receivedAt ? 1 : -1));
+}
+
+export async function hubListMessages(
+  ownerId: number,
+  opts: { query?: string; limit?: number; accountId?: number }
+): Promise<UnifiedMessage[]> {
+  if (opts.accountId) {
+    const account = requireAccount(ownerId, opts.accountId);
+    requirePermission(account, "read");
+    return fetchMessages([account], opts);
+  }
+
+  // Aggregate "all accounts" call (briefing, alerts, "what's unread") — silently exclude
+  // read-restricted accounts rather than erroring, same posture as auth-broken accounts below.
+  if (messageCache) {
+    const key = `${ownerId}:${opts.query ?? ""}:${opts.limit ?? 20}`;
+    const cached = messageCache.get(key);
+    if (cached) return cached;
+    const accounts = listAccounts(ownerId).filter((a) => a.canRead);
+    const promise = fetchMessages(accounts, opts);
+    messageCache.set(key, promise);
+    return promise;
+  }
+
+  const accounts = listAccounts(ownerId).filter((a) => a.canRead);
+  return fetchMessages(accounts, opts);
 }
 
 export async function hubGetMessage(

@@ -14,7 +14,8 @@ vi.mock("../providers/google.js", () => ({
 vi.mock("../providers/microsoft.js", () => ({}));
 
 const { findOrCreateUserByEmail, upsertAccount, updateAccountPermissions } = await import("../db/store.js");
-const { hubListMessages, hubSendMessage, hubArchiveMessages, hubGetMessage } = await import("./hub.js");
+const { hubListMessages, hubSendMessage, hubArchiveMessages, hubGetMessage, withMessageCache } =
+  await import("./hub.js");
 
 let counter = 0;
 function uniqueEmail(prefix: string): string {
@@ -151,5 +152,84 @@ describe("per-account permission enforcement", () => {
       /[Rr]eading is turned off/
     );
     expect(mockGoogleListMessages).not.toHaveBeenCalled();
+  });
+});
+
+describe("withMessageCache", () => {
+  it("collapses two identical aggregate calls (same owner/query/limit) into one provider fetch", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("hub-cache-dedup"));
+    const account = upsertAccount(user.id, {
+      provider: "google",
+      email: uniqueEmail("inbox-dedup"),
+      accessToken: "t",
+      refreshToken: "r",
+      expiryDate: null,
+    });
+    mockGoogleListMessages.mockResolvedValue([fakeMessage(account.id, "m1")]);
+
+    const [a, b] = await withMessageCache(() =>
+      Promise.all([
+        hubListMessages(user.id, { limit: 50 }),
+        hubListMessages(user.id, { limit: 50 }),
+      ])
+    );
+
+    expect(a).toEqual(b);
+    expect(mockGoogleListMessages).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not dedupe calls with different limits — each is fetched independently", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("hub-cache-different-limits"));
+    const account = upsertAccount(user.id, {
+      provider: "google",
+      email: uniqueEmail("inbox-diff-limit"),
+      accessToken: "t",
+      refreshToken: "r",
+      expiryDate: null,
+    });
+    mockGoogleListMessages.mockResolvedValue([fakeMessage(account.id, "m1")]);
+
+    await withMessageCache(() =>
+      Promise.all([
+        hubListMessages(user.id, { limit: 50 }),
+        hubListMessages(user.id, { limit: 150 }),
+      ])
+    );
+
+    expect(mockGoogleListMessages).toHaveBeenCalledTimes(2);
+  });
+
+  it("never caches outside of withMessageCache — interactive callers always get a fresh fetch", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("hub-cache-no-scope"));
+    const account = upsertAccount(user.id, {
+      provider: "google",
+      email: uniqueEmail("inbox-no-scope"),
+      accessToken: "t",
+      refreshToken: "r",
+      expiryDate: null,
+    });
+    mockGoogleListMessages.mockResolvedValue([fakeMessage(account.id, "m1")]);
+
+    await hubListMessages(user.id, { limit: 50 });
+    await hubListMessages(user.id, { limit: 50 });
+
+    expect(mockGoogleListMessages).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not leak the cache across separate withMessageCache scopes", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("hub-cache-scoped"));
+    const account = upsertAccount(user.id, {
+      provider: "google",
+      email: uniqueEmail("inbox-scoped"),
+      accessToken: "t",
+      refreshToken: "r",
+      expiryDate: null,
+    });
+    mockGoogleListMessages.mockResolvedValue([fakeMessage(account.id, "m1")]);
+
+    await withMessageCache(() => hubListMessages(user.id, { limit: 50 }));
+    await withMessageCache(() => hubListMessages(user.id, { limit: 50 }));
+
+    expect(mockGoogleListMessages).toHaveBeenCalledTimes(2);
   });
 });

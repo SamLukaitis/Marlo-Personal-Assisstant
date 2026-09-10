@@ -1,4 +1,5 @@
 import { getBriefingSettings, getTodaysBriefing } from "./briefing.js";
+import { withMessageCache } from "./hub.js";
 import {
   getSetting,
   setSetting,
@@ -129,18 +130,24 @@ async function tick(): Promise<void> {
     await runDailyCheckForUser(ownerId).catch((err) =>
       console.error(`scheduler: daily check failed for user ${ownerId}`, err)
     );
-    await runAlertsCheckForUser(ownerId).catch((err) =>
-      console.error(`scheduler: alerts check failed for user ${ownerId}`, err)
-    );
-    await runMemoryReminderCheckForUser(ownerId).catch((err) =>
-      console.error(`scheduler: memory reminder check failed for user ${ownerId}`, err)
-    );
-    await runReconciliationCheckForUser(ownerId).catch((err) =>
-      console.error(`scheduler: reconciliation check failed for user ${ownerId}`, err)
-    );
-    await runImportantEmailAlertsCheckForUser(ownerId).catch((err) =>
-      console.error(`scheduler: important-email check failed for user ${ownerId}`, err)
-    );
+    // alerts/reconciliation/important-email each independently call hubListMessages for this
+    // same user — sharing one withMessageCache scope collapses the ones that fetch an identical
+    // (query, limit) window (alerts + important-email both use {limit:50}) into a single Gmail
+    // fetch instead of paying for it twice. See hub.ts's withMessageCache doc comment.
+    await withMessageCache(async () => {
+      await runAlertsCheckForUser(ownerId).catch((err) =>
+        console.error(`scheduler: alerts check failed for user ${ownerId}`, err)
+      );
+      await runMemoryReminderCheckForUser(ownerId).catch((err) =>
+        console.error(`scheduler: memory reminder check failed for user ${ownerId}`, err)
+      );
+      await runReconciliationCheckForUser(ownerId).catch((err) =>
+        console.error(`scheduler: reconciliation check failed for user ${ownerId}`, err)
+      );
+      await runImportantEmailAlertsCheckForUser(ownerId).catch((err) =>
+        console.error(`scheduler: important-email check failed for user ${ownerId}`, err)
+      );
+    });
   }
 }
 
