@@ -6,6 +6,9 @@ import {
   markMemorySurfaced,
   removeMemoryNote,
   searchMemoryNotes,
+  listMemoryRemindersToGiveUpOn,
+  markMemoryGivenUp,
+  searchReminderNotes,
 } from "./store.js";
 
 let counter = 0;
@@ -89,6 +92,96 @@ describe("listDueMemoryReminders", () => {
     addMemoryNote(userA.id, "A's reminder", past);
 
     expect(listDueMemoryReminders(userB.id, Date.now())).toHaveLength(0);
+  });
+});
+
+describe("listMemoryRemindersToGiveUpOn", () => {
+  it("returns a reminder that crossed the 24h give-up window without ever sending", () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("giveup-basic"));
+    const stale = new Date(Date.now() - 25 * 60 * 60 * 1000).toISOString();
+    addMemoryNote(user.id, "Stuck reminder", stale);
+
+    const toGiveUpOn = listMemoryRemindersToGiveUpOn(user.id, Date.now());
+    expect(toGiveUpOn).toHaveLength(1);
+    expect(toGiveUpOn[0].content).toBe("Stuck reminder");
+  });
+
+  it("excludes a reminder still inside the give-up window (still due, not given up on yet)", () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("giveup-still-due"));
+    const past = new Date(Date.now() - 60_000).toISOString();
+    addMemoryNote(user.id, "Recently due", past);
+
+    expect(listMemoryRemindersToGiveUpOn(user.id, Date.now())).toHaveLength(0);
+  });
+
+  it("excludes a reminder that was already surfaced", () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("giveup-surfaced"));
+    const stale = new Date(Date.now() - 25 * 60 * 60 * 1000).toISOString();
+    const note = addMemoryNote(user.id, "Already sent", stale);
+    markMemorySurfaced(user.id, note.id);
+
+    expect(listMemoryRemindersToGiveUpOn(user.id, Date.now())).toHaveLength(0);
+  });
+
+  it("excludes a reminder already marked given up (doesn't re-notify every tick)", () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("giveup-already-flagged"));
+    const stale = new Date(Date.now() - 25 * 60 * 60 * 1000).toISOString();
+    const note = addMemoryNote(user.id, "Flagged once", stale);
+    markMemoryGivenUp(user.id, note.id);
+
+    expect(listMemoryRemindersToGiveUpOn(user.id, Date.now())).toHaveLength(0);
+  });
+
+  it("scopes results by owner", () => {
+    const userA = findOrCreateUserByEmail(uniqueEmail("giveup-owner-a"));
+    const userB = findOrCreateUserByEmail(uniqueEmail("giveup-owner-b"));
+    const stale = new Date(Date.now() - 25 * 60 * 60 * 1000).toISOString();
+    addMemoryNote(userA.id, "A's stuck reminder", stale);
+
+    expect(listMemoryRemindersToGiveUpOn(userB.id, Date.now())).toHaveLength(0);
+  });
+});
+
+describe("markMemoryGivenUp", () => {
+  it("sets gaveUpAt so the note's status can be reported as failed", () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("mark-givenup"));
+    const stale = new Date(Date.now() - 25 * 60 * 60 * 1000).toISOString();
+    const note = addMemoryNote(user.id, "Failed reminder", stale);
+
+    markMemoryGivenUp(user.id, note.id);
+
+    const [found] = searchReminderNotes(user.id, "Failed");
+    expect(found.gaveUpAt).not.toBeNull();
+  });
+});
+
+describe("searchReminderNotes", () => {
+  it("finds a reminder note by keyword", () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("reminder-search-basic"));
+    addMemoryNote(user.id, "Text Henry about the meeting", new Date(Date.now() - 60_000).toISOString());
+    addMemoryNote(user.id, "Unrelated reminder", new Date(Date.now() - 60_000).toISOString());
+
+    const results = searchReminderNotes(user.id, "Henry");
+    expect(results).toHaveLength(1);
+    expect(results[0].content).toBe("Text Henry about the meeting");
+  });
+
+  it("excludes ordinary notes that have no trigger_at at all", () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("reminder-search-notrigger"));
+    addMemoryNote(user.id, "Henry's allergy is shellfish");
+
+    expect(searchReminderNotes(user.id, "Henry")).toHaveLength(0);
+  });
+
+  it("reports triggerAt, lastSurfacedAt, and gaveUpAt so status can be derived", () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("reminder-search-fields"));
+    const triggerIso = new Date(Date.now() + 60_000).toISOString();
+    addMemoryNote(user.id, "Scheduled reminder", triggerIso);
+
+    const [result] = searchReminderNotes(user.id, "Scheduled");
+    expect(result.triggerAt).toBe(new Date(triggerIso).getTime());
+    expect(result.lastSurfacedAt).toBeNull();
+    expect(result.gaveUpAt).toBeNull();
   });
 });
 

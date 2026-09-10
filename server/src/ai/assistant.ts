@@ -5,6 +5,7 @@ import {
   listRecentMemoryNotes,
   addMemoryNote,
   searchMemoryNotes,
+  searchReminderNotes,
   searchWhatsAppHistory,
   searchDocuments,
   listDocuments,
@@ -432,6 +433,22 @@ const ALWAYS_ON_TOOLS: Anthropic.ToolUnion[] = [
       properties: {
         query: { type: "string", description: "Keyword(s) to search for" },
         limit: { type: "number", description: "Max notes to return, default 10" },
+      },
+      required: ["query"],
+    },
+  },
+  {
+    name: "check_reminder_status",
+    description:
+      "Check whether a reminder you set (a remember call with triggerAt) actually went out, is " +
+      "still scheduled, or failed to send. Call this when the user asks whether a reminder " +
+      "arrived/fired/went out — never guess or claim you can't check. Matches by keyword against " +
+      "the reminder's content, same as search_memory but restricted to notes that have a triggerAt.",
+    input_schema: {
+      type: "object",
+      properties: {
+        query: { type: "string", description: "Keyword(s) from the reminder's content to search for" },
+        limit: { type: "number", description: "Max reminders to return, default 10" },
       },
       required: ["query"],
     },
@@ -1022,6 +1039,26 @@ export async function runTool(
         input.query as string,
         (input.limit as number | undefined) ?? SEARCH_MEMORY_DEFAULT_LIMIT
       );
+    case "check_reminder_status":
+      return searchReminderNotes(
+        ownerId,
+        input.query as string,
+        (input.limit as number | undefined) ?? SEARCH_MEMORY_DEFAULT_LIMIT
+      ).map((note) => ({
+        content: note.content,
+        triggerAt: note.triggerAt,
+        // Mirrors listDueMemoryReminders/listMemoryRemindersToGiveUpOn's own precedence
+        // (surfaced > given-up > scheduled > pending) without needing their give-up window
+        // constant — a note can't be both, so order here only matters for reading it clearly.
+        status:
+          note.lastSurfacedAt != null
+            ? "sent"
+            : note.gaveUpAt != null
+              ? "failed"
+              : note.triggerAt != null && note.triggerAt > Date.now()
+                ? "scheduled"
+                : "pending",
+      }));
     case "recall_entity": {
       const entityName = input.entity_name as string;
       const entityType = input.entity_type as string | undefined;
@@ -1369,6 +1406,7 @@ function buildRules(enabled: Set<ToolKey>): string {
     "- Use the remember tool proactively whenever the user shares something worth recalling later (preferences, which account is which, standing instructions) — don't wait to be asked.",
     "- When a remember note is about a specific, nameable, recurring subject (a person, place, project, etc) the user might ask about again by name, pass entity_name + entity_type on that same remember call so it files onto a lookup-able entity instead of only a flat note — don't do this for one-off preferences with no clear subject. Use recall_entity (not search_memory) when the user later asks about that subject by name — it returns the entity's notes plus everything linked to it in one call.",
     "- Use flag_unmet_request whenever you have to tell the user you can't do something — call it in the same turn as your reply, don't wait to be asked.",
+    "- Use check_reminder_status when the user asks whether a reminder you set actually went out (e.g. \"did that reminder send?\", \"did Henry get texted?\") — never guess from your own context or say you have no way to check.",
     '- Use search_documents/list_recent_documents when the user asks about something they photographed or sent via WhatsApp (boarding passes, licenses, tickets, receipts) — e.g. "when did I fly to X" or "what\'s the code on my license".',
     "- If the user wants the actual photo/file back rather than just its details (e.g. \"send me that photo again\", \"can I get the original image\"), find the right document with search_documents/list_recent_documents first, then call send_document with its id.",
     "- Use search_conversation_history when the user references something they told you earlier (a name, a decision, a date, a specific fact) that isn't in your current context — the visible recent messages or the conversation summary above — instead of saying you don't have it or guessing. WhatsApp-only, same as send_document. Every term must appear in the same message to match, so a full sentence often returns nothing even when the fact is there — if a call comes back empty, retry with different single keywords pulled from the user's question (a name, a place, a specific number) before telling them you don't have it.",

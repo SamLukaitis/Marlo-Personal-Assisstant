@@ -30,6 +30,7 @@ import {
   listMemoryNotes,
   addMemoryNote,
   markMemorySurfaced,
+  markMemoryGivenUp,
   setPendingSetup,
   listUnmetRequests,
   findEntityByName,
@@ -686,6 +687,85 @@ describe("search_memory tool", () => {
 
     const results = (await runTool(user.id, "search_memory", { query: "trip", limit: 2 })) as unknown[];
     expect(results).toHaveLength(2);
+  });
+});
+
+describe("check_reminder_status tool", () => {
+  it("is always available, same as remember", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("reminder-status-toollist"));
+    const names = buildToolsForOwner(user.id).map((t) => t.name);
+    expect(names).toContain("check_reminder_status");
+  });
+
+  it("reports a future reminder as scheduled", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("reminder-status-scheduled"));
+    const future = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+    await runTool(user.id, "remember", { note: "Text Henry about the meeting", triggerAt: future });
+
+    const results = (await runTool(user.id, "check_reminder_status", { query: "Henry" })) as {
+      content: string;
+      status: string;
+    }[];
+    expect(results).toHaveLength(1);
+    expect(results[0].content).toBe("Text Henry about the meeting");
+    expect(results[0].status).toBe("scheduled");
+  });
+
+  it("reports a note with no trigger as not found (it isn't a reminder)", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("reminder-status-notrigger"));
+    await runTool(user.id, "remember", { note: "Henry's allergy is shellfish" });
+
+    const results = (await runTool(user.id, "check_reminder_status", { query: "Henry" })) as unknown[];
+    expect(results).toHaveLength(0);
+  });
+
+  it("passes a caller-supplied limit through to the store", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("reminder-status-limit"));
+    const past = new Date(Date.now() - 60_000).toISOString();
+    await runTool(user.id, "remember", { note: "Trip reminder alpha", triggerAt: past });
+    await runTool(user.id, "remember", { note: "Trip reminder beta", triggerAt: past });
+    await runTool(user.id, "remember", { note: "Trip reminder gamma", triggerAt: past });
+
+    const results = (await runTool(user.id, "check_reminder_status", {
+      query: "trip",
+      limit: 2,
+    })) as unknown[];
+    expect(results).toHaveLength(2);
+  });
+
+  it("reports a delivered reminder as sent", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("reminder-status-sent"));
+    const past = new Date(Date.now() - 60_000).toISOString();
+    await runTool(user.id, "remember", { note: "Text Henry at 11am", triggerAt: past });
+    markMemorySurfaced(user.id, listMemoryNotes(user.id)[0].id);
+
+    const results = (await runTool(user.id, "check_reminder_status", { query: "Henry" })) as {
+      status: string;
+    }[];
+    expect(results[0].status).toBe("sent");
+  });
+
+  it("reports a given-up reminder as failed", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("reminder-status-failed"));
+    const past = new Date(Date.now() - 60_000).toISOString();
+    await runTool(user.id, "remember", { note: "Text Henry at 11am", triggerAt: past });
+    markMemoryGivenUp(user.id, listMemoryNotes(user.id)[0].id);
+
+    const results = (await runTool(user.id, "check_reminder_status", { query: "Henry" })) as {
+      status: string;
+    }[];
+    expect(results[0].status).toBe("failed");
+  });
+
+  it("reports a due-but-not-yet-processed reminder as pending", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("reminder-status-pending"));
+    const past = new Date(Date.now() - 60_000).toISOString();
+    await runTool(user.id, "remember", { note: "Text Henry at 11am", triggerAt: past });
+
+    const results = (await runTool(user.id, "check_reminder_status", { query: "Henry" })) as {
+      status: string;
+    }[];
+    expect(results[0].status).toBe("pending");
   });
 });
 
