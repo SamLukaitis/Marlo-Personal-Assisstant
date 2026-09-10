@@ -4,6 +4,7 @@ import {
   updateAccountTokens,
   type AccountRow,
 } from "../db/store.js";
+import { mapWithConcurrency } from "../services/concurrency.js";
 import type {
   UnifiedMessage,
   CalendarEvent,
@@ -173,6 +174,16 @@ export function extractAttachmentMetas(
     }));
 }
 
+// Gmail's messages.list returns only ids — there's no way to get subject/from in that same call —
+// so every message needs its own messages.get, at 5 quota units each. Capping how many of those
+// run at once (rather than firing all of them in one Promise.all) matters because this fan-out
+// runs from several independent background checks on the same 5-minute scheduler tick
+// (alerts.ts, importantEmailAlerts.ts, reconciliation.ts's 150-message scan) — uncapped, that's
+// hundreds of quota units fired in a single instant per account, which is exactly what tripped
+// Gmail's "Units per minute per user" quota in production (2026-09-10). This spreads the same
+// total cost over time instead.
+const GMAIL_GET_CONCURRENCY = 8;
+
 export async function googleListMessages(
   account: AccountRow,
   opts: { query?: string; limit?: number } = {}
@@ -186,17 +197,15 @@ export async function googleListMessages(
     maxResults: opts.limit ?? 20,
   });
   const ids = list.data.messages ?? [];
-  return Promise.all(
-    ids.map(async (m) => {
-      const full = await gmail.users.messages.get({
-        userId: "me",
-        id: m.id!,
-        format: "metadata",
-        metadataHeaders: ["Subject", "From"],
-      });
-      return toUnified(account, full.data);
-    })
-  );
+  return mapWithConcurrency(ids, GMAIL_GET_CONCURRENCY, async (m) => {
+    const full = await gmail.users.messages.get({
+      userId: "me",
+      id: m.id!,
+      format: "metadata",
+      metadataHeaders: ["Subject", "From"],
+    });
+    return toUnified(account, full.data);
+  });
 }
 
 export async function googleGetMessage(
