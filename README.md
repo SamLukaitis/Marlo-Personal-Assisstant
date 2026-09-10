@@ -47,7 +47,7 @@ see your data, and every `/api/*` route is scoped to whoever is logged in.
 | **Memory** | The assistant remembers facts and preferences you share across conversations (e.g. "the Acme account is my priority business") — view/add/remove notes on the Setup page |
 | **Assistant** | Claude with tool-calling: looks up real messages/events/chats/files/contacts before answering; personalized via your Setup-page description |
 | **WhatsApp** | Message your assistant on WhatsApp via Meta's official Cloud API — a compliant bot channel, restricted to a phone-number allowlist you control |
-| **Documents (from WhatsApp)** | Send a photo or PDF (boarding pass, license, ticket, receipt) — Claude's vision analyzes it once on arrival and the extracted details are saved, so you can later ask things like "when did I fly to Berlin" or "what's the code on my license". Ask for it back ("send me that photo again") and Marlowe resends the original file over WhatsApp. If it's a travel document, it also feeds the travel day tracker below automatically. Browse/download/delete what's been saved on the Files page |
+| **Documents (from WhatsApp)** | Send a photo, PDF, or Word doc (boarding pass, license, ticket, receipt) — Claude analyzes it once on arrival and the extracted details are saved, so you can later ask things like "when did I fly to Berlin" or "what's the code on my license". Ask for it back ("send me that photo again") and Marlowe resends the original file over WhatsApp. If it's a travel document, it also feeds the travel day tracker below automatically. Browse/download/delete what's been saved on the Files page |
 | **Location check-ins** | A phone automation (iOS Shortcuts / Android Tasker) posts your coordinates when you land somewhere or cross a border; the server reverse-geocodes it to a country/city and logs it — no WhatsApp round-trip, so it's genuinely automatic. Ask things like "where have I been this month" |
 | **Travel day tracker** | "How many Schengen days have I used in the last 180 days?" — computed deterministically in code from the check-in log (day-by-day reconstruction, not model guesswork), which now includes both automatic phone check-ins and dates pulled from boarding passes/tickets sent via WhatsApp. Works for "schengen", "eu", or any specific country name. The Setup page shows a running Schengen 90/180 count and labels each entry by source (phone vs. document) at a glance |
 | **Unified search** | One search bar (the **Search** page) that queries your email, Drive/OneDrive/local files, Teams chats, and saved WhatsApp documents all at once, instead of searching each separately |
@@ -98,13 +98,13 @@ everything it protects.
   - `src/providers/whatsapp.ts` — Meta Cloud API client (send message, verify webhook signature/handshake, download media)
   - `src/services/hub.ts` — merges results across all connected accounts (and local folders); the UI and the AI only talk to this layer
   - `src/services/briefing.ts` — builds the daily briefing (gathers real data, then has Claude write it up); cached once per day in SQLite
-  - `src/services/documents.ts` — downloads a WhatsApp photo/PDF, runs it through Claude's vision once to extract key facts, and stores both the file and the extracted text. The same call offers an optional `record_travel_movement` tool the model can call if the document clearly shows travel — those get saved as check-ins (source `"document"`, linked back to the document) so they feed the travel day tracker automatically
+  - `src/services/documents.ts` — downloads a WhatsApp photo/PDF/Word doc, runs it through Claude once to extract key facts (vision for photos, a native PDF text layer or vision fallback for PDFs, `mammoth` for `.docx`), and stores both the file and the extracted text. The same call offers an optional `record_travel_movement` tool the model can call if the document clearly shows travel — those get saved as check-ins (source `"document"`, linked back to the document) so they feed the travel day tracker automatically
   - `src/services/geocode.ts` — reverse-geocodes lat/long to a country/city via OpenStreetMap's free Nominatim API
   - `src/services/travelDays.ts` — pure date arithmetic: reconstructs a day-by-day "which country" timeline from check-ins and counts days in a country/Schengen/EU over a date range; no model involved, since day counts need to be exact
   - `src/services/alerts.ts` — polls for unread mail from real people (not automated senders) and pushes a WhatsApp ping for anything new, with a persisted dedup ledger and a first-run baseline so enabling it doesn't alert on your whole existing inbox
   - `src/services/scheduler.ts` — the only long-running part of the app: an in-process interval (every 5 min) that drives both the proactive briefing push and the real-time alert check. Only does anything while the server process is actually running
   - `src/ai/assistant.ts` — Claude (Anthropic SDK) with tools: messages, calendar, Teams chats, files, contacts, archive/labels, memory, saved documents, travel check-ins/day-counting
-  - `src/routes/whatsappRoutes.ts` — the public webhook (`GET`/`POST /webhooks/whatsapp`) Meta calls; resolves the sender's phone to a tenant (`resolveOwnerByPhone`), then reuses the same assistant engine as the web chat; branches to `documents.ts` for photo/PDF messages
+  - `src/routes/whatsappRoutes.ts` — the public webhook (`GET`/`POST /webhooks/whatsapp`) Meta calls; resolves the sender's phone to a tenant (`resolveOwnerByPhone`), then reuses the same assistant engine as the web chat; branches to `documents.ts` for photo/PDF/Word-doc messages
   - `src/routes/checkinRoutes.ts` — secret-protected `POST /api/checkin` for phone automations (resolves to the app owner — see "Accounts, login, and multi-tenancy"); `checkinReadRoutes` (mounted separately, session-gated) has `GET /api/checkins` and `GET /api/travel-days`
   - `src/routes/searchRoutes.ts` — `GET /api/search` fans a query out to mail/files/chats/documents in parallel and returns them together
   - `src/routes/authRoutes.ts` — both the "log into the app" and "connect a data source" OAuth flows (see "Accounts, login, and multi-tenancy"); `src/routes/meRoutes.ts` — `GET /api/me`, how the client knows who's logged in
@@ -342,10 +342,10 @@ Open `http://localhost:5173`:
   older turns are dropped rather than condensed. Anything worth keeping needs to be an
   explicit memory note (the assistant is instructed to do this proactively, but it's not
   guaranteed for every fact).
-- **Document extraction is one-shot, at upload time** — a photo/PDF is analyzed once when it
-  arrives and that text is what the assistant searches later; there's no re-analysis if the
-  first pass missed something. Only images (jpeg/png/gif/webp) and PDFs are analyzed — other
-  file types (e.g. Word docs) are stored for download but skipped for extraction.
+- **Document extraction is one-shot, at upload time** — a photo/PDF/Word doc is analyzed once
+  when it arrives and that text is what the assistant searches later; there's no re-analysis if
+  the first pass missed something. Images (jpeg/png/gif/webp), PDFs, and Word docs (`.docx`) are
+  analyzed — other file types are stored for download but skipped for extraction.
 - **Reverse geocoding uses OpenStreetMap's free Nominatim API** — no API key needed, but it's
   a shared public service with a fair-use rate limit; fine for personal check-ins (a handful a
   day), not for anything high-frequency.

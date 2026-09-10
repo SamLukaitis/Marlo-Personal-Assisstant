@@ -3,6 +3,7 @@ import fs from "node:fs";
 import crypto from "node:crypto";
 import Anthropic from "@anthropic-ai/sdk";
 import { PDFParse } from "pdf-parse";
+import mammoth from "mammoth";
 import { downloadWhatsAppMedia, sendWhatsAppMediaFromBuffer } from "../providers/whatsapp.js";
 import { hubGetAttachment, hubGetMessage } from "./hub.js";
 import {
@@ -48,6 +49,11 @@ const EXTRACTION_MODEL = process.env.ASSISTANT_MODEL_COMPLEX ?? "claude-sonnet-5
 
 const SUPPORTED_IMAGE_TYPES = new Set(["image/jpeg", "image/png", "image/gif", "image/webp"]);
 
+// Word's real (2007+) format. The legacy binary .doc format isn't handled — mammoth only reads
+// the zip-based .docx, and it's rare enough via WhatsApp/email that it isn't worth a second
+// library just for that.
+const DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+
 let client: Anthropic | null = null;
 function getClient(): Anthropic {
   if (!client) client = new Anthropic();
@@ -60,6 +66,7 @@ const EXTENSIONS: Record<string, string> = {
   "image/gif": "gif",
   "image/webp": "webp",
   "application/pdf": "pdf",
+  [DOCX_MIME]: "docx",
 };
 
 // Optional — the model only calls this if the document clearly shows travel between two
@@ -229,6 +236,22 @@ async function looksLikeGibberish(text: string, ownerId: number): Promise<boolea
   );
   const answer = response.content.find((b): b is Anthropic.TextBlock => b.type === "text")?.text ?? "";
   return answer.toUpperCase().includes("GIBBERISH");
+}
+
+// docx has no scanned/photographed equivalent of a PDF's font-rendering ambiguity — the zip's
+// text layer is exact — so unlike extractPdfTextLayer this needs no gibberish check, just a
+// present/absent result. A failed or empty extraction (corrupt file, an unsupported legacy .doc
+// mislabeled as .docx) falls back to storing the file with no automatic analysis, same as any
+// other unsupported type — there's no vision path to fall back to for a Word document.
+export async function extractDocxText(buffer: Buffer): Promise<string | null> {
+  try {
+    const result = await mammoth.extractRawText({ buffer });
+    const trimmed = result.value.trim();
+    return trimmed.length > 0 ? trimmed : null;
+  } catch (err) {
+    console.warn("documents: mammoth docx extraction failed", err);
+    return null;
+  }
 }
 
 async function extractPdfTextLayer(buffer: Buffer, ownerId: number): Promise<string | null> {
@@ -512,6 +535,30 @@ async function extractDocument(buffer: Buffer, mimeType: string, ownerId: number
     "number, also call record_match_keys with it, so it can be cross-referenced against " +
     "email later.";
 
+  if (mimeType === DOCX_MIME) {
+    const docxText = await extractDocxText(buffer);
+    if (!docxText) {
+      return {
+        text: "(couldn't extract any text from this Word document)",
+        title: null,
+        category: null,
+        movement: null,
+        matchKeys: null,
+        purchases: [],
+        bookings: [],
+      };
+    }
+    return runExtraction(
+      [
+        {
+          type: "text",
+          text: `Document text (extracted directly from the Word document — exact, not a transcription):\n\n${docxText}\n\n${prompt}`,
+        },
+      ],
+      ownerId
+    );
+  }
+
   const pdfText = mimeType === "application/pdf" ? await extractPdfTextLayer(buffer, ownerId) : null;
 
   const base64 = buffer.toString("base64");
@@ -672,7 +719,8 @@ async function finalizeIngestedFile(
   let derivedEntities: ReturnType<typeof buildDerivedEntities>;
   let matchKeys: MatchKeys | null;
   try {
-    const canAnalyze = SUPPORTED_IMAGE_TYPES.has(mimeType) || mimeType === "application/pdf";
+    const canAnalyze =
+      SUPPORTED_IMAGE_TYPES.has(mimeType) || mimeType === "application/pdf" || mimeType === DOCX_MIME;
     const {
       text: extractedText,
       title,

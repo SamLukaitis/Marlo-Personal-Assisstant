@@ -144,7 +144,29 @@ async function tick(): Promise<void> {
   }
 }
 
+// setInterval fires on a fixed clock regardless of how long the previous tick() took. At
+// multi-tenant scale, tick() awaits real network calls per user in a loop, so a full pass can
+// plausibly exceed CHECK_INTERVAL_MS — a raw setInterval would then start a second, overlapping
+// tick() on top of the first (double-sending briefings/alerts) on a single process, with no
+// second instance required. Self-rescheduling after each tick finishes, guarded against
+// re-entry, makes that impossible: the next tick is never scheduled until the current one (and
+// its own timer) has fully settled.
+let tickInFlight = false;
+
+export async function tickGuarded(): Promise<void> {
+  if (tickInFlight) {
+    console.warn("scheduler: previous tick still running — skipping this cycle");
+    return;
+  }
+  tickInFlight = true;
+  try {
+    await tick();
+  } finally {
+    tickInFlight = false;
+  }
+}
+
 export function startScheduler(): void {
-  tick();
-  setInterval(tick, CHECK_INTERVAL_MS);
+  void tickGuarded();
+  setInterval(() => void tickGuarded(), CHECK_INTERVAL_MS);
 }

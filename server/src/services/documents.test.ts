@@ -15,11 +15,17 @@ vi.mock("../providers/whatsapp.js", () => ({
   sendWhatsAppMediaFromBuffer: (...args: unknown[]) => mockSendWhatsAppMediaFromBuffer(...args),
 }));
 
+const mockExtractRawText = vi.fn();
+vi.mock("mammoth", () => ({
+  default: { extractRawText: (...args: unknown[]) => mockExtractRawText(...args) },
+}));
+
 const { findOrCreateUserByEmail, saveDocument, uploadsDir } = await import("../db/store.js");
 const { encryptBuffer } = await import("./crypto.js");
 const {
   resolveDocumentCategory,
   buildDerivedEntities,
+  extractDocxText,
   ingestEmailAttachment,
   sendSavedDocumentFile,
 } = await import("./documents.js");
@@ -43,6 +49,27 @@ describe("resolveDocumentCategory", () => {
 
 // The deterministic gate between the model's record_purchase/record_booking transcriptions and
 // the entities table — pure, so the whole decision table runs offline with no API in the loop.
+describe("extractDocxText", () => {
+  beforeEach(() => {
+    mockExtractRawText.mockReset();
+  });
+
+  it("trims mammoth's extracted text", async () => {
+    mockExtractRawText.mockResolvedValue({ value: "  Hello from a Word doc  \n" });
+    expect(await extractDocxText(Buffer.from("fake docx bytes"))).toBe("Hello from a Word doc");
+  });
+
+  it("returns null for a docx with no extractable text", async () => {
+    mockExtractRawText.mockResolvedValue({ value: "   " });
+    expect(await extractDocxText(Buffer.from("fake docx bytes"))).toBeNull();
+  });
+
+  it("returns null instead of throwing when mammoth can't parse the file", async () => {
+    mockExtractRawText.mockRejectedValue(new Error("not a valid zip"));
+    expect(await extractDocxText(Buffer.from("not actually a docx"))).toBeNull();
+  });
+});
+
 describe("buildDerivedEntities", () => {
   const UPLOAD = new Date("2026-06-12T10:00:00Z");
 
