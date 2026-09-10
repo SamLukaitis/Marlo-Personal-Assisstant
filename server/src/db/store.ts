@@ -719,6 +719,12 @@ if (!memoryNoteColumns.includes("trigger_at")) {
 if (!memoryNoteColumns.includes("last_surfaced_at")) {
   db.exec(`ALTER TABLE memory_notes ADD COLUMN last_surfaced_at INTEGER`);
 }
+// Set once a reminder ages out of listDueMemoryReminders's 24h window without ever sending — lets
+// checkDueMemoryReminders notify the user exactly once that it gave up, and lets
+// searchReminderNotes report "failed" instead of leaving the reminder looking silently pending.
+if (!memoryNoteColumns.includes("gave_up_at")) {
+  db.exec(`ALTER TABLE memory_notes ADD COLUMN gave_up_at INTEGER`);
+}
 db.exec(`CREATE INDEX IF NOT EXISTS idx_memory_notes_trigger ON memory_notes (owner_id, trigger_at)`);
 
 // Full-text index over memory notes, backing searchMemoryNotes() below. The system prompt only
@@ -1104,9 +1110,10 @@ export interface MemoryNoteRow {
   createdAt: number;
   triggerAt: number | null;
   lastSurfacedAt: number | null;
+  gaveUpAt: number | null;
 }
 
-const MEMORY_NOTE_COLUMNS = `id, content, created_at AS createdAt, trigger_at AS triggerAt, last_surfaced_at AS lastSurfacedAt`;
+const MEMORY_NOTE_COLUMNS = `id, content, created_at AS createdAt, trigger_at AS triggerAt, last_surfaced_at AS lastSurfacedAt, gave_up_at AS gaveUpAt`;
 
 export function listMemoryNotes(ownerId: number): MemoryNoteRow[] {
   return db
@@ -1159,10 +1166,32 @@ export function searchMemoryNotes(ownerId: number, query: string, limit = 10): M
   return db
     .prepare(
       `SELECT m.id, m.content, m.created_at AS createdAt, m.trigger_at AS triggerAt,
-              m.last_surfaced_at AS lastSurfacedAt
+              m.last_surfaced_at AS lastSurfacedAt, m.gave_up_at AS gaveUpAt
        FROM memory_notes_fts f
        JOIN memory_notes m ON m.id = f.rowid
        WHERE f.memory_notes_fts MATCH ? AND m.owner_id = ?
+       ORDER BY rank
+       LIMIT ?`
+    )
+    .all(matchQuery, ownerId, limit) as MemoryNoteRow[];
+}
+
+// Same FTS approach as searchMemoryNotes, restricted to notes that are actually reminders
+// (trigger_at IS NOT NULL) — backs check_reminder_status, so an ordinary fact never shows up when
+// the user asks "did X reminder go out". Status (sent/failed/scheduled/pending) is derived by the
+// caller from triggerAt/lastSurfacedAt/gaveUpAt rather than stored directly.
+export function searchReminderNotes(ownerId: number, query: string, limit = 10): MemoryNoteRow[] {
+  const terms = query.match(/[\p{L}\p{N}]+/gu) ?? [];
+  if (terms.length === 0) return [];
+
+  const matchQuery = terms.map((t) => `"${t.replace(/"/g, '""')}"`).join(" AND ");
+  return db
+    .prepare(
+      `SELECT m.id, m.content, m.created_at AS createdAt, m.trigger_at AS triggerAt,
+              m.last_surfaced_at AS lastSurfacedAt, m.gave_up_at AS gaveUpAt
+       FROM memory_notes_fts f
+       JOIN memory_notes m ON m.id = f.rowid
+       WHERE f.memory_notes_fts MATCH ? AND m.owner_id = ? AND m.trigger_at IS NOT NULL
        ORDER BY rank
        LIMIT ?`
     )
@@ -1199,6 +1228,24 @@ export function markMemorySurfaced(ownerId: number, id: number): void {
     id,
     ownerId
   );
+}
+
+// The other side of the give-up tradeoff documented above listDueMemoryReminders: once a reminder
+// ages out of that query without ever sending, this is how checkDueMemoryReminders finds it (once)
+// to notify the user it failed, and how markMemoryGivenUp below stops it from being found again.
+export function listMemoryRemindersToGiveUpOn(ownerId: number, nowMs: number): MemoryNoteRow[] {
+  return db
+    .prepare(
+      `SELECT ${MEMORY_NOTE_COLUMNS} FROM memory_notes
+       WHERE owner_id = ? AND trigger_at IS NOT NULL AND trigger_at <= ?
+         AND last_surfaced_at IS NULL AND gave_up_at IS NULL
+       ORDER BY trigger_at ASC`
+    )
+    .all(ownerId, nowMs - MEMORY_REMINDER_GIVE_UP_WINDOW_MS) as MemoryNoteRow[];
+}
+
+export function markMemoryGivenUp(ownerId: number, id: number): void {
+  db.prepare(`UPDATE memory_notes SET gave_up_at = ? WHERE id = ? AND owner_id = ?`).run(Date.now(), id, ownerId);
 }
 
 export interface WhatsAppMessageRow {

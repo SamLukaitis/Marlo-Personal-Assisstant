@@ -17,6 +17,8 @@ const {
   recordInboundMessage,
   addMemoryNote,
   listDueMemoryReminders,
+  listMemoryRemindersToGiveUpOn,
+  searchReminderNotes,
 } = await import("../db/store.js");
 const { checkDueMemoryReminders } = await import("./memoryReminders.js");
 
@@ -110,5 +112,60 @@ describe("checkDueMemoryReminders", () => {
     await checkDueMemoryReminders(user.id);
 
     expect(sendWhatsAppMessage).not.toHaveBeenCalled();
+  });
+
+  describe("give-up notice", () => {
+    it("notifies the user and marks the reminder given up once it crosses the 24h window unsent", async () => {
+      const user = findOrCreateUserByEmail(uniqueEmail("reminder-giveup"));
+      const phoneNumber = registerActivePhone(user.id);
+      const stale = new Date(Date.now() - 25 * 60 * 60 * 1000).toISOString();
+      addMemoryNote(user.id, "Text Henry about the invoice", stale);
+
+      await checkDueMemoryReminders(user.id);
+
+      expect(sendWhatsAppMessage).toHaveBeenCalledTimes(1);
+      const [phone, text] = vi.mocked(sendWhatsAppMessage).mock.calls[0];
+      expect(phone).toBe(phoneNumber);
+      expect(text).toContain("Text Henry about the invoice");
+      expect(listMemoryRemindersToGiveUpOn(user.id, Date.now())).toHaveLength(0);
+      const [note] = searchReminderNotes(user.id, "Henry");
+      expect(note.gaveUpAt).not.toBeNull();
+    });
+
+    it("does not send a give-up notice for a reminder still inside the window", async () => {
+      const user = findOrCreateUserByEmail(uniqueEmail("reminder-giveup-notyet"));
+      registerActivePhone(user.id);
+      const past = new Date(Date.now() - 60_000).toISOString();
+      addMemoryNote(user.id, "Recently due reminder", past);
+
+      await checkDueMemoryReminders(user.id);
+
+      // Only the ordinary due-reminder send, not a second give-up notice.
+      expect(sendWhatsAppMessage).toHaveBeenCalledTimes(1);
+    });
+
+    it("does not re-send a give-up notice on a later tick", async () => {
+      const user = findOrCreateUserByEmail(uniqueEmail("reminder-giveup-once"));
+      registerActivePhone(user.id);
+      const stale = new Date(Date.now() - 25 * 60 * 60 * 1000).toISOString();
+      addMemoryNote(user.id, "Stuck reminder", stale);
+
+      await checkDueMemoryReminders(user.id);
+      await checkDueMemoryReminders(user.id);
+
+      expect(sendWhatsAppMessage).toHaveBeenCalledTimes(1);
+    });
+
+    it("still marks the reminder given up even if the give-up notice itself fails to send", async () => {
+      const user = findOrCreateUserByEmail(uniqueEmail("reminder-giveup-notice-fails"));
+      registerActivePhone(user.id);
+      const stale = new Date(Date.now() - 25 * 60 * 60 * 1000).toISOString();
+      addMemoryNote(user.id, "Unreachable reminder", stale);
+      vi.mocked(sendWhatsAppMessage).mockRejectedValueOnce(new Error("network error"));
+
+      await checkDueMemoryReminders(user.id);
+
+      expect(listMemoryRemindersToGiveUpOn(user.id, Date.now())).toHaveLength(0);
+    });
   });
 });
