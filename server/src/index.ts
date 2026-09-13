@@ -161,6 +161,64 @@ below.</p>
 </html>`);
 });
 
+// Static terms of service page, alongside /privacy above — also required for Meta's App Review
+// submission (whatsapp_business_messaging permission).
+app.get("/terms", (_req, res) => {
+  res.type("html").send(`<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Terms of Service — Marlowe</title>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; max-width: 700px; margin: 40px auto; padding: 0 20px; line-height: 1.6; color: #1a1a1a; }
+  h1 { font-size: 1.5rem; }
+  h2 { font-size: 1.1rem; margin-top: 2rem; }
+  footer { margin-top: 3rem; color: #666; font-size: 0.9rem; }
+</style>
+</head>
+<body>
+<h1>Terms of Service — Marlowe</h1>
+<p>Marlowe is a private, invite-only personal assistant operated by Posidonia Environmental
+Services Ltd. By using Marlowe, an invited user agrees to these terms.</p>
+
+<h2>Access</h2>
+<p>Marlowe is not available to the public. Access is by invitation only, at the operator's
+discretion, and may be withdrawn at any time.</p>
+
+<h2>Acceptable use</h2>
+<p>Marlowe is provided for personal, non-commercial use by its invited users. Users must not use
+it for unlawful purposes, to send unsolicited messages to others, or to attempt to access
+another user's data or account.</p>
+
+<h2>Your data</h2>
+<p>See the <a href="/privacy">Privacy Policy</a> for what data Marlowe accesses and how it's
+used.</p>
+
+<h2>No warranty</h2>
+<p>Marlowe is provided "as is," without warranty of any kind. It is an assistant tool and may
+make mistakes — users should verify anything important (e.g. dates, amounts, sent messages)
+before relying on it.</p>
+
+<h2>Limitation of liability</h2>
+<p>To the extent permitted by law, Posidonia Environmental Services Ltd is not liable for any
+indirect, incidental, or consequential loss arising from use of Marlowe.</p>
+
+<h2>Changes</h2>
+<p>These terms may be updated from time to time. Continued use after a change means acceptance
+of the updated terms.</p>
+
+<h2>Governing law</h2>
+<p>These terms are governed by the laws of England and Wales.</p>
+
+<h2>Contact</h2>
+<p>${process.env.PRIVACY_CONTACT_EMAIL ?? "posidoniaenvironmental@gmail.com"}</p>
+
+<footer>Last updated 2026-09-13.</footer>
+</body>
+</html>`);
+});
+
 // Serve the built React client from the same process/port in production, so
 // Railway (or any single-service host) only needs to run this one app — no
 // separate static host, no cross-origin config. Falls back to index.html for
