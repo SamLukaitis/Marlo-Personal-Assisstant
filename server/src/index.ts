@@ -111,6 +111,56 @@ app.use("/api/portal", requireAdmin, portalRoutes);
 
 app.get("/health", (_req, res) => res.json({ ok: true }));
 
+// Static privacy policy page, required by Meta's WhatsApp Business API setup (App Settings /
+// App Review). Marlowe is an invite-only personal assistant for a small, known set of users —
+// this describes what it actually does rather than a boilerplate SaaS policy.
+app.get("/privacy", (_req, res) => {
+  res.type("html").send(`<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Privacy Policy — Marlowe</title>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; max-width: 700px; margin: 40px auto; padding: 0 20px; line-height: 1.6; color: #1a1a1a; }
+  h1 { font-size: 1.5rem; }
+  h2 { font-size: 1.1rem; margin-top: 2rem; }
+  footer { margin-top: 3rem; color: #666; font-size: 0.9rem; }
+</style>
+</head>
+<body>
+<h1>Privacy Policy — Marlowe</h1>
+<p>Marlowe is a private, invite-only personal assistant. It is not available to the public —
+access is limited to a small number of individually invited users.</p>
+
+<h2>What data Marlowe accesses</h2>
+<p>Depending on which integrations an invited user connects, Marlowe may access: Gmail/Outlook
+email, Google/Microsoft calendar events, Google Drive/OneDrive/Teams files, WhatsApp messages
+sent to the assistant's number, documents a user uploads or sends, and location check-ins a
+user opts to send.</p>
+
+<h2>How it's used</h2>
+<p>This data is used only to operate the assistant for the user who connected it — for example,
+summarizing email, answering questions about a document, or replying to a WhatsApp message.
+Message content is sent to Anthropic's Claude API to generate responses, and to Meta's WhatsApp
+Cloud API to send and receive WhatsApp messages. Data is not sold, shared with advertisers, or
+used for any purpose beyond operating the assistant for its invited users.</p>
+
+<h2>Storage</h2>
+<p>Data is stored on Marlowe's own server infrastructure, accessible only to its operator.</p>
+
+<h2>Deletion</h2>
+<p>An invited user can request their data be deleted at any time by contacting the address
+below.</p>
+
+<h2>Contact</h2>
+<p>${process.env.PRIVACY_CONTACT_EMAIL ?? "posidoniaenvironmental@gmail.com"}</p>
+
+<footer>Last updated 2026-09-13.</footer>
+</body>
+</html>`);
+});
+
 // Serve the built React client from the same process/port in production, so
 // Railway (or any single-service host) only needs to run this one app — no
 // separate static host, no cross-origin config. Falls back to index.html for
