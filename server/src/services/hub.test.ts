@@ -7,19 +7,27 @@ const mockGoogleListMessages = vi.fn();
 const mockGoogleSendMessage = vi.fn();
 const mockGoogleArchiveMessages = vi.fn();
 const mockGoogleGetMessage = vi.fn();
+const mockGoogleListNewMessages = vi.fn();
 vi.mock("../providers/google.js", () => ({
   googleListMessages: (...args: unknown[]) => mockGoogleListMessages(...args),
   googleSendMessage: (...args: unknown[]) => mockGoogleSendMessage(...args),
   googleArchiveMessages: (...args: unknown[]) => mockGoogleArchiveMessages(...args),
   googleGetMessage: (...args: unknown[]) => mockGoogleGetMessage(...args),
+  googleListNewMessages: (...args: unknown[]) => mockGoogleListNewMessages(...args),
 }));
 vi.mock("../providers/microsoft.js", () => ({}));
 
 const { findOrCreateUserByEmail, upsertAccount, updateAccountPermissions, searchReadEmails } = await import(
   "../db/store.js"
 );
-const { hubListMessages, hubSendMessage, hubArchiveMessages, hubGetMessage, withMessageCache } =
-  await import("./hub.js");
+const {
+  hubListMessages,
+  hubSendMessage,
+  hubArchiveMessages,
+  hubGetMessage,
+  hubListNewMessages,
+  withMessageCache,
+} = await import("./hub.js");
 
 let counter = 0;
 function uniqueEmail(prefix: string): string {
@@ -46,6 +54,7 @@ beforeEach(() => {
   mockGoogleSendMessage.mockReset();
   mockGoogleArchiveMessages.mockReset();
   mockGoogleGetMessage.mockReset();
+  mockGoogleListNewMessages.mockReset();
 });
 
 describe("per-account permission enforcement", () => {
@@ -216,6 +225,100 @@ describe("read_emails cache", () => {
     await hubGetMessage(user.id, account.id, "missing");
 
     expect(searchReadEmails(user.id, "missing")).toHaveLength(0);
+  });
+});
+
+describe("hubListNewMessages", () => {
+  it("passes the baseline limit through and returns whatever the provider gives back", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("hub-new-basic"));
+    const account = upsertAccount(user.id, {
+      provider: "google",
+      email: uniqueEmail("inbox-new-basic"),
+      accessToken: "t",
+      refreshToken: "r",
+      expiryDate: null,
+    });
+    mockGoogleListNewMessages.mockResolvedValueOnce([fakeMessage(account.id, "new-1")]);
+
+    const results = await hubListNewMessages(user.id);
+
+    expect(results).toHaveLength(1);
+    expect(mockGoogleListNewMessages).toHaveBeenCalledWith(
+      expect.objectContaining({ id: account.id }),
+      { limit: 150 }
+    );
+  });
+
+  it("excludes read-restricted accounts", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("hub-new-restricted"));
+    const restricted = upsertAccount(user.id, {
+      provider: "google",
+      email: uniqueEmail("inbox-new-restricted"),
+      accessToken: "t",
+      refreshToken: "r",
+      expiryDate: null,
+    });
+    updateAccountPermissions(user.id, restricted.id, { canRead: false });
+    mockGoogleListNewMessages.mockResolvedValue([]);
+
+    await hubListNewMessages(user.id);
+
+    expect(mockGoogleListNewMessages).not.toHaveBeenCalled();
+  });
+
+  it("persists metadata for whatever it returns, same as hubListMessages", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("hub-new-cache"));
+    const account = upsertAccount(user.id, {
+      provider: "google",
+      email: uniqueEmail("inbox-new-cache"),
+      accessToken: "t",
+      refreshToken: "r",
+      expiryDate: null,
+    });
+    mockGoogleListNewMessages.mockResolvedValueOnce([
+      { ...fakeMessage(account.id, "new-2"), subject: "Package delayed" },
+    ]);
+
+    await hubListNewMessages(user.id);
+
+    expect(searchReadEmails(user.id, "delayed")).toHaveLength(1);
+  });
+
+  it("within one withMessageCache scope, collapses repeated calls for the same owner into a single fetch — regardless of caller", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("hub-new-collapse"));
+    upsertAccount(user.id, {
+      provider: "google",
+      email: uniqueEmail("inbox-new-collapse"),
+      accessToken: "t",
+      refreshToken: "r",
+      expiryDate: null,
+    });
+    mockGoogleListNewMessages.mockResolvedValue([]);
+
+    await withMessageCache(async () => {
+      await hubListNewMessages(user.id);
+      await hubListNewMessages(user.id);
+      await hubListNewMessages(user.id);
+    });
+
+    expect(mockGoogleListNewMessages).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not carry the cache across separate withMessageCache scopes — each tick fetches fresh", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("hub-new-no-leak"));
+    upsertAccount(user.id, {
+      provider: "google",
+      email: uniqueEmail("inbox-new-no-leak"),
+      accessToken: "t",
+      refreshToken: "r",
+      expiryDate: null,
+    });
+    mockGoogleListNewMessages.mockResolvedValue([]);
+
+    await withMessageCache(() => hubListNewMessages(user.id));
+    await withMessageCache(() => hubListNewMessages(user.id));
+
+    expect(mockGoogleListNewMessages).toHaveBeenCalledTimes(2);
   });
 });
 

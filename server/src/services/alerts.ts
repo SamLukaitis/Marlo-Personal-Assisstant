@@ -1,4 +1,4 @@
-import { hubListMessages, AUTOMATED_SENDER_PATTERN } from "./hub.js";
+import { hubListNewMessages, AUTOMATED_SENDER_PATTERN } from "./hub.js";
 import { hasAlerted, markAlerted, getSetting, setSetting, listPhoneNumbersForUser } from "../db/store.js";
 import { isWhatsAppConfigured } from "../providers/whatsapp.js";
 import { sendProactiveMessage } from "./outbound.js";
@@ -26,7 +26,7 @@ async function notify(numbers: string[], text: string): Promise<void> {
 // persisted ledger so the same message never triggers twice across restarts. Runs per-tenant —
 // scheduler.ts loops over every user and calls this once per owner.
 export async function checkForNewImportantMessages(ownerId: number): Promise<void> {
-  const messages = await hubListMessages(ownerId, { limit: 50 });
+  const messages = await hubListNewMessages(ownerId);
   const candidates = messages.filter(
     (m) => m.unread && m.from && !AUTOMATED_SENDER_PATTERN.test(m.from)
   );

@@ -176,6 +176,50 @@ export async function hubListMessages(
   return fetchMessages(accounts, opts);
 }
 
+// A Gmail account with no checkpoint yet (or one Gmail has expired) falls back to a full list —
+// see google.ts's googleListNewMessages — bounded by this one fixed window rather than a
+// per-caller limit, since after that one-time baseline "new" has no limit at all, it's just
+// whatever changed. Matches reconciliation.ts's current window, the widest of the three
+// existing background scans, so no caller loses catch-up coverage on first run.
+const HISTORY_BASELINE_LIMIT = 150;
+
+async function fetchNewMessages(accounts: AccountRow[]): Promise<UnifiedMessage[]> {
+  const results = await Promise.allSettled(
+    accounts.map((a) =>
+      a.provider === "google"
+        ? g.googleListNewMessages(a, { limit: HISTORY_BASELINE_LIMIT })
+        : ms.microsoftListMessages(a, { limit: HISTORY_BASELINE_LIMIT })
+    )
+  );
+  const messages = settleForAccounts(accounts, results).sort((a, b) => (a.receivedAt < b.receivedAt ? 1 : -1));
+  cacheMessageMetadata(accounts, messages);
+  return messages;
+}
+
+// Backs the three background "what's new" scans (alerts.ts, importantEmailAlerts.ts,
+// reconciliation.ts) — none of which pass a search query, and each of which independently
+// decides whether to act on a message via its own ledger (hasAlerted, recon-match:, ...), but
+// all of which mean the same thing by "new": everything since the last time any of them
+// checked. So this deliberately shares ONE fetch — and one checkpoint advance — across all
+// three, keyed without `limit` (unlike hubListMessages's cache key) precisely because the
+// different limits they used to pass were never a real difference in what they wanted, just
+// three different proxies for the same "how far to look" bound on a full list. Only the one-time
+// baseline (no checkpoint yet) actually reads a limit at all — see HISTORY_BASELINE_LIMIT — and
+// that's shared too, not per-caller: whichever of the three runs first within one
+// withMessageCache tick decides it, same as any other cached fetch.
+export async function hubListNewMessages(ownerId: number): Promise<UnifiedMessage[]> {
+  const accounts = listAccounts(ownerId).filter((a) => a.canRead);
+  if (messageCache) {
+    const key = `${ownerId}:new`;
+    const cached = messageCache.get(key);
+    if (cached) return cached;
+    const promise = fetchNewMessages(accounts);
+    messageCache.set(key, promise);
+    return promise;
+  }
+  return fetchNewMessages(accounts);
+}
+
 export async function hubGetMessage(
   ownerId: number,
   accountId: number,

@@ -5,7 +5,7 @@
 // match against) can catch. See
 // docs/superpowers/specs/2026-08-26-important-email-alerts-design.md.
 
-import { hubListMessages, hubGetMessage, AUTOMATED_SENDER_PATTERN } from "./hub.js";
+import { hubListNewMessages, hubGetMessage, AUTOMATED_SENDER_PATTERN } from "./hub.js";
 import {
   hasAlerted,
   markAlerted,
@@ -116,7 +116,7 @@ async function notifyAll(numbers: string[], text: string): Promise<boolean> {
 // category here can trigger two separate WhatsApp messages. Accepted for v1 — the two mechanisms
 // are deliberately decoupled; revisit only if this proves annoying in practice.
 export async function checkForImportantEmails(ownerId: number): Promise<void> {
-  const messages = await hubListMessages(ownerId, { limit: 50 });
+  const messages = await hubListNewMessages(ownerId);
   const candidates = messages.filter(
     (m) => m.unread && m.from && AUTOMATED_SENDER_PATTERN.test(m.from) && !mentionsOwnApp(m)
   );

@@ -347,6 +347,13 @@ if (!accountColumns.includes("can_send")) {
 if (!accountColumns.includes("can_delete")) {
   db.exec(`ALTER TABLE accounts ADD COLUMN can_delete INTEGER NOT NULL DEFAULT 1`);
 }
+// Gmail History API checkpoint (google.ts's incremental list) — NULL means "never baselined",
+// which falls back to a full messages.list and sets this from the mailbox's current historyId.
+// Microsoft accounts never set this; Graph has its own separate delta-query mechanism, not
+// implemented here, so they keep doing a full list every tick, unaffected.
+if (!accountColumns.includes("history_id")) {
+  db.exec(`ALTER TABLE accounts ADD COLUMN history_id TEXT`);
+}
 
 // travel_checkins originally required lat/long (phone GPS check-ins only). Document-derived
 // entries (a boarding pass's arrival city) don't have exact coordinates, so lat/long need to
@@ -433,12 +440,13 @@ if (!hasOwnerId) {
         can_read INTEGER NOT NULL DEFAULT 1,
         can_send INTEGER NOT NULL DEFAULT 1,
         can_delete INTEGER NOT NULL DEFAULT 1,
+        history_id TEXT,
         UNIQUE(owner_id, provider, email)
       );
     `);
     db.prepare(
-      `INSERT INTO accounts_new (id, owner_id, provider, email, access_token, refresh_token, expiry_date, auth_broken, auth_broken_at, can_read, can_send, can_delete)
-       SELECT id, ?, provider, email, access_token, refresh_token, expiry_date, auth_broken, auth_broken_at, can_read, can_send, can_delete FROM accounts`
+      `INSERT INTO accounts_new (id, owner_id, provider, email, access_token, refresh_token, expiry_date, auth_broken, auth_broken_at, can_read, can_send, can_delete, history_id)
+       SELECT id, ?, provider, email, access_token, refresh_token, expiry_date, auth_broken, auth_broken_at, can_read, can_send, can_delete, history_id FROM accounts`
     ).run(ownerId);
     db.exec(`DROP TABLE accounts; ALTER TABLE accounts_new RENAME TO accounts;`);
 
@@ -938,6 +946,7 @@ export interface AccountRow {
   canRead: boolean;
   canSend: boolean;
   canDelete: boolean;
+  historyId: string | null;
 }
 
 // ownerId travels on the row itself (not just as a query filter) so code that already has an
@@ -947,7 +956,8 @@ export interface AccountRow {
 const rowSelect = `id, owner_id AS ownerId, provider, email, access_token AS accessToken,
                    refresh_token AS refreshToken, expiry_date AS expiryDate,
                    auth_broken AS authBroken, auth_broken_at AS authBrokenAt,
-                   can_read AS canRead, can_send AS canSend, can_delete AS canDelete`;
+                   can_read AS canRead, can_send AS canSend, can_delete AS canDelete,
+                   history_id AS historyId`;
 
 // Tokens written before encryption was added are still plaintext in the DB. Rather than a
 // one-shot migration script (easy to miss on a host you don't shell into), decrypt lazily and
@@ -1046,6 +1056,18 @@ export function markAccountAuthHealthy(ownerId: number, id: number): void {
   db.prepare(
     `UPDATE accounts SET auth_broken = 0, auth_broken_at = NULL WHERE id = ? AND owner_id = ? AND auth_broken = 1`
   ).run(id, ownerId);
+}
+
+// Written after a full list (baseline) or a successful incremental sync (google.ts) — the
+// checkpoint google.ts's next call starts an incremental fetch from. Passing null explicitly
+// forces the next call back to a full list (used when Gmail reports the stored id has expired,
+// 404/"historyId too old").
+export function setAccountHistoryId(ownerId: number, id: number, historyId: string | null): void {
+  db.prepare(`UPDATE accounts SET history_id = ? WHERE id = ? AND owner_id = ?`).run(
+    historyId,
+    id,
+    ownerId
+  );
 }
 
 // Backs the Settings page's per-inbox Read/Send/Delete toggles. Only the fields present in

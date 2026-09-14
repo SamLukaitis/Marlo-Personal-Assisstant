@@ -12,8 +12,10 @@ vi.mock("../providers/whatsapp.js", async (importOriginal) => {
 });
 
 const mockHubListMessages = vi.fn();
+const mockHubListNewMessages = vi.fn();
 vi.mock("./hub.js", () => ({
   hubListMessages: (...args: unknown[]) => mockHubListMessages(...args),
+  hubListNewMessages: (...args: unknown[]) => mockHubListNewMessages(...args),
 }));
 
 const { sendWhatsAppMessage, sendWhatsAppTemplate, isWhatsAppConfigured } = await import("../providers/whatsapp.js");
@@ -57,6 +59,7 @@ beforeEach(() => {
   vi.mocked(sendWhatsAppTemplate).mockReset();
   vi.mocked(isWhatsAppConfigured).mockReset().mockReturnValue(true);
   mockHubListMessages.mockReset();
+  mockHubListNewMessages.mockReset();
 });
 
 describe("checkDocumentAgainstRecentEmails", () => {
@@ -219,7 +222,7 @@ describe("checkNewEmailsAgainstRecentDocuments", () => {
     });
     saveMatchKeys(user.id, doc.id, { referenceCode: "H9ZZ21" });
 
-    mockHubListMessages.mockResolvedValue([fakeMessage({ id: "m10", subject: "Change to booking H9ZZ21" })]);
+    mockHubListNewMessages.mockResolvedValue([fakeMessage({ id: "m10", subject: "Change to booking H9ZZ21" })]);
 
     await checkNewEmailsAgainstRecentDocuments(user.id);
 
@@ -247,7 +250,7 @@ describe("checkNewEmailsAgainstRecentDocuments", () => {
     // this user entirely — but this reference code deliberately doesn't appear in the message
     // below, so the point of this test (a no-match email still gets its scan key marked) holds.
     saveMatchKeys(user.id, doc.id, { referenceCode: "ZZNOMATCH1" });
-    mockHubListMessages.mockResolvedValue([fakeMessage({ id: "m11", subject: "Nothing relevant here" })]);
+    mockHubListNewMessages.mockResolvedValue([fakeMessage({ id: "m11", subject: "Nothing relevant here" })]);
 
     await checkNewEmailsAgainstRecentDocuments(user.id);
     await checkNewEmailsAgainstRecentDocuments(user.id);
@@ -257,12 +260,12 @@ describe("checkNewEmailsAgainstRecentDocuments", () => {
     // second identical tick doesn't re-notify, covered by the dedup test below with an actual match.
   });
 
-  it("returns without calling hubListMessages when the user has no recent match keys at all", async () => {
+  it("returns without calling hubListNewMessages when the user has no recent match keys at all", async () => {
     const user = findOrCreateUserByEmail(uniqueEmail("email-to-doc-no-keys"));
 
     await checkNewEmailsAgainstRecentDocuments(user.id);
 
-    expect(mockHubListMessages).not.toHaveBeenCalled();
+    expect(mockHubListNewMessages).not.toHaveBeenCalled();
     expect(sendWhatsAppMessage).not.toHaveBeenCalled();
   });
 
@@ -282,10 +285,10 @@ describe("checkNewEmailsAgainstRecentDocuments", () => {
       category: "receipts",
     });
     saveMatchKeys(user.id, doc.id, { referenceCode: "H9ZZ22" });
-    mockHubListMessages.mockResolvedValue([fakeMessage({ id: "m12", subject: "Change to booking H9ZZ22" })]);
+    mockHubListNewMessages.mockResolvedValue([fakeMessage({ id: "m12", subject: "Change to booking H9ZZ22" })]);
 
     await checkNewEmailsAgainstRecentDocuments(user.id);
-    mockHubListMessages.mockResolvedValue([fakeMessage({ id: "m12", subject: "Change to booking H9ZZ22" })]);
+    mockHubListNewMessages.mockResolvedValue([fakeMessage({ id: "m12", subject: "Change to booking H9ZZ22" })]);
     await checkNewEmailsAgainstRecentDocuments(user.id);
 
     expect(sendWhatsAppMessage).toHaveBeenCalledTimes(1);
@@ -307,7 +310,7 @@ describe("checkNewEmailsAgainstRecentDocuments", () => {
       category: "receipts",
     });
     saveMatchKeys(user.id, doc.id, { referenceCode: "H9ZZ23" });
-    mockHubListMessages.mockResolvedValue([fakeMessage({ id: "m13", subject: "Change to booking H9ZZ23" })]);
+    mockHubListNewMessages.mockResolvedValue([fakeMessage({ id: "m13", subject: "Change to booking H9ZZ23" })]);
     vi.mocked(sendWhatsAppMessage).mockRejectedValue(new Error("network down"));
 
     await checkNewEmailsAgainstRecentDocuments(user.id);
@@ -323,7 +326,7 @@ describe("checkNewEmailsAgainstRecentDocuments", () => {
     // Prove the retriability is real, not just an unset flag: a later tick with delivery now
     // succeeding must re-examine this same email and actually deliver the notification.
     vi.mocked(sendWhatsAppMessage).mockReset().mockResolvedValue(undefined);
-    mockHubListMessages.mockResolvedValue([fakeMessage({ id: "m13", subject: "Change to booking H9ZZ23" })]);
+    mockHubListNewMessages.mockResolvedValue([fakeMessage({ id: "m13", subject: "Change to booking H9ZZ23" })]);
 
     await checkNewEmailsAgainstRecentDocuments(user.id);
 
@@ -354,7 +357,7 @@ describe("checkNewEmailsAgainstRecentDocuments", () => {
     const messages = Array.from({ length: 6 }, (_, i) =>
       fakeMessage({ id: `cap-${i}`, subject: `Change to booking OVERFLOWCODE1 (${i})` })
     );
-    mockHubListMessages.mockResolvedValue(messages);
+    mockHubListNewMessages.mockResolvedValue(messages);
 
     await checkNewEmailsAgainstRecentDocuments(user.id);
 
@@ -453,7 +456,13 @@ describe("reconciliation scan depth", () => {
     expect(RECONCILIATION_SCAN_LIMIT).toBe(150);
   });
 
-  it("checkNewEmailsAgainstRecentDocuments asks for the same limit", async () => {
+  // checkNewEmailsAgainstRecentDocuments runs on the scheduler tick and only ever acts on
+  // messages it hasn't scanned before (its own unscanned filter) — genuinely "what's new since
+  // last check", unlike checkDocumentAgainstRecentEmails above (which needs the full current
+  // window right now, checking one just-saved document against mail that could have arrived any
+  // time within it). So it shares hub.ts's incremental hubListNewMessages instead, which takes
+  // no limit at all — see hub.ts's HISTORY_BASELINE_LIMIT comment for why.
+  it("checkNewEmailsAgainstRecentDocuments uses the incremental hubListNewMessages, not a fixed-limit list", async () => {
     const user = findOrCreateUserByEmail(uniqueEmail("scan-depth-email"));
     const phoneNumber = freshPhone();
     addPhoneNumberForUser(user.id, phoneNumber);
@@ -469,10 +478,11 @@ describe("reconciliation scan depth", () => {
       category: "travel",
     });
     saveMatchKeys(user.id, doc.id, { referenceCode: "EFGH5678" });
-    mockHubListMessages.mockResolvedValue([]);
+    mockHubListNewMessages.mockResolvedValue([]);
 
     await checkNewEmailsAgainstRecentDocuments(user.id);
 
-    expect(mockHubListMessages).toHaveBeenCalledWith(user.id, { limit: RECONCILIATION_SCAN_LIMIT });
+    expect(mockHubListNewMessages).toHaveBeenCalledWith(user.id);
+    expect(mockHubListMessages).not.toHaveBeenCalled();
   });
 });

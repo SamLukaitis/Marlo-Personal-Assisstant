@@ -11,13 +11,13 @@ vi.mock("../providers/whatsapp.js", async (importOriginal) => {
   };
 });
 
-const mockHubListMessages = vi.fn();
+const mockHubListNewMessages = vi.fn();
 const mockHubGetMessage = vi.fn();
 vi.mock("./hub.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./hub.js")>();
   return {
     ...actual,
-    hubListMessages: (...args: unknown[]) => mockHubListMessages(...args),
+    hubListNewMessages: (...args: unknown[]) => mockHubListNewMessages(...args),
     hubGetMessage: (...args: unknown[]) => mockHubGetMessage(...args),
   };
 });
@@ -88,7 +88,7 @@ function fakeMessage(
 }
 
 async function baseline(ownerId: number) {
-  mockHubListMessages.mockResolvedValueOnce([]);
+  mockHubListNewMessages.mockResolvedValueOnce([]);
   await checkForImportantEmails(ownerId);
 }
 
@@ -96,7 +96,7 @@ beforeEach(() => {
   vi.mocked(sendWhatsAppMessage).mockReset();
   vi.mocked(sendWhatsAppTemplate).mockReset();
   vi.mocked(isWhatsAppConfigured).mockReset().mockReturnValue(true);
-  mockHubListMessages.mockReset();
+  mockHubListNewMessages.mockReset();
   mockHubGetMessage.mockReset();
   mockClassify.mockReset().mockResolvedValue(new Map());
 });
@@ -104,7 +104,7 @@ beforeEach(() => {
 describe("checkForImportantEmails", () => {
   it("baselines the existing inbox on first run without classifying or notifying", async () => {
     const user = findOrCreateUserByEmail(uniqueEmail("baseline"));
-    mockHubListMessages.mockResolvedValueOnce([fakeMessage({ id: "old-1" })]);
+    mockHubListNewMessages.mockResolvedValueOnce([fakeMessage({ id: "old-1" })]);
 
     await checkForImportantEmails(user.id);
 
@@ -118,7 +118,7 @@ describe("checkForImportantEmails", () => {
     registerActivePhone(user.id);
     await baseline(user.id);
 
-    mockHubListMessages.mockResolvedValueOnce([
+    mockHubListNewMessages.mockResolvedValueOnce([
       fakeMessage({ id: "read", unread: false, from: "no-reply@delta.com" }),
       fakeMessage({ id: "real-person", unread: true, from: "jane@example.com" }),
       fakeMessage({ id: "candidate", unread: true, from: "no-reply@delta.com", subject: "Flight change" }),
@@ -142,7 +142,7 @@ describe("checkForImportantEmails", () => {
       registerActivePhone(user.id);
       await baseline(user.id);
 
-      mockHubListMessages.mockResolvedValueOnce([
+      mockHubListNewMessages.mockResolvedValueOnce([
         fakeMessage({
           id: "own-app-1",
           from: "no-reply@accounts.google.com",
@@ -170,7 +170,7 @@ describe("checkForImportantEmails", () => {
     const phone = registerActivePhone(user.id);
     await baseline(user.id);
 
-    mockHubListMessages.mockResolvedValueOnce([
+    mockHubListNewMessages.mockResolvedValueOnce([
       fakeMessage({ id: "flight-1", subject: "Your flight changed" }),
     ]);
     mockClassify.mockResolvedValueOnce(
@@ -193,7 +193,7 @@ describe("checkForImportantEmails", () => {
     const phone = registerActivePhone(user.id);
     await baseline(user.id);
 
-    mockHubListMessages.mockResolvedValue([fakeMessage({ id: "flight-2" })]);
+    mockHubListNewMessages.mockResolvedValue([fakeMessage({ id: "flight-2" })]);
     mockClassify.mockResolvedValue(new Map([[0, { category: "flight_change", summary: "" }]]));
 
     await checkForImportantEmails(user.id);
@@ -208,7 +208,7 @@ describe("checkForImportantEmails", () => {
     registerActivePhone(user.id);
     await baseline(user.id);
 
-    mockHubListMessages.mockResolvedValue([fakeMessage({ id: "boring-1" })]);
+    mockHubListNewMessages.mockResolvedValue([fakeMessage({ id: "boring-1" })]);
     mockClassify.mockResolvedValue(new Map());
 
     await checkForImportantEmails(user.id);
@@ -223,7 +223,7 @@ describe("checkForImportantEmails", () => {
     registerActivePhone(user.id);
     await baseline(user.id);
 
-    mockHubListMessages.mockResolvedValueOnce([fakeMessage({ id: "err-1" })]);
+    mockHubListNewMessages.mockResolvedValueOnce([fakeMessage({ id: "err-1" })]);
     mockClassify.mockRejectedValueOnce(new Error("API down"));
 
     await checkForImportantEmails(user.id);
@@ -238,7 +238,7 @@ describe("checkForImportantEmails", () => {
     const phone = registerActivePhone(user.id);
     await baseline(user.id);
 
-    mockHubListMessages.mockResolvedValueOnce([fakeMessage({ id: "fail-1" })]);
+    mockHubListNewMessages.mockResolvedValueOnce([fakeMessage({ id: "fail-1" })]);
     mockClassify.mockResolvedValueOnce(new Map([[0, { category: "invoice_due", summary: "" }]]));
     vi.mocked(sendWhatsAppMessage).mockRejectedValueOnce(new Error("network down"));
 
@@ -251,7 +251,7 @@ describe("checkForImportantEmails", () => {
     const user = findOrCreateUserByEmail(uniqueEmail("not-configured"));
     await baseline(user.id);
 
-    mockHubListMessages.mockResolvedValueOnce([fakeMessage({ id: "noconfig-1" })]);
+    mockHubListNewMessages.mockResolvedValueOnce([fakeMessage({ id: "noconfig-1" })]);
     mockClassify.mockResolvedValueOnce(new Map([[0, { category: "invoice_due", summary: "" }]]));
     vi.mocked(isWhatsAppConfigured).mockReturnValue(false);
 
@@ -265,7 +265,7 @@ describe("checkForImportantEmails", () => {
     const user = findOrCreateUserByEmail(uniqueEmail("no-numbers"));
     await baseline(user.id);
 
-    mockHubListMessages.mockResolvedValueOnce([fakeMessage({ id: "nonum-1" })]);
+    mockHubListNewMessages.mockResolvedValueOnce([fakeMessage({ id: "nonum-1" })]);
     mockClassify.mockResolvedValueOnce(new Map([[0, { category: "invoice_due", summary: "" }]]));
 
     await checkForImportantEmails(user.id);
@@ -279,7 +279,7 @@ describe("checkForImportantEmails", () => {
     registerActivePhone(user.id);
     await baseline(user.id);
 
-    mockHubListMessages.mockResolvedValueOnce([
+    mockHubListNewMessages.mockResolvedValueOnce([
       fakeMessage({ id: "flight-entity", subject: "Your flight changed", from: "no-reply@delta.com" }),
     ]);
     mockClassify.mockResolvedValueOnce(
@@ -306,7 +306,7 @@ describe("checkForImportantEmails", () => {
     registerActivePhone(user.id);
     await baseline(user.id);
 
-    mockHubListMessages.mockResolvedValueOnce([fakeMessage({ id: "fail-entity" })]);
+    mockHubListNewMessages.mockResolvedValueOnce([fakeMessage({ id: "fail-entity" })]);
     mockClassify.mockResolvedValueOnce(new Map([[0, { category: "invoice_due", summary: "" }]]));
     vi.mocked(sendWhatsAppMessage).mockRejectedValueOnce(new Error("network down"));
 
@@ -324,7 +324,7 @@ describe("checkForImportantEmails", () => {
     const messages = Array.from({ length: 6 }, (_, i) =>
       fakeMessage({ id: `cap-${i}`, subject: `Notice ${i}` })
     );
-    mockHubListMessages.mockResolvedValueOnce(messages);
+    mockHubListNewMessages.mockResolvedValueOnce(messages);
     const classified = new Map<number, { category: "invoice_due"; summary: string }>();
     for (let i = 0; i < 6; i++) classified.set(i, { category: "invoice_due", summary: "" });
     mockClassify.mockResolvedValueOnce(classified);
@@ -348,7 +348,7 @@ describe("checkForImportantEmails — invoice forward offer", () => {
     setXeroForwardingEmail(user.id, "abc123@bills.xero.com");
     await baseline(user.id);
 
-    mockHubListMessages.mockResolvedValueOnce([
+    mockHubListNewMessages.mockResolvedValueOnce([
       fakeMessage({ id: "inv-1", subject: "Invoice from Acme" }),
     ]);
     mockClassify.mockResolvedValueOnce(new Map([[0, { category: "invoice_due", summary: "" }]]));
@@ -372,7 +372,7 @@ describe("checkForImportantEmails — invoice forward offer", () => {
     registerActivePhone(user.id);
     await baseline(user.id);
 
-    mockHubListMessages.mockResolvedValueOnce([fakeMessage({ id: "inv-2" })]);
+    mockHubListNewMessages.mockResolvedValueOnce([fakeMessage({ id: "inv-2" })]);
     mockClassify.mockResolvedValueOnce(new Map([[0, { category: "invoice_due", summary: "" }]]));
 
     await checkForImportantEmails(user.id);
@@ -389,7 +389,7 @@ describe("checkForImportantEmails — invoice forward offer", () => {
     setXeroForwardingEmail(user.id, "abc123@bills.xero.com");
     await baseline(user.id);
 
-    mockHubListMessages.mockResolvedValueOnce([fakeMessage({ id: "inv-3" })]);
+    mockHubListNewMessages.mockResolvedValueOnce([fakeMessage({ id: "inv-3" })]);
     mockClassify.mockResolvedValueOnce(new Map([[0, { category: "invoice_due", summary: "" }]]));
     mockHubGetMessage.mockResolvedValueOnce({ attachments: [] });
 
@@ -408,7 +408,7 @@ describe("checkForImportantEmails — invoice forward offer", () => {
     setXeroForwardingEmail(user.id, "abc123@bills.xero.com");
     await baseline(user.id);
 
-    mockHubListMessages.mockResolvedValueOnce([fakeMessage({ id: "inv-text", subject: "Your receipt" })]);
+    mockHubListNewMessages.mockResolvedValueOnce([fakeMessage({ id: "inv-text", subject: "Your receipt" })]);
     mockClassify.mockResolvedValueOnce(new Map([[0, { category: "invoice_due", summary: "" }]]));
     mockHubGetMessage.mockResolvedValueOnce({ attachments: [], body: "Thanks for your payment of £22.80." });
 
@@ -425,7 +425,7 @@ describe("checkForImportantEmails — invoice forward offer", () => {
     setXeroForwardingEmail(user.id, "abc123@bills.xero.com");
     await baseline(user.id);
 
-    mockHubListMessages.mockResolvedValueOnce([
+    mockHubListNewMessages.mockResolvedValueOnce([
       fakeMessage({ id: "inv-a", subject: "Invoice A" }),
       fakeMessage({ id: "inv-b", subject: "Invoice B" }),
     ]);
@@ -453,7 +453,7 @@ describe("checkForImportantEmails — invoice forward offer", () => {
     setXeroForwardingEmail(user.id, "abc123@bills.xero.com");
     await baseline(user.id);
 
-    mockHubListMessages.mockResolvedValueOnce([fakeMessage({ id: "inv-4" })]);
+    mockHubListNewMessages.mockResolvedValueOnce([fakeMessage({ id: "inv-4" })]);
     mockClassify.mockResolvedValueOnce(new Map([[0, { category: "invoice_due", summary: "" }]]));
     mockHubGetMessage.mockResolvedValueOnce({
       attachments: [{ id: "att-1", filename: "invoice.pdf", mimeType: "application/pdf", size: 100 }],
