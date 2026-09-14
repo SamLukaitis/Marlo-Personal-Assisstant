@@ -3,18 +3,14 @@
 // ask_briefing_content — see docs/superpowers/specs/2026-08-28-whatsapp-onboarding-redesign-design.md)
 // can route a real request straight through ordinary chat handling without whatsappRoutes.ts and
 // postConnectSetup.ts importing each other.
-import {
-  getWhatsAppHistory,
-  appendWhatsAppMessage,
-} from "../db/store.js";
-import { runAssistantChat, MAX_HISTORY_MESSAGES } from "../ai/assistant.js";
+import { appendWhatsAppMessage } from "../db/store.js";
 import { ingestWhatsAppLink } from "./documents.js";
 import { findSaveableUrl, type FetchFailureReason } from "./safeLinkFetcher.js";
 import { isHelpTrigger, MARLOWE_HELP_TEXT } from "./whatsappRegistration.js";
-import { sendAssistantReply } from "./whatsappReply.js";
 import { isVersionTrigger, buildVersionText } from "./version.js";
 import { sendWhatsAppMessage } from "../providers/whatsapp.js";
 import { resolveQuotedMessageContext } from "./quotedMessage.js";
+import { queueForAssistant, looksComplete } from "./messageBatching.js";
 
 // Friendly, non-leaky wording per failure reason — never expose the raw fetch/DNS error detail
 // to the end user, just enough for them to know what to do next.
@@ -48,23 +44,15 @@ async function handleLink(ownerId: number, from: string, url: string, messageId:
     return;
   }
 
-  // Same pattern as whatsappRoutes.ts's handleMedia: route through the normal assistant loop so
-  // the saved page's content can actually be acted on/confirmed, not just echoed back.
-  const history = getWhatsAppHistory(from, MAX_HISTORY_MESSAGES).map((m) => ({
-    role: m.role,
-    content: m.content,
-  }));
+  // Same pattern as whatsappRoutes.ts's handleMedia: route through the normal assistant loop (via
+  // the batching queue, so a message sent right after this one still gets folded into the same
+  // reply) so the saved page's content can actually be acted on/confirmed, not just echoed back.
   const docContext =
     `[A link was just sent via WhatsApp, fetched, and saved — no need to save it again, just ` +
     `confirm and/or act on it. Extracted content:\n${result.doc.extractedText}`;
-  if (history.length > 0) {
-    history[history.length - 1] = { role: "user", content: docContext };
-  } else {
-    history.push({ role: "user", content: docContext });
-  }
-
-  const reply = await runAssistantChat(ownerId, history, from);
-  await sendAssistantReply(ownerId, from, reply, messageId);
+  // No caption to judge completeness from — same default as an uncaptioned media attachment,
+  // biased toward waiting since a bare link is often followed by an explanatory message.
+  queueForAssistant(ownerId, from, messageId, docContext, false);
 }
 
 // Folds a dropped WhatsApp pin into the conversation the same way handleLink folds in a saved
@@ -85,13 +73,9 @@ export async function handleLocation(
   const locationText = `[User shared their location: ${latitude}, ${longitude}${label ? ` (${label})` : ""}]`;
   appendWhatsAppMessage(ownerId, from, "user", locationText);
 
-  const history = getWhatsAppHistory(from, MAX_HISTORY_MESSAGES).map((m) => ({
-    role: m.role,
-    content: m.content,
-  }));
-
-  const reply = await runAssistantChat(ownerId, history, from);
-  await sendAssistantReply(ownerId, from, reply, messageId);
+  // The persisted line is already exactly what the model should see, so no override — a dropped
+  // pin is rarely followed by more, so it takes the short debounce path like a complete message.
+  queueForAssistant(ownerId, from, messageId, null, true);
 }
 
 export async function handleText(
@@ -133,24 +117,10 @@ export async function handleText(
     return;
   }
 
-  const history = getWhatsAppHistory(from, MAX_HISTORY_MESSAGES).map((m) => ({
-    role: m.role,
-    content: m.content,
-  }));
-
-  // Same pattern as handleLink/handleMedia's docContext: swap the real resolved content into the
-  // just-appended history line (or push it, if history came back empty) so the model answers from
-  // what the swipe-reply actually pointed at instead of guessing — see quotedMessage.ts.
+  // Same pattern as handleLink/handleMedia's docContext: override the persisted history line with
+  // the real resolved content at flush time so the model answers from what the swipe-reply
+  // actually pointed at instead of guessing — see quotedMessage.ts.
   const quotedContext = resolveQuotedMessageContext(ownerId, quotedMessageId, forwarded);
-  if (quotedContext) {
-    const content = `${quotedContext}\n\n${text}`;
-    if (history.length > 0) {
-      history[history.length - 1] = { role: "user", content };
-    } else {
-      history.push({ role: "user", content });
-    }
-  }
-
-  const reply = await runAssistantChat(ownerId, history, from);
-  await sendAssistantReply(ownerId, from, reply, messageId);
+  const override = quotedContext ? `${quotedContext}\n\n${text}` : null;
+  queueForAssistant(ownerId, from, messageId, override, looksComplete(text));
 }

@@ -12,11 +12,9 @@ import {
 import {
   resolveOwnerByPhone,
   recordInboundMessage,
-  getWhatsAppHistory,
   appendWhatsAppMessage,
   markWamidSeenIfNew,
 } from "../db/store.js";
-import { runAssistantChat, MAX_HISTORY_MESSAGES } from "../ai/assistant.js";
 import { ingestWhatsAppMedia } from "../services/documents.js";
 import { handlePendingRegistration } from "../services/whatsappRegistration.js";
 import {
@@ -24,11 +22,11 @@ import {
   handleFirstTaskReply,
   handleBriefingContentReply,
 } from "../services/postConnectSetup.js";
-import { sendAssistantReply } from "../services/whatsappReply.js";
 import { handlePendingActionReply } from "../services/actionHandlers.js";
 import { maybeUpdateConversationSummary } from "../services/conversationSummary.js";
 import { handleText, handleLocation } from "../services/chatDispatch.js";
 import { resolveQuotedMessageContext } from "../services/quotedMessage.js";
+import { queueForAssistant, looksComplete } from "../services/messageBatching.js";
 
 export const whatsappRoutes = Router();
 
@@ -77,19 +75,17 @@ async function handleMedia(
     wamid: messageId,
   });
 
-  // Route this through the normal assistant/tool loop instead of just echoing the raw
+  // Route this through the normal assistant/tool loop (via the batching queue, so a follow-up
+  // text sent right after gets folded into the same reply) instead of just echoing the raw
   // extraction back. This is what makes a caption like "add this to calendar" actually get
   // acted on in the same turn — previously handleMedia never called the assistant at all, so
   // any request sent alongside the file was silently ignored until the user asked again.
-  const history = getWhatsAppHistory(from, MAX_HISTORY_MESSAGES).map((m) => ({
-    role: m.role,
-    content: m.content,
-  }));
+  //
   // The persisted history line is just "[Sent <caption>]" (kept short so it doesn't bloat every
-  // future call's history) — for this one call, swap in the full extracted text plus the
-  // caption so the model has the actual document content to act on and confirm. A rare case
-  // where this media message was itself a swipe-reply to something else gets that resolved
-  // context prepended — see quotedMessage.ts.
+  // future call's history) — this override swaps in the full extracted text plus the caption so
+  // the model has the actual document content to act on and confirm. A rare case where this media
+  // message was itself a swipe-reply to something else gets that resolved context prepended —
+  // see quotedMessage.ts.
   const quotedContext = resolveQuotedMessageContext(ownerId, quotedMessageId, forwarded);
   const docContext =
     (quotedContext ? `${quotedContext}\n\n` : "") +
@@ -98,14 +94,10 @@ async function handleMedia(
     (caption
       ? `\n\nThe user's message alongside it was: "${caption}"`
       : "\n\nThe user didn't add any message alongside it — just give a short confirmation of what was saved.");
-  if (history.length > 0) {
-    history[history.length - 1] = { role: "user", content: docContext };
-  } else {
-    history.push({ role: "user", content: docContext });
-  }
-
-  const reply = await runAssistantChat(ownerId, history, from);
-  await sendAssistantReply(ownerId, from, reply, messageId);
+  // A caption that reads as a complete thought ("what does this say?") takes the short debounce
+  // path; no caption (or one that trails off) defaults to waiting longer, since a document often
+  // arrives with the explanatory text as its own separate follow-up message.
+  queueForAssistant(ownerId, from, messageId, docContext, !!caption && looksComplete(caption));
 }
 
 export async function handleIncoming(message: IncomingWhatsAppMessage): Promise<void> {
