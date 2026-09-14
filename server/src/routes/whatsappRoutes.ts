@@ -19,6 +19,7 @@ import { ingestWhatsAppMedia } from "../services/documents.js";
 import { handlePendingRegistration } from "../services/whatsappRegistration.js";
 import {
   handlePostConnectSetupReply,
+  handleNameReply,
   handleFirstTaskReply,
   handleBriefingContentReply,
 } from "../services/postConnectSetup.js";
@@ -134,9 +135,11 @@ export async function handleIncoming(message: IncomingWhatsAppMessage): Promise<
     console.error("whatsapp: conversation summary update failed", err)
   );
 
-  // The two blocking free-text setup steps (ask_first_task, ask_briefing_content) — each either
-  // consumes a "skip" and advances the chain, or forwards the message to ordinary chat handling
-  // and advances right after. Checked first since they're the earliest steps in the chain.
+  // The blocking free-text setup steps (ask_name, ask_first_task, ask_briefing_content) — each
+  // either consumes a "skip" (or, for ask_name, saves the name) and advances the chain, or
+  // forwards the message to ordinary chat handling and advances right after. Checked first since
+  // they're the earliest steps in the chain — ask_name is the very first question asked.
+  if (await handleNameReply(ownerId, message)) return;
   if (await handleFirstTaskReply(ownerId, message)) return;
   // A tap answering one of postConnectSetup's yes/no button questions (daily briefing, Teams) —
   // handled entirely there and never reaches the assistant. Returns false for everything else

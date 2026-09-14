@@ -29,7 +29,7 @@ vi.mock("./importantEmailClassifier.js", async (importOriginal) => {
 });
 
 const { sendWhatsAppMessage, sendWhatsAppTemplate, isWhatsAppConfigured } = await import("../providers/whatsapp.js");
-const { findOrCreateUserByEmail, addPhoneNumberForUser, recordInboundMessage, hasAlerted, listEntities } =
+const { findOrCreateUserByEmail, addPhoneNumberForUser, recordInboundMessage, hasAlerted, listEntities, setSetting } =
   await import("../db/store.js");
 const { checkForImportantEmails, formatImportantEmailAlert, IMPORTANT_EMAIL_ENTITY_TYPE } = await import(
   "./importantEmailAlerts.js"
@@ -187,9 +187,26 @@ describe("checkForImportantEmails", () => {
     const [sentTo, text] = vi.mocked(sendWhatsAppMessage).mock.calls[0];
     expect(sentTo).toBe(phone);
     expect(text).toContain("✈️");
-    expect(text).toContain("Your flight changed");
     expect(text).toContain("Your gate moved to B12.");
+    expect(text).not.toContain("@"); // never a raw email address in the visible text
     expect(hasAlerted(user.id, "important-email:1:flight-1")).toBe(true);
+  });
+
+  it("greets the user by their saved name when one is set", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("named"));
+    registerActivePhone(user.id);
+    setSetting(user.id, "user_name", "Sam");
+    await baseline(user.id);
+
+    mockHubListNewMessages.mockResolvedValueOnce([fakeMessage({ id: "flight-named" })]);
+    mockClassify.mockResolvedValueOnce(
+      new Map([[0, { category: "flight_change", summary: "Your gate moved to B12." }]])
+    );
+
+    await checkForImportantEmails(user.id);
+
+    const [, text] = vi.mocked(sendWhatsAppMessage).mock.calls[0];
+    expect(text).toBe("✈️ Sam, Your gate moved to B12.");
   });
 
   it("does not re-classify or re-alert the same message on a later tick", async () => {
@@ -471,41 +488,40 @@ describe("checkForImportantEmails — invoice forward offer", () => {
 });
 
 describe("formatImportantEmailAlert", () => {
-  it("falls back to the raw snippet when no summary is given", () => {
+  it("greets the user by name, leads with the emoji, and shows no email address or robotic label/subject", () => {
     const text = formatImportantEmailAlert(
-      fakeMessage({
-        subject: "Your invoice is due",
-        from: "billing@vendor.com",
-        snippet: "£120 due 1 Sep",
-      }),
-      "invoice_due"
+      fakeMessage({ subject: "Your invoice is due", from: "billing@vendor.com", snippet: "£120 due 1 Sep" }),
+      "invoice_due",
+      "Sam"
     );
-    expect(text).toContain("💳");
-    expect(text).toContain("Invoice/payment due");
-    expect(text).toContain("Your invoice is due");
-    expect(text).toContain("billing@vendor.com");
+    expect(text).toBe("💳 Sam, £120 due 1 Sep");
+    expect(text).not.toContain("@");
+    expect(text).not.toContain("Invoice/payment due");
+    expect(text).not.toContain("Your invoice is due"); // the raw subject line, not the summary/snippet
+  });
+
+  it("omits the greeting entirely when no name is known yet", () => {
+    const text = formatImportantEmailAlert(
+      fakeMessage({ snippet: "£120 due 1 Sep" }),
+      "invoice_due",
+      null
+    );
+    expect(text).toBe("💳 £120 due 1 Sep");
+  });
+
+  it("falls back to the raw snippet when no summary is given", () => {
+    const text = formatImportantEmailAlert(fakeMessage({ snippet: "£120 due 1 Sep" }), "invoice_due", "Sam");
     expect(text).toContain("£120 due 1 Sep");
   });
 
-  it("prefixes the message with the source inbox's email address", () => {
+  it("prefers the model-written summary (which may carry *bold* markers) over the raw snippet", () => {
     const text = formatImportantEmailAlert(
-      fakeMessage({ subject: "Your invoice is due" }),
-      "invoice_due"
-    );
-    expect(text.startsWith("[test@example.com] ")).toBe(true);
-  });
-
-  it("prefers the model-written summary over the raw snippet when given", () => {
-    const text = formatImportantEmailAlert(
-      fakeMessage({
-        subject: "Your invoice is due",
-        from: "billing@vendor.com",
-        snippet: "You&#39;ve got an invoice&hellip; view it here...",
-      }),
+      fakeMessage({ snippet: "You&#39;ve got an invoice&hellip; view it here..." }),
       "invoice_due",
-      "£120 is due on 1 September."
+      "Sam",
+      "*£120* is due on *1 September*."
     );
-    expect(text).toContain("£120 is due on 1 September.");
+    expect(text).toContain("*£120* is due on *1 September*.");
     expect(text).not.toContain("&#39;");
   });
 });

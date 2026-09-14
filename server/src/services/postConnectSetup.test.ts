@@ -17,6 +17,7 @@ const { hubListMessages, hubListEvents } = await import("./hub.js");
 const { handleText } = await import("./chatDispatch.js");
 const {
   startPostConnectSetup,
+  handleNameReply,
   handleFirstTaskReply,
   handlePostConnectSetupReply,
   handleBriefingContentReply,
@@ -53,15 +54,15 @@ beforeEach(() => {
 });
 
 describe("startPostConnectSetup", () => {
-  it("sends the connected confirmation and the first-task question, and sets ask_first_task pending", async () => {
+  it("sends the connected confirmation and the name question, and sets ask_name pending", async () => {
     const ownerId = newOwnerId();
 
     await startPostConnectSetup(ownerId, PHONE);
 
     expect(sendWhatsAppMessage).toHaveBeenCalledWith(PHONE, expect.stringContaining("Connected"));
-    expect(sendWhatsAppMessage).toHaveBeenCalledWith(PHONE, expect.stringContaining("skip"));
+    expect(sendWhatsAppMessage).toHaveBeenCalledWith(PHONE, expect.stringContaining("what should I call you"));
     expect(sendWhatsAppReplyButtons).not.toHaveBeenCalled();
-    expect(getPendingSetup(ownerId)).toBe("ask_first_task");
+    expect(getPendingSetup(ownerId)).toBe("ask_name");
   });
 
   it("includes unread mail / calendar counts in the confirmation as a best-effort fact", async () => {
@@ -81,7 +82,65 @@ describe("startPostConnectSetup", () => {
   });
 });
 
+describe("handleNameReply", () => {
+  it("returns false for a non-text message or when nothing is pending", async () => {
+    const ownerId = newOwnerId();
+    expect(await handleNameReply(ownerId, tap("anything"))).toBe(false);
+    expect(await handleNameReply(ownerId, text("Sam"))).toBe(false); // nothing pending yet
+  });
+
+  it("on a real name: saves it and asks the first-task question next", async () => {
+    const ownerId = newOwnerId();
+    await startPostConnectSetup(ownerId, PHONE);
+    vi.mocked(sendWhatsAppMessage).mockClear();
+
+    const handled = await handleNameReply(ownerId, text("Sam"));
+
+    expect(handled).toBe(true);
+    expect(getSetting(ownerId, "user_name")).toBe("Sam");
+    expect(sendWhatsAppMessage).toHaveBeenCalledWith(PHONE, expect.stringContaining("skip"));
+    expect(getPendingSetup(ownerId)).toBe("ask_first_task");
+  });
+
+  it("trims whitespace around the name", async () => {
+    const ownerId = newOwnerId();
+    await startPostConnectSetup(ownerId, PHONE);
+
+    await handleNameReply(ownerId, text("  Sam  "));
+
+    expect(getSetting(ownerId, "user_name")).toBe("Sam");
+  });
+
+  it("on skip: saves no name, and asks the first-task question next", async () => {
+    const ownerId = newOwnerId();
+    await startPostConnectSetup(ownerId, PHONE);
+
+    const handled = await handleNameReply(ownerId, text("skip"));
+
+    expect(handled).toBe(true);
+    expect(getSetting(ownerId, "user_name")).toBeNull();
+    expect(getPendingSetup(ownerId)).toBe("ask_first_task");
+  });
+
+  it("on a blank/whitespace-only reply: saves no name, still advances", async () => {
+    const ownerId = newOwnerId();
+    await startPostConnectSetup(ownerId, PHONE);
+
+    const handled = await handleNameReply(ownerId, text("   "));
+
+    expect(handled).toBe(true);
+    expect(getSetting(ownerId, "user_name")).toBeNull();
+    expect(getPendingSetup(ownerId)).toBe("ask_first_task");
+  });
+});
+
 describe("handleFirstTaskReply", () => {
+  async function pastName(ownerId: number) {
+    await startPostConnectSetup(ownerId, PHONE);
+    await handleNameReply(ownerId, text("Sam"));
+    vi.mocked(sendWhatsAppMessage).mockClear();
+  }
+
   it("returns false for a non-text message or when nothing is pending", async () => {
     const ownerId = newOwnerId();
     expect(await handleFirstTaskReply(ownerId, tap("anything"))).toBe(false);
@@ -90,8 +149,7 @@ describe("handleFirstTaskReply", () => {
 
   it("on skip: acknowledges without calling the assistant, and asks the briefing question next", async () => {
     const ownerId = newOwnerId();
-    await startPostConnectSetup(ownerId, PHONE);
-    vi.mocked(sendWhatsAppMessage).mockClear();
+    await pastName(ownerId);
 
     const handled = await handleFirstTaskReply(ownerId, text("skip"));
 
@@ -105,7 +163,7 @@ describe("handleFirstTaskReply", () => {
 
   it("on a real request: forwards it to ordinary chat handling, then asks the briefing question right after", async () => {
     const ownerId = newOwnerId();
-    await startPostConnectSetup(ownerId, PHONE);
+    await pastName(ownerId);
 
     const handled = await handleFirstTaskReply(ownerId, text("reply to John's email for me"));
 
@@ -118,6 +176,7 @@ describe("handleFirstTaskReply", () => {
 describe("handlePostConnectSetupReply", () => {
   async function pastFirstTask(ownerId: number) {
     await startPostConnectSetup(ownerId, PHONE);
+    await handleNameReply(ownerId, text("skip"));
     await handleFirstTaskReply(ownerId, text("skip"));
     vi.mocked(sendWhatsAppReplyButtons).mockClear();
     vi.mocked(sendWhatsAppMessage).mockClear();
@@ -198,6 +257,7 @@ describe("handlePostConnectSetupReply", () => {
 describe("handleBriefingContentReply", () => {
   async function atBriefingContent(ownerId: number) {
     await startPostConnectSetup(ownerId, PHONE);
+    await handleNameReply(ownerId, text("skip"));
     await handleFirstTaskReply(ownerId, text("skip"));
     await handlePostConnectSetupReply(ownerId, tap("briefing_yes"));
     vi.mocked(sendWhatsAppReplyButtons).mockClear();

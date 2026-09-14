@@ -403,31 +403,36 @@ describe("matchTier", () => {
 });
 
 describe("buildMatchNotification", () => {
-  it("includes the document title, identifier, and date", () => {
-    const msg = buildMatchNotification("Delta Boarding Pass", { flightNumber: "DL1234", eventDate: "2026-09-12" });
-    expect(msg).toContain("Delta Boarding Pass");
-    expect(msg).toContain("DL1234");
+  it("includes the document title, identifier, and date, with the title and identifier bolded", () => {
+    const msg = buildMatchNotification(
+      "Delta Boarding Pass",
+      { flightNumber: "DL1234", eventDate: "2026-09-12" },
+      null
+    );
+    expect(msg).toContain("*Delta Boarding Pass*");
+    expect(msg).toContain("*DL1234*");
     expect(msg).toContain("2026-09-12");
   });
 
   it("prefers referenceCode over flightNumber when both are present", () => {
-    const msg = buildMatchNotification("Hotel Booking", { referenceCode: "K4X9QP", flightNumber: "DL1234" });
+    const msg = buildMatchNotification("Hotel Booking", { referenceCode: "K4X9QP", flightNumber: "DL1234" }, null);
     expect(msg).toContain("K4X9QP");
     expect(msg).not.toContain("DL1234");
   });
 
   it("omits a stray date segment when eventDate is absent", () => {
-    const msg = buildMatchNotification("Hotel Booking", { referenceCode: "K4X9QP" });
+    const msg = buildMatchNotification("Hotel Booking", { referenceCode: "K4X9QP" }, null);
     expect(msg).not.toContain("undefined");
   });
 
-  it("prefixes the message with the source inbox when an account email is given", () => {
-    const msg = buildMatchNotification("Hotel Booking", { referenceCode: "K4X9QP" }, "jake.work@gmail.com");
-    expect(msg.startsWith("[jake.work@gmail.com] ")).toBe(true);
+  it("greets the user by name when one is known", () => {
+    const msg = buildMatchNotification("Hotel Booking", { referenceCode: "K4X9QP" }, "Sam");
+    expect(msg).toContain("Sam");
   });
 
-  it("omits the inbox prefix when no account email is given", () => {
-    const msg = buildMatchNotification("Hotel Booking", { referenceCode: "K4X9QP" });
+  it("omits the greeting, and never shows a raw email address, when no name is known", () => {
+    const msg = buildMatchNotification("Hotel Booking", { referenceCode: "K4X9QP" }, null);
+    expect(msg).not.toContain("@");
     expect(msg.startsWith("[")).toBe(false);
   });
 });

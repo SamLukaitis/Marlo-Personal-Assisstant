@@ -18,9 +18,8 @@ vi.mock("./hub.js", async (importOriginal) => {
 });
 
 const { sendWhatsAppMessage, isWhatsAppConfigured } = await import("../providers/whatsapp.js");
-const { findOrCreateUserByEmail, addPhoneNumberForUser, recordInboundMessage, hasAlerted } = await import(
-  "../db/store.js"
-);
+const { findOrCreateUserByEmail, addPhoneNumberForUser, recordInboundMessage, hasAlerted, setSetting } =
+  await import("../db/store.js");
 const { checkForNewImportantMessages } = await import("./alerts.js");
 
 let counter = 0;
@@ -128,5 +127,44 @@ describe("checkForNewImportantMessages", () => {
     await checkForNewImportantMessages(user.id);
 
     expect(sendWhatsAppMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it("greets the user by name and shows the sender's display name, never a raw email address", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("alerts-format"));
+    registerActivePhone(user.id);
+    setSetting(user.id, "user_name", "Sam");
+    await baseline(user.id);
+
+    mockHubListNewMessages.mockResolvedValueOnce([
+      fakeMessage({
+        id: "fmt-1",
+        from: '"Jane Doe" <jane@example.com>',
+        subject: "Quick question",
+        snippet: "Are you free Thursday?",
+      }),
+    ]);
+
+    await checkForNewImportantMessages(user.id);
+
+    const [, text] = vi.mocked(sendWhatsAppMessage).mock.calls[0];
+    expect(text).toContain("Sam");
+    expect(text).toContain("Jane Doe");
+    expect(text).not.toContain("@");
+    expect(text).toContain("Quick question");
+    expect(text).toContain("Are you free Thursday?");
+  });
+
+  it("omits the greeting when no name is known yet", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("alerts-format-noname"));
+    registerActivePhone(user.id);
+    await baseline(user.id);
+
+    mockHubListNewMessages.mockResolvedValueOnce([fakeMessage({ id: "fmt-2", from: "jane@example.com" })]);
+
+    await checkForNewImportantMessages(user.id);
+
+    const [, text] = vi.mocked(sendWhatsAppMessage).mock.calls[0];
+    expect(text).not.toContain("@");
+    expect(text).toContain("jane"); // local-part fallback display name
   });
 });

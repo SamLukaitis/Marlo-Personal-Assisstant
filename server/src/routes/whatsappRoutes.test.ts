@@ -40,6 +40,7 @@ vi.mock("../services/whatsappRegistration.js", async () => {
   };
 });
 vi.mock("../services/postConnectSetup.js", () => ({
+  handleNameReply: vi.fn().mockResolvedValue(false),
   handleFirstTaskReply: vi.fn().mockResolvedValue(false),
   handlePostConnectSetupReply: vi.fn().mockResolvedValue(false),
   handleBriefingContentReply: vi.fn().mockResolvedValue(false),
@@ -63,7 +64,7 @@ const { resolveOwnerByPhone, appendWhatsAppMessage, getDocumentByWamid, getWhats
   "../db/store.js"
 );
 const { runAssistantChat } = await import("../ai/assistant.js");
-const { handleFirstTaskReply, handlePostConnectSetupReply, handleBriefingContentReply } = await import(
+const { handleNameReply, handleFirstTaskReply, handlePostConnectSetupReply, handleBriefingContentReply } = await import(
   "../services/postConnectSetup.js"
 );
 const { sendAssistantReply } = await import("../services/whatsappReply.js");
@@ -84,6 +85,7 @@ beforeEach(() => {
   vi.mocked(runAssistantChat).mockClear();
   vi.mocked(resolveOwnerByPhone).mockReturnValue(42);
   vi.mocked(appendWhatsAppMessage).mockClear();
+  vi.mocked(handleNameReply).mockReset().mockResolvedValue(false);
   vi.mocked(handleFirstTaskReply).mockReset().mockResolvedValue(false);
   vi.mocked(handlePostConnectSetupReply).mockReset().mockResolvedValue(false);
   vi.mocked(handleBriefingContentReply).mockReset().mockResolvedValue(false);
@@ -141,6 +143,15 @@ describe("handleIncoming — version trigger", () => {
 });
 
 describe("handleIncoming — blocking free-text setup steps", () => {
+  it("short-circuits entirely when handleNameReply consumes the message", async () => {
+    vi.mocked(handleNameReply).mockResolvedValue(true);
+
+    await handleIncoming({ kind: "text", from: "447900000014", text: "Sam", messageId: "m14" });
+
+    expect(handleNameReply).toHaveBeenCalledWith(42, expect.objectContaining({ text: "Sam" }));
+    expect(runAssistantChat).not.toHaveBeenCalled();
+  });
+
   it("short-circuits entirely when handleFirstTaskReply consumes the message", async () => {
     vi.mocked(handleFirstTaskReply).mockResolvedValue(true);
 

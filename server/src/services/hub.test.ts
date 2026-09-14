@@ -27,6 +27,7 @@ const {
   hubGetMessage,
   hubListNewMessages,
   withMessageCache,
+  senderDisplayName,
 } = await import("./hub.js");
 
 let counter = 0;
@@ -398,5 +399,23 @@ describe("withMessageCache", () => {
     await withMessageCache(() => hubListMessages(user.id, { limit: 50 }));
 
     expect(mockGoogleListMessages).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("senderDisplayName", () => {
+  it("extracts a quoted display name", () => {
+    expect(senderDisplayName('"Jane Doe" <jane@example.com>')).toBe("Jane Doe");
+  });
+
+  it("extracts an unquoted display name", () => {
+    expect(senderDisplayName("Jane Doe <jane@example.com>")).toBe("Jane Doe");
+  });
+
+  it("falls back to the local part of a bare email address", () => {
+    expect(senderDisplayName("no-reply@delta.com")).toBe("no-reply");
+  });
+
+  it("returns a bare display name with no address as-is", () => {
+    expect(senderDisplayName("Jane Doe")).toBe("Jane Doe");
   });
 });

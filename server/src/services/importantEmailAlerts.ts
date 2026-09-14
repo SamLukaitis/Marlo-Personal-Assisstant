@@ -79,16 +79,23 @@ function messageKey(m: UnifiedMessage): string {
   return `important-email:${m.accountId}:${m.id}`;
 }
 
+// No account email, sender address, raw subject, or category label in the visible text — those
+// read as a machine-generated log line, not something a person would send. The classifier's
+// summary (buildClassifyPrompt) is written to already be a complete, natural sentence with key
+// specifics in *bold*, so it's the entire message body; this just adds the emoji and, when known,
+// a name-first greeting ("Sam, ...") so it reads like a text from someone who knows the user.
 export function formatImportantEmailAlert(
   m: UnifiedMessage,
   category: ImportantEmailCategory,
+  userName: string | null,
   summary?: string
 ): string {
-  const { emoji, label } = CATEGORY_INFO[category];
+  const { emoji } = CATEGORY_INFO[category];
   // Prefer the model's plain-English summary over the raw snippet — the snippet is
   // HTML-entity-encoded and truncated mid-sentence straight from the Gmail/Graph API.
   const body = summary?.trim() || m.snippet;
-  return `[${m.accountEmail}] ${emoji} ${label}: "${m.subject}" from ${m.from}\n${body}`;
+  const greeting = userName ? `${userName}, ` : "";
+  return `${emoji} ${greeting}${body}`;
 }
 
 // Returns whether every registered number actually got the message — callers must only mark a
@@ -170,12 +177,13 @@ export async function checkForImportantEmails(ownerId: number): Promise<void> {
   if (matches.length === 0) return;
 
   const toSend = matches.slice(0, MAX_ALERTS_PER_CHECK);
+  const userName = getSetting(ownerId, "user_name");
   // At most one invoice_due match per tick gets the "reply yes" offer — there's only one pending
   // confirmation slot per owner (see xeroInvoiceConfirmation.ts), by design, not an oversight.
   let offeredInvoiceConfirm = false;
   for (const { m, match } of toSend) {
     const { category, summary } = match;
-    let text = formatImportantEmailAlert(m, category, summary);
+    let text = formatImportantEmailAlert(m, category, userName, summary);
     let confirmable: { accountId: number; messageId: string; subject: string } | null = null;
 
     if (category === "invoice_due" && !offeredInvoiceConfirm && getXeroForwardingEmail(ownerId)) {

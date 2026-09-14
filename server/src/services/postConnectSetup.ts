@@ -1,5 +1,5 @@
-// The setup chain run right after OAuth connects a mailbox: a first-task check, then daily
-// briefing (yes/no + content), then Teams chat search. See
+// The setup chain run right after OAuth connects a mailbox: the user's name, then a first-task
+// check, then daily briefing (yes/no + content), then Teams chat search. See
 // docs/superpowers/specs/2026-08-28-whatsapp-onboarding-redesign-design.md for the full design —
 // this replaces the earlier version of this file, which asked about Schengen tracking
 // unconditionally and stacked the briefing-content question directly behind the Teams question
@@ -48,6 +48,11 @@ function isSkip(text: string): boolean {
 
 async function reply(phone: string, text: string): Promise<void> {
   await sendWhatsAppMessage(phone, text);
+}
+
+async function askName(ownerId: number, phone: string): Promise<void> {
+  await reply(phone, "Before we get started — what should I call you?");
+  setPendingSetup(ownerId, "ask_name");
 }
 
 async function askFirstTask(ownerId: number, phone: string): Promise<void> {
@@ -115,7 +120,28 @@ export async function startPostConnectSetup(ownerId: number, phone: string): Pro
   }
 
   await reply(phone, `*Connected!* ✅ I can see your inbox and your calendar.${fact}`);
+  await askName(ownerId, phone);
+}
+
+// The ask_name step — the very first question in the chain, right after the connected
+// confirmation. Unlike the other free-text steps below (ask_first_task, ask_briefing_content), a
+// name reply is never forwarded to ordinary chat handling — it's not a request, just a name — so
+// this doesn't use advancePastFreeTextStep. Skipping (or a blank reply) leaves no name saved;
+// callers that personalize text (e.g. importantEmailAlerts.ts's alert copy) fall back to an
+// unpersonalized form rather than requiring this.
+export async function handleNameReply(
+  ownerId: number,
+  message: IncomingWhatsAppMessage
+): Promise<boolean> {
+  if (message.kind !== "text") return false;
+  if (getPendingSetup(ownerId) !== "ask_name") return false;
+  const phone = message.from;
+  if (!isSkip(message.text)) {
+    const name = message.text.trim().slice(0, 60);
+    if (name) setSetting(ownerId, "user_name", name);
+  }
   await askFirstTask(ownerId, phone);
+  return true;
 }
 
 // Shared by both free-text steps below: if it's a skip, acknowledge and hand off to `next`

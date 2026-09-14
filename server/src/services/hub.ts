@@ -390,6 +390,18 @@ export async function hubSearchContacts(ownerId: number, query: string, limit = 
 export const AUTOMATED_SENDER_PATTERN =
   /no-?reply|notifications?@|newsletter|updates?@|do-?not-?reply|automated|mailer-daemon/i;
 
+// Extracts a human-readable name from a raw From header — "Jane Doe <jane@x.com>",
+// "jane@x.com", or a bare display name with no address at all. Alert text sent to the user
+// should read like a person wrote it, never show a raw email address.
+export function senderDisplayName(from: string): string {
+  const quoted = from.match(/^"([^"]+)"\s*<[^>]+>$/);
+  if (quoted) return quoted[1].trim();
+  const bare = from.match(/^([^<]+)<[^>]+>$/);
+  if (bare) return bare[1].trim();
+  const at = from.indexOf("@");
+  return at > 0 ? from.slice(0, at) : from.trim();
+}
+
 export async function hubFlaggedMessages(ownerId: number, daysThreshold = 3): Promise<UnifiedMessage[]> {
   const all = await hubListMessages(ownerId, { limit: 100 });
   const cutoff = Date.now() - daysThreshold * 24 * 60 * 60 * 1000;
