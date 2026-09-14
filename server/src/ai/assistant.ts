@@ -22,6 +22,7 @@ import {
   findOrCreateEntity,
   appendEntityNote,
   findEntityByName,
+  searchReadEmails,
   getDocument,
   getEnabledTools,
   setToolEnabled,
@@ -49,6 +50,11 @@ import {
   clearPendingInvoiceForward,
 } from "../services/xeroInvoiceConfirmation.js";
 import { ingestEmailAttachment, ingestEmailBodyReceipt, sendSavedDocumentFile } from "../services/documents.js";
+import {
+  IMPORTANT_EMAIL_ENTITY_TYPE,
+  type ImportantEmailEntityData,
+} from "../services/importantEmailAlerts.js";
+import { IMPORTANT_EMAIL_CATEGORIES } from "../services/importantEmailClassifier.js";
 import {
   hubListMessages,
   hubGetMessage,
@@ -508,6 +514,35 @@ const ALWAYS_ON_TOOLS: Anthropic.ToolUnion[] = [
         },
       },
       required: ["entity_name"],
+    },
+  },
+  {
+    name: "list_flagged_emails",
+    description:
+      "List emails already flagged as important by the background scan (flight changes, reservations, invoices/payments due, government mail, delivery notices, security alerts, subscription renewals, refund/dispute updates) — the real classified subject/sender/summary, stored durably when the alert was sent. Call this before answering a question about an email you (or an earlier alert) already flagged, instead of relying on your own memory of a past reply or re-searching from scratch.",
+    input_schema: {
+      type: "object",
+      properties: {
+        category: {
+          type: "string",
+          enum: [...IMPORTANT_EMAIL_CATEGORIES],
+          description: "Optional — narrow to one category",
+        },
+        limit: { type: "number", description: "Max emails to return, default 20, newest first" },
+      },
+    },
+  },
+  {
+    name: "search_read_emails",
+    description:
+      "Search every email you've previously listed or opened across connected accounts — subject, sender, and (if you actually opened it with get_message) the full body. Durable: still finds it even after it's aged out of chat history, or been archived/deleted from the mailbox. Call this before restating any specific detail (a date, amount, name, reference number) about an email discussed earlier, instead of relying on your own memory of a past reply. If it comes back empty, the email may never have been listed/opened yet — try search_messages/get_message instead of assuming it doesn't exist.",
+    input_schema: {
+      type: "object",
+      properties: {
+        query: { type: "string", description: "Keyword(s) to search for" },
+        limit: { type: "number", description: "Max results, default 10" },
+      },
+      required: ["query"],
     },
   },
   {
@@ -1066,6 +1101,20 @@ export async function runTool(
       if (!entity) return { error: `no entity found matching "${entityName}"` };
       return { entity, related: getRelatedEntities(ownerId, { type: "entity", id: entity.id }) };
     }
+    case "list_flagged_emails": {
+      const category = input.category as ImportantEmailEntityData["category"] | undefined;
+      const limit = (input.limit as number | undefined) ?? 20;
+      return listEntities<ImportantEmailEntityData>(ownerId, { type: IMPORTANT_EMAIL_ENTITY_TYPE })
+        .filter((e) => !category || e.data.category === category)
+        .slice(0, limit)
+        .map((e) => e.data);
+    }
+    case "search_read_emails":
+      return searchReadEmails(
+        ownerId,
+        input.query as string,
+        (input.limit as number | undefined) ?? 10
+      );
     case "flag_unmet_request":
       addUnmetRequest(ownerId, input.summary as string, phone ? "whatsapp" : "web");
       return { ok: true };
@@ -1395,6 +1444,8 @@ function buildRules(enabled: Set<ToolKey>): string {
     "- Always look up real data with your tools before answering questions about email, calendar, or files — never invent contents.",
     "- ask_user_choice renders real tappable buttons/a list on WhatsApp instead of asking in prose — use it for confirm-before-destructive-action and for disambiguating between candidates (see the archive and search_contacts rules below for the two concrete cases). Call it alone, as the only tool call in your turn.",
     "- Never state that something does NOT exist (no booking, no email, nothing on file, calendar is empty, etc.) without calling the relevant tool in THIS turn first. You do not retain tool results from earlier turns — only your own past reply text — so a memory of having checked before is not verification. If a user pushes back on something you said, that is a signal to re-run the tool, not to just apologize or reverse yourself from reasoning alone.",
+    "- Before answering a question about a flight change, reservation, invoice/payment due, government mail, delivery, security alert, subscription renewal, or refund/dispute you or an earlier proactive alert may have flagged, call list_flagged_emails first — it's the real stored record (exact subject, sender, summary), not your memory of a past reply. Never state a specific value (a date, an amount, a confirmation code) about a previously flagged email from recollection alone; get it from list_flagged_emails or, if it isn't there, from search_messages/get_message.",
+    "- More generally, for ANY email discussed earlier in this conversation (flagged or not), call search_read_emails before restating a specific detail from it — it durably holds every email you've ever listed or opened, so it survives even after the conversation itself has moved on and your only other record is your own paraphrase. If it comes back empty, the email may simply never have been listed/opened yet — fall back to search_messages/get_message rather than assuming the detail doesn't exist.",
     "- After re-running a tool in response to pushback, check what it actually returned before deciding how to respond: if it confirms your original answer was correct, just say so plainly (e.g. \"confirmed — it's still Feb 8\") and move on. Don't apologize or claim you were reciting/guessing/pulling from context you shouldn't have relied on when the tool result backs up what you said — that's confusing and untrue when the original answer was grounded. Reserve the apology for when re-checking actually turns up something different from what you first said.",
     "- list_bookings/list_expenses only cover confirmations and receipts that were already saved as a document AND successfully extracted into a structured record — they do NOT search email. Before telling the user there's no hotel, flight, car rental, invoice, or payment due, also check search_messages/list_recent_messages: the confirmation or invoice email may exist even though nothing has been extracted into list_bookings/list_expenses yet. An empty list_bookings/list_expenses result on its own is not enough to say something doesn't exist.",
     "- For a broad or topic-level search (a country, region, or trip name — e.g. \"South America\", \"my Lisbon trip\"), call search_messages multiple times with different concrete sub-terms — city/place names, likely vendor names (airlines, hotels, booking sites), reference codes you already know — before concluding nothing was found. A single broad query is not sufficient; a broad topic phrase rarely appears verbatim in a real subject line.",

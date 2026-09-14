@@ -2,7 +2,7 @@
 // docs/superpowers/specs/2026-08-24-document-email-cross-referencing-design.md for the full
 // design and why this stays entirely deterministic in v1 (no LLM call on the email side at all).
 
-import { hubListMessages } from "./hub.js";
+import { hubListMessages, hubListNewMessages } from "./hub.js";
 import { isWhatsAppConfigured } from "../providers/whatsapp.js";
 import { sendProactiveMessage } from "./outbound.js";
 import { hasAlerted, markAlerted, listPhoneNumbersForUser, listRecentMatchKeys } from "../db/store.js";
@@ -130,7 +130,12 @@ export async function checkNewEmailsAgainstRecentDocuments(ownerId: number): Pro
 
   let messages: UnifiedMessage[];
   try {
-    messages = await hubListMessages(ownerId, { limit: RECONCILIATION_SCAN_LIMIT });
+    // Unlike checkDocumentAgainstRecentEmails above (which needs the CURRENT recent-mail window,
+    // since it's checking one just-saved document against mail that may have arrived any time in
+    // that window), this runs on the scheduler tick and already only acts on messages it hasn't
+    // scanned before (the unscanned filter below) — genuinely "what's new since last check", so
+    // it shares the same incremental fetch as alerts.ts/importantEmailAlerts.ts.
+    messages = await hubListNewMessages(ownerId);
   } catch (err) {
     console.error(`reconciliation: failed to list messages for owner ${ownerId}`, err);
     return;

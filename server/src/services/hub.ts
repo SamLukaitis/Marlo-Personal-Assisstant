@@ -3,6 +3,7 @@ import {
   getAccount,
   markAccountAuthBroken,
   markAccountAuthHealthy,
+  upsertReadEmail,
   type AccountRow,
 } from "../db/store.js";
 import * as g from "../providers/google.js";
@@ -119,6 +120,20 @@ export function withMessageCache<T>(fn: () => Promise<T>): Promise<T> {
   });
 }
 
+// Every message this returns already crossed the wire (Gmail/Outlook's list call includes
+// subject/from/snippet/date at no extra cost — see google.ts's messages.get(format: "metadata")
+// comment) so persisting it here is free: no extra provider call, no LLM call. This is what lets
+// a later question about ANY previously listed/searched email (not just ones the classifier
+// flagged as important) be answered from real stored data instead of the model's memory of its
+// own past reply — see search_read_emails in assistant.ts. Deliberately unconditional (every
+// caller of hubListMessages: search_messages, list_recent_messages, the background scans) rather
+// than gated to one code path, so nothing needs to remember to opt in.
+function cacheMessageMetadata(accounts: AccountRow[], messages: UnifiedMessage[]): void {
+  const ownerId = accounts[0]?.ownerId;
+  if (ownerId === undefined) return;
+  for (const m of messages) upsertReadEmail(ownerId, m);
+}
+
 async function fetchMessages(
   accounts: AccountRow[],
   opts: { query?: string; limit?: number }
@@ -130,7 +145,9 @@ async function fetchMessages(
         : ms.microsoftListMessages(a, opts)
     )
   );
-  return settleForAccounts(accounts, results).sort((a, b) => (a.receivedAt < b.receivedAt ? 1 : -1));
+  const messages = settleForAccounts(accounts, results).sort((a, b) => (a.receivedAt < b.receivedAt ? 1 : -1));
+  cacheMessageMetadata(accounts, messages);
+  return messages;
 }
 
 export async function hubListMessages(
@@ -159,6 +176,50 @@ export async function hubListMessages(
   return fetchMessages(accounts, opts);
 }
 
+// A Gmail account with no checkpoint yet (or one Gmail has expired) falls back to a full list —
+// see google.ts's googleListNewMessages — bounded by this one fixed window rather than a
+// per-caller limit, since after that one-time baseline "new" has no limit at all, it's just
+// whatever changed. Matches reconciliation.ts's current window, the widest of the three
+// existing background scans, so no caller loses catch-up coverage on first run.
+const HISTORY_BASELINE_LIMIT = 150;
+
+async function fetchNewMessages(accounts: AccountRow[]): Promise<UnifiedMessage[]> {
+  const results = await Promise.allSettled(
+    accounts.map((a) =>
+      a.provider === "google"
+        ? g.googleListNewMessages(a, { limit: HISTORY_BASELINE_LIMIT })
+        : ms.microsoftListMessages(a, { limit: HISTORY_BASELINE_LIMIT })
+    )
+  );
+  const messages = settleForAccounts(accounts, results).sort((a, b) => (a.receivedAt < b.receivedAt ? 1 : -1));
+  cacheMessageMetadata(accounts, messages);
+  return messages;
+}
+
+// Backs the three background "what's new" scans (alerts.ts, importantEmailAlerts.ts,
+// reconciliation.ts) — none of which pass a search query, and each of which independently
+// decides whether to act on a message via its own ledger (hasAlerted, recon-match:, ...), but
+// all of which mean the same thing by "new": everything since the last time any of them
+// checked. So this deliberately shares ONE fetch — and one checkpoint advance — across all
+// three, keyed without `limit` (unlike hubListMessages's cache key) precisely because the
+// different limits they used to pass were never a real difference in what they wanted, just
+// three different proxies for the same "how far to look" bound on a full list. Only the one-time
+// baseline (no checkpoint yet) actually reads a limit at all — see HISTORY_BASELINE_LIMIT — and
+// that's shared too, not per-caller: whichever of the three runs first within one
+// withMessageCache tick decides it, same as any other cached fetch.
+export async function hubListNewMessages(ownerId: number): Promise<UnifiedMessage[]> {
+  const accounts = listAccounts(ownerId).filter((a) => a.canRead);
+  if (messageCache) {
+    const key = `${ownerId}:new`;
+    const cached = messageCache.get(key);
+    if (cached) return cached;
+    const promise = fetchNewMessages(accounts);
+    messageCache.set(key, promise);
+    return promise;
+  }
+  return fetchNewMessages(accounts);
+}
+
 export async function hubGetMessage(
   ownerId: number,
   accountId: number,
@@ -166,9 +227,15 @@ export async function hubGetMessage(
 ): Promise<UnifiedMessage | null> {
   const account = requireAccount(ownerId, accountId);
   requirePermission(account, "read");
-  return account.provider === "google"
-    ? g.googleGetMessage(account, messageId)
-    : ms.microsoftGetMessage(account, messageId);
+  const message =
+    account.provider === "google"
+      ? await g.googleGetMessage(account, messageId)
+      : await ms.microsoftGetMessage(account, messageId);
+  // Full body, on top of whatever metadata a prior list already cached — every caller (the
+  // assistant's get_message tool, the extract_email_attachment flow, the invoice-attachment
+  // check in importantEmailAlerts.ts, the web UI's message view) gets this for free.
+  if (message) upsertReadEmail(ownerId, message);
+  return message;
 }
 
 export async function hubGetAttachment(

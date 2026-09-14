@@ -2,6 +2,7 @@ import { google, gmail_v1 } from "googleapis";
 import {
   upsertAccount,
   updateAccountTokens,
+  setAccountHistoryId,
   type AccountRow,
 } from "../db/store.js";
 import { mapWithConcurrency } from "../services/concurrency.js";
@@ -201,6 +202,87 @@ export async function googleListMessages(
     const full = await gmail.users.messages.get({
       userId: "me",
       id: m.id!,
+      format: "metadata",
+      metadataHeaders: ["Subject", "From"],
+    });
+    return toUnified(account, full.data);
+  });
+}
+
+function isNotFoundError(err: unknown): boolean {
+  const status = (err as { response?: { status?: number }; code?: unknown })?.response?.status;
+  return status === 404 || (err as { code?: unknown })?.code === 404;
+}
+
+async function baselineAndList(
+  account: AccountRow,
+  gmail: gmail_v1.Gmail,
+  limit: number
+): Promise<UnifiedMessage[]> {
+  // Captured BEFORE the list call, not after — if a message arrives in the gap between this and
+  // the list below, the next incremental sync (starting from this id) will pick it up too. That
+  // means occasionally re-seeing something the baseline list already returned (harmless — every
+  // consumer already dedupes via its own ledger), which is the safe direction to be wrong in;
+  // the unsafe direction (a silent gap) is what capturing it after the list would risk.
+  const profile = await gmail.users.getProfile({ userId: "me" });
+  const messages = await googleListMessages(account, { limit });
+  if (profile.data.historyId) {
+    setAccountHistoryId(account.ownerId, account.id, profile.data.historyId);
+  }
+  return messages;
+}
+
+// Incremental alternative to googleListMessages for "what's new since last time" background
+// scans (alerts.ts, importantEmailAlerts.ts, reconciliation.ts — none of which pass a search
+// query). Gmail's History API (history.list) returns only what changed since a stored
+// checkpoint instead of re-listing and re-fetching the same recent window on every 5-minute
+// tick — see the quota-incident comment on GMAIL_GET_CONCURRENCY above; re-fetching an unread
+// inbox's top 50-150 messages in full, every tick, forever, is the same waste at a smaller
+// scale. Falls back to a full list (and rebaselines) when there's no checkpoint yet (first-ever
+// run) or Gmail reports the stored one has expired (history is only retained ~1 week).
+export async function googleListNewMessages(
+  account: AccountRow,
+  opts: { limit?: number } = {}
+): Promise<UnifiedMessage[]> {
+  const gmail = google.gmail({ version: "v1", auth: authFor(account) });
+  if (!account.historyId) {
+    return baselineAndList(account, gmail, opts.limit ?? 20);
+  }
+
+  const addedIds = new Set<string>();
+  let latestHistoryId = account.historyId;
+  let pageToken: string | undefined;
+  try {
+    do {
+      const res = await gmail.users.history.list({
+        userId: "me",
+        startHistoryId: account.historyId,
+        historyTypes: ["messageAdded"],
+        labelId: "INBOX", // mirrors googleListMessages's default in:inbox scope
+        pageToken,
+      });
+      for (const h of res.data.history ?? []) {
+        for (const added of h.messagesAdded ?? []) {
+          if (added.message?.id) addedIds.add(added.message.id);
+        }
+      }
+      if (res.data.historyId) latestHistoryId = res.data.historyId;
+      pageToken = res.data.nextPageToken ?? undefined;
+    } while (pageToken);
+  } catch (err) {
+    if (isNotFoundError(err)) {
+      return baselineAndList(account, gmail, opts.limit ?? 20);
+    }
+    throw err;
+  }
+
+  setAccountHistoryId(account.ownerId, account.id, latestHistoryId);
+  if (addedIds.size === 0) return [];
+
+  return mapWithConcurrency([...addedIds], GMAIL_GET_CONCURRENCY, async (id) => {
+    const full = await gmail.users.messages.get({
+      userId: "me",
+      id,
       format: "metadata",
       metadataHeaders: ["Subject", "From"],
     });

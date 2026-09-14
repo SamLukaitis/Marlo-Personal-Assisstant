@@ -38,7 +38,9 @@ import {
   linkRecords,
   appendWhatsAppMessage,
   saveEntity,
+  upsertReadEmail,
 } from "../db/store.js";
+import { IMPORTANT_EMAIL_ENTITY_TYPE } from "../services/importantEmailAlerts.js";
 import { getBriefingSettings, saveBriefingSettings, type BriefingSettings } from "../services/briefing.js";
 import { getXeroForwardingEmail } from "../services/xero.js";
 import { setPendingInvoiceForward, getPendingInvoiceForward } from "../services/xeroInvoiceConfirmation.js";
@@ -649,6 +651,169 @@ describe("remember + recall_entity end-to-end", () => {
       "Prefers email over calls",
     ]);
     expect(result.related.map((e) => e.data.name)).toEqual(["Project Falcon"]);
+  });
+});
+
+describe("list_flagged_emails tool", () => {
+  it("is always available, same as recall_entity", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("flagged-emails-toollist"));
+    const names = buildToolsForOwner(user.id).map((t) => t.name);
+    expect(names).toContain("list_flagged_emails");
+  });
+
+  it("returns previously flagged emails newest first", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("flagged-emails-list"));
+    saveEntity(user.id, {
+      type: IMPORTANT_EMAIL_ENTITY_TYPE,
+      data: {
+        accountId: 1,
+        accountEmail: "me@example.com",
+        messageId: "msg-1",
+        category: "invoice_due",
+        subject: "Invoice from Acme",
+        from: "billing@acme.com",
+        summary: "£120 due 1 Sep.",
+        receivedAt: "2026-09-01T00:00:00.000Z",
+      },
+    });
+    saveEntity(user.id, {
+      type: IMPORTANT_EMAIL_ENTITY_TYPE,
+      data: {
+        accountId: 1,
+        accountEmail: "me@example.com",
+        messageId: "msg-2",
+        category: "flight_change",
+        subject: "Your flight changed",
+        from: "no-reply@delta.com",
+        summary: "Your gate moved to B12.",
+        receivedAt: "2026-09-02T00:00:00.000Z",
+      },
+    });
+
+    const result = (await runTool(user.id, "list_flagged_emails", {})) as { subject: string }[];
+    expect(result.map((r) => r.subject)).toEqual(["Your flight changed", "Invoice from Acme"]);
+  });
+
+  it("filters by category when given", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("flagged-emails-category"));
+    saveEntity(user.id, {
+      type: IMPORTANT_EMAIL_ENTITY_TYPE,
+      data: {
+        accountId: 1,
+        accountEmail: "me@example.com",
+        messageId: "msg-1",
+        category: "invoice_due",
+        subject: "Invoice from Acme",
+        from: "billing@acme.com",
+        summary: "",
+        receivedAt: "2026-09-01T00:00:00.000Z",
+      },
+    });
+    saveEntity(user.id, {
+      type: IMPORTANT_EMAIL_ENTITY_TYPE,
+      data: {
+        accountId: 1,
+        accountEmail: "me@example.com",
+        messageId: "msg-2",
+        category: "flight_change",
+        subject: "Your flight changed",
+        from: "no-reply@delta.com",
+        summary: "",
+        receivedAt: "2026-09-02T00:00:00.000Z",
+      },
+    });
+
+    const result = (await runTool(user.id, "list_flagged_emails", {
+      category: "invoice_due",
+    })) as { subject: string }[];
+    expect(result.map((r) => r.subject)).toEqual(["Invoice from Acme"]);
+  });
+
+  it("never leaks another owner's flagged emails", async () => {
+    const userA = findOrCreateUserByEmail(uniqueEmail("flagged-emails-owner-a"));
+    const userB = findOrCreateUserByEmail(uniqueEmail("flagged-emails-owner-b"));
+    saveEntity(userA.id, {
+      type: IMPORTANT_EMAIL_ENTITY_TYPE,
+      data: {
+        accountId: 1,
+        accountEmail: "a@example.com",
+        messageId: "msg-1",
+        category: "invoice_due",
+        subject: "Owner A's invoice",
+        from: "billing@acme.com",
+        summary: "",
+        receivedAt: "2026-09-01T00:00:00.000Z",
+      },
+    });
+
+    const result = await runTool(userB.id, "list_flagged_emails", {});
+    expect(result).toEqual([]);
+  });
+});
+
+describe("search_read_emails tool", () => {
+  it("is always available, same as list_flagged_emails", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("read-emails-toollist"));
+    const names = buildToolsForOwner(user.id).map((t) => t.name);
+    expect(names).toContain("search_read_emails");
+  });
+
+  it("finds a previously listed message with no body by subject", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("read-emails-metadata-only"));
+    upsertReadEmail(user.id, {
+      accountId: 1,
+      accountEmail: "me@example.com",
+      id: "msg-1",
+      subject: "Electrician quote",
+      from: "quotes@electrician.co",
+      snippet: "£450 for the rewiring job",
+      receivedAt: "2026-09-01T00:00:00.000Z",
+    });
+
+    const result = (await runTool(user.id, "search_read_emails", { query: "electrician" })) as {
+      subject: string;
+      body: string | null;
+    }[];
+    expect(result).toHaveLength(1);
+    expect(result[0].subject).toBe("Electrician quote");
+    expect(result[0].body).toBeNull();
+  });
+
+  it("finds a previously opened message by its full body content", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("read-emails-body"));
+    upsertReadEmail(user.id, {
+      accountId: 1,
+      accountEmail: "me@example.com",
+      id: "msg-2",
+      subject: "Your quote",
+      from: "quotes@electrician.co",
+      snippet: "",
+      receivedAt: "2026-09-01T00:00:00.000Z",
+      body: "Rewiring quote: £450, valid until 30 Sep.",
+    });
+
+    const result = (await runTool(user.id, "search_read_emails", { query: "valid until" })) as {
+      body: string | null;
+    }[];
+    expect(result).toHaveLength(1);
+    expect(result[0].body).toBe("Rewiring quote: £450, valid until 30 Sep.");
+  });
+
+  it("never leaks another owner's cached emails", async () => {
+    const userA = findOrCreateUserByEmail(uniqueEmail("read-emails-owner-a"));
+    const userB = findOrCreateUserByEmail(uniqueEmail("read-emails-owner-b"));
+    upsertReadEmail(userA.id, {
+      accountId: 1,
+      accountEmail: "a@example.com",
+      id: "msg-1",
+      subject: "Owner A's electrician quote",
+      from: "quotes@electrician.co",
+      snippet: "",
+      receivedAt: "2026-09-01T00:00:00.000Z",
+    });
+
+    const result = await runTool(userB.id, "search_read_emails", { query: "electrician" });
+    expect(result).toEqual([]);
   });
 });
 

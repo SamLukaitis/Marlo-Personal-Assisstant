@@ -234,6 +234,28 @@ db.exec(`
     text       TEXT NOT NULL,
     created_at INTEGER NOT NULL
   );
+
+  -- Durable cache of every email Marlowe has ever seen metadata for or opened, keyed so a
+  -- re-list/re-open upserts the same row rather than piling up duplicates. subject/sender/
+  -- snippet/received_at are populated the moment hub.ts lists a message (cheap — Gmail/Outlook
+  -- already return this in the same call); body stays NULL until get_message actually opens it
+  -- in full. Backs search_read_emails (assistant.ts) — durable ground truth for a previously
+  -- seen/opened email even after it ages out of chat history, or is later archived/deleted.
+  CREATE TABLE IF NOT EXISTS read_emails (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    owner_id      INTEGER NOT NULL REFERENCES users(id),
+    account_id    INTEGER NOT NULL,
+    account_email TEXT NOT NULL,
+    message_id    TEXT NOT NULL,
+    subject       TEXT NOT NULL,
+    sender        TEXT NOT NULL,
+    snippet       TEXT NOT NULL,
+    body          TEXT,
+    received_at   TEXT NOT NULL,
+    read_at       INTEGER NOT NULL,
+    UNIQUE(owner_id, account_id, message_id)
+  );
+  CREATE INDEX IF NOT EXISTS idx_read_emails_owner ON read_emails(owner_id);
 `);
 
 // Lightweight migration (same pattern as accounts.auth_broken below): users predates the is_admin
@@ -325,6 +347,13 @@ if (!accountColumns.includes("can_send")) {
 if (!accountColumns.includes("can_delete")) {
   db.exec(`ALTER TABLE accounts ADD COLUMN can_delete INTEGER NOT NULL DEFAULT 1`);
 }
+// Gmail History API checkpoint (google.ts's incremental list) — NULL means "never baselined",
+// which falls back to a full messages.list and sets this from the mailbox's current historyId.
+// Microsoft accounts never set this; Graph has its own separate delta-query mechanism, not
+// implemented here, so they keep doing a full list every tick, unaffected.
+if (!accountColumns.includes("history_id")) {
+  db.exec(`ALTER TABLE accounts ADD COLUMN history_id TEXT`);
+}
 
 // travel_checkins originally required lat/long (phone GPS check-ins only). Document-derived
 // entries (a boarding pass's arrival city) don't have exact coordinates, so lat/long need to
@@ -411,12 +440,13 @@ if (!hasOwnerId) {
         can_read INTEGER NOT NULL DEFAULT 1,
         can_send INTEGER NOT NULL DEFAULT 1,
         can_delete INTEGER NOT NULL DEFAULT 1,
+        history_id TEXT,
         UNIQUE(owner_id, provider, email)
       );
     `);
     db.prepare(
-      `INSERT INTO accounts_new (id, owner_id, provider, email, access_token, refresh_token, expiry_date, auth_broken, auth_broken_at, can_read, can_send, can_delete)
-       SELECT id, ?, provider, email, access_token, refresh_token, expiry_date, auth_broken, auth_broken_at, can_read, can_send, can_delete FROM accounts`
+      `INSERT INTO accounts_new (id, owner_id, provider, email, access_token, refresh_token, expiry_date, auth_broken, auth_broken_at, can_read, can_send, can_delete, history_id)
+       SELECT id, ?, provider, email, access_token, refresh_token, expiry_date, auth_broken, auth_broken_at, can_read, can_send, can_delete, history_id FROM accounts`
     ).run(ownerId);
     db.exec(`DROP TABLE accounts; ALTER TABLE accounts_new RENAME TO accounts;`);
 
@@ -916,6 +946,7 @@ export interface AccountRow {
   canRead: boolean;
   canSend: boolean;
   canDelete: boolean;
+  historyId: string | null;
 }
 
 // ownerId travels on the row itself (not just as a query filter) so code that already has an
@@ -925,7 +956,8 @@ export interface AccountRow {
 const rowSelect = `id, owner_id AS ownerId, provider, email, access_token AS accessToken,
                    refresh_token AS refreshToken, expiry_date AS expiryDate,
                    auth_broken AS authBroken, auth_broken_at AS authBrokenAt,
-                   can_read AS canRead, can_send AS canSend, can_delete AS canDelete`;
+                   can_read AS canRead, can_send AS canSend, can_delete AS canDelete,
+                   history_id AS historyId`;
 
 // Tokens written before encryption was added are still plaintext in the DB. Rather than a
 // one-shot migration script (easy to miss on a host you don't shell into), decrypt lazily and
@@ -1024,6 +1056,18 @@ export function markAccountAuthHealthy(ownerId: number, id: number): void {
   db.prepare(
     `UPDATE accounts SET auth_broken = 0, auth_broken_at = NULL WHERE id = ? AND owner_id = ? AND auth_broken = 1`
   ).run(id, ownerId);
+}
+
+// Written after a full list (baseline) or a successful incremental sync (google.ts) — the
+// checkpoint google.ts's next call starts an incremental fetch from. Passing null explicitly
+// forces the next call back to a full list (used when Gmail reports the stored id has expired,
+// 404/"historyId too old").
+export function setAccountHistoryId(ownerId: number, id: number, historyId: string | null): void {
+  db.prepare(`UPDATE accounts SET history_id = ? WHERE id = ? AND owner_id = ?`).run(
+    historyId,
+    id,
+    ownerId
+  );
 }
 
 // Backs the Settings page's per-inbox Read/Send/Delete toggles. Only the fields present in
@@ -2075,6 +2119,84 @@ export function findEntityByName(
   );
 }
 
+export interface ReadEmailRow {
+  id: number;
+  accountId: number;
+  accountEmail: string;
+  messageId: string;
+  subject: string;
+  from: string;
+  snippet: string;
+  body: string | null;
+  receivedAt: string;
+  readAt: number;
+}
+
+// Writes/refreshes the read_emails cache row for one message — called from hub.ts's
+// fetchMessages (metadata only, every time a message is listed) and from assistant.ts's
+// get_message tool (with body, once the full email is actually opened). Upserts on
+// (owner, account, message id) so a re-list or a re-open refreshes the same row rather than
+// piling up duplicates. body is only ever moved forward, never backward: a later metadata-only
+// upsert (no body given) must not erase a body an earlier get_message already saved, so it's
+// COALESCEd against whatever's already stored rather than overwritten unconditionally.
+export function upsertReadEmail(
+  ownerId: number,
+  message: {
+    accountId: number;
+    accountEmail: string;
+    id: string;
+    subject: string;
+    from: string;
+    snippet: string;
+    receivedAt: string;
+    body?: string | null;
+  }
+): void {
+  db.prepare(
+    `INSERT INTO read_emails
+       (owner_id, account_id, account_email, message_id, subject, sender, snippet, body, received_at, read_at)
+     VALUES (@ownerId, @accountId, @accountEmail, @messageId, @subject, @sender, @snippet, @body, @receivedAt, @readAt)
+     ON CONFLICT(owner_id, account_id, message_id) DO UPDATE SET
+       account_email = excluded.account_email,
+       subject       = excluded.subject,
+       sender        = excluded.sender,
+       snippet       = excluded.snippet,
+       body          = COALESCE(excluded.body, read_emails.body),
+       received_at   = excluded.received_at,
+       read_at       = excluded.read_at`
+  ).run({
+    ownerId,
+    accountId: message.accountId,
+    accountEmail: message.accountEmail,
+    messageId: message.id,
+    subject: message.subject,
+    sender: message.from,
+    snippet: message.snippet,
+    body: message.body ?? null,
+    receivedAt: message.receivedAt,
+    readAt: Date.now(),
+  });
+}
+
+// Plain LIKE, not FTS — same precedent as searchDocuments (store.ts above): per-user volume here
+// is bounded by how much mail Marlowe actually lists/opens, not a full message-transcript firehose
+// like whatsapp_messages/memory_notes, so FTS5's extra machinery (virtual table + triggers) isn't
+// worth it. Searches every previously-seen email regardless of whether it was ever fully opened —
+// a metadata-only row (body still NULL) still matches on subject/sender/snippet.
+export function searchReadEmails(ownerId: number, query: string, limit = 10): ReadEmailRow[] {
+  const like = `%${query}%`;
+  const rows = db
+    .prepare(
+      `SELECT id, account_id AS accountId, account_email AS accountEmail, message_id AS messageId,
+              subject, sender, snippet, body, received_at AS receivedAt, read_at AS readAt
+       FROM read_emails
+       WHERE owner_id = ? AND (subject LIKE ? OR sender LIKE ? OR snippet LIKE ? OR body LIKE ?)
+       ORDER BY id DESC LIMIT ?`
+    )
+    .all(ownerId, like, like, like, like, limit) as (Omit<ReadEmailRow, "from"> & { sender: string })[];
+  return rows.map(({ sender, ...rest }) => ({ ...rest, from: sender }));
+}
+
 // ---------------------------------------------------------------------------
 // Users, invites, sessions — the identity layer. Everything above this line is
 // per-tenant *data*; everything below is what determines which tenant a request belongs to.
@@ -2636,6 +2758,7 @@ export function deleteUserCompletely(ownerId: number): { deletedDocumentPaths: s
     db.prepare(`DELETE FROM entities WHERE owner_id = ?`).run(ownerId);
     db.prepare(`DELETE FROM links WHERE owner_id = ?`).run(ownerId);
     db.prepare(`DELETE FROM alerted_messages WHERE owner_id = ?`).run(ownerId);
+    db.prepare(`DELETE FROM read_emails WHERE owner_id = ?`).run(ownerId);
     db.prepare(`DELETE FROM user_enabled_tools WHERE owner_id = ?`).run(ownerId);
     db.prepare(`DELETE FROM pending_setup WHERE owner_id = ?`).run(ownerId);
     db.prepare(`DELETE FROM pending_actions WHERE owner_id = ?`).run(ownerId);

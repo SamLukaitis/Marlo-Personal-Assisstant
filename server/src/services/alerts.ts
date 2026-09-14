@@ -1,4 +1,4 @@
-import { hubListMessages, AUTOMATED_SENDER_PATTERN } from "./hub.js";
+import { hubListNewMessages, AUTOMATED_SENDER_PATTERN } from "./hub.js";
 import { hasAlerted, markAlerted, getSetting, setSetting, listPhoneNumbersForUser } from "../db/store.js";
 import { isWhatsAppConfigured } from "../providers/whatsapp.js";
 import { sendProactiveMessage } from "./outbound.js";
@@ -26,10 +26,13 @@ async function notify(numbers: string[], text: string): Promise<void> {
 // persisted ledger so the same message never triggers twice across restarts. Runs per-tenant —
 // scheduler.ts loops over every user and calls this once per owner.
 export async function checkForNewImportantMessages(ownerId: number): Promise<void> {
-  const messages = await hubListMessages(ownerId, { limit: 50 });
-  const candidates = messages.filter(
-    (m) => m.unread && m.from && !AUTOMATED_SENDER_PATTERN.test(m.from)
-  );
+  const messages = await hubListNewMessages(ownerId);
+  // Deliberately NOT gated on m.unread — a user who opens a real person's message the moment it
+  // arrives (completely normal) must not lose the alert. hasAlerted's per-message ledger below is
+  // the real "have we already handled this" check, independent of whether the user has read it;
+  // unread was a redundant, strictly worse substitute that silently and permanently dropped any
+  // message read before this scan ever saw it.
+  const candidates = messages.filter((m) => m.from && !AUTOMATED_SENDER_PATTERN.test(m.from));
 
   // First-ever run: record the current inbox as a baseline instead of alerting on everything
   // that was already sitting there unread before this feature existed.

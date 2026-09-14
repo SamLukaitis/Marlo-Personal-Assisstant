@@ -22,6 +22,8 @@ import {
   recordApiUsage,
   listRecentApiUsage,
   listPosterNotes,
+  upsertReadEmail,
+  searchReadEmails,
 } from "./store.js";
 
 let counter = 0;
@@ -130,6 +132,27 @@ describe("deleteUserCompletely", () => {
     expect(() => deleteUserCompletely(todoOwner.id)).not.toThrow();
     expect(getUser(todoOwner.id)).toBeNull();
   });
+
+  // Regression test for the same bug shape one table generation later: read_emails.owner_id
+  // declares NOT NULL REFERENCES users(id) (the search_read_emails cache) — added alongside the
+  // rest of the reset, not after a production report this time, specifically because every prior
+  // fix in this file was a report first.
+  it("does not throw when the owner has a read_emails row, and the row is actually gone after", () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("read-email-cache"));
+    upsertReadEmail(user.id, {
+      accountId: 1,
+      accountEmail: "me@example.com",
+      id: "msg-1",
+      subject: "Test",
+      from: "someone@example.com",
+      snippet: "snippet",
+      receivedAt: new Date().toISOString(),
+    });
+
+    expect(() => deleteUserCompletely(user.id)).not.toThrow();
+    expect(getUser(user.id)).toBeNull();
+    expect(searchReadEmails(user.id, "Test")).toEqual([]);
+  });
 });
 
 describe("findRemainingOwnerReferences", () => {
@@ -149,6 +172,21 @@ describe("findRemainingOwnerReferences", () => {
     deleteUserCompletely(user.id);
 
     expect(findRemainingOwnerReferences(user.id)).toEqual([]);
+  });
+
+  it("names read_emails specifically when a cached email is left behind", () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("dangling-read-email"));
+    upsertReadEmail(user.id, {
+      accountId: 1,
+      accountEmail: "me@example.com",
+      id: "msg-1",
+      subject: "Test",
+      from: "someone@example.com",
+      snippet: "snippet",
+      receivedAt: new Date().toISOString(),
+    });
+
+    expect(findRemainingOwnerReferences(user.id)).toEqual(["read_emails.owner_id (1 row)"]);
   });
 });
 
