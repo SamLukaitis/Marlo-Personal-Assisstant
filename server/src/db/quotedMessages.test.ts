@@ -1,0 +1,100 @@
+import { describe, it, expect } from "vitest";
+import {
+  findOrCreateUserByEmail,
+  appendWhatsAppMessage,
+  getWhatsAppMessageByWamid,
+  saveDocument,
+  getDocumentByWamid,
+} from "./store.js";
+
+let counter = 0;
+function uniqueEmail(prefix: string): string {
+  counter += 1;
+  return `${prefix}-${Date.now()}-${counter}@example.com`;
+}
+
+describe("getWhatsAppMessageByWamid", () => {
+  it("finds a message by a wamid recorded when it was appended", () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("wamid-lookup"));
+    const wamid = `wamid.msg-${Date.now()}`;
+    appendWhatsAppMessage(user.id, "447900000001", "user", "hello there", [wamid]);
+
+    const found = getWhatsAppMessageByWamid(user.id, wamid);
+    expect(found?.content).toBe("hello there");
+  });
+
+  it("records every wamid for a chunked outbound reply against the same message row", () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("wamid-chunks"));
+    const first = `wamid.chunk1-${Date.now()}`;
+    const second = `wamid.chunk2-${Date.now()}`;
+    appendWhatsAppMessage(user.id, "447900000002", "assistant", "full reply text", [first, second]);
+
+    expect(getWhatsAppMessageByWamid(user.id, first)?.content).toBe("full reply text");
+    expect(getWhatsAppMessageByWamid(user.id, second)?.content).toBe("full reply text");
+  });
+
+  it("returns undefined for an unrecorded wamid", () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("wamid-miss"));
+    expect(getWhatsAppMessageByWamid(user.id, "wamid.never-seen")).toBeUndefined();
+  });
+
+  it("never resolves a wamid recorded under a different owner", () => {
+    const owner = findOrCreateUserByEmail(uniqueEmail("wamid-owner"));
+    const other = findOrCreateUserByEmail(uniqueEmail("wamid-other"));
+    const wamid = `wamid.scoped-${Date.now()}`;
+    appendWhatsAppMessage(owner.id, "447900000003", "user", "mine", [wamid]);
+
+    expect(getWhatsAppMessageByWamid(other.id, wamid)).toBeUndefined();
+  });
+
+  it("appendWhatsAppMessage still works with no wamids given (existing callers)", () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("wamid-optional"));
+    expect(() => appendWhatsAppMessage(user.id, "447900000004", "user", "no wamid here")).not.toThrow();
+  });
+});
+
+describe("getDocumentByWamid", () => {
+  it("finds a saved document by the wamid of the WhatsApp message that carried it", () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("doc-wamid"));
+    const wamid = `wamid.doc-${Date.now()}`;
+    const saved = saveDocument(user.id, {
+      phone: "447900000005",
+      filename: "photo.jpg",
+      mimeType: "image/jpeg",
+      storedPath: "/tmp/fake-doc-wamid",
+      caption: null,
+      title: "Test photo",
+      extractedText: "a boarding pass for flight BA123",
+      category: "travel",
+      wamid,
+    });
+
+    const found = getDocumentByWamid(user.id, wamid);
+    expect(found?.id).toBe(saved.id);
+    expect(found?.extractedText).toBe("a boarding pass for flight BA123");
+  });
+
+  it("returns undefined when no document carries that wamid", () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("doc-wamid-miss"));
+    expect(getDocumentByWamid(user.id, "wamid.no-doc")).toBeUndefined();
+  });
+
+  it("never resolves a document saved under a different owner", () => {
+    const owner = findOrCreateUserByEmail(uniqueEmail("doc-wamid-owner"));
+    const other = findOrCreateUserByEmail(uniqueEmail("doc-wamid-other"));
+    const wamid = `wamid.doc-scoped-${Date.now()}`;
+    saveDocument(owner.id, {
+      phone: "447900000006",
+      filename: null,
+      mimeType: "image/jpeg",
+      storedPath: "/tmp/fake-doc-scoped",
+      caption: null,
+      title: null,
+      extractedText: "text",
+      category: null,
+      wamid,
+    });
+
+    expect(getDocumentByWamid(other.id, wamid)).toBeUndefined();
+  });
+});

@@ -6,6 +6,7 @@ import {
   sendChoiceMessage,
   sendWhatsAppMediaFromBuffer,
   sendWhatsAppReaction,
+  sendWhatsAppMessage,
   extractIncomingMessages,
   WhatsAppSendError,
 } from "./whatsapp.js";
@@ -480,5 +481,136 @@ describe("extractIncomingMessages — interactive list replies", () => {
     };
     const messages = extractIncomingMessages(payload);
     expect(messages).toEqual([{ kind: "interactive", from: "447000000001", messageId: "wamid.def", buttonId: "pa:abc:0" }]);
+  });
+});
+
+describe("extractIncomingMessages — reply/quote and forwarded context", () => {
+  it("carries the quoted wamid from a text message's context.id (a swipe-to-reply)", () => {
+    const payload = {
+      entry: [
+        {
+          changes: [
+            {
+              value: {
+                messages: [
+                  {
+                    from: "447000000001",
+                    id: "wamid.reply1",
+                    type: "text",
+                    text: { body: "what's this" },
+                    context: { id: "wamid.original" },
+                  },
+                ],
+              },
+            },
+          ],
+        },
+      ],
+    };
+
+    expect(extractIncomingMessages(payload)).toEqual([
+      {
+        kind: "text",
+        from: "447000000001",
+        text: "what's this",
+        messageId: "wamid.reply1",
+        quotedMessageId: "wamid.original",
+      },
+    ]);
+  });
+
+  it("has no quotedMessageId on an ordinary text message with no context", () => {
+    const payload = {
+      entry: [
+        {
+          changes: [{ value: { messages: [{ from: "447000000001", id: "wamid.plain", type: "text", text: { body: "hi" } }] } }],
+        },
+      ],
+    };
+
+    const [message] = extractIncomingMessages(payload);
+    expect(message).not.toHaveProperty("quotedMessageId");
+  });
+
+  it("marks a forwarded text message via context.forwarded", () => {
+    const payload = {
+      entry: [
+        {
+          changes: [
+            {
+              value: {
+                messages: [
+                  {
+                    from: "447000000001",
+                    id: "wamid.fwd1",
+                    type: "text",
+                    text: { body: "look at this" },
+                    context: { forwarded: true },
+                  },
+                ],
+              },
+            },
+          ],
+        },
+      ],
+    };
+
+    expect(extractIncomingMessages(payload)).toEqual([
+      {
+        kind: "text",
+        from: "447000000001",
+        text: "look at this",
+        messageId: "wamid.fwd1",
+        forwarded: true,
+      },
+    ]);
+  });
+
+  it("carries the quoted wamid onto a swipe-reply to a photo/document too", () => {
+    const payload = {
+      entry: [
+        {
+          changes: [
+            {
+              value: {
+                messages: [
+                  {
+                    from: "447000000001",
+                    id: "wamid.reply2",
+                    type: "image",
+                    image: { id: "media-1", mime_type: "image/jpeg" },
+                    context: { id: "wamid.originalphoto" },
+                  },
+                ],
+              },
+            },
+          ],
+        },
+      ],
+    };
+
+    const [message] = extractIncomingMessages(payload);
+    expect(message).toMatchObject({ kind: "media", quotedMessageId: "wamid.originalphoto" });
+  });
+});
+
+describe("sendWhatsAppMessage", () => {
+  it("returns the sent message's wamid from the API response", async () => {
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      text: async () => JSON.stringify({ messages: [{ id: "wamid.sent123" }] }),
+    }) as unknown as typeof fetch;
+
+    const wamid = await sendWhatsAppMessage("447000000001", "hello");
+
+    expect(wamid).toBe("wamid.sent123");
+  });
+
+  it("returns undefined rather than throwing when the response body is unparseable", async () => {
+    global.fetch = vi.fn().mockResolvedValue({ ok: true, text: async () => "not json" }) as unknown as typeof fetch;
+
+    const wamid = await sendWhatsAppMessage("447000000001", "hello");
+
+    expect(wamid).toBeUndefined();
   });
 });

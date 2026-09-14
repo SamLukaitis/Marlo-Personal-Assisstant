@@ -55,7 +55,21 @@ async function buildSendError(prefix: string, res: Response): Promise<WhatsAppSe
   return new WhatsAppSendError(`${prefix} (${res.status}): ${bodyText}`, code);
 }
 
-export async function sendWhatsAppMessage(to: string, text: string): Promise<void> {
+// Pulls the sent message's wamid out of a successful send response — Meta's Cloud API returns
+// `{ messages: [{ id: "wamid...." }] }` on every successful send. Used so a later swipe-to-reply
+// to something Marlowe sent can be resolved (see db/store.ts's whatsapp_message_wamids). Reads via
+// res.text() + JSON.parse rather than res.json(), same as buildSendError above, and never throws —
+// an unparseable/unexpected body just means the reply can't be resolved later, not a failed send.
+async function extractSentWamid(res: Response): Promise<string | undefined> {
+  try {
+    const body = JSON.parse(await res.text()) as { messages?: Array<{ id?: string }> };
+    return body.messages?.[0]?.id;
+  } catch {
+    return undefined;
+  }
+}
+
+export async function sendWhatsAppMessage(to: string, text: string): Promise<string | undefined> {
   const phoneNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID;
   const token = process.env.WHATSAPP_TOKEN;
   const res = await fetch(
@@ -77,6 +91,7 @@ export async function sendWhatsAppMessage(to: string, text: string): Promise<voi
   if (!res.ok) {
     throw await buildSendError("WhatsApp send failed", res);
   }
+  return extractSentWamid(res);
 }
 
 // Up to 3 tappable quick-reply buttons under a text prompt — used for closed-set questions
@@ -394,11 +409,20 @@ export async function sendWhatsAppTypingIndicator(messageId: string): Promise<vo
   }
 }
 
+// quotedMessageId/forwarded both come from Meta's `context` field on the inbound message.
+// quotedMessageId is the wamid of the message a swipe-to-reply targeted — set only when the user
+// replied to a specific earlier message (theirs, or one Marlowe sent), and resolvable via
+// db/store.ts's getWhatsAppMessageByWamid/getDocumentByWamid no matter how long ago it was sent.
+// forwarded means the message arrived via WhatsApp's "Forward" action; Meta does not expose the
+// original chat/message it came from (only this boolean), so there's nothing to look up for a
+// forward — the forwarded content itself just arrives as this message's own text/media.
 export interface IncomingTextMessage {
   kind: "text";
   from: string;
   text: string;
   messageId: string;
+  quotedMessageId?: string;
+  forwarded?: boolean;
 }
 
 export interface IncomingMediaMessage {
@@ -409,6 +433,8 @@ export interface IncomingMediaMessage {
   mimeType: string;
   filename?: string;
   caption?: string;
+  quotedMessageId?: string;
+  forwarded?: boolean;
 }
 
 // A tap on a reply-button message sent by sendWhatsAppReplyButtons — buttonId is whatever id we
@@ -477,6 +503,7 @@ interface WebhookPayload {
           document?: { id?: string; mime_type?: string; filename?: string; caption?: string };
           reaction?: { message_id?: string; emoji?: string };
           location?: { latitude?: number; longitude?: number; name?: string; address?: string };
+          context?: { id?: string; forwarded?: boolean };
           interactive?: {
             type?: string;
             button_reply?: { id?: string; title?: string };
@@ -495,8 +522,16 @@ export function extractIncomingMessages(payload: WebhookPayload): IncomingWhatsA
   for (const entry of payload.entry ?? []) {
     for (const change of entry.changes ?? []) {
       for (const m of change.value?.messages ?? []) {
+        // Present on any inbound message type whose sender swipe-replied to (context.id) or
+        // forwarded (context.forwarded) it — spread in below so a message with no context keeps
+        // exactly its old shape (no stray `undefined`-valued keys).
+        const quoteFields = {
+          ...(m.context?.id ? { quotedMessageId: m.context.id } : {}),
+          ...(m.context?.forwarded ? { forwarded: true as const } : {}),
+        };
+
         if (m.type === "text" && m.from && m.text?.body && m.id) {
-          messages.push({ kind: "text", from: m.from, text: m.text.body, messageId: m.id });
+          messages.push({ kind: "text", from: m.from, text: m.text.body, messageId: m.id, ...quoteFields });
         } else if (m.type === "image" && m.from && m.id && m.image?.id && m.image.mime_type) {
           messages.push({
             kind: "media",
@@ -505,6 +540,7 @@ export function extractIncomingMessages(payload: WebhookPayload): IncomingWhatsA
             mediaId: m.image.id,
             mimeType: m.image.mime_type,
             caption: m.image.caption,
+            ...quoteFields,
           });
         } else if (m.type === "document" && m.from && m.id && m.document?.id && m.document.mime_type) {
           messages.push({
@@ -515,6 +551,7 @@ export function extractIncomingMessages(payload: WebhookPayload): IncomingWhatsA
             mimeType: m.document.mime_type,
             filename: m.document.filename,
             caption: m.document.caption,
+            ...quoteFields,
           });
         } else if (
           m.type === "location" &&

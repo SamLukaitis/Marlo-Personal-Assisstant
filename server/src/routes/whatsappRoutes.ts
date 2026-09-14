@@ -28,6 +28,7 @@ import { sendAssistantReply } from "../services/whatsappReply.js";
 import { handlePendingActionReply } from "../services/actionHandlers.js";
 import { maybeUpdateConversationSummary } from "../services/conversationSummary.js";
 import { handleText, handleLocation } from "../services/chatDispatch.js";
+import { resolveQuotedMessageContext } from "../services/quotedMessage.js";
 
 export const whatsappRoutes = Router();
 
@@ -59,12 +60,22 @@ async function handleMedia(
   mimeType: string,
   messageId: string,
   filename?: string,
-  caption?: string
+  caption?: string,
+  quotedMessageId?: string,
+  forwarded?: boolean
 ): Promise<void> {
   const label = filename ?? caption ?? "a file";
   appendWhatsAppMessage(ownerId, from, "user", `[Sent ${label}]`);
 
-  const doc = await ingestWhatsAppMedia({ ownerId, phone: from, mediaId, mimeType, filename, caption });
+  const doc = await ingestWhatsAppMedia({
+    ownerId,
+    phone: from,
+    mediaId,
+    mimeType,
+    filename,
+    caption,
+    wamid: messageId,
+  });
 
   // Route this through the normal assistant/tool loop instead of just echoing the raw
   // extraction back. This is what makes a caption like "add this to calendar" actually get
@@ -76,8 +87,12 @@ async function handleMedia(
   }));
   // The persisted history line is just "[Sent <caption>]" (kept short so it doesn't bloat every
   // future call's history) — for this one call, swap in the full extracted text plus the
-  // caption so the model has the actual document content to act on and confirm.
+  // caption so the model has the actual document content to act on and confirm. A rare case
+  // where this media message was itself a swipe-reply to something else gets that resolved
+  // context prepended — see quotedMessage.ts.
+  const quotedContext = resolveQuotedMessageContext(ownerId, quotedMessageId, forwarded);
   const docContext =
+    (quotedContext ? `${quotedContext}\n\n` : "") +
     `[A document was just sent via WhatsApp and has already been downloaded and saved — no ` +
     `need to save it again, just confirm and/or act on it. Extracted content:\n${doc.extractedText}` +
     (caption
@@ -141,7 +156,14 @@ export async function handleIncoming(message: IncomingWhatsAppMessage): Promise<
 
   try {
     if (message.kind === "text") {
-      await handleText(ownerId, message.from, message.text, message.messageId);
+      await handleText(
+        ownerId,
+        message.from,
+        message.text,
+        message.messageId,
+        message.quotedMessageId,
+        message.forwarded
+      );
     } else if (message.kind === "media") {
       await handleMedia(
         ownerId,
@@ -150,7 +172,9 @@ export async function handleIncoming(message: IncomingWhatsAppMessage): Promise<
         message.mimeType,
         message.messageId,
         message.filename,
-        message.caption
+        message.caption,
+        message.quotedMessageId,
+        message.forwarded
       );
     } else if (message.kind === "location") {
       await handleLocation(

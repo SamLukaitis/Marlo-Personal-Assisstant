@@ -711,6 +711,7 @@ async function finalizeIngestedFile(
     emailAccountId?: number | null;
     emailMessageId?: string | null;
     emailAttachmentId?: string | null;
+    wamid?: string | null;
   }
 ): Promise<DocumentRow> {
   const uploadedAt = new Date();
@@ -759,6 +760,7 @@ async function finalizeIngestedFile(
       emailAccountId: saveMeta.emailAccountId ?? null,
       emailMessageId: saveMeta.emailMessageId ?? null,
       emailAttachmentId: saveMeta.emailAttachmentId ?? null,
+      wamid: saveMeta.wamid ?? null,
     });
   } catch (err) {
     // Extraction or the DB insert failed after the encrypted file already landed on disk —
@@ -804,6 +806,10 @@ export async function ingestWhatsAppMedia(params: {
   mimeType: string;
   filename?: string;
   caption?: string;
+  // The wamid of the inbound WhatsApp message that carried this media — stored on the document so
+  // a later swipe-to-reply to this exact photo/file (see services/quotedMessage.ts) can resolve
+  // straight to its real extracted content, no matter how long afterward.
+  wamid?: string;
 }): Promise<DocumentRow> {
   const { buffer, mimeType: downloadedMimeType } = await downloadWhatsAppMedia(params.mediaId);
   const mimeType = params.mimeType || downloadedMimeType;
@@ -817,6 +823,7 @@ export async function ingestWhatsAppMedia(params: {
     phone: params.phone,
     filename: params.filename ?? null,
     caption: params.caption ?? null,
+    wamid: params.wamid ?? null,
     source: "whatsapp",
   });
 }

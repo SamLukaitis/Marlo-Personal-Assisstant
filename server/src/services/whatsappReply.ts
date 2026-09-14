@@ -26,25 +26,38 @@ export async function sendAssistantReply(
     return;
   }
 
-  appendWhatsAppMessage(ownerId, phone, "assistant", reply.text);
-
   if (!reply.choice) {
-    // Splitting/pausing is transport-only — the history row above always holds the one full
+    // Splitting/pausing is transport-only — the history row below always holds the one full
     // reply.text, not one row per chunk, so conversation-history/summary logic elsewhere is
     // unaffected. A single-paragraph reply (the common case) yields exactly one chunk and sends
-    // exactly as it always did, with no pause.
+    // exactly as it always did, with no pause. Sending happens before the append (rather than
+    // before, as it used to) so the wamid(s) actually sent can be recorded against the history
+    // row — see db/store.ts's whatsapp_message_wamids, which resolves a later swipe-to-reply to
+    // this message no matter how long afterward.
     const chunks = splitIntoChunks(reply.text);
+    const wamids: string[] = [];
     if (chunks.length === 0) {
-      await sendWhatsAppMessage(phone, reply.text);
-      return;
+      const wamid = await sendWhatsAppMessage(phone, reply.text);
+      if (wamid) wamids.push(wamid);
+    } else {
+      for (let i = 0; i < chunks.length; i++) {
+        if (i > 0) await sleep(delayForChunk(chunks[i]));
+        const wamid = await sendWhatsAppMessage(phone, chunks[i]);
+        if (wamid) wamids.push(wamid);
+      }
     }
-    for (let i = 0; i < chunks.length; i++) {
-      if (i > 0) await sleep(delayForChunk(chunks[i]));
-      await sendWhatsAppMessage(phone, chunks[i]);
+    // Only pass the wamids array when it actually has something — an explicit empty/undefined
+    // 5th argument is a different call shape than omitting it, and appendWhatsAppMessage already
+    // treats "no wamids" as a no-op for the join table either way.
+    if (wamids.length) {
+      appendWhatsAppMessage(ownerId, phone, "assistant", reply.text, wamids);
+    } else {
+      appendWhatsAppMessage(ownerId, phone, "assistant", reply.text);
     }
     return;
   }
 
+  appendWhatsAppMessage(ownerId, phone, "assistant", reply.text);
   const choice = reply.choice;
   const choices = choice.buttons.map((b) => ({
     id: `pa:${choice.actionId}:${b.key}`,

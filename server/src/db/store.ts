@@ -643,6 +643,14 @@ if (!documentColumns.includes("email_account_email")) {
   db.exec(`ALTER TABLE documents ADD COLUMN email_account_email TEXT`);
 }
 
+// The wamid of the WhatsApp message that carried this document, so a later swipe-to-reply on that
+// photo/file (Meta's `context.id`) resolves straight to its real extracted content instead of the
+// short "[Sent a file]" placeholder stored in whatsapp_messages. Null for email-sourced documents
+// and for anything saved before this shipped.
+if (!documentColumns.includes("wamid")) {
+  db.exec(`ALTER TABLE documents ADD COLUMN wamid TEXT`);
+}
+
 // One-time relabel: 'receipts_bookings' was split into 'receipts' (booking confirmations moved
 // under 'travel', where they arguably always belonged — see JAKES_TODO.md 2026-08-24). Plain
 // UPDATE rather than a guarded block since it's naturally idempotent: once no row has the old
@@ -859,6 +867,21 @@ db.exec(`
     wamid TEXT PRIMARY KEY,
     seen_at INTEGER NOT NULL
   );
+`);
+
+// Maps a WhatsApp message's wamid(s) back to the whatsapp_messages row it belongs to, so a later
+// swipe-to-reply (Meta's `context.id`) can resolve to what was actually said/sent, no matter how
+// long ago. A join table rather than a column on whatsapp_messages because one outbound reply can
+// go out as several WhatsApp-sent chunks (services/messageSplitting.ts) — each chunk gets its own
+// wamid, but they're persisted as a single history row; a plain column can't hold that 1:many
+// case. Inbound messages just get one row here. Unlike seen_wamids (dedupe-only, pruned after 8
+// days), this is never pruned — the whole point is resolving a reply from an arbitrary time ago.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS whatsapp_message_wamids (
+    wamid TEXT PRIMARY KEY,
+    message_id INTEGER NOT NULL REFERENCES whatsapp_messages(id)
+  );
+  CREATE INDEX IF NOT EXISTS idx_whatsapp_message_wamids_message ON whatsapp_message_wamids(message_id);
 `);
 
 // One rolling summary per WhatsApp conversation, covering everything older than the raw history
@@ -1270,15 +1293,44 @@ export function getWhatsAppHistory(phone: string, limit = 20): WhatsAppMessageRo
   return rows.reverse();
 }
 
+// wamids: the WhatsApp message id(s) this history row corresponds to — a single-element array for
+// an inbound message, or one element per chunk for an outbound reply split across several sends
+// (services/messageSplitting.ts). Optional and omitted by most existing callers (reactions,
+// short-circuit replies like "help"/version text) that don't need to be resolvable as a quote
+// target.
 export function appendWhatsAppMessage(
   ownerId: number,
   phone: string,
   role: "user" | "assistant",
-  content: string
+  content: string,
+  wamids?: string[]
 ): void {
-  db.prepare(
-    `INSERT INTO whatsapp_messages (owner_id, phone, role, content, created_at) VALUES (?, ?, ?, ?, ?)`
-  ).run(ownerId, phone, role, content, Date.now());
+  const info = db
+    .prepare(
+      `INSERT INTO whatsapp_messages (owner_id, phone, role, content, created_at) VALUES (?, ?, ?, ?, ?)`
+    )
+    .run(ownerId, phone, role, content, Date.now());
+  if (wamids?.length) {
+    const insertWamid = db.prepare(
+      `INSERT OR IGNORE INTO whatsapp_message_wamids (wamid, message_id) VALUES (?, ?)`
+    );
+    for (const wamid of wamids) insertWamid.run(wamid, info.lastInsertRowid);
+  }
+}
+
+// Resolves a swipe-to-reply (Meta's `context.id`) back to the message it quoted, no matter how
+// long ago it was sent/received — whatsapp_message_wamids is never pruned, unlike seen_wamids.
+// Scoped by ownerId (defense in depth, same convention as searchWhatsAppHistory/getDocument) so a
+// lookup can never cross an owner boundary even on a wamid collision.
+export function getWhatsAppMessageByWamid(ownerId: number, wamid: string): WhatsAppMessageRow | undefined {
+  return db
+    .prepare(
+      `SELECT w.id, w.phone, w.role, w.content, w.created_at AS createdAt
+       FROM whatsapp_message_wamids ww
+       JOIN whatsapp_messages w ON w.id = ww.message_id
+       WHERE ww.wamid = ? AND w.owner_id = ?`
+    )
+    .get(wamid, ownerId) as WhatsAppMessageRow | undefined;
 }
 
 // Reaches the full raw transcript, not just the MAX_HISTORY_MESSAGES window the assistant sees by
@@ -1479,13 +1531,14 @@ export interface DocumentRow {
   emailMessageId: string | null;
   emailAttachmentId: string | null;
   emailAccountEmail: string | null;
+  wamid: string | null;
 }
 
 const DOCUMENT_COLUMNS = `id, phone, filename, mime_type AS mimeType, stored_path AS storedPath,
   caption, title, extracted_text AS extractedText, category, created_at AS createdAt,
   xero_forwarded_at AS xeroForwardedAt, source, email_account_id AS emailAccountId,
   email_message_id AS emailMessageId, email_attachment_id AS emailAttachmentId,
-  email_account_email AS emailAccountEmail`;
+  email_account_email AS emailAccountEmail, wamid`;
 
 export function saveDocument(
   ownerId: number,
@@ -1502,6 +1555,7 @@ export function saveDocument(
     emailAccountId?: number | null;
     emailMessageId?: string | null;
     emailAttachmentId?: string | null;
+    wamid?: string | null;
   }
 ): DocumentRow {
   // Snapshotted at save time (not resolved on read) so the tag survives the account later
@@ -1509,8 +1563,8 @@ export function saveDocument(
   const emailAccountEmail = doc.emailAccountId ? getAccount(ownerId, doc.emailAccountId)?.email ?? null : null;
   const info = db
     .prepare(
-      `INSERT INTO documents (owner_id, phone, filename, mime_type, stored_path, caption, title, extracted_text, category, created_at, source, email_account_id, email_message_id, email_attachment_id, email_account_email)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO documents (owner_id, phone, filename, mime_type, stored_path, caption, title, extracted_text, category, created_at, source, email_account_id, email_message_id, email_attachment_id, email_account_email, wamid)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
       ownerId,
@@ -1527,7 +1581,8 @@ export function saveDocument(
       doc.emailAccountId ?? null,
       doc.emailMessageId ?? null,
       doc.emailAttachmentId ?? null,
-      emailAccountEmail
+      emailAccountEmail,
+      doc.wamid ?? null
     );
   return db
     .prepare(`SELECT ${DOCUMENT_COLUMNS} FROM documents WHERE id = ?`)
@@ -1576,6 +1631,15 @@ export function findDocumentByEmailAttachment(
        WHERE owner_id = ? AND email_account_id = ? AND email_message_id = ? AND email_attachment_id = ?`
     )
     .get(ownerId, emailAccountId, emailMessageId, emailAttachmentId) as DocumentRow | undefined;
+}
+
+// Resolves a swipe-to-reply on a previously-sent photo/document back to its real extracted
+// content — see whatsapp_message_wamids/getWhatsAppMessageByWamid above for the same idea applied
+// to plain-text messages. Scoped by ownerId, same convention as getDocument.
+export function getDocumentByWamid(ownerId: number, wamid: string): DocumentRow | undefined {
+  return db
+    .prepare(`SELECT ${DOCUMENT_COLUMNS} FROM documents WHERE owner_id = ? AND wamid = ?`)
+    .get(ownerId, wamid) as DocumentRow | undefined;
 }
 
 export function deleteDocument(ownerId: number, id: number): void {
@@ -2558,6 +2622,11 @@ export function deleteUserCompletely(ownerId: number): { deletedDocumentPaths: s
     db.prepare(`DELETE FROM local_roots WHERE owner_id = ?`).run(ownerId);
     db.prepare(`DELETE FROM briefings WHERE owner_id = ?`).run(ownerId);
     db.prepare(`DELETE FROM memory_notes WHERE owner_id = ?`).run(ownerId);
+    // whatsapp_message_wamids.message_id REFERENCES whatsapp_messages(id) — must be deleted
+    // before whatsapp_messages itself or the FK constraint rejects the whatsapp_messages delete.
+    db.prepare(
+      `DELETE FROM whatsapp_message_wamids WHERE message_id IN (SELECT id FROM whatsapp_messages WHERE owner_id = ?)`
+    ).run(ownerId);
     db.prepare(`DELETE FROM whatsapp_messages WHERE owner_id = ?`).run(ownerId);
     // document_match_keys.document_id REFERENCES documents(id) — must be deleted before
     // documents itself or the FK constraint rejects the documents delete.
