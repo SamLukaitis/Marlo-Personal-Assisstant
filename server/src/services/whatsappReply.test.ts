@@ -87,6 +87,23 @@ describe("sendAssistantReply", () => {
     expect(sendWhatsAppMessage).toHaveBeenCalledTimes(1);
   });
 
+  it("persists the sent wamid so the reply can later be resolved as a quote target", async () => {
+    vi.mocked(sendWhatsAppMessage).mockResolvedValueOnce("wamid.out1");
+
+    await sendAssistantReply(1, "44700", { text: "Sure, done." }, "wamid.in");
+
+    expect(appendWhatsAppMessage).toHaveBeenCalledWith(1, "44700", "assistant", "Sure, done.", ["wamid.out1"]);
+  });
+
+  it("persists one wamid per chunk, in order, for a multi-paragraph reply", async () => {
+    vi.mocked(sendWhatsAppMessage).mockResolvedValueOnce("wamid.chunk1").mockResolvedValueOnce("wamid.chunk2");
+    const text = "First paragraph.\n\nSecond paragraph.";
+
+    await sendAssistantReply(1, "44700", { text }, "wamid.in");
+
+    expect(appendWhatsAppMessage).toHaveBeenCalledWith(1, "44700", "assistant", text, ["wamid.chunk1", "wamid.chunk2"]);
+  });
+
   it("sends a reaction targeting the inbound message instead of text, and persists a readable history line", async () => {
     await sendAssistantReply(1, "44700", { text: "", reaction: { emoji: "👍" } }, "wamid.in");
 

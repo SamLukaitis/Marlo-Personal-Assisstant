@@ -16,6 +16,8 @@ vi.mock("../db/store.js", () => ({
   recordInboundMessage: vi.fn(),
   getWhatsAppHistory: vi.fn().mockReturnValue([]),
   appendWhatsAppMessage: vi.fn(),
+  getDocumentByWamid: vi.fn(),
+  getWhatsAppMessageByWamid: vi.fn(),
 }));
 vi.mock("../ai/assistant.js", () => ({
   runAssistantChat: vi.fn(),
@@ -53,7 +55,9 @@ vi.mock("../services/conversationSummary.js", () => ({
 }));
 
 const { sendWhatsAppMessage } = await import("../providers/whatsapp.js");
-const { resolveOwnerByPhone, appendWhatsAppMessage } = await import("../db/store.js");
+const { resolveOwnerByPhone, appendWhatsAppMessage, getDocumentByWamid, getWhatsAppMessageByWamid } = await import(
+  "../db/store.js"
+);
 const { runAssistantChat } = await import("../ai/assistant.js");
 const { handleFirstTaskReply, handlePostConnectSetupReply, handleBriefingContentReply } = await import(
   "../services/postConnectSetup.js"
@@ -74,6 +78,8 @@ beforeEach(() => {
   vi.mocked(sendAssistantReply).mockClear();
   vi.mocked(handlePendingActionReply).mockReset().mockResolvedValue(false);
   vi.mocked(maybeUpdateConversationSummary).mockClear().mockResolvedValue(undefined);
+  vi.mocked(getDocumentByWamid).mockReset();
+  vi.mocked(getWhatsAppMessageByWamid).mockReset();
 });
 
 describe("handleIncoming — help trigger for already-registered users", () => {
@@ -301,5 +307,82 @@ describe("handleIncoming — pending-action taps", () => {
       buttonId: "pa:abc:yes",
     });
     expect(runAssistantChat).not.toHaveBeenCalled();
+  });
+});
+
+describe("handleIncoming — swipe-to-reply and forwarded messages", () => {
+  it("resolves a quoted photo/document to its real extracted content, not the raw placeholder", async () => {
+    vi.mocked(runAssistantChat).mockResolvedValue({ text: "That's your BA123 boarding pass." });
+    vi.mocked(getDocumentByWamid).mockReturnValue({
+      id: 1,
+      title: "Boarding pass",
+      filename: "bp.jpg",
+      extractedText: "Flight BA123, seat 14C, gate 22",
+    } as never);
+
+    await handleIncoming({
+      kind: "text",
+      from: "447900000020",
+      text: "what's this",
+      messageId: "m20",
+      quotedMessageId: "wamid.old-photo",
+    });
+
+    expect(getDocumentByWamid).toHaveBeenCalledWith(42, "wamid.old-photo");
+    const history = vi.mocked(runAssistantChat).mock.calls.at(-1)?.[1] as Array<{ content: string }>;
+    expect(history.at(-1)?.content).toContain("Flight BA123, seat 14C, gate 22");
+  });
+
+  it("resolves a quoted plain-text message when it isn't a saved document", async () => {
+    vi.mocked(runAssistantChat).mockResolvedValue({ text: "6pm, at the airport hotel." });
+    vi.mocked(getDocumentByWamid).mockReturnValue(undefined);
+    vi.mocked(getWhatsAppMessageByWamid).mockReturnValue({
+      id: 2,
+      phone: "447900000021",
+      role: "assistant",
+      content: "Your flight is at 6pm.",
+      createdAt: Date.now(),
+    } as never);
+
+    await handleIncoming({
+      kind: "text",
+      from: "447900000021",
+      text: "what time was that again",
+      messageId: "m21",
+      quotedMessageId: "wamid.old-text",
+    });
+
+    const history = vi.mocked(runAssistantChat).mock.calls.at(-1)?.[1] as Array<{ content: string }>;
+    expect(history.at(-1)?.content).toContain("Your flight is at 6pm.");
+  });
+
+  it("tells the model plainly it can't see an untracked quote, instead of staying silent about it", async () => {
+    vi.mocked(runAssistantChat).mockResolvedValue({ text: "..." });
+    vi.mocked(getDocumentByWamid).mockReturnValue(undefined);
+    vi.mocked(getWhatsAppMessageByWamid).mockReturnValue(undefined);
+
+    await handleIncoming({
+      kind: "text",
+      from: "447900000022",
+      text: "what's this",
+      messageId: "m22",
+      quotedMessageId: "wamid.never-recorded",
+    });
+
+    const history = vi.mocked(runAssistantChat).mock.calls.at(-1)?.[1] as Array<{ content: string }>;
+    expect(history.at(-1)?.content).toMatch(/can't see|can't retrieve/i);
+  });
+
+  it("does not alter history when the message has no quote and wasn't forwarded", async () => {
+    vi.mocked(runAssistantChat).mockResolvedValue({ text: "Sure." });
+
+    await handleIncoming({ kind: "text", from: "447900000023", text: "ordinary message", messageId: "m23" });
+
+    expect(getDocumentByWamid).not.toHaveBeenCalled();
+    expect(getWhatsAppMessageByWamid).not.toHaveBeenCalled();
+    // getWhatsAppHistory is mocked to always return [] regardless of appendWhatsAppMessage calls —
+    // with no quote to inject, nothing should have been pushed onto it either.
+    const history = vi.mocked(runAssistantChat).mock.calls.at(-1)?.[1];
+    expect(history).toEqual([]);
   });
 });

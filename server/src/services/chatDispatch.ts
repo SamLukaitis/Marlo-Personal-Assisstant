@@ -14,6 +14,7 @@ import { isHelpTrigger, MARLOWE_HELP_TEXT } from "./whatsappRegistration.js";
 import { sendAssistantReply } from "./whatsappReply.js";
 import { isVersionTrigger, buildVersionText } from "./version.js";
 import { sendWhatsAppMessage } from "../providers/whatsapp.js";
+import { resolveQuotedMessageContext } from "./quotedMessage.js";
 
 // Friendly, non-leaky wording per failure reason — never expose the raw fetch/DNS error detail
 // to the end user, just enough for them to know what to do next.
@@ -97,7 +98,9 @@ export async function handleText(
   ownerId: number,
   from: string,
   text: string,
-  messageId: string
+  messageId: string,
+  quotedMessageId?: string,
+  forwarded?: boolean
 ): Promise<void> {
   appendWhatsAppMessage(ownerId, from, "user", text);
 
@@ -134,6 +137,19 @@ export async function handleText(
     role: m.role,
     content: m.content,
   }));
+
+  // Same pattern as handleLink/handleMedia's docContext: swap the real resolved content into the
+  // just-appended history line (or push it, if history came back empty) so the model answers from
+  // what the swipe-reply actually pointed at instead of guessing — see quotedMessage.ts.
+  const quotedContext = resolveQuotedMessageContext(ownerId, quotedMessageId, forwarded);
+  if (quotedContext) {
+    const content = `${quotedContext}\n\n${text}`;
+    if (history.length > 0) {
+      history[history.length - 1] = { role: "user", content };
+    } else {
+      history.push({ role: "user", content });
+    }
+  }
 
   const reply = await runAssistantChat(ownerId, history, from);
   await sendAssistantReply(ownerId, from, reply, messageId);

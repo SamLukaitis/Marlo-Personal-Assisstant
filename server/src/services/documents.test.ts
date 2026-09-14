@@ -20,13 +20,15 @@ vi.mock("mammoth", () => ({
   default: { extractRawText: (...args: unknown[]) => mockExtractRawText(...args) },
 }));
 
-const { findOrCreateUserByEmail, saveDocument, uploadsDir } = await import("../db/store.js");
+const { findOrCreateUserByEmail, saveDocument, getDocumentByWamid, uploadsDir } = await import("../db/store.js");
 const { encryptBuffer } = await import("./crypto.js");
+const { downloadWhatsAppMedia } = await import("../providers/whatsapp.js");
 const {
   resolveDocumentCategory,
   buildDerivedEntities,
   extractDocxText,
   ingestEmailAttachment,
+  ingestWhatsAppMedia,
   sendSavedDocumentFile,
 } = await import("./documents.js");
 
@@ -139,6 +141,29 @@ beforeEach(() => {
   mockHubGetAttachment.mockReset();
   mockHubGetMessage.mockReset();
   mockSendWhatsAppMediaFromBuffer.mockReset();
+  vi.mocked(downloadWhatsAppMedia).mockReset();
+});
+
+describe("ingestWhatsAppMedia", () => {
+  it("stores the inbound message's wamid on the saved document, resolvable by getDocumentByWamid", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("ingest-media-wamid"));
+    vi.mocked(downloadWhatsAppMedia).mockResolvedValue({
+      buffer: Buffer.from("fake-zip-bytes"),
+      mimeType: "application/zip",
+    });
+    const wamid = `wamid.media-${Date.now()}`;
+
+    const doc = await ingestWhatsAppMedia({
+      ownerId: user.id,
+      phone: "447900000099",
+      mediaId: "media-1",
+      mimeType: "application/zip",
+      wamid,
+    });
+
+    expect(doc.wamid).toBe(wamid);
+    expect(getDocumentByWamid(user.id, wamid)?.id).toBe(doc.id);
+  });
 });
 
 describe("ingestEmailAttachment", () => {
