@@ -113,13 +113,17 @@ describe("checkForImportantEmails", () => {
     expect(hasAlerted(user.id, "important-email:1:old-1")).toBe(true);
   });
 
-  it("filters to unread automated-sender mail only, ignoring read mail and mail from real people", async () => {
+  // A user who opens a flight-booking notification the moment it arrives (entirely normal
+  // behavior) must not lose the alert — unread was never the real "already handled" signal,
+  // hasAlerted's per-message ledger below already is, so a read automated-sender email is still
+  // a valid candidate. Only the sender-type filter (automated vs a real person) narrows this.
+  it("filters to automated-sender mail regardless of read status, ignoring mail from real people", async () => {
     const user = findOrCreateUserByEmail(uniqueEmail("filter"));
     registerActivePhone(user.id);
     await baseline(user.id);
 
     mockHubListNewMessages.mockResolvedValueOnce([
-      fakeMessage({ id: "read", unread: false, from: "no-reply@delta.com" }),
+      fakeMessage({ id: "already-read", unread: false, from: "no-reply@delta.com", subject: "Already read" }),
       fakeMessage({ id: "real-person", unread: true, from: "jane@example.com" }),
       fakeMessage({ id: "candidate", unread: true, from: "no-reply@delta.com", subject: "Flight change" }),
     ]);
@@ -128,7 +132,7 @@ describe("checkForImportantEmails", () => {
 
     expect(mockClassify).toHaveBeenCalledTimes(1);
     const [candidates] = mockClassify.mock.calls[0];
-    expect(candidates).toEqual([{ index: 0, subject: "Flight change", snippet: "" }]);
+    expect(candidates.map((c: { subject: string }) => c.subject)).toEqual(["Already read", "Flight change"]);
   });
 
   // Google/Microsoft's "an app was granted access" notification fires for Marlowe's own OAuth

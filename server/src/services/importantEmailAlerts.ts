@@ -117,8 +117,13 @@ async function notifyAll(numbers: string[], text: string): Promise<boolean> {
 // are deliberately decoupled; revisit only if this proves annoying in practice.
 export async function checkForImportantEmails(ownerId: number): Promise<void> {
   const messages = await hubListNewMessages(ownerId);
+  // Deliberately NOT gated on m.unread — a user who opens a flight-booking/invoice notification
+  // the moment it arrives (completely normal) must not lose the alert. hasAlerted's per-message
+  // ledger below is the real "have we already handled this" check, independent of whether the
+  // user has read it; unread was a redundant, strictly worse substitute that silently and
+  // permanently dropped any message read before this scan ever saw it.
   const candidates = messages.filter(
-    (m) => m.unread && m.from && AUTOMATED_SENDER_PATTERN.test(m.from) && !mentionsOwnApp(m)
+    (m) => m.from && AUTOMATED_SENDER_PATTERN.test(m.from) && !mentionsOwnApp(m)
   );
 
   // First-ever run: baseline the current inbox instead of alerting on everything already sitting
