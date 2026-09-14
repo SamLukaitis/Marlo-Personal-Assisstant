@@ -257,6 +257,7 @@ export interface BookingData {
   startDate: string; // YYYY-MM-DD — flight date / hotel check-in
   endDate: string | null; // hotel check-out; usually null for flights
   sourceAccountEmail?: string; // which connected inbox this was extracted from, if any (documents.ts)
+  tripPrepNotifiedAt?: number; // set by tripPrep.ts once the proactive check-in nudge has fired — one-shot per booking
 }
 
 export function validateBooking(data: unknown, ctx: { uploadedAt: Date }): ValidationResult {

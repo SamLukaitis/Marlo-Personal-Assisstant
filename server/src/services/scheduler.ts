@@ -18,6 +18,7 @@ import { checkForNewImportantMessages } from "./alerts.js";
 import { checkNewEmailsAgainstRecentDocuments } from "./reconciliation.js";
 import { checkDueMemoryReminders } from "./memoryReminders.js";
 import { checkForImportantEmails } from "./importantEmailAlerts.js";
+import { checkTripPrepNudges } from "./tripPrep.js";
 import { todayKey } from "./dateKey.js";
 
 const CHECK_INTERVAL_MS = 5 * 60 * 1000;
@@ -108,6 +109,17 @@ async function runReconciliationCheckForUser(ownerId: number): Promise<void> {
   }
 }
 
+// Gated on the same "travel" tool toggle as the Schengen alert above — no separate setting to
+// add or explain, and consistent with "travel off means no travel-derived proactive pushes".
+async function runTripPrepCheckForUser(ownerId: number): Promise<void> {
+  if (!getEnabledTools(ownerId).has("travel")) return;
+  try {
+    await checkTripPrepNudges(ownerId);
+  } catch (err) {
+    console.error(`scheduler: trip-prep check failed for user ${ownerId}`, err);
+  }
+}
+
 async function runImportantEmailAlertsCheckForUser(ownerId: number): Promise<void> {
   if (getSetting(ownerId, "important_email_alerts_enabled") === "false") return;
   try {
@@ -129,6 +141,9 @@ async function tick(): Promise<void> {
   for (const ownerId of listAllUserIds()) {
     await runDailyCheckForUser(ownerId).catch((err) =>
       console.error(`scheduler: daily check failed for user ${ownerId}`, err)
+    );
+    await runTripPrepCheckForUser(ownerId).catch((err) =>
+      console.error(`scheduler: trip-prep check failed for user ${ownerId}`, err)
     );
     // alerts/reconciliation/important-email each independently call hubListMessages for this
     // same user — sharing one withMessageCache scope collapses the ones that fetch an identical
