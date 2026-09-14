@@ -5,7 +5,7 @@
 import { hubListMessages, hubListNewMessages } from "./hub.js";
 import { isWhatsAppConfigured } from "../providers/whatsapp.js";
 import { sendProactiveMessage } from "./outbound.js";
-import { hasAlerted, markAlerted, listPhoneNumbersForUser, listRecentMatchKeys } from "../db/store.js";
+import { hasAlerted, markAlerted, listPhoneNumbersForUser, listRecentMatchKeys, getSetting } from "../db/store.js";
 import type { UnifiedMessage } from "../providers/types.js";
 
 export interface MatchKeys {
@@ -43,11 +43,15 @@ export function matchTier(keys: MatchKeys, text: string): "strong" | null {
   return null;
 }
 
-export function buildMatchNotification(docTitle: string, keys: MatchKeys, accountEmail?: string): string {
+// No account email — the doc title and identifier are bolded instead so the concrete facts stand
+// out, and a name-first greeting when known, matching the tone of the other two alert types
+// (importantEmailAlerts.ts, alerts.ts).
+export function buildMatchNotification(docTitle: string, keys: MatchKeys, userName: string | null): string {
   const identifier = keys.referenceCode ?? keys.flightNumber ?? "";
-  const datePart = keys.eventDate ? `, ${keys.eventDate}` : "";
-  const prefix = accountEmail ? `[${accountEmail}] ` : "";
-  return `${prefix}📎 Heads up — an email about "${docTitle}" (${identifier}${datePart}) just came in. Worth a look?`;
+  const idPart = identifier ? ` — reference *${identifier}*` : "";
+  const datePart = keys.eventDate ? ` (${keys.eventDate})` : "";
+  const greeting = userName ? `${userName}, ` : "";
+  return `📎 ${greeting}an email about your *${docTitle}*${datePart} just came in${idPart}. Worth a look?`;
 }
 
 const MAX_MATCH_NOTIFICATIONS_PER_RUN = 3;
@@ -92,6 +96,7 @@ export async function checkDocumentAgainstRecentEmails(
     return;
   }
 
+  const userName = getSetting(ownerId, "user_name");
   let sent = 0;
   for (const m of messages) {
     if (sent >= MAX_MATCH_NOTIFICATIONS_PER_RUN) break;
@@ -102,7 +107,7 @@ export async function checkDocumentAgainstRecentEmails(
     const matchKey = `recon-match:${documentId}:${m.accountId}:${m.id}`;
     if (hasAlerted(ownerId, matchKey)) continue;
 
-    const delivered = await notifyMatch(ownerId, buildMatchNotification(docTitle, keys, m.accountEmail));
+    const delivered = await notifyMatch(ownerId, buildMatchNotification(docTitle, keys, userName));
     if (!delivered) continue; // leave this match retriable — don't mark or count it
 
     markAlerted(ownerId, matchKey);
@@ -144,6 +149,7 @@ export async function checkNewEmailsAgainstRecentDocuments(ownerId: number): Pro
   const unscanned = messages.filter((m) => !hasAlerted(ownerId, scanKey(m)));
   if (unscanned.length === 0) return;
 
+  const userName = getSetting(ownerId, "user_name");
   let sent = 0;
   for (const m of unscanned) {
     // Once the per-tick cap is hit, stop entirely rather than continuing — the remaining
@@ -171,7 +177,7 @@ export async function checkNewEmailsAgainstRecentDocuments(ownerId: number): Pro
 
       const delivered = await notifyMatch(
         ownerId,
-        buildMatchNotification(row.docTitle ?? "a saved document", keys, m.accountEmail)
+        buildMatchNotification(row.docTitle ?? "a saved document", keys, userName)
       );
       if (!delivered) {
         hadUndeliveredMatch = true;

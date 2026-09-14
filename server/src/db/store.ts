@@ -3029,6 +3029,7 @@ export function deletePendingRegistration(phone: string): void {
 // ---------------------------------------------------------------------------
 
 export type PostConnectSetupStep =
+  | "ask_name"
   | "ask_first_task"
   | "ask_briefing"
   | "ask_briefing_content"

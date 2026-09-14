@@ -1,4 +1,4 @@
-import { hubListNewMessages, AUTOMATED_SENDER_PATTERN } from "./hub.js";
+import { hubListNewMessages, AUTOMATED_SENDER_PATTERN, senderDisplayName } from "./hub.js";
 import { hasAlerted, markAlerted, getSetting, setSetting, listPhoneNumbersForUser } from "../db/store.js";
 import { isWhatsAppConfigured } from "../providers/whatsapp.js";
 import { sendProactiveMessage } from "./outbound.js";
@@ -49,11 +49,16 @@ export async function checkForNewImportantMessages(ownerId: number): Promise<voi
   const numbers = listPhoneNumbersForUser(ownerId).map((r) => r.phone);
   if (numbers.length === 0) return;
 
+  const userName = getSetting(ownerId, "user_name");
+  const greeting = userName ? `${userName}, ` : "";
   const toSend = unseen.slice(0, MAX_ALERTS_PER_CHECK);
   for (const m of toSend) {
+    // Never the raw email address — senderDisplayName pulls a real name out of the From header
+    // (or falls back to the address's local part) so this reads like a person telling you who
+    // emailed, not a log line.
     await notify(
       numbers,
-      `[${m.accountEmail}] 📬 New message that might need attention:\n"${m.subject}" from ${m.from}\n${m.snippet}`
+      `📬 ${greeting}${senderDisplayName(m.from)} emailed you: "${m.subject}"\n${m.snippet}`
     );
     markAlerted(ownerId, messageKey(m));
   }

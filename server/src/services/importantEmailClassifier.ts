@@ -94,8 +94,13 @@ export function buildClassifyPrompt(candidates: ClassifyCandidate[]): string {
     "(newsletters, marketing, app notifications with no action needed). Omit indices that don't " +
     "match. For each match, also write a one-sentence plain-English summary of what the email " +
     "actually says (the concrete fact — what changed, what's due, what to expect) in your own " +
-    "words. Never copy the snippet verbatim — it may be truncated mid-sentence or contain raw " +
-    `HTML entities.\n\n${emailList}`
+    "words. This summary becomes the whole WhatsApp message the user reads, so: write it as a " +
+    "complete, natural sentence addressed directly to the user (start with 'your' where it fits, " +
+    "e.g. 'Your flight to Paris was delayed to 6:45pm.' or 'Your Hilton reservation is confirmed " +
+    "for 12–15 June.'), and wrap every concrete specific — vendor/airline/hotel name, flight or " +
+    "confirmation number, amount, date, or place — in WhatsApp bold (*text*, single asterisks on " +
+    "each side) so it stands out at a glance. Never copy the snippet verbatim — it may be " +
+    `truncated mid-sentence or contain raw HTML entities.\n\n${emailList}`
   );
 }
 
