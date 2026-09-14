@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 vi.mock("../providers/whatsapp.js", () => ({
   sendWhatsAppMessage: vi.fn(),
@@ -53,6 +53,10 @@ vi.mock("../services/actionHandlers.js", () => ({
 vi.mock("../services/conversationSummary.js", () => ({
   maybeUpdateConversationSummary: vi.fn().mockResolvedValue(undefined),
 }));
+// messageBatching.js is deliberately NOT mocked — chatDispatch.ts/whatsappRoutes.ts now queue
+// through its real debounce logic (against the mocked db/store.js, ai/assistant.js, and
+// whatsappReply.js above), so every test that expects an assistant call needs to advance fake
+// timers past the delay before asserting. See flushBatch() below.
 
 const { sendWhatsAppMessage } = await import("../providers/whatsapp.js");
 const { resolveOwnerByPhone, appendWhatsAppMessage, getDocumentByWamid, getWhatsAppMessageByWamid } = await import(
@@ -65,9 +69,17 @@ const { handleFirstTaskReply, handlePostConnectSetupReply, handleBriefingContent
 const { sendAssistantReply } = await import("../services/whatsappReply.js");
 const { handlePendingActionReply } = await import("../services/actionHandlers.js");
 const { maybeUpdateConversationSummary } = await import("../services/conversationSummary.js");
+const { LONG_DEBOUNCE_MS } = await import("../services/messageBatching.js");
 const { handleIncoming } = await import("./whatsappRoutes.js");
 
+// Advances fake timers past the longest possible debounce delay, letting a message queued via
+// the real messageBatching.js actually flush — safe to call even when nothing was queued.
+async function flushBatch(): Promise<void> {
+  await vi.advanceTimersByTimeAsync(LONG_DEBOUNCE_MS);
+}
+
 beforeEach(() => {
+  vi.useFakeTimers();
   vi.mocked(sendWhatsAppMessage).mockClear();
   vi.mocked(runAssistantChat).mockClear();
   vi.mocked(resolveOwnerByPhone).mockReturnValue(42);
@@ -80,6 +92,10 @@ beforeEach(() => {
   vi.mocked(maybeUpdateConversationSummary).mockClear().mockResolvedValue(undefined);
   vi.mocked(getDocumentByWamid).mockReset();
   vi.mocked(getWhatsAppMessageByWamid).mockReset();
+});
+
+afterEach(() => {
+  vi.useRealTimers();
 });
 
 describe("handleIncoming — help trigger for already-registered users", () => {
@@ -108,6 +124,7 @@ describe("handleIncoming — help trigger for already-registered users", () => {
     vi.mocked(runAssistantChat).mockResolvedValue({ text: "a real reply" });
 
     await handleIncoming({ kind: "text", from: "447900000001", text: "what's on my calendar today?", messageId: "m2" });
+    await flushBatch();
 
     expect(runAssistantChat).toHaveBeenCalledTimes(1);
   });
@@ -195,6 +212,7 @@ describe("handleIncoming — location messages", () => {
       name: "Big Ben",
       address: "London SW1A 0AA",
     });
+    await flushBatch();
 
     expect(vi.mocked(appendWhatsAppMessage).mock.calls[0]).toEqual([
       42,
@@ -271,6 +289,7 @@ describe("handleIncoming — routes runAssistantChat's result through sendAssist
     vi.mocked(runAssistantChat).mockResolvedValue({ text: "a real reply" });
 
     await handleIncoming({ kind: "text", from: "447900000005", text: "what's on my calendar today?", messageId: "m6" });
+    await flushBatch();
 
     expect(sendAssistantReply).toHaveBeenCalledWith(42, "447900000005", { text: "a real reply" }, "m6");
   });
@@ -289,6 +308,7 @@ describe("handleIncoming — rolling conversation summary", () => {
     vi.mocked(runAssistantChat).mockResolvedValue({ text: "reply" });
 
     await handleIncoming({ kind: "text", from: "447900000011", text: "what's on my calendar today?", messageId: "m11" });
+    await flushBatch();
 
     expect(runAssistantChat).toHaveBeenCalledWith(42, expect.anything(), "447900000011");
   });
@@ -327,6 +347,7 @@ describe("handleIncoming — swipe-to-reply and forwarded messages", () => {
       messageId: "m20",
       quotedMessageId: "wamid.old-photo",
     });
+    await flushBatch();
 
     expect(getDocumentByWamid).toHaveBeenCalledWith(42, "wamid.old-photo");
     const history = vi.mocked(runAssistantChat).mock.calls.at(-1)?.[1] as Array<{ content: string }>;
@@ -351,6 +372,7 @@ describe("handleIncoming — swipe-to-reply and forwarded messages", () => {
       messageId: "m21",
       quotedMessageId: "wamid.old-text",
     });
+    await flushBatch();
 
     const history = vi.mocked(runAssistantChat).mock.calls.at(-1)?.[1] as Array<{ content: string }>;
     expect(history.at(-1)?.content).toContain("Your flight is at 6pm.");
@@ -368,6 +390,7 @@ describe("handleIncoming — swipe-to-reply and forwarded messages", () => {
       messageId: "m22",
       quotedMessageId: "wamid.never-recorded",
     });
+    await flushBatch();
 
     const history = vi.mocked(runAssistantChat).mock.calls.at(-1)?.[1] as Array<{ content: string }>;
     expect(history.at(-1)?.content).toMatch(/can't see|can't retrieve/i);
@@ -377,6 +400,7 @@ describe("handleIncoming — swipe-to-reply and forwarded messages", () => {
     vi.mocked(runAssistantChat).mockResolvedValue({ text: "Sure." });
 
     await handleIncoming({ kind: "text", from: "447900000023", text: "ordinary message", messageId: "m23" });
+    await flushBatch();
 
     expect(getDocumentByWamid).not.toHaveBeenCalled();
     expect(getWhatsAppMessageByWamid).not.toHaveBeenCalled();
