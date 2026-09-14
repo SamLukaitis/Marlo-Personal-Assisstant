@@ -219,6 +219,10 @@ just shows "Not configured".
 > Test numbers work indefinitely for personal use with up to 5 approved recipients — you
 > don't need Meta Business verification unless you want a dedicated permanent number.
 
+> **Moving to a real business number?** See `docs/whatsapp-test-to-live-runbook.md` — in
+> particular the live WhatsApp Business Account must be subscribed to the app by hand
+> (`npm run whatsapp:check -- <WABA_ID> --subscribe`), and templates must be recreated on it.
+
 ### 4. Location check-ins (optional — automatic travel logging)
 
 This logs where you've been without any WhatsApp round-trip — a phone automation posts your
