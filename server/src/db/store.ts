@@ -234,6 +234,28 @@ db.exec(`
     text       TEXT NOT NULL,
     created_at INTEGER NOT NULL
   );
+
+  -- Durable cache of every email Marlowe has ever seen metadata for or opened, keyed so a
+  -- re-list/re-open upserts the same row rather than piling up duplicates. subject/sender/
+  -- snippet/received_at are populated the moment hub.ts lists a message (cheap — Gmail/Outlook
+  -- already return this in the same call); body stays NULL until get_message actually opens it
+  -- in full. Backs search_read_emails (assistant.ts) — durable ground truth for a previously
+  -- seen/opened email even after it ages out of chat history, or is later archived/deleted.
+  CREATE TABLE IF NOT EXISTS read_emails (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    owner_id      INTEGER NOT NULL REFERENCES users(id),
+    account_id    INTEGER NOT NULL,
+    account_email TEXT NOT NULL,
+    message_id    TEXT NOT NULL,
+    subject       TEXT NOT NULL,
+    sender        TEXT NOT NULL,
+    snippet       TEXT NOT NULL,
+    body          TEXT,
+    received_at   TEXT NOT NULL,
+    read_at       INTEGER NOT NULL,
+    UNIQUE(owner_id, account_id, message_id)
+  );
+  CREATE INDEX IF NOT EXISTS idx_read_emails_owner ON read_emails(owner_id);
 `);
 
 // Lightweight migration (same pattern as accounts.auth_broken below): users predates the is_admin
@@ -2075,6 +2097,84 @@ export function findEntityByName(
   );
 }
 
+export interface ReadEmailRow {
+  id: number;
+  accountId: number;
+  accountEmail: string;
+  messageId: string;
+  subject: string;
+  from: string;
+  snippet: string;
+  body: string | null;
+  receivedAt: string;
+  readAt: number;
+}
+
+// Writes/refreshes the read_emails cache row for one message — called from hub.ts's
+// fetchMessages (metadata only, every time a message is listed) and from assistant.ts's
+// get_message tool (with body, once the full email is actually opened). Upserts on
+// (owner, account, message id) so a re-list or a re-open refreshes the same row rather than
+// piling up duplicates. body is only ever moved forward, never backward: a later metadata-only
+// upsert (no body given) must not erase a body an earlier get_message already saved, so it's
+// COALESCEd against whatever's already stored rather than overwritten unconditionally.
+export function upsertReadEmail(
+  ownerId: number,
+  message: {
+    accountId: number;
+    accountEmail: string;
+    id: string;
+    subject: string;
+    from: string;
+    snippet: string;
+    receivedAt: string;
+    body?: string | null;
+  }
+): void {
+  db.prepare(
+    `INSERT INTO read_emails
+       (owner_id, account_id, account_email, message_id, subject, sender, snippet, body, received_at, read_at)
+     VALUES (@ownerId, @accountId, @accountEmail, @messageId, @subject, @sender, @snippet, @body, @receivedAt, @readAt)
+     ON CONFLICT(owner_id, account_id, message_id) DO UPDATE SET
+       account_email = excluded.account_email,
+       subject       = excluded.subject,
+       sender        = excluded.sender,
+       snippet       = excluded.snippet,
+       body          = COALESCE(excluded.body, read_emails.body),
+       received_at   = excluded.received_at,
+       read_at       = excluded.read_at`
+  ).run({
+    ownerId,
+    accountId: message.accountId,
+    accountEmail: message.accountEmail,
+    messageId: message.id,
+    subject: message.subject,
+    sender: message.from,
+    snippet: message.snippet,
+    body: message.body ?? null,
+    receivedAt: message.receivedAt,
+    readAt: Date.now(),
+  });
+}
+
+// Plain LIKE, not FTS — same precedent as searchDocuments (store.ts above): per-user volume here
+// is bounded by how much mail Marlowe actually lists/opens, not a full message-transcript firehose
+// like whatsapp_messages/memory_notes, so FTS5's extra machinery (virtual table + triggers) isn't
+// worth it. Searches every previously-seen email regardless of whether it was ever fully opened —
+// a metadata-only row (body still NULL) still matches on subject/sender/snippet.
+export function searchReadEmails(ownerId: number, query: string, limit = 10): ReadEmailRow[] {
+  const like = `%${query}%`;
+  const rows = db
+    .prepare(
+      `SELECT id, account_id AS accountId, account_email AS accountEmail, message_id AS messageId,
+              subject, sender, snippet, body, received_at AS receivedAt, read_at AS readAt
+       FROM read_emails
+       WHERE owner_id = ? AND (subject LIKE ? OR sender LIKE ? OR snippet LIKE ? OR body LIKE ?)
+       ORDER BY id DESC LIMIT ?`
+    )
+    .all(ownerId, like, like, like, like, limit) as (Omit<ReadEmailRow, "from"> & { sender: string })[];
+  return rows.map(({ sender, ...rest }) => ({ ...rest, from: sender }));
+}
+
 // ---------------------------------------------------------------------------
 // Users, invites, sessions — the identity layer. Everything above this line is
 // per-tenant *data*; everything below is what determines which tenant a request belongs to.
@@ -2636,6 +2736,7 @@ export function deleteUserCompletely(ownerId: number): { deletedDocumentPaths: s
     db.prepare(`DELETE FROM entities WHERE owner_id = ?`).run(ownerId);
     db.prepare(`DELETE FROM links WHERE owner_id = ?`).run(ownerId);
     db.prepare(`DELETE FROM alerted_messages WHERE owner_id = ?`).run(ownerId);
+    db.prepare(`DELETE FROM read_emails WHERE owner_id = ?`).run(ownerId);
     db.prepare(`DELETE FROM user_enabled_tools WHERE owner_id = ?`).run(ownerId);
     db.prepare(`DELETE FROM pending_setup WHERE owner_id = ?`).run(ownerId);
     db.prepare(`DELETE FROM pending_actions WHERE owner_id = ?`).run(ownerId);

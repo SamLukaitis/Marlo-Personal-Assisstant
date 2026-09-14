@@ -6,7 +6,14 @@
 // docs/superpowers/specs/2026-08-26-important-email-alerts-design.md.
 
 import { hubListMessages, hubGetMessage, AUTOMATED_SENDER_PATTERN } from "./hub.js";
-import { hasAlerted, markAlerted, getSetting, setSetting, listPhoneNumbersForUser } from "../db/store.js";
+import {
+  hasAlerted,
+  markAlerted,
+  getSetting,
+  setSetting,
+  listPhoneNumbersForUser,
+  saveEntity,
+} from "../db/store.js";
 import { isWhatsAppConfigured } from "../providers/whatsapp.js";
 import { sendProactiveMessage } from "./outbound.js";
 import {
@@ -21,6 +28,25 @@ import type { UnifiedMessage } from "../providers/types.js";
 
 const MAX_ALERTS_PER_CHECK = 5;
 const BASELINE_KEY = "important_email_baseline_set";
+
+// entities.type for a flagged email, stored the moment its alert is actually delivered — durable,
+// queryable ground truth (via list_flagged_emails in assistant.ts) so the assistant can answer a
+// later question about a flight change/invoice/etc. from the real classified data instead of its
+// own prior paraphrase (or nothing at all, once that reply ages out of chat history). Never
+// injected into the system prompt, so it costs nothing on turns that don't ask for it — same
+// on-demand-tool-call cost as search_messages.
+export const IMPORTANT_EMAIL_ENTITY_TYPE = "important_email";
+
+export interface ImportantEmailEntityData {
+  accountId: number;
+  accountEmail: string;
+  messageId: string;
+  category: ImportantEmailCategory;
+  subject: string;
+  from: string;
+  summary: string;
+  receivedAt: string;
+}
 
 // Google/Microsoft send an automated "an app was granted access to your account" notification
 // every time the user connects (or reconnects) their mailbox — including to Marlowe itself during
@@ -161,6 +187,19 @@ export async function checkForImportantEmails(ownerId: number): Promise<void> {
     const delivered = await notifyAll(numbers, text);
     if (delivered) {
       markAlerted(ownerId, messageKey(m));
+      saveEntity<ImportantEmailEntityData>(ownerId, {
+        type: IMPORTANT_EMAIL_ENTITY_TYPE,
+        data: {
+          accountId: m.accountId,
+          accountEmail: m.accountEmail,
+          messageId: m.id,
+          category,
+          subject: m.subject,
+          from: m.from,
+          summary: summary?.trim() || m.snippet,
+          receivedAt: m.receivedAt,
+        },
+      });
       if (confirmable) {
         setPendingInvoiceForward(ownerId, confirmable);
         offeredInvoiceConfirm = true;

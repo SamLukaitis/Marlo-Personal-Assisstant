@@ -6,14 +6,18 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 const mockGoogleListMessages = vi.fn();
 const mockGoogleSendMessage = vi.fn();
 const mockGoogleArchiveMessages = vi.fn();
+const mockGoogleGetMessage = vi.fn();
 vi.mock("../providers/google.js", () => ({
   googleListMessages: (...args: unknown[]) => mockGoogleListMessages(...args),
   googleSendMessage: (...args: unknown[]) => mockGoogleSendMessage(...args),
   googleArchiveMessages: (...args: unknown[]) => mockGoogleArchiveMessages(...args),
+  googleGetMessage: (...args: unknown[]) => mockGoogleGetMessage(...args),
 }));
 vi.mock("../providers/microsoft.js", () => ({}));
 
-const { findOrCreateUserByEmail, upsertAccount, updateAccountPermissions } = await import("../db/store.js");
+const { findOrCreateUserByEmail, upsertAccount, updateAccountPermissions, searchReadEmails } = await import(
+  "../db/store.js"
+);
 const { hubListMessages, hubSendMessage, hubArchiveMessages, hubGetMessage, withMessageCache } =
   await import("./hub.js");
 
@@ -41,6 +45,7 @@ beforeEach(() => {
   mockGoogleListMessages.mockReset();
   mockGoogleSendMessage.mockReset();
   mockGoogleArchiveMessages.mockReset();
+  mockGoogleGetMessage.mockReset();
 });
 
 describe("per-account permission enforcement", () => {
@@ -152,6 +157,65 @@ describe("per-account permission enforcement", () => {
       /[Rr]eading is turned off/
     );
     expect(mockGoogleListMessages).not.toHaveBeenCalled();
+  });
+});
+
+describe("read_emails cache", () => {
+  it("hubListMessages persists metadata for every listed message, with no body yet", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("hub-cache-list"));
+    const account = upsertAccount(user.id, {
+      provider: "google",
+      email: uniqueEmail("inbox-cache-list"),
+      accessToken: "t",
+      refreshToken: "r",
+      expiryDate: null,
+    });
+    mockGoogleListMessages.mockResolvedValueOnce([
+      { ...fakeMessage(account.id, "cache-1"), subject: "Your order shipped" },
+    ]);
+
+    await hubListMessages(user.id, { accountId: account.id });
+
+    const results = searchReadEmails(user.id, "shipped");
+    expect(results).toHaveLength(1);
+    expect(results[0]).toMatchObject({ messageId: "cache-1", subject: "Your order shipped", body: null });
+  });
+
+  it("hubGetMessage persists the full body onto the cached row", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("hub-cache-get"));
+    const account = upsertAccount(user.id, {
+      provider: "google",
+      email: uniqueEmail("inbox-cache-get"),
+      accessToken: "t",
+      refreshToken: "r",
+      expiryDate: null,
+    });
+    mockGoogleGetMessage.mockResolvedValueOnce({
+      ...fakeMessage(account.id, "cache-2"),
+      body: "Full text with the tracking number 98765.",
+    });
+
+    await hubGetMessage(user.id, account.id, "cache-2");
+
+    const results = searchReadEmails(user.id, "tracking number");
+    expect(results).toHaveLength(1);
+    expect(results[0].body).toBe("Full text with the tracking number 98765.");
+  });
+
+  it("does not cache anything when hubGetMessage returns null (message not found)", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("hub-cache-get-miss"));
+    const account = upsertAccount(user.id, {
+      provider: "google",
+      email: uniqueEmail("inbox-cache-get-miss"),
+      accessToken: "t",
+      refreshToken: "r",
+      expiryDate: null,
+    });
+    mockGoogleGetMessage.mockResolvedValueOnce(null);
+
+    await hubGetMessage(user.id, account.id, "missing");
+
+    expect(searchReadEmails(user.id, "missing")).toHaveLength(0);
   });
 });
 

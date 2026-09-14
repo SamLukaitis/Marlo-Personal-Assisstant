@@ -29,10 +29,11 @@ vi.mock("./importantEmailClassifier.js", async (importOriginal) => {
 });
 
 const { sendWhatsAppMessage, sendWhatsAppTemplate, isWhatsAppConfigured } = await import("../providers/whatsapp.js");
-const { findOrCreateUserByEmail, addPhoneNumberForUser, recordInboundMessage, hasAlerted } = await import(
-  "../db/store.js"
+const { findOrCreateUserByEmail, addPhoneNumberForUser, recordInboundMessage, hasAlerted, listEntities } =
+  await import("../db/store.js");
+const { checkForImportantEmails, formatImportantEmailAlert, IMPORTANT_EMAIL_ENTITY_TYPE } = await import(
+  "./importantEmailAlerts.js"
 );
-const { checkForImportantEmails, formatImportantEmailAlert } = await import("./importantEmailAlerts.js");
 const { setXeroForwardingEmail } = await import("./xero.js");
 const { getPendingInvoiceForward } = await import("./xeroInvoiceConfirmation.js");
 
@@ -271,6 +272,47 @@ describe("checkForImportantEmails", () => {
 
     expect(sendWhatsAppMessage).not.toHaveBeenCalled();
     expect(hasAlerted(user.id, "important-email:1:nonum-1")).toBe(false);
+  });
+
+  it("stores the matched email as a queryable entity when the alert is delivered", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("entity-store"));
+    registerActivePhone(user.id);
+    await baseline(user.id);
+
+    mockHubListMessages.mockResolvedValueOnce([
+      fakeMessage({ id: "flight-entity", subject: "Your flight changed", from: "no-reply@delta.com" }),
+    ]);
+    mockClassify.mockResolvedValueOnce(
+      new Map([[0, { category: "flight_change", summary: "Your gate moved to B12." }]])
+    );
+
+    await checkForImportantEmails(user.id);
+
+    const stored = listEntities(user.id, { type: IMPORTANT_EMAIL_ENTITY_TYPE });
+    expect(stored).toHaveLength(1);
+    expect(stored[0].data).toMatchObject({
+      accountId: 1,
+      accountEmail: "test@example.com",
+      messageId: "flight-entity",
+      category: "flight_change",
+      subject: "Your flight changed",
+      from: "no-reply@delta.com",
+      summary: "Your gate moved to B12.",
+    });
+  });
+
+  it("does not store an entity when delivery fails", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("entity-deliver-fail"));
+    registerActivePhone(user.id);
+    await baseline(user.id);
+
+    mockHubListMessages.mockResolvedValueOnce([fakeMessage({ id: "fail-entity" })]);
+    mockClassify.mockResolvedValueOnce(new Map([[0, { category: "invoice_due", summary: "" }]]));
+    vi.mocked(sendWhatsAppMessage).mockRejectedValueOnce(new Error("network down"));
+
+    await checkForImportantEmails(user.id);
+
+    expect(listEntities(user.id, { type: IMPORTANT_EMAIL_ENTITY_TYPE })).toHaveLength(0);
   });
 
   it("caps alerts per tick and sends a summary for the overflow", async () => {

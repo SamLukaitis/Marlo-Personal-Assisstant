@@ -3,6 +3,7 @@ import {
   getAccount,
   markAccountAuthBroken,
   markAccountAuthHealthy,
+  upsertReadEmail,
   type AccountRow,
 } from "../db/store.js";
 import * as g from "../providers/google.js";
@@ -119,6 +120,20 @@ export function withMessageCache<T>(fn: () => Promise<T>): Promise<T> {
   });
 }
 
+// Every message this returns already crossed the wire (Gmail/Outlook's list call includes
+// subject/from/snippet/date at no extra cost — see google.ts's messages.get(format: "metadata")
+// comment) so persisting it here is free: no extra provider call, no LLM call. This is what lets
+// a later question about ANY previously listed/searched email (not just ones the classifier
+// flagged as important) be answered from real stored data instead of the model's memory of its
+// own past reply — see search_read_emails in assistant.ts. Deliberately unconditional (every
+// caller of hubListMessages: search_messages, list_recent_messages, the background scans) rather
+// than gated to one code path, so nothing needs to remember to opt in.
+function cacheMessageMetadata(accounts: AccountRow[], messages: UnifiedMessage[]): void {
+  const ownerId = accounts[0]?.ownerId;
+  if (ownerId === undefined) return;
+  for (const m of messages) upsertReadEmail(ownerId, m);
+}
+
 async function fetchMessages(
   accounts: AccountRow[],
   opts: { query?: string; limit?: number }
@@ -130,7 +145,9 @@ async function fetchMessages(
         : ms.microsoftListMessages(a, opts)
     )
   );
-  return settleForAccounts(accounts, results).sort((a, b) => (a.receivedAt < b.receivedAt ? 1 : -1));
+  const messages = settleForAccounts(accounts, results).sort((a, b) => (a.receivedAt < b.receivedAt ? 1 : -1));
+  cacheMessageMetadata(accounts, messages);
+  return messages;
 }
 
 export async function hubListMessages(
@@ -166,9 +183,15 @@ export async function hubGetMessage(
 ): Promise<UnifiedMessage | null> {
   const account = requireAccount(ownerId, accountId);
   requirePermission(account, "read");
-  return account.provider === "google"
-    ? g.googleGetMessage(account, messageId)
-    : ms.microsoftGetMessage(account, messageId);
+  const message =
+    account.provider === "google"
+      ? await g.googleGetMessage(account, messageId)
+      : await ms.microsoftGetMessage(account, messageId);
+  // Full body, on top of whatever metadata a prior list already cached — every caller (the
+  // assistant's get_message tool, the extract_email_attachment flow, the invoice-attachment
+  // check in importantEmailAlerts.ts, the web UI's message view) gets this for free.
+  if (message) upsertReadEmail(ownerId, message);
+  return message;
 }
 
 export async function hubGetAttachment(
