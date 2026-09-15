@@ -88,6 +88,14 @@ export interface EventInput {
   title: string;
   start: string; // ISO datetime
   end: string; // ISO datetime
+  // IANA timezone name (e.g. "America/Bogota") for start/end, only when the event happens
+  // somewhere other than the user's home timezone (a flight, a trip abroad). When set, `start`/
+  // `end` are the plain local clock time at that place (no Z/offset) — the provider is told to
+  // interpret them in this zone, rather than the caller doing UTC conversion itself. A flight's
+  // departure and arrival cities can be in different zones, so these are independent. Omitted for
+  // an ordinary event in the user's own timezone, preserving the previous UTC/'Z' behavior.
+  startTimeZone?: string;
+  endTimeZone?: string;
   location?: string;
   description?: string;
 }

@@ -437,8 +437,8 @@ export async function googleCreateEvent(
       summary: input.title,
       location: input.location,
       description: input.description,
-      start: { dateTime: input.start },
-      end: { dateTime: input.end },
+      start: { dateTime: input.start, timeZone: input.startTimeZone },
+      end: { dateTime: input.end, timeZone: input.endTimeZone },
       colorId: colorForAccount(account.id),
     },
   });
@@ -458,8 +458,10 @@ export async function googleUpdateEvent(
       ...(input.title !== undefined ? { summary: input.title } : {}),
       ...(input.location !== undefined ? { location: input.location } : {}),
       ...(input.description !== undefined ? { description: input.description } : {}),
-      ...(input.start !== undefined ? { start: { dateTime: input.start } } : {}),
-      ...(input.end !== undefined ? { end: { dateTime: input.end } } : {}),
+      ...(input.start !== undefined
+        ? { start: { dateTime: input.start, timeZone: input.startTimeZone } }
+        : {}),
+      ...(input.end !== undefined ? { end: { dateTime: input.end, timeZone: input.endTimeZone } } : {}),
     },
   });
   return eventToCalendarEvent(account, res.data);

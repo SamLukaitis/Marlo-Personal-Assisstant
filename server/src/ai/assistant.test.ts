@@ -10,9 +10,16 @@ vi.mock("../services/documents.js", () => ({
 }));
 
 const mockHubGetMessage = vi.fn();
+const mockHubCreateEvent = vi.fn();
+const mockHubUpdateEvent = vi.fn();
 vi.mock("../services/hub.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../services/hub.js")>();
-  return { ...actual, hubGetMessage: (...args: unknown[]) => mockHubGetMessage(...args) };
+  return {
+    ...actual,
+    hubGetMessage: (...args: unknown[]) => mockHubGetMessage(...args),
+    hubCreateEvent: (...args: unknown[]) => mockHubCreateEvent(...args),
+    hubUpdateEvent: (...args: unknown[]) => mockHubUpdateEvent(...args),
+  };
 });
 
 import {
@@ -244,6 +251,75 @@ describe("runTool defense-in-depth", () => {
     const user = findOrCreateUserByEmail(uniqueEmail("defense-remember"));
     const result = await runTool(user.id, "remember", { note: "test note" });
     expect(result).toEqual({ ok: true });
+  });
+});
+
+// Regression coverage for a real bug: calendar events for something outside the user's home
+// timezone (a flight, a trip abroad) always ended up in the user's home timezone instead of the
+// event's real local time. See providers/google.calendarEvent.test.ts and
+// microsoft.calendarEvent.test.ts for the provider-level fix — this covers that runTool actually
+// threads the tool's start_timezone/end_timezone input through to hubCreateEvent/hubUpdateEvent
+// as EventInput's startTimeZone/endTimeZone.
+describe("create_calendar_event / update_calendar_event — timezone passthrough", () => {
+  beforeEach(() => {
+    mockHubCreateEvent.mockReset().mockResolvedValue({ id: "evt-1" });
+    mockHubUpdateEvent.mockReset().mockResolvedValue({ id: "evt-1" });
+  });
+
+  it("threads start_timezone/end_timezone into hubCreateEvent's EventInput", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("event-tz-create"));
+
+    await runTool(user.id, "create_calendar_event", {
+      account_id: 1,
+      title: "Flight to Lima",
+      start: "2026-09-19T17:29:00",
+      end: "2026-09-19T20:35:00",
+      start_timezone: "America/Bogota",
+      end_timezone: "America/Lima",
+    });
+
+    expect(mockHubCreateEvent).toHaveBeenCalledWith(
+      user.id,
+      1,
+      expect.objectContaining({ startTimeZone: "America/Bogota", endTimeZone: "America/Lima" })
+    );
+  });
+
+  it("passes undefined timezones through when the model omits them (ordinary home-timezone event)", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("event-tz-create-omitted"));
+
+    await runTool(user.id, "create_calendar_event", {
+      account_id: 1,
+      title: "Dentist",
+      start: "2026-09-19T09:00:00Z",
+      end: "2026-09-19T09:30:00Z",
+    });
+
+    expect(mockHubCreateEvent).toHaveBeenCalledWith(
+      user.id,
+      1,
+      expect.objectContaining({ startTimeZone: undefined, endTimeZone: undefined })
+    );
+  });
+
+  it("threads start_timezone/end_timezone into hubUpdateEvent's EventInput too", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("event-tz-update"));
+
+    await runTool(user.id, "update_calendar_event", {
+      account_id: 1,
+      event_id: "evt-1",
+      start: "2026-09-19T18:00:00",
+      end: "2026-09-19T21:00:00",
+      start_timezone: "America/Bogota",
+      end_timezone: "America/Lima",
+    });
+
+    expect(mockHubUpdateEvent).toHaveBeenCalledWith(
+      user.id,
+      1,
+      "evt-1",
+      expect.objectContaining({ startTimeZone: "America/Bogota", endTimeZone: "America/Lima" })
+    );
   });
 });
 

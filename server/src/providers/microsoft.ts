@@ -501,8 +501,8 @@ export async function microsoftCreateEvent(
     body: input.description
       ? { contentType: "Text", content: input.description }
       : undefined,
-    start: { dateTime: input.start, timeZone: "UTC" },
-    end: { dateTime: input.end, timeZone: "UTC" },
+    start: { dateTime: input.start, timeZone: input.startTimeZone ?? "UTC" },
+    end: { dateTime: input.end, timeZone: input.endTimeZone ?? "UTC" },
   });
   return graphEventToCalendarEvent(account, event);
 }
@@ -518,8 +518,12 @@ export async function microsoftUpdateEvent(
     ...(input.description !== undefined
       ? { body: { contentType: "Text", content: input.description } }
       : {}),
-    ...(input.start !== undefined ? { start: { dateTime: input.start, timeZone: "UTC" } } : {}),
-    ...(input.end !== undefined ? { end: { dateTime: input.end, timeZone: "UTC" } } : {}),
+    ...(input.start !== undefined
+      ? { start: { dateTime: input.start, timeZone: input.startTimeZone ?? "UTC" } }
+      : {}),
+    ...(input.end !== undefined
+      ? { end: { dateTime: input.end, timeZone: input.endTimeZone ?? "UTC" } }
+      : {}),
   });
   return graphEventToCalendarEvent(account, event);
 }
