@@ -11,7 +11,6 @@ import {
   markAlerted,
   getSetting,
   setSetting,
-  getPendingSetup,
   listPhoneNumbersForUser,
   saveEntity,
 } from "../db/store.js";
@@ -25,11 +24,25 @@ import {
 } from "./importantEmailClassifier.js";
 import { getXeroForwardingEmail } from "./xero.js";
 import { setPendingInvoiceForward } from "./xeroInvoiceConfirmation.js";
-import { incrementSuppressedOnboardingAlerts } from "./onboardingAlertSuppression.js";
 import type { UnifiedMessage } from "../providers/types.js";
 
 const MAX_ALERTS_PER_CHECK = 5;
 const BASELINE_KEY = "important_email_baseline_set";
+
+// Priority order for scanAndCurateImportantEmailsForOnboarding's preview — most-urgent-feeling
+// first, so a security alert or government letter never gets buried behind a routine booking
+// confirmation just because it happened to sort later in the inbox.
+const ONBOARDING_PREVIEW_CATEGORY_PRIORITY: ImportantEmailCategory[] = [
+  "security_alert",
+  "government_mail",
+  "flight_change",
+  "reservation_confirmed",
+  "invoice_due",
+  "refund_dispute",
+  "delivery_notification",
+  "subscription_renewal",
+];
+const ONBOARDING_PREVIEW_LIMIT = 3;
 
 // entities.type for a flagged email, stored the moment its alert is actually delivered — durable,
 // queryable ground truth (via list_flagged_emails in assistant.ts) so the assistant can answer a
@@ -178,35 +191,6 @@ export async function checkForImportantEmails(ownerId: number): Promise<void> {
     .filter((x): x is { m: UnifiedMessage; match: ClassifyMatch } => !!x.match);
   if (matches.length === 0) return;
 
-  // While the post-connect onboarding chain (postConnectSetup.ts) is still in progress, don't
-  // interleave individual proactive alerts into that conversation — a fresh connection commonly
-  // has a backlog of already-existing important-looking mail, and pushing it as a burst of
-  // separate WhatsApp messages right as the user is trying to answer onboarding's own questions
-  // was a real, reported bug. Still record every match exactly as if it had been sent
-  // (list_flagged_emails and future ticks must see it as handled) — only the actual push and the
-  // Xero forward offer (which needs a real delivered message to reply to) are deferred.
-  // sendClosingMessage mentions the total once, via takeSuppressedOnboardingAlertCount.
-  if (getPendingSetup(ownerId) !== null) {
-    for (const { m, match } of matches) {
-      markAlerted(ownerId, messageKey(m));
-      saveEntity<ImportantEmailEntityData>(ownerId, {
-        type: IMPORTANT_EMAIL_ENTITY_TYPE,
-        data: {
-          accountId: m.accountId,
-          accountEmail: m.accountEmail,
-          messageId: m.id,
-          category: match.category,
-          subject: m.subject,
-          from: m.from,
-          summary: match.summary?.trim() || m.snippet,
-          receivedAt: m.receivedAt,
-        },
-      });
-    }
-    incrementSuppressedOnboardingAlerts(ownerId, matches.length);
-    return;
-  }
-
   const toSend = matches.slice(0, MAX_ALERTS_PER_CHECK);
   const userName = getSetting(ownerId, "user_name");
   // At most one invoice_due match per tick gets the "reply yes" offer — there's only one pending
@@ -259,4 +243,104 @@ export async function checkForImportantEmails(ownerId: number): Promise<void> {
       for (const { m } of rest) markAlerted(ownerId, messageKey(m));
     }
   }
+}
+
+export interface OnboardingImportantEmailPreview {
+  lines: string[];
+  moreCount: number;
+}
+
+// Runs once, synchronously, at the exact moment a mailbox finishes connecting
+// (postConnectSetup.ts's startPostConnectSetup) — classifies the CURRENT inbox backlog right
+// then and there, baselines every candidate found (matched or not) so checkForImportantEmails's
+// own scheduler-driven scan never re-examines or re-alerts on any of it, and returns a curated
+// preview (the top ONBOARDING_PREVIEW_LIMIT by ONBOARDING_PREVIEW_CATEGORY_PRIORITY, plus a count
+// of the rest) for the caller to fold into its own "Connected!" message. Never sends a WhatsApp
+// message itself — sending is entirely the caller's job.
+//
+// This is what makes the *first* scan happen at a deterministic, known-good moment instead of
+// whenever the next 5-minute scheduler tick happens to land, which was a real, reported bug (see
+// onboardingAlertSuppression.ts's module comment) — alerts.ts/reconciliation.ts still rely on
+// that grace-period approach since neither has a classifier to curate a preview from.
+export async function scanAndCurateImportantEmailsForOnboarding(
+  ownerId: number
+): Promise<OnboardingImportantEmailPreview | null> {
+  // Already baselined (e.g. a scheduler tick somehow beat this call to it) — nothing left for a
+  // one-time onboarding preview to do; the scheduler's own scan is now the source of truth.
+  if (getSetting(ownerId, BASELINE_KEY) === "true") return null;
+
+  let messages: UnifiedMessage[];
+  try {
+    messages = await hubListNewMessages(ownerId);
+  } catch (err) {
+    console.error(`importantEmailAlerts: onboarding scan failed to list messages for owner ${ownerId}`, err);
+    // BASELINE_KEY stays unset — checkForImportantEmails's own first-run branch still covers
+    // this account's very first scheduler tick, just silently (no curated preview), same as
+    // before this feature existed.
+    return null;
+  }
+  const candidates = messages.filter(
+    (m) => m.from && AUTOMATED_SENDER_PATTERN.test(m.from) && !mentionsOwnApp(m)
+  );
+
+  // This scan IS the baseline, regardless of whether anything below actually matches — set it
+  // now so checkForImportantEmails's own first-run branch is never reached for this owner again;
+  // from here on its `unscanned` filter sees only genuinely new mail.
+  setSetting(ownerId, BASELINE_KEY, "true");
+  if (candidates.length === 0) return null;
+
+  let classified: Map<number, ClassifyMatch>;
+  try {
+    classified = await classifyImportantEmails(
+      candidates.map((m, index) => ({ index, subject: m.subject, snippet: m.snippet })),
+      ownerId
+    );
+  } catch (err) {
+    console.error(`importantEmailAlerts: onboarding classification failed for owner ${ownerId}`, err);
+    // Candidates deliberately stay unmarked even though BASELINE_KEY is now true —
+    // checkForImportantEmails's `unscanned` filter will pick every one of them straight back up
+    // on its first tick and classify+alert normally, same as any other new mail. Losing the
+    // one-time curated preview here is acceptable; losing the alerts entirely would not be.
+    return null;
+  }
+
+  for (let i = 0; i < candidates.length; i++) {
+    if (!classified.has(i)) markAlerted(ownerId, messageKey(candidates[i]));
+  }
+
+  const matches = candidates
+    .map((m, index) => ({ m, match: classified.get(index) }))
+    .filter((x): x is { m: UnifiedMessage; match: ClassifyMatch } => !!x.match);
+
+  for (const { m, match } of matches) {
+    markAlerted(ownerId, messageKey(m));
+    saveEntity<ImportantEmailEntityData>(ownerId, {
+      type: IMPORTANT_EMAIL_ENTITY_TYPE,
+      data: {
+        accountId: m.accountId,
+        accountEmail: m.accountEmail,
+        messageId: m.id,
+        category: match.category,
+        subject: m.subject,
+        from: m.from,
+        summary: match.summary?.trim() || m.snippet,
+        receivedAt: m.receivedAt,
+      },
+    });
+  }
+
+  if (matches.length === 0) return null;
+
+  const sorted = [...matches].sort(
+    (a, b) =>
+      ONBOARDING_PREVIEW_CATEGORY_PRIORITY.indexOf(a.match.category) -
+      ONBOARDING_PREVIEW_CATEGORY_PRIORITY.indexOf(b.match.category)
+  );
+  const shown = sorted.slice(0, ONBOARDING_PREVIEW_LIMIT);
+  const lines = shown.map(({ m, match }) => {
+    const { emoji } = CATEGORY_INFO[match.category];
+    return `${emoji} ${match.summary?.trim() || m.snippet}`;
+  });
+
+  return { lines, moreCount: matches.length - shown.length };
 }

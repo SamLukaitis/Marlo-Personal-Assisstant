@@ -1,15 +1,11 @@
 import { hubListNewMessages, AUTOMATED_SENDER_PATTERN, senderDisplayName } from "./hub.js";
-import {
-  hasAlerted,
-  markAlerted,
-  getSetting,
-  setSetting,
-  getPendingSetup,
-  listPhoneNumbersForUser,
-} from "../db/store.js";
+import { hasAlerted, markAlerted, getSetting, setSetting, listPhoneNumbersForUser } from "../db/store.js";
 import { isWhatsAppConfigured } from "../providers/whatsapp.js";
 import { sendProactiveMessage } from "./outbound.js";
-import { incrementSuppressedOnboardingAlerts } from "./onboardingAlertSuppression.js";
+import {
+  isOnboardingSuppressionActive,
+  incrementSuppressedOnboardingAlerts,
+} from "./onboardingAlertSuppression.js";
 import type { UnifiedMessage } from "../providers/types.js";
 
 const MAX_ALERTS_PER_CHECK = 5;
@@ -60,7 +56,7 @@ export async function checkForNewImportantMessages(ownerId: number): Promise<voi
   // See importantEmailAlerts.ts's identical check for the full rationale: don't interleave
   // individual proactive alerts into the onboarding conversation itself. Still mark everything
   // seen so it's never re-alerted later — only the push is deferred and counted.
-  if (getPendingSetup(ownerId) !== null) {
+  if (isOnboardingSuppressionActive(ownerId)) {
     for (const m of unseen) markAlerted(ownerId, messageKey(m));
     incrementSuppressedOnboardingAlerts(ownerId, unseen.length);
     return;

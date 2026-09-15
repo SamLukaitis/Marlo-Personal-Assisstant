@@ -43,6 +43,10 @@ vi.mock("./importantEmailAlerts.js", () => ({
   checkForImportantEmails: vi.fn(),
 }));
 
+vi.mock("./onboardingAlertSuppression.js", () => ({
+  flushOnboardingAlertSummaryIfDue: vi.fn(() => Promise.resolve()),
+}));
+
 // Resolved from inside a test once it wants tick() to finish its (otherwise indefinitely
 // pending) call to checkDueMemoryReminders — this is what lets a test hold one tick "in flight"
 // long enough to prove a second call is skipped rather than run concurrently.
@@ -58,11 +62,13 @@ vi.mock("./memoryReminders.js", () => ({
 
 const { listAllUserIds } = await import("../db/store.js");
 const { checkDueMemoryReminders } = await import("./memoryReminders.js");
+const { flushOnboardingAlertSummaryIfDue } = await import("./onboardingAlertSuppression.js");
 const { tickGuarded } = await import("./scheduler.js");
 
 beforeEach(() => {
   vi.mocked(listAllUserIds).mockClear();
   vi.mocked(checkDueMemoryReminders).mockClear();
+  vi.mocked(flushOnboardingAlertSummaryIfDue).mockClear();
 });
 
 describe("tickGuarded", () => {
@@ -91,5 +97,17 @@ describe("tickGuarded", () => {
 
     releaseMemoryReminderCheck();
     await second;
+  });
+
+  // Regression coverage: the onboarding alert flood fix depends on this actually running every
+  // tick for every tenant — see onboardingAlertSuppression.ts's own tests for the suppression
+  // logic itself, this just proves the scheduler wires it in at all.
+  it("flushes any due onboarding alert summary for every tenant", async () => {
+    const first = tickGuarded();
+    await vi.waitFor(() => expect(checkDueMemoryReminders).toHaveBeenCalledTimes(1));
+    releaseMemoryReminderCheck();
+    await first;
+
+    expect(flushOnboardingAlertSummaryIfDue).toHaveBeenCalledWith(1);
   });
 });

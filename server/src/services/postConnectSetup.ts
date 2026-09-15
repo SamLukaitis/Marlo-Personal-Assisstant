@@ -34,7 +34,8 @@ import { sendWhatsAppMessage, sendWhatsAppReplyButtons } from "../providers/what
 import { hubListMessages, hubListEvents } from "./hub.js";
 import { handleText } from "./chatDispatch.js";
 import { isPlausibleName } from "./plausibleName.js";
-import { takeSuppressedOnboardingAlertCount } from "./onboardingAlertSuppression.js";
+import { markOnboardingConnected } from "./onboardingAlertSuppression.js";
+import { scanAndCurateImportantEmailsForOnboarding } from "./importantEmailAlerts.js";
 import type { IncomingWhatsAppMessage } from "../providers/whatsapp.js";
 import type { NewsTopic } from "../providers/news.js";
 
@@ -105,22 +106,17 @@ async function askTeams(ownerId: number, phone: string): Promise<void> {
   setPendingSetup(ownerId, "ask_teams");
 }
 
-async function sendClosingMessage(ownerId: number, phone: string): Promise<void> {
-  // Report — once, here — any important-looking mail the proactive scanners found but held back
-  // while onboarding was still in progress (see onboardingAlertSuppression.ts), instead of the
-  // user having already been hit with a burst of separate alerts about it mid-conversation. Read
-  // this exactly once: takeSuppressedOnboardingAlertCount resets the counter, so a straggler
-  // scanner tick landing after this point starts a fresh count for real-time alerts from here on.
-  const suppressed = takeSuppressedOnboardingAlertCount(ownerId);
-  const backlogNote =
-    suppressed > 0
-      ? `\n\nAlso — I found *${suppressed}* important-looking email${suppressed === 1 ? "" : "s"} already in your inbox from before we started. I'll message you individually as new ones come in from here.`
-      : "";
+// Note: this does NOT mention any important-mail backlog the proactive scanners may have found
+// but held back (see onboardingAlertSuppression.ts) — an earlier version of this fix tried to
+// report that here, but by the time this runs the backlog usually hasn't been discovered yet
+// (the onboarding chain above typically finishes in well under a minute, while the scanners run
+// on a global 5-minute tick unrelated to this moment). flushOnboardingAlertSummaryIfDue
+// (scheduler.ts) reports it later instead, as its own message, once it's actually known.
+async function sendClosingMessage(phone: string): Promise<void> {
   await reply(
     phone,
-    '*All set!* ✅ Ask me anything, or say *help* any time.' +
-      backlogNote +
-      "\n\nOne more thing — I'm still in testing, and my developers *Sam* and *Jake* want your feedback. " +
+    '*All set!* ✅ Ask me anything, or say *help* any time.\n\n' +
+      "One more thing — I'm still in testing, and my developers *Sam* and *Jake* want your feedback. " +
       "If something's off or you've got a request, just tell me and I'll pass it straight to them."
   );
 }
@@ -133,7 +129,7 @@ async function askTeamsOrFinish(ownerId: number, phone: string): Promise<void> {
     await askTeams(ownerId, phone);
   } else {
     clearPendingSetup(ownerId);
-    await sendClosingMessage(ownerId, phone);
+    await sendClosingMessage(phone);
   }
 }
 
@@ -141,36 +137,58 @@ async function askTeamsOrFinish(ownerId: number, phone: string): Promise<void> {
 // connected. Sends the "connected" confirmation + a best-effort first-value fact, then starts the
 // chain with the first-task check.
 export async function startPostConnectSetup(ownerId: number, phone: string): Promise<void> {
+  // Anchors onboardingAlertSuppression.ts's grace period to this exact moment — see its own
+  // comment for why this matters independently of how fast the chain below is answered.
+  markOnboardingConnected(ownerId);
   let fact = "";
   try {
-    const [messages, events] = await Promise.all([
+    const [messages, events, importantPreview] = await Promise.all([
       hubListMessages(ownerId, { limit: 20 }).catch(() => []),
       hubListEvents(ownerId, 1).catch(() => []),
+      scanAndCurateImportantEmailsForOnboarding(ownerId).catch((err) => {
+        console.error(`postConnectSetup: onboarding important-email scan failed for owner ${ownerId}`, err);
+        return null;
+      }),
     ]);
-    const unreadMessages = messages.filter((m) => m.unread);
-    const unread = unreadMessages.length;
-    const parts: string[] = [];
-    // A single unread email names its actual subject instead of just a count — this and the
-    // event title below are the one genuine "wow" moment in the whole chain: Marlowe visibly
-    // already knows something real about the user's day before they've answered a single
-    // question. More than one unread falls back to a count — picking which one matters most
-    // would need the importantEmailClassifier LLM call, overkill for a best-effort onboarding fact.
-    if (unread === 1 && unreadMessages[0].subject) {
-      parts.push(`*1 unread email* — "${unreadMessages[0].subject}"`);
-    } else if (unread > 0) {
-      parts.push(`*${unread} unread emails*`);
-    }
-    const nextEvent = events[0];
-    if (nextEvent?.title) {
-      parts.push(
-        events.length > 1
+
+    const calendarSentence = (() => {
+      const nextEvent = events[0];
+      if (nextEvent?.title) {
+        return events.length > 1
           ? `*${nextEvent.title}* on today's calendar (plus ${events.length - 1} more)`
-          : `*${nextEvent.title}* on today's calendar`
-      );
-    } else if (events.length > 0) {
-      parts.push(`*${events.length} thing${events.length === 1 ? "" : "s"}* on today's calendar`);
+          : `*${nextEvent.title}* on today's calendar`;
+      }
+      if (events.length > 0) return `*${events.length} thing${events.length === 1 ? "" : "s"}* on today's calendar`;
+      return null;
+    })();
+
+    if (importantPreview && importantPreview.lines.length > 0) {
+      // A real, curated finding replaces the plain unread count entirely — a user's own
+      // feedback: "instead of something like 20 unread emails it should say the most important
+      // emails". Its own paragraph (it's multi-line), with the calendar fact folded in as a
+      // trailing sentence rather than forced into the single joined sentence used below.
+      const more =
+        importantPreview.moreCount > 0
+          ? `\n...and ${importantPreview.moreCount} more — just ask any time.`
+          : "";
+      const calendarNote = calendarSentence ? ` I can also see ${calendarSentence}.` : "";
+      fact = `\n\nAlready found a few things worth knowing about:\n${importantPreview.lines.join("\n")}${more}${calendarNote}`;
+    } else {
+      const parts: string[] = [];
+      const unreadMessages = messages.filter((m) => m.unread);
+      const unread = unreadMessages.length;
+      // A single unread email names its actual subject instead of just a count — this and the
+      // event sentence below are the one genuine "wow" moment in the whole chain when there's no
+      // curated preview to lead with: Marlowe visibly already knows something real about the
+      // user's day before they've answered a single question.
+      if (unread === 1 && unreadMessages[0].subject) {
+        parts.push(`*1 unread email* — "${unreadMessages[0].subject}"`);
+      } else if (unread > 0) {
+        parts.push(`*${unread} unread emails*`);
+      }
+      if (calendarSentence) parts.push(calendarSentence);
+      fact = parts.length ? ` I can already see ${parts.join(" and ")}.` : "";
     }
-    fact = parts.length ? ` I can already see ${parts.join(" and ")}.` : "";
   } catch {
     // best-effort — a missing first-value fact shouldn't block the confirmation message itself
   }
@@ -288,7 +306,7 @@ export async function handlePostConnectSetupReply(
     case "ask_teams": {
       setToolEnabled(ownerId, "teams", yes);
       clearPendingSetup(ownerId);
-      await sendClosingMessage(ownerId, phone);
+      await sendClosingMessage(phone);
       return true;
     }
   }
