@@ -950,6 +950,21 @@ db.exec(`
   );
 `);
 
+// Per-number delivery ledger for proactive pushes that go to every registered number (briefing,
+// reminders, trip nudges, important-email alerts). Each of those only marks its item done once
+// every number has it, so without this a single failing number made the retry resend to the
+// numbers that already got it, every tick. See services/proactiveDelivery.ts, the only user.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS proactive_deliveries (
+    owner_id INTEGER NOT NULL,
+    item_key TEXT NOT NULL,
+    phone TEXT NOT NULL,
+    delivered_at INTEGER NOT NULL,
+    PRIMARY KEY (owner_id, item_key, phone)
+  );
+  CREATE INDEX IF NOT EXISTS idx_proactive_deliveries_delivered_at ON proactive_deliveries(delivered_at);
+`);
+
 // Which provider account a person actually signed in with, keyed on the provider's own immutable
 // ids — for Microsoft, "<tenant id>:<object id>" from the id_token. Microsoft sign-in used to find
 // the user by Graph's `mail`, which any Entra tenant admin can set to someone else's address; see
@@ -1893,6 +1908,26 @@ export function hasAlerted(ownerId: number, key: string): boolean {
   return !!db.prepare(`SELECT 1 FROM alerted_messages WHERE owner_id = ? AND key = ?`).get(ownerId, key);
 }
 
+export function listProactiveDeliveryPhones(ownerId: number, itemKey: string): string[] {
+  return (
+    db
+      .prepare(`SELECT phone FROM proactive_deliveries WHERE owner_id = ? AND item_key = ?`)
+      .all(ownerId, itemKey) as { phone: string }[]
+  ).map((r) => r.phone);
+}
+
+// Every item this ledger tracks is retried for at most a day (reminders give up after 24h, the
+// briefing is per calendar day), so a week of history is plenty — prune on write.
+const PROACTIVE_DELIVERY_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
+
+export function recordProactiveDelivery(ownerId: number, itemKey: string, phone: string): void {
+  const now = Date.now();
+  db.prepare(
+    `INSERT OR IGNORE INTO proactive_deliveries (owner_id, item_key, phone, delivered_at) VALUES (?, ?, ?, ?)`
+  ).run(ownerId, itemKey, phone, now);
+  db.prepare(`DELETE FROM proactive_deliveries WHERE delivered_at < ?`).run(now - PROACTIVE_DELIVERY_RETENTION_MS);
+}
+
 export function markAlerted(ownerId: number, key: string): void {
   db.prepare(
     `INSERT OR IGNORE INTO alerted_messages (owner_id, key, alerted_at) VALUES (?, ?, ?)`
@@ -2822,6 +2857,14 @@ export function deleteUserCompletely(ownerId: number): { deletedDocumentPaths: s
     db.prepare(`DELETE FROM local_roots WHERE owner_id = ?`).run(ownerId);
     db.prepare(`DELETE FROM briefings WHERE owner_id = ?`).run(ownerId);
     db.prepare(`DELETE FROM memory_notes WHERE owner_id = ?`).run(ownerId);
+    // whatsapp_conversation_summaries is keyed by phone, not owner_id — clear every number this
+    // owner has bound or messaged from, or a new account on the same number inherits the old
+    // summary in its system prompt. Must run before user_phone_numbers/whatsapp_messages go.
+    db.prepare(
+      `DELETE FROM whatsapp_conversation_summaries WHERE phone IN (
+         SELECT phone FROM user_phone_numbers WHERE user_id = ?
+         UNION SELECT phone FROM whatsapp_messages WHERE owner_id = ?)`
+    ).run(ownerId, ownerId);
     // whatsapp_message_wamids.message_id REFERENCES whatsapp_messages(id) — must be deleted
     // before whatsapp_messages itself or the FK constraint rejects the whatsapp_messages delete.
     db.prepare(
@@ -2836,6 +2879,7 @@ export function deleteUserCompletely(ownerId: number): { deletedDocumentPaths: s
     db.prepare(`DELETE FROM entities WHERE owner_id = ?`).run(ownerId);
     db.prepare(`DELETE FROM links WHERE owner_id = ?`).run(ownerId);
     db.prepare(`DELETE FROM alerted_messages WHERE owner_id = ?`).run(ownerId);
+    db.prepare(`DELETE FROM proactive_deliveries WHERE owner_id = ?`).run(ownerId);
     db.prepare(`DELETE FROM read_emails WHERE owner_id = ?`).run(ownerId);
     db.prepare(`DELETE FROM user_enabled_tools WHERE owner_id = ?`).run(ownerId);
     db.prepare(`DELETE FROM pending_setup WHERE owner_id = ?`).run(ownerId);

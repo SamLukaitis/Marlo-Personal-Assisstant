@@ -24,6 +24,9 @@ import {
   listPosterNotes,
   upsertReadEmail,
   searchReadEmails,
+  saveConversationSummary,
+  getConversationSummary,
+  appendWhatsAppMessage,
 } from "./store.js";
 
 let counter = 0;
@@ -152,6 +155,41 @@ describe("deleteUserCompletely", () => {
     expect(() => deleteUserCompletely(user.id)).not.toThrow();
     expect(getUser(user.id)).toBeNull();
     expect(searchReadEmails(user.id, "Test")).toEqual([]);
+  });
+
+  // whatsapp_conversation_summaries is keyed by phone, not owner_id, so the owner-scoped purge
+  // never reached it — a new account registered on the same number got the old account's
+  // summary in its system prompt.
+  it("removes the conversation summary for the owner's phone numbers", () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("summary-bound"));
+    const phone = `4479${Date.now().toString().slice(-8)}`;
+    addPhoneNumberForUser(user.id, phone);
+    saveConversationSummary(phone, "old account's summary", 1);
+
+    deleteUserCompletely(user.id);
+
+    expect(getConversationSummary(phone)).toBeNull();
+  });
+
+  it("removes the conversation summary for a phone the owner messaged from but no longer has bound", () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("summary-history"));
+    const phone = `4478${Date.now().toString().slice(-8)}`;
+    appendWhatsAppMessage(user.id, phone, "user", "hi");
+    saveConversationSummary(phone, "old account's summary", 1);
+
+    deleteUserCompletely(user.id);
+
+    expect(getConversationSummary(phone)).toBeNull();
+  });
+
+  it("leaves other people's conversation summaries alone", () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("summary-other"));
+    const otherPhone = `4477${Date.now().toString().slice(-8)}`;
+    saveConversationSummary(otherPhone, "someone else's summary", 1);
+
+    deleteUserCompletely(user.id);
+
+    expect(getConversationSummary(otherPhone)?.summary).toBe("someone else's summary");
   });
 });
 
