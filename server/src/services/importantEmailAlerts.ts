@@ -21,7 +21,8 @@ import {
   saveEntity,
 } from "../db/store.js";
 import { isWhatsAppConfigured } from "../providers/whatsapp.js";
-import { sendProactiveMessage } from "./outbound.js";
+import { createHash } from "node:crypto";
+import { sendToAllNumbers } from "./proactiveDelivery.js";
 import {
   classifyImportantEmails,
   CATEGORY_INFO,
@@ -123,17 +124,9 @@ export function formatImportantEmailAlert(
 // message alerted when this is true. Same precedent as memoryReminders.ts: a notification that
 // fails to deliver must stay retriable, unlike alerts.ts's fire-and-forget notify() (acceptable
 // there only because "another email will come"; not acceptable for a flight-cancellation alert).
-async function notifyAll(numbers: string[], text: string): Promise<boolean> {
-  let allSucceeded = true;
-  for (const number of numbers) {
-    try {
-      await sendProactiveMessage(number, text, "alert");
-    } catch (err) {
-      console.error("importantEmailAlerts: failed to send", err);
-      allSucceeded = false;
-    }
-  }
-  return allSucceeded;
+// A retry skips numbers that already got this `itemKey` (see proactiveDelivery.ts).
+function notifyAll(ownerId: number, itemKey: string, numbers: string[], text: string): Promise<boolean> {
+  return sendToAllNumbers(ownerId, itemKey, numbers, text, "alert", "importantEmailAlerts");
 }
 
 // Runs on the existing 5-minute scheduler tick, sibling to checkForNewImportantMessages and
@@ -222,7 +215,7 @@ export async function checkForImportantEmails(ownerId: number): Promise<void> {
       }
     }
 
-    const delivered = await notifyAll(numbers, text);
+    const delivered = await notifyAll(ownerId, messageKey(m), numbers, text);
     if (delivered) {
       markAlerted(ownerId, messageKey(m));
       saveEntity<ImportantEmailEntityData>(ownerId, {
@@ -250,7 +243,12 @@ export async function checkForImportantEmails(ownerId: number): Promise<void> {
   const rest = matches.slice(MAX_ALERTS_PER_CHECK);
   if (rest.length > 0) {
     const summary = `...and ${rest.length} more important email${rest.length === 1 ? "" : "s"} — check your inbox.`;
-    const delivered = await notifyAll(numbers, summary);
+    // Keyed on the exact set of emails it covers, so a retry of the same overflow skips numbers
+    // that already have it.
+    const overflowKey = `important-email-overflow:${createHash("sha256")
+      .update(rest.map(({ m }) => messageKey(m)).sort().join("\n"))
+      .digest("hex")}`;
+    const delivered = await notifyAll(ownerId, overflowKey, numbers, summary);
     if (delivered) {
       for (const { m } of rest) markAlerted(ownerId, messageKey(m));
     } else {

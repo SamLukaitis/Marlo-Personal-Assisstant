@@ -317,6 +317,31 @@ describe("checkForImportantEmails", () => {
     expect(hasAlerted(user.id, "important-email:1:fail-1")).toBe(false);
   });
 
+  it("on retry after a partial failure, only resends to the number that missed it", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("deliver-partial"));
+    registerActivePhone(user.id);
+    const second = registerActivePhone(user.id);
+    await baseline(user.id);
+
+    const msg = fakeMessage({ id: "partial-1" });
+    const classified = new Map([[0, { category: "invoice_due", summary: "" }]]);
+    mockHubListNewMessages.mockResolvedValueOnce([msg]);
+    mockClassify.mockResolvedValueOnce(classified);
+    vi.mocked(sendWhatsAppMessage).mockImplementation(async (to: string) => {
+      if (to === second) throw new Error("network down");
+    });
+    await checkForImportantEmails(user.id);
+    expect(hasAlerted(user.id, "important-email:1:partial-1")).toBe(false);
+
+    vi.mocked(sendWhatsAppMessage).mockReset().mockResolvedValue(undefined);
+    mockHubListNewMessages.mockResolvedValueOnce([msg]);
+    mockClassify.mockResolvedValueOnce(classified);
+    await checkForImportantEmails(user.id);
+
+    expect(vi.mocked(sendWhatsAppMessage).mock.calls.map((c) => c[0])).toEqual([second]);
+    expect(hasAlerted(user.id, "important-email:1:partial-1")).toBe(true);
+  });
+
   it("leaves a matched message unmarked when WhatsApp isn't configured", async () => {
     const user = findOrCreateUserByEmail(uniqueEmail("not-configured"));
     await baseline(user.id);

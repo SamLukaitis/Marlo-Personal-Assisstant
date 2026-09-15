@@ -11,6 +11,7 @@ import {
 } from "../db/store.js";
 import { isWhatsAppConfigured } from "../providers/whatsapp.js";
 import { sendProactiveMessage } from "./outbound.js";
+import { sendToAllNumbers } from "./proactiveDelivery.js";
 
 const MAX_REMINDERS_PER_CHECK = 5;
 
@@ -31,17 +32,11 @@ export async function checkDueMemoryReminders(ownerId: number): Promise<void> {
 
   for (const note of toSend) {
     const text = `💭 Just remembered: ${note.content}`;
-    let allSucceeded = true;
-    for (const number of numbers) {
-      try {
-        await sendProactiveMessage(number, text, "alert");
-      } catch (err) {
-        console.error("memoryReminders: failed to send reminder", err);
-        allSucceeded = false;
-      }
-    }
+    const itemKey = `memory-reminder:${note.id}:${note.triggerAt}`;
+    const allSucceeded = await sendToAllNumbers(ownerId, itemKey, numbers, text, "alert", "memoryReminders");
     // Only stamp last_surfaced_at once every number actually got it — a partial/total failure
-    // means this reminder stays due and is retried in full on the next tick, rather than being
+    // means this reminder stays due and is retried on the next tick (only to the numbers that
+    // missed it — see proactiveDelivery.ts), rather than being
     // silently half-delivered or lost. Deliberately different from alerts.ts's notify(), which
     // marks unconditionally — see the design doc for why that's the wrong call for a one-time,
     // time-sensitive reminder.

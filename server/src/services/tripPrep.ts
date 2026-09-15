@@ -9,7 +9,7 @@
 
 import { listEntities, listPhoneNumbersForUser, updateEntity, type EntityRow } from "../db/store.js";
 import { isWhatsAppConfigured } from "../providers/whatsapp.js";
-import { sendProactiveMessage } from "./outbound.js";
+import { sendToAllNumbers } from "./proactiveDelivery.js";
 import { todayKey } from "./dateKey.js";
 import type { BookingData } from "./entityValidation.js";
 
@@ -53,17 +53,11 @@ export async function checkTripPrepNudges(ownerId: number): Promise<void> {
     if (!isTripPrepDue(booking.data, today, tomorrow)) continue;
 
     const text = tripPrepMessage(booking.data);
-    let allSucceeded = true;
-    for (const number of numbers) {
-      try {
-        await sendProactiveMessage(number, text, "alert");
-      } catch (err) {
-        console.error("tripPrep: failed to send nudge", err);
-        allSucceeded = false;
-      }
-    }
+    const itemKey = `trip-prep:${booking.id}:${booking.data.kind}:${booking.data.startDate}`;
+    const allSucceeded = await sendToAllNumbers(ownerId, itemKey, numbers, text, "alert", "tripPrep");
     // Only stamp once every number actually got it — same reasoning as memoryReminders.ts: a
-    // partial/total failure leaves this booking due again next tick rather than silently lost.
+    // partial/total failure leaves this booking due again next tick (for the numbers that missed
+    // it) rather than silently lost.
     if (allSucceeded) {
       updateEntity<BookingData>(ownerId, booking.id, {
         data: { ...booking.data, tripPrepNotifiedAt: Date.now() },

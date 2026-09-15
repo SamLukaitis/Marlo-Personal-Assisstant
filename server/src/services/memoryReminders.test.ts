@@ -91,6 +91,25 @@ describe("checkDueMemoryReminders", () => {
     expect(listDueMemoryReminders(user.id, Date.now())).toHaveLength(1);
   });
 
+  it("on retry after a partial failure, only resends to the number that missed it", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("reminder-partial"));
+    registerActivePhone(user.id);
+    const second = registerActivePhone(user.id);
+    addMemoryNote(user.id, "Call the bank", new Date(Date.now() - 60_000).toISOString());
+    vi.mocked(sendWhatsAppMessage).mockImplementation(async (to: string) => {
+      if (to === second) throw new Error("network error");
+    });
+
+    await checkDueMemoryReminders(user.id);
+    expect(listDueMemoryReminders(user.id, Date.now())).toHaveLength(1);
+
+    vi.mocked(sendWhatsAppMessage).mockReset().mockResolvedValue(undefined);
+    await checkDueMemoryReminders(user.id);
+
+    expect(vi.mocked(sendWhatsAppMessage).mock.calls.map((c) => c[0])).toEqual([second]);
+    expect(listDueMemoryReminders(user.id, Date.now())).toHaveLength(0);
+  });
+
   it("does nothing when WhatsApp isn't configured", async () => {
     const user = findOrCreateUserByEmail(uniqueEmail("reminder-unconfigured"));
     registerActivePhone(user.id);

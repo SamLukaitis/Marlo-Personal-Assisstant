@@ -143,6 +143,29 @@ describe("checkTripPrepNudges", () => {
     expect(sendWhatsAppMessage).not.toHaveBeenCalled();
   });
 
+  it("on retry after a partial failure, only resends to the number that missed it", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("tripprep-partial"));
+    const first = registerActivePhone(user.id);
+    const second = registerActivePhone(user.id);
+    const entity = saveEntity<BookingData>(user.id, {
+      type: "booking",
+      data: booking({ kind: "flight", startDate: dateKeyPlusDays(1) }),
+    });
+    vi.mocked(sendWhatsAppMessage).mockImplementation(async (to: string) => {
+      if (to === second) throw new Error("network error");
+    });
+
+    await checkTripPrepNudges(user.id);
+    expect(getEntity<BookingData>(user.id, entity.id)!.data.tripPrepNotifiedAt).toBeUndefined();
+
+    vi.mocked(sendWhatsAppMessage).mockReset().mockResolvedValue(undefined);
+    await checkTripPrepNudges(user.id);
+
+    expect(vi.mocked(sendWhatsAppMessage).mock.calls.map((c) => c[0])).toEqual([second]);
+    expect(first).not.toBe(second);
+    expect(getEntity<BookingData>(user.id, entity.id)!.data.tripPrepNotifiedAt).toBeDefined();
+  });
+
   it("does not stamp the booking if the send fails, so it retries next tick", async () => {
     const user = findOrCreateUserByEmail(uniqueEmail("tripprep-fail"));
     registerActivePhone(user.id);
