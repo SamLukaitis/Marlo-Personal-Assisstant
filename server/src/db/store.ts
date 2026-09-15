@@ -1708,8 +1708,14 @@ export function getDocumentByWamid(ownerId: number, wamid: string): DocumentRow 
     .get(ownerId, wamid) as DocumentRow | undefined;
 }
 
+// document_match_keys.document_id REFERENCES documents(id) — children first, same manual-cascade
+// order as deleteUserCompletely, or the documents delete fails the foreign key.
 export function deleteDocument(ownerId: number, id: number): void {
-  db.prepare(`DELETE FROM documents WHERE id = ? AND owner_id = ?`).run(id, ownerId);
+  const purge = db.transaction(() => {
+    db.prepare(`DELETE FROM document_match_keys WHERE document_id = ? AND owner_id = ?`).run(id, ownerId);
+    db.prepare(`DELETE FROM documents WHERE id = ? AND owner_id = ?`).run(id, ownerId);
+  });
+  purge();
 }
 
 export function markDocumentXeroForwarded(ownerId: number, id: number, forwardedAt: number): void {
