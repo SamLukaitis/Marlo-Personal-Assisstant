@@ -43,7 +43,6 @@ vi.mock("../services/postConnectSetup.js", () => ({
   handleNameReply: vi.fn().mockResolvedValue(false),
   handleFirstTaskReply: vi.fn().mockResolvedValue(false),
   handlePostConnectSetupReply: vi.fn().mockResolvedValue(false),
-  handleBriefingContentReply: vi.fn().mockResolvedValue(false),
 }));
 vi.mock("../services/whatsappReply.js", () => ({
   sendAssistantReply: vi.fn(),
@@ -64,7 +63,7 @@ const { resolveOwnerByPhone, appendWhatsAppMessage, getDocumentByWamid, getWhats
   "../db/store.js"
 );
 const { runAssistantChat } = await import("../ai/assistant.js");
-const { handleNameReply, handleFirstTaskReply, handlePostConnectSetupReply, handleBriefingContentReply } = await import(
+const { handleNameReply, handleFirstTaskReply, handlePostConnectSetupReply } = await import(
   "../services/postConnectSetup.js"
 );
 const { sendAssistantReply } = await import("../services/whatsappReply.js");
@@ -88,7 +87,6 @@ beforeEach(() => {
   vi.mocked(handleNameReply).mockReset().mockResolvedValue(false);
   vi.mocked(handleFirstTaskReply).mockReset().mockResolvedValue(false);
   vi.mocked(handlePostConnectSetupReply).mockReset().mockResolvedValue(false);
-  vi.mocked(handleBriefingContentReply).mockReset().mockResolvedValue(false);
   vi.mocked(sendAssistantReply).mockClear();
   vi.mocked(handlePendingActionReply).mockReset().mockResolvedValue(false);
   vi.mocked(maybeUpdateConversationSummary).mockClear().mockResolvedValue(undefined);
@@ -161,14 +159,6 @@ describe("handleIncoming — blocking free-text setup steps", () => {
     expect(runAssistantChat).not.toHaveBeenCalled();
   });
 
-  it("short-circuits entirely when handleBriefingContentReply consumes the message", async () => {
-    vi.mocked(handleBriefingContentReply).mockResolvedValue(true);
-
-    await handleIncoming({ kind: "text", from: "447900000013", text: "news please", messageId: "m13" });
-
-    expect(handleBriefingContentReply).toHaveBeenCalledWith(42, expect.objectContaining({ text: "news please" }));
-    expect(runAssistantChat).not.toHaveBeenCalled();
-  });
 });
 
 describe("handleIncoming — post-connect setup button taps", () => {

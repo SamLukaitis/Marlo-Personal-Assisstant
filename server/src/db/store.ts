@@ -865,6 +865,24 @@ db.exec(`
   );
 `);
 
+// An append-only log of every post-connect setup step transition, so onboarding drop-off is
+// something you can actually see instead of guess at — a 'reached' row with no later row for that
+// owner is exactly where they stalled. Written from inside setPendingSetup/clearPendingSetup below
+// (the only two writers of pending_setup) rather than from each call site in
+// services/postConnectSetup.ts, so every transition is captured for free and a future step can't
+// forget to log itself. See adminRoutes.ts's conversation viewer, which renders these alongside
+// the WhatsApp history for the same owner.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS onboarding_step_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    owner_id INTEGER NOT NULL REFERENCES users(id),
+    step TEXT NOT NULL,
+    event TEXT NOT NULL,
+    created_at INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_onboarding_step_events_owner ON onboarding_step_events(owner_id);
+`);
+
 // Backs ask_user_choice (assistant.ts): a closed-set question rendered as WhatsApp buttons/a
 // list, tapped later. 'confirm' rows store the exact tool+args to run on a Yes tap (executed
 // directly, no further LLM call), and optionally a decline tool+args to run instead of just
@@ -2761,6 +2779,7 @@ export function deleteUserCompletely(ownerId: number): { deletedDocumentPaths: s
     db.prepare(`DELETE FROM read_emails WHERE owner_id = ?`).run(ownerId);
     db.prepare(`DELETE FROM user_enabled_tools WHERE owner_id = ?`).run(ownerId);
     db.prepare(`DELETE FROM pending_setup WHERE owner_id = ?`).run(ownerId);
+    db.prepare(`DELETE FROM onboarding_step_events WHERE owner_id = ?`).run(ownerId);
     db.prepare(`DELETE FROM pending_actions WHERE owner_id = ?`).run(ownerId);
     db.prepare(`DELETE FROM unmet_requests WHERE owner_id = ?`).run(ownerId);
     db.prepare(`DELETE FROM api_usage WHERE owner_id = ?`).run(ownerId);
@@ -3023,17 +3042,15 @@ export function deletePendingRegistration(phone: string): void {
 }
 
 // ---------------------------------------------------------------------------
-// Post-connect setup — the chain (first-task check, daily briefing + content, Teams) run right
-// after OAuth connects. ask_first_task and ask_briefing_content are free-text steps that wait for
-// a real reply (skip or otherwise) rather than a button tap. See services/postConnectSetup.ts.
+// Post-connect setup — the chain (first-task check, daily briefing, Teams) run right after OAuth
+// connects. ask_first_task is a free-text step that waits for a real reply (skip or otherwise)
+// rather than a button tap. See services/postConnectSetup.ts. Briefing content (news/weather/
+// markets) is no longer its own step — it defaults on yes and stays adjustable afterward via the
+// assistant's set_briefing_preferences tool, and ask_teams is skipped entirely for owners with no
+// Microsoft account connected.
 // ---------------------------------------------------------------------------
 
-export type PostConnectSetupStep =
-  | "ask_name"
-  | "ask_first_task"
-  | "ask_briefing"
-  | "ask_briefing_content"
-  | "ask_teams";
+export type PostConnectSetupStep = "ask_name" | "ask_first_task" | "ask_briefing" | "ask_teams";
 
 export function getPendingSetup(ownerId: number): PostConnectSetupStep | null {
   const row = db.prepare(`SELECT step FROM pending_setup WHERE owner_id = ?`).get(ownerId) as
@@ -3042,15 +3059,45 @@ export function getPendingSetup(ownerId: number): PostConnectSetupStep | null {
   return row?.step ?? null;
 }
 
+function logOnboardingStepEvent(
+  ownerId: number,
+  step: PostConnectSetupStep,
+  event: "reached" | "completed"
+): void {
+  db.prepare(
+    `INSERT INTO onboarding_step_events (owner_id, step, event, created_at) VALUES (?, ?, ?, ?)`
+  ).run(ownerId, step, event, Date.now());
+}
+
 export function setPendingSetup(ownerId: number, step: PostConnectSetupStep): void {
   db.prepare(
     `INSERT INTO pending_setup (owner_id, step) VALUES (?, ?)
      ON CONFLICT(owner_id) DO UPDATE SET step = excluded.step`
   ).run(ownerId, step);
+  logOnboardingStepEvent(ownerId, step, "reached");
 }
 
 export function clearPendingSetup(ownerId: number): void {
+  const step = getPendingSetup(ownerId);
   db.prepare(`DELETE FROM pending_setup WHERE owner_id = ?`).run(ownerId);
+  if (step) logOnboardingStepEvent(ownerId, step, "completed");
+}
+
+export interface OnboardingStepEvent {
+  step: PostConnectSetupStep;
+  event: "reached" | "completed";
+  createdAt: number;
+}
+
+// Oldest first, so a caller rendering these alongside a WhatsApp conversation can just walk them
+// in order — see adminRoutes.ts's conversation viewer.
+export function getOnboardingStepEvents(ownerId: number): OnboardingStepEvent[] {
+  return db
+    .prepare(
+      `SELECT step, event, created_at AS createdAt FROM onboarding_step_events
+       WHERE owner_id = ? ORDER BY id ASC`
+    )
+    .all(ownerId) as OnboardingStepEvent[];
 }
 
 // ---------------------------------------------------------------------------

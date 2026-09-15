@@ -1,10 +1,11 @@
 // The setup chain run right after OAuth connects a mailbox: the user's name, then a first-task
-// check, then daily briefing (yes/no + content), then Teams chat search. See
-// docs/superpowers/specs/2026-08-28-whatsapp-onboarding-redesign-design.md for the full design —
-// this replaces the earlier version of this file, which asked about Schengen tracking
-// unconditionally and stacked the briefing-content question directly behind the Teams question
-// with no wait (see whatsappRegistration.ts's sendFirstValueAndBriefingPrompt, which kicks this
-// off, still unchanged).
+// check, then daily briefing (yes/no, content defaulted), then Teams chat search (skipped for
+// non-Microsoft owners). See docs/superpowers/specs/2026-08-28-whatsapp-onboarding-redesign-design.md
+// for the original design and docs/superpowers/specs/2026-09-15-onboarding-seamless-design.md for
+// the trim/wow-moment follow-up — this replaces the earlier version of this file, which asked
+// about Schengen tracking unconditionally and stacked the briefing-content question directly
+// behind the Teams question with no wait (see whatsappRegistration.ts's
+// sendFirstValueAndBriefingPrompt, which kicks this off, still unchanged).
 //
 // Reuses the exact same save functions the assistant's own set_briefing_preferences/
 // set_tool_enabled tools call — this is a different trigger for the same preferences, not a new
@@ -13,17 +14,18 @@
 // A registered number is routed straight to the real assistant (handleIncoming in
 // whatsappRoutes.ts), not a registration-style state machine, so a button tap answering one of
 // the yes/no questions here needs its own small piece of state (pending_setup in db/store.ts) to
-// be recognized instead of falling through as an unrecognized interactive message. The two
-// free-text steps (ask_first_task, ask_briefing_content) work differently: they wait for a real
-// text reply (a "skip" or an actual request), forward a genuine request through ordinary chat
-// handling (handleText, from chatDispatch.ts) so it gets a real answer, and only then advance the
-// chain — never stacking the next scripted question behind an unanswered one.
+// be recognized instead of falling through as an unrecognized interactive message. The one
+// free-text step (ask_first_task) works differently: it waits for a real text reply (a "skip" or
+// an actual request), forwards a genuine request through ordinary chat handling (handleText, from
+// chatDispatch.ts) so it gets a real answer, and only then advances the chain — never stacking the
+// next scripted question behind an unanswered one.
 import {
   getPendingSetup,
   setPendingSetup,
   clearPendingSetup,
   setToolEnabled,
   setSetting,
+  listAccounts,
 } from "../db/store.js";
 import { getBriefingSettings, saveBriefingSettings } from "./briefing.js";
 import { todayKey } from "./dateKey.js";
@@ -31,13 +33,14 @@ import { sendWhatsAppMessage, sendWhatsAppReplyButtons } from "../providers/what
 import { hubListMessages, hubListEvents } from "./hub.js";
 import { handleText } from "./chatDispatch.js";
 import type { IncomingWhatsAppMessage } from "../providers/whatsapp.js";
+import type { NewsTopic } from "../providers/news.js";
 
 const BUTTON_IDS: Record<"ask_briefing" | "ask_teams", { yes: string; no: string }> = {
   ask_briefing: { yes: "briefing_yes", no: "briefing_no" },
   ask_teams: { yes: "teams_yes", no: "teams_no" },
 };
 
-// Matches a reply that means "nothing else, move on" for either free-text step — deliberately
+// Matches a reply that means "nothing else, move on" for a free-text step — deliberately
 // permissive (whole-message match, case-insensitive) rather than a substring search, so an actual
 // request that happens to contain one of these words ("skip the intro and just tell me...") isn't
 // misread as a skip.
@@ -75,12 +78,20 @@ async function askBriefing(ownerId: number, phone: string): Promise<void> {
   setPendingSetup(ownerId, "ask_briefing");
 }
 
-async function askBriefingContent(ownerId: number, phone: string): Promise<void> {
+// The old ask_briefing_content step asked separately what to include (news/business/weather) —
+// dropped as its own round trip (see docs/superpowers/specs/2026-09-15-onboarding-seamless-design.md).
+// Content now defaults to top-story news on a Yes, since that's the only one of the three that
+// needs no further setup — weather needs a saved location and markets need tickers, neither of
+// which onboarding collects, so turning those on by default would do nothing. Still adjustable
+// any time via the assistant's own set_briefing_preferences tool.
+const DEFAULT_BRIEFING_TOPICS: NewsTopic[] = ["world", "business"];
+
+async function announceBriefingDefault(phone: string): Promise<void> {
   await reply(
     phone,
-    "Great — I'll send that each morning. Want me to also include *news*, *business headlines*, or *weather*? Just tell me, or say *skip*."
+    "Great — I'll send that each morning, with today's top headlines included. Just tell me anytime " +
+      "if you'd like to add weather or markets too, or drop the news."
   );
-  setPendingSetup(ownerId, "ask_briefing_content");
 }
 
 async function askTeams(ownerId: number, phone: string): Promise<void> {
@@ -100,6 +111,18 @@ async function sendClosingMessage(phone: string): Promise<void> {
   );
 }
 
+// Only Microsoft-connected owners can have anything in Teams — asking everyone made the chain
+// longer for the majority (Google) of test users for a question that could never apply to them.
+async function askTeamsOrFinish(ownerId: number, phone: string): Promise<void> {
+  const hasMicrosoft = listAccounts(ownerId, "microsoft").length > 0;
+  if (hasMicrosoft) {
+    await askTeams(ownerId, phone);
+  } else {
+    clearPendingSetup(ownerId);
+    await sendClosingMessage(phone);
+  }
+}
+
 // Called from the OAuth callback (via whatsappRegistration.ts) once the mailbox is actually
 // connected. Sends the "connected" confirmation + a best-effort first-value fact, then starts the
 // chain with the first-task check.
@@ -110,10 +133,29 @@ export async function startPostConnectSetup(ownerId: number, phone: string): Pro
       hubListMessages(ownerId, { limit: 20 }).catch(() => []),
       hubListEvents(ownerId, 1).catch(() => []),
     ]);
-    const unread = messages.filter((m) => m.unread).length;
+    const unreadMessages = messages.filter((m) => m.unread);
+    const unread = unreadMessages.length;
     const parts: string[] = [];
-    if (unread > 0) parts.push(`*${unread} unread email${unread === 1 ? "" : "s"}*`);
-    if (events.length > 0) parts.push(`*${events.length} thing${events.length === 1 ? "" : "s"}* on today's calendar`);
+    // A single unread email names its actual subject instead of just a count — this and the
+    // event title below are the one genuine "wow" moment in the whole chain: Marlowe visibly
+    // already knows something real about the user's day before they've answered a single
+    // question. More than one unread falls back to a count — picking which one matters most
+    // would need the importantEmailClassifier LLM call, overkill for a best-effort onboarding fact.
+    if (unread === 1 && unreadMessages[0].subject) {
+      parts.push(`*1 unread email* — "${unreadMessages[0].subject}"`);
+    } else if (unread > 0) {
+      parts.push(`*${unread} unread emails*`);
+    }
+    const nextEvent = events[0];
+    if (nextEvent?.title) {
+      parts.push(
+        events.length > 1
+          ? `*${nextEvent.title}* on today's calendar (plus ${events.length - 1} more)`
+          : `*${nextEvent.title}* on today's calendar`
+      );
+    } else if (events.length > 0) {
+      parts.push(`*${events.length} thing${events.length === 1 ? "" : "s"}* on today's calendar`);
+    }
     fact = parts.length ? ` I can already see ${parts.join(" and ")}.` : "";
   } catch {
     // best-effort — a missing first-value fact shouldn't block the confirmation message itself
@@ -124,9 +166,9 @@ export async function startPostConnectSetup(ownerId: number, phone: string): Pro
 }
 
 // The ask_name step — the very first question in the chain, right after the connected
-// confirmation. Unlike the other free-text steps below (ask_first_task, ask_briefing_content), a
-// name reply is never forwarded to ordinary chat handling — it's not a request, just a name — so
-// this doesn't use advancePastFreeTextStep. Skipping (or a blank reply) leaves no name saved;
+// confirmation. Unlike the free-text step below (ask_first_task), a name reply is never forwarded
+// to ordinary chat handling — it's not a request, just a name — so this doesn't use
+// advancePastFreeTextStep. Skipping (or a blank reply) leaves no name saved;
 // callers that personalize text (e.g. importantEmailAlerts.ts's alert copy) fall back to an
 // unpersonalized form rather than requiring this.
 export async function handleNameReply(
@@ -144,7 +186,7 @@ export async function handleNameReply(
   return true;
 }
 
-// Shared by both free-text steps below: if it's a skip, acknowledge and hand off to `next`
+// Shared by the free-text step below: if it's a skip, acknowledge and hand off to `next`
 // (which sends the following scripted question); otherwise forward the message to ordinary chat
 // handling (a real answer, from the real assistant) and only then call `next` — so the next
 // scripted question is never stacked behind one the user hasn't answered yet.
@@ -181,23 +223,6 @@ export async function handleFirstTaskReply(
   return true;
 }
 
-// The ask_briefing_content step — same shape as handleFirstTaskReply above, advancing to Teams
-// once answered (skip or a real preference, via the assistant's set_briefing_preferences tool).
-export async function handleBriefingContentReply(
-  ownerId: number,
-  message: IncomingWhatsAppMessage
-): Promise<boolean> {
-  if (message.kind !== "text") return false;
-  if (getPendingSetup(ownerId) !== "ask_briefing_content") return false;
-  await advancePastFreeTextStep(
-    ownerId,
-    message,
-    "No worries, just the essentials then.",
-    askTeams
-  );
-  return true;
-}
-
 // Called from whatsappRoutes.ts's handleIncoming, before falling through to the real assistant.
 // Handles the two remaining yes/no button steps (ask_briefing, ask_teams). Returns true if this
 // message was consumed (an interactive tap matching the outstanding question), false otherwise
@@ -219,16 +244,19 @@ export async function handlePostConnectSetupReply(
   switch (step) {
     case "ask_briefing": {
       const current = getBriefingSettings(ownerId);
-      saveBriefingSettings(ownerId, { ...current, proactive: yes });
+      saveBriefingSettings(ownerId, {
+        ...current,
+        proactive: yes,
+        ...(yes ? { includeNews: true, topics: DEFAULT_BRIEFING_TOPICS } : {}),
+      });
       if (yes) {
         // Stamped immediately so the scheduler (runDailyCheckForUser in scheduler.ts) treats
         // today as already sent — the first real proactive briefing goes out tomorrow morning,
         // not minutes after onboarding finishes.
         setSetting(ownerId, "last_proactive_send_date", todayKey());
-        await askBriefingContent(ownerId, phone);
-      } else {
-        await askTeams(ownerId, phone);
+        await announceBriefingDefault(phone);
       }
+      await askTeamsOrFinish(ownerId, phone);
       return true;
     }
     case "ask_teams": {

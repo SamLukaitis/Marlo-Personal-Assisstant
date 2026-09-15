@@ -163,7 +163,10 @@ describe("findRemainingOwnerReferences", () => {
     const user = findOrCreateUserByEmail(uniqueEmail("dangling-ref"));
     setPendingSetup(user.id, "ask_briefing");
 
-    expect(findRemainingOwnerReferences(user.id)).toEqual(["pending_setup.owner_id (1 row)"]);
+    expect(findRemainingOwnerReferences(user.id)).toEqual([
+      "pending_setup.owner_id (1 row)",
+      "onboarding_step_events.owner_id (1 row)",
+    ]);
   });
 
   it("returns nothing once the owner has actually been purged", () => {

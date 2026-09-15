@@ -21,7 +21,6 @@ import {
   handlePostConnectSetupReply,
   handleNameReply,
   handleFirstTaskReply,
-  handleBriefingContentReply,
 } from "../services/postConnectSetup.js";
 import { handlePendingActionReply } from "../services/actionHandlers.js";
 import { maybeUpdateConversationSummary } from "../services/conversationSummary.js";
@@ -135,10 +134,10 @@ export async function handleIncoming(message: IncomingWhatsAppMessage): Promise<
     console.error("whatsapp: conversation summary update failed", err)
   );
 
-  // The blocking free-text setup steps (ask_name, ask_first_task, ask_briefing_content) — each
-  // either consumes a "skip" (or, for ask_name, saves the name) and advances the chain, or
-  // forwards the message to ordinary chat handling and advances right after. Checked first since
-  // they're the earliest steps in the chain — ask_name is the very first question asked.
+  // The blocking free-text setup steps (ask_name, ask_first_task) — each either consumes a "skip"
+  // (or, for ask_name, saves the name) and advances the chain, or forwards the message to
+  // ordinary chat handling and advances right after. Checked first since they're the earliest
+  // steps in the chain — ask_name is the very first question asked.
   if (await handleNameReply(ownerId, message)) return;
   if (await handleFirstTaskReply(ownerId, message)) return;
   // A tap answering one of postConnectSetup's yes/no button questions (daily briefing, Teams) —
@@ -146,7 +145,6 @@ export async function handleIncoming(message: IncomingWhatsAppMessage): Promise<
   // (nothing pending, a stray/late tap, or ordinary text/media), which falls through to normal
   // handling below exactly as before.
   if (await handlePostConnectSetupReply(ownerId, message)) return;
-  if (await handleBriefingContentReply(ownerId, message)) return;
   if (await handlePendingActionReply(ownerId, message)) return;
 
   try {

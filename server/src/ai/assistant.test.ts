@@ -935,13 +935,6 @@ describe("check_reminder_status tool", () => {
 });
 
 describe("buildSystemPrompt onboarding paragraph", () => {
-  it("is present, mentioning set_briefing_preferences, while ask_briefing_content is pending", () => {
-    const user = findOrCreateUserByEmail(uniqueEmail("prompt-onboarding-content"));
-    setPendingSetup(user.id, "ask_briefing_content");
-    const prompt = buildSystemPrompt(user.id);
-    expect(prompt).toContain("set_briefing_preferences");
-  });
-
   it("is present, without mentioning set_briefing_preferences, while ask_first_task is pending", () => {
     const user = findOrCreateUserByEmail(uniqueEmail("prompt-onboarding-first-task"));
     setPendingSetup(user.id, "ask_first_task");
