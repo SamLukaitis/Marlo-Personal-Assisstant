@@ -18,9 +18,16 @@ vi.mock("./hub.js", async (importOriginal) => {
 });
 
 const { sendWhatsAppMessage, isWhatsAppConfigured } = await import("../providers/whatsapp.js");
-const { findOrCreateUserByEmail, addPhoneNumberForUser, recordInboundMessage, hasAlerted, setSetting } =
-  await import("../db/store.js");
+const {
+  findOrCreateUserByEmail,
+  addPhoneNumberForUser,
+  recordInboundMessage,
+  hasAlerted,
+  setSetting,
+  setPendingSetup,
+} = await import("../db/store.js");
 const { checkForNewImportantMessages } = await import("./alerts.js");
+const { takeSuppressedOnboardingAlertCount } = await import("./onboardingAlertSuppression.js");
 
 let counter = 0;
 function uniqueEmail(prefix: string): string {
@@ -166,5 +173,27 @@ describe("checkForNewImportantMessages", () => {
     const [, text] = vi.mocked(sendWhatsAppMessage).mock.calls[0];
     expect(text).not.toContain("@");
     expect(text).toContain("jane"); // local-part fallback display name
+  });
+
+  // Same onboarding-window suppression as importantEmailAlerts.ts (see that file's test of the
+  // same name for the full rationale) — a real bug where a fresh connection's mail backlog got
+  // pushed as separate WhatsApp alerts interleaved with onboarding's own questions.
+  it("records but does not send while onboarding is still in progress", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("alerts-mid-onboarding"));
+    registerActivePhone(user.id);
+    await baseline(user.id);
+    setPendingSetup(user.id, "ask_briefing");
+
+    mockHubListNewMessages.mockResolvedValueOnce([
+      fakeMessage({ id: "onb-1", from: "jane@example.com" }),
+      fakeMessage({ id: "onb-2", from: "bob@example.com" }),
+    ]);
+
+    await checkForNewImportantMessages(user.id);
+
+    expect(sendWhatsAppMessage).not.toHaveBeenCalled();
+    expect(hasAlerted(user.id, "1:onb-1")).toBe(true);
+    expect(hasAlerted(user.id, "1:onb-2")).toBe(true);
+    expect(takeSuppressedOnboardingAlertCount(user.id)).toBe(2);
   });
 });

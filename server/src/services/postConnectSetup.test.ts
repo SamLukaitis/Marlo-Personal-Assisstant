@@ -21,10 +21,13 @@ const {
   handleFirstTaskReply,
   handlePostConnectSetupReply,
 } = await import("./postConnectSetup.js");
-const { findOrCreateUserByEmail, getPendingSetup, getEnabledTools, getSetting, upsertAccount } =
+const { findOrCreateUserByEmail, getPendingSetup, getEnabledTools, getSetting, setSetting, upsertAccount } =
   await import("../db/store.js");
 const { getBriefingSettings } = await import("./briefing.js");
 const { todayKey } = await import("./dateKey.js");
+const { incrementSuppressedOnboardingAlerts, takeSuppressedOnboardingAlertCount } = await import(
+  "./onboardingAlertSuppression.js"
+);
 
 let counter = 0;
 function uniqueEmail(prefix: string): string {
@@ -93,6 +96,21 @@ describe("startPostConnectSetup", () => {
     const [, confirmText] = vi.mocked(sendWhatsAppMessage).mock.calls[0];
     expect(confirmText).toContain("2 unread emails");
   });
+
+  // Regression test: the pre-connect registration flow (whatsappRegistration.ts) already asks
+  // "what should I call you?" once. If a name was already captured and persisted to user_name
+  // before this chain starts, asking again is a redundant, annoying repeat of a question the user
+  // already answered — and was the root cause of a real bug (a frustrated re-answer like "I
+  // already said Sam" getting stored as the permanent display name).
+  it("skips the name question and goes straight to the first-task question when a name is already known", async () => {
+    const ownerId = newOwnerId();
+    setSetting(ownerId, "user_name", "Sam");
+
+    await startPostConnectSetup(ownerId, PHONE);
+
+    expect(sendWhatsAppMessage).not.toHaveBeenCalledWith(PHONE, expect.stringContaining("what should I call you"));
+    expect(getPendingSetup(ownerId)).toBe("ask_first_task");
+  });
 });
 
 describe("handleNameReply", () => {
@@ -140,6 +158,21 @@ describe("handleNameReply", () => {
     await startPostConnectSetup(ownerId, PHONE);
 
     const handled = await handleNameReply(ownerId, text("   "));
+
+    expect(handled).toBe(true);
+    expect(getSetting(ownerId, "user_name")).toBeNull();
+    expect(getPendingSetup(ownerId)).toBe("ask_first_task");
+  });
+
+  // Regression test for the real bug: asked this question a second time (having already
+  // answered it during pre-connect registration), a user can reasonably reply with a sentence
+  // like this instead of just their name. That whole sentence must never become the permanent
+  // display name — it previously did, and leaked into every personalized proactive message.
+  it("on a sentence-shaped reply (not a real name): saves no name, still advances", async () => {
+    const ownerId = newOwnerId();
+    await startPostConnectSetup(ownerId, PHONE);
+
+    const handled = await handleNameReply(ownerId, text("I already said Sam"));
 
     expect(handled).toBe(true);
     expect(getSetting(ownerId, "user_name")).toBeNull();
@@ -304,5 +337,33 @@ describe("handlePostConnectSetupReply", () => {
     expect(getPendingSetup(ownerId)).toBeNull();
     expect(sendWhatsAppMessage).toHaveBeenCalledWith(PHONE, expect.stringContaining("All set"));
     expect(sendWhatsAppMessage).toHaveBeenCalledWith(PHONE, expect.stringContaining("Sam"));
+  });
+
+  // Regression test for a real bug: a backlog of already-existing important mail used to arrive
+  // as a burst of separate WhatsApp alerts right as onboarding finished, instead of one mention.
+  // The scanners (alerts.ts/importantEmailAlerts.ts/reconciliation.ts) record a suppressed count
+  // while pending setup is non-null (see onboardingAlertSuppression.ts) — the closing message
+  // must read-and-report that total exactly once.
+  it("mentions a suppressed alert backlog once in the closing message, when there was one", async () => {
+    const ownerId = newOwnerId();
+    await pastFirstTask(ownerId);
+    incrementSuppressedOnboardingAlerts(ownerId, 3);
+
+    await handlePostConnectSetupReply(ownerId, tap("briefing_no"));
+
+    expect(sendWhatsAppMessage).toHaveBeenCalledWith(PHONE, expect.stringContaining("3"));
+    expect(takeSuppressedOnboardingAlertCount(ownerId)).toBe(0); // consumed, not left to double-report
+  });
+
+  it("says nothing extra in the closing message when nothing was suppressed", async () => {
+    const ownerId = newOwnerId();
+    await pastFirstTask(ownerId);
+
+    await handlePostConnectSetupReply(ownerId, tap("briefing_no"));
+
+    const closingCall = vi
+      .mocked(sendWhatsAppMessage)
+      .mock.calls.find(([, text]) => text.includes("All set"));
+    expect(closingCall?.[1]).not.toMatch(/inbox|already/i);
   });
 });

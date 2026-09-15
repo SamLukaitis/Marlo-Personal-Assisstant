@@ -29,13 +29,21 @@ vi.mock("./importantEmailClassifier.js", async (importOriginal) => {
 });
 
 const { sendWhatsAppMessage, sendWhatsAppTemplate, isWhatsAppConfigured } = await import("../providers/whatsapp.js");
-const { findOrCreateUserByEmail, addPhoneNumberForUser, recordInboundMessage, hasAlerted, listEntities, setSetting } =
-  await import("../db/store.js");
+const {
+  findOrCreateUserByEmail,
+  addPhoneNumberForUser,
+  recordInboundMessage,
+  hasAlerted,
+  listEntities,
+  setSetting,
+  setPendingSetup,
+} = await import("../db/store.js");
 const { checkForImportantEmails, formatImportantEmailAlert, IMPORTANT_EMAIL_ENTITY_TYPE } = await import(
   "./importantEmailAlerts.js"
 );
 const { setXeroForwardingEmail } = await import("./xero.js");
 const { getPendingInvoiceForward } = await import("./xeroInvoiceConfirmation.js");
+const { takeSuppressedOnboardingAlertCount } = await import("./onboardingAlertSuppression.js");
 
 let counter = 0;
 function uniqueEmail(prefix: string): string {
@@ -359,6 +367,38 @@ describe("checkForImportantEmails", () => {
     for (let i = 0; i < 6; i++) {
       expect(hasAlerted(user.id, `important-email:1:cap-${i}`)).toBe(true);
     }
+  });
+
+  // Regression test for a real bug: right after onboarding finishes connecting a mailbox, a
+  // backlog of already-existing important-looking mail would get pushed as a burst of separate
+  // WhatsApp alerts, interleaved with the onboarding chain's own yes/no questions. While
+  // postConnectSetup.ts's chain is still in progress (getPendingSetup non-null), matches must be
+  // recorded exactly as before (so list_flagged_emails/dedup still work) but not actually sent —
+  // instead counted, so postConnectSetup can mention the total once in its closing message.
+  it("records matches but does not send any WhatsApp alert while onboarding is still in progress", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("mid-onboarding"));
+    registerActivePhone(user.id);
+    await baseline(user.id);
+    setPendingSetup(user.id, "ask_briefing");
+
+    mockHubListNewMessages.mockResolvedValueOnce([
+      fakeMessage({ id: "onb-1", subject: "Your flight changed" }),
+      fakeMessage({ id: "onb-2", subject: "Reservation confirmed" }),
+    ]);
+    mockClassify.mockResolvedValueOnce(
+      new Map([
+        [0, { category: "flight_change", summary: "Your gate moved to B12." }],
+        [1, { category: "reservation_confirmed", summary: "Hotel confirmed for the 3rd." }],
+      ])
+    );
+
+    await checkForImportantEmails(user.id);
+
+    expect(sendWhatsAppMessage).not.toHaveBeenCalled();
+    expect(hasAlerted(user.id, "important-email:1:onb-1")).toBe(true);
+    expect(hasAlerted(user.id, "important-email:1:onb-2")).toBe(true);
+    expect(listEntities(user.id, { type: IMPORTANT_EMAIL_ENTITY_TYPE })).toHaveLength(2);
+    expect(takeSuppressedOnboardingAlertCount(user.id)).toBe(2);
   });
 });
 

@@ -25,6 +25,7 @@ import {
   clearPendingSetup,
   setToolEnabled,
   setSetting,
+  getSetting,
   listAccounts,
 } from "../db/store.js";
 import { getBriefingSettings, saveBriefingSettings } from "./briefing.js";
@@ -32,6 +33,8 @@ import { todayKey } from "./dateKey.js";
 import { sendWhatsAppMessage, sendWhatsAppReplyButtons } from "../providers/whatsapp.js";
 import { hubListMessages, hubListEvents } from "./hub.js";
 import { handleText } from "./chatDispatch.js";
+import { isPlausibleName } from "./plausibleName.js";
+import { takeSuppressedOnboardingAlertCount } from "./onboardingAlertSuppression.js";
 import type { IncomingWhatsAppMessage } from "../providers/whatsapp.js";
 import type { NewsTopic } from "../providers/news.js";
 
@@ -102,11 +105,22 @@ async function askTeams(ownerId: number, phone: string): Promise<void> {
   setPendingSetup(ownerId, "ask_teams");
 }
 
-async function sendClosingMessage(phone: string): Promise<void> {
+async function sendClosingMessage(ownerId: number, phone: string): Promise<void> {
+  // Report — once, here — any important-looking mail the proactive scanners found but held back
+  // while onboarding was still in progress (see onboardingAlertSuppression.ts), instead of the
+  // user having already been hit with a burst of separate alerts about it mid-conversation. Read
+  // this exactly once: takeSuppressedOnboardingAlertCount resets the counter, so a straggler
+  // scanner tick landing after this point starts a fresh count for real-time alerts from here on.
+  const suppressed = takeSuppressedOnboardingAlertCount(ownerId);
+  const backlogNote =
+    suppressed > 0
+      ? `\n\nAlso — I found *${suppressed}* important-looking email${suppressed === 1 ? "" : "s"} already in your inbox from before we started. I'll message you individually as new ones come in from here.`
+      : "";
   await reply(
     phone,
-    '*All set!* ✅ Ask me anything, or say *help* any time.\n\n' +
-      "One more thing — I'm still in testing, and my developers *Sam* and *Jake* want your feedback. " +
+    '*All set!* ✅ Ask me anything, or say *help* any time.' +
+      backlogNote +
+      "\n\nOne more thing — I'm still in testing, and my developers *Sam* and *Jake* want your feedback. " +
       "If something's off or you've got a request, just tell me and I'll pass it straight to them."
   );
 }
@@ -119,7 +133,7 @@ async function askTeamsOrFinish(ownerId: number, phone: string): Promise<void> {
     await askTeams(ownerId, phone);
   } else {
     clearPendingSetup(ownerId);
-    await sendClosingMessage(phone);
+    await sendClosingMessage(ownerId, phone);
   }
 }
 
@@ -162,7 +176,17 @@ export async function startPostConnectSetup(ownerId: number, phone: string): Pro
   }
 
   await reply(phone, `*Connected!* ✅ I can see your inbox and your calendar.${fact}`);
-  await askName(ownerId, phone);
+  // Pre-connect registration (whatsappRegistration.ts's sendFirstValueAndBriefingPrompt) already
+  // asks "what should I call you?" and, if the answer was a plausible name, persists it to
+  // user_name before this chain ever starts. Asking again here is a redundant repeat of a
+  // question the user already answered — and was the root cause of a real bug (a frustrated
+  // re-answer like "I already said Sam" getting stored as the permanent display name instead of
+  // just their name).
+  if (getSetting(ownerId, "user_name")) {
+    await askFirstTask(ownerId, phone);
+  } else {
+    await askName(ownerId, phone);
+  }
 }
 
 // The ask_name step — the very first question in the chain, right after the connected
@@ -180,7 +204,9 @@ export async function handleNameReply(
   const phone = message.from;
   if (!isSkip(message.text)) {
     const name = message.text.trim().slice(0, 60);
-    if (name) setSetting(ownerId, "user_name", name);
+    // Reject sentence-shaped replies (e.g. "I already said Sam") rather than storing them
+    // verbatim as the permanent display name — see plausibleName.ts.
+    if (name && isPlausibleName(name)) setSetting(ownerId, "user_name", name);
   }
   await askFirstTask(ownerId, phone);
   return true;
@@ -262,7 +288,7 @@ export async function handlePostConnectSetupReply(
     case "ask_teams": {
       setToolEnabled(ownerId, "teams", yes);
       clearPendingSetup(ownerId);
-      await sendClosingMessage(phone);
+      await sendClosingMessage(ownerId, phone);
       return true;
     }
   }

@@ -19,10 +19,18 @@ vi.mock("./hub.js", () => ({
 }));
 
 const { sendWhatsAppMessage, sendWhatsAppTemplate, isWhatsAppConfigured } = await import("../providers/whatsapp.js");
-const { findOrCreateUserByEmail, saveDocument, addPhoneNumberForUser, recordInboundMessage, hasAlerted, saveMatchKeys } =
-  await import("../db/store.js");
+const {
+  findOrCreateUserByEmail,
+  saveDocument,
+  addPhoneNumberForUser,
+  recordInboundMessage,
+  hasAlerted,
+  saveMatchKeys,
+  setPendingSetup,
+} = await import("../db/store.js");
 const { matchTier, buildMatchNotification, checkDocumentAgainstRecentEmails, checkNewEmailsAgainstRecentDocuments } =
   await import("./reconciliation.js");
+const { takeSuppressedOnboardingAlertCount } = await import("./onboardingAlertSuppression.js");
 
 let counter = 0;
 function uniqueEmail(prefix: string): string {
@@ -368,6 +376,37 @@ describe("checkNewEmailsAgainstRecentDocuments", () => {
     // The sixth message was never reached by the loop (it `break`s once the cap is hit), so it
     // must stay unscanned to get a fair chance on the next tick — not marked-and-dropped.
     expect(hasAlerted(user.id, "recon-scan:1:cap-5")).toBe(false);
+  });
+
+  // Same onboarding-window suppression as alerts.ts/importantEmailAlerts.ts (see those files'
+  // tests of the same name for the full rationale).
+  it("records but does not send while onboarding is still in progress", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("email-to-doc-mid-onboarding"));
+    const phoneNumber = freshPhone();
+    addPhoneNumberForUser(user.id, phoneNumber);
+    recordInboundMessage(phoneNumber);
+    setPendingSetup(user.id, "ask_briefing");
+    const doc = saveDocument(user.id, {
+      phone: phoneNumber,
+      filename: null,
+      mimeType: "image/jpeg",
+      storedPath: "/tmp/fake",
+      caption: null,
+      title: "Hilton Booking",
+      extractedText: "text",
+      category: "receipts",
+    });
+    saveMatchKeys(user.id, doc.id, { referenceCode: "ONBOARDCODE1" });
+    mockHubListNewMessages.mockResolvedValue([
+      fakeMessage({ id: "onb-1", subject: "Change to booking ONBOARDCODE1" }),
+    ]);
+
+    await checkNewEmailsAgainstRecentDocuments(user.id);
+
+    expect(sendWhatsAppMessage).not.toHaveBeenCalled();
+    expect(hasAlerted(user.id, `recon-match:${doc.id}:1:onb-1`)).toBe(true);
+    expect(hasAlerted(user.id, "recon-scan:1:onb-1")).toBe(true);
+    expect(takeSuppressedOnboardingAlertCount(user.id)).toBe(1);
   });
 });
 

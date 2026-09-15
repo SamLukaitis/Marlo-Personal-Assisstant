@@ -11,6 +11,7 @@ import {
   markAlerted,
   getSetting,
   setSetting,
+  getPendingSetup,
   listPhoneNumbersForUser,
   saveEntity,
 } from "../db/store.js";
@@ -24,6 +25,7 @@ import {
 } from "./importantEmailClassifier.js";
 import { getXeroForwardingEmail } from "./xero.js";
 import { setPendingInvoiceForward } from "./xeroInvoiceConfirmation.js";
+import { incrementSuppressedOnboardingAlerts } from "./onboardingAlertSuppression.js";
 import type { UnifiedMessage } from "../providers/types.js";
 
 const MAX_ALERTS_PER_CHECK = 5;
@@ -175,6 +177,35 @@ export async function checkForImportantEmails(ownerId: number): Promise<void> {
     .map((m, index) => ({ m, match: classified.get(index) }))
     .filter((x): x is { m: UnifiedMessage; match: ClassifyMatch } => !!x.match);
   if (matches.length === 0) return;
+
+  // While the post-connect onboarding chain (postConnectSetup.ts) is still in progress, don't
+  // interleave individual proactive alerts into that conversation — a fresh connection commonly
+  // has a backlog of already-existing important-looking mail, and pushing it as a burst of
+  // separate WhatsApp messages right as the user is trying to answer onboarding's own questions
+  // was a real, reported bug. Still record every match exactly as if it had been sent
+  // (list_flagged_emails and future ticks must see it as handled) — only the actual push and the
+  // Xero forward offer (which needs a real delivered message to reply to) are deferred.
+  // sendClosingMessage mentions the total once, via takeSuppressedOnboardingAlertCount.
+  if (getPendingSetup(ownerId) !== null) {
+    for (const { m, match } of matches) {
+      markAlerted(ownerId, messageKey(m));
+      saveEntity<ImportantEmailEntityData>(ownerId, {
+        type: IMPORTANT_EMAIL_ENTITY_TYPE,
+        data: {
+          accountId: m.accountId,
+          accountEmail: m.accountEmail,
+          messageId: m.id,
+          category: match.category,
+          subject: m.subject,
+          from: m.from,
+          summary: match.summary?.trim() || m.snippet,
+          receivedAt: m.receivedAt,
+        },
+      });
+    }
+    incrementSuppressedOnboardingAlerts(ownerId, matches.length);
+    return;
+  }
 
   const toSend = matches.slice(0, MAX_ALERTS_PER_CHECK);
   const userName = getSetting(ownerId, "user_name");
