@@ -18,13 +18,33 @@ vi.mock("../providers/microsoft.js", () => ({
   isMicrosoftConfigured: () => true,
   getMicrosoftAuthUrl: (state: string) => `https://login.microsoftonline.com/mock?state=${state}`,
   exchangeMicrosoftCode: vi.fn(),
-  handleMicrosoftCallback: vi.fn(),
+  microsoftGetGraphUserId: vi.fn(),
+  microsoftIdentitySubject: (auth: { tenantId: string; objectId: string }) => `${auth.tenantId}:${auth.objectId}`,
+}));
+vi.mock("../providers/whatsapp.js", () => ({
+  sendWhatsAppMessage: vi.fn().mockResolvedValue(undefined),
+}));
+vi.mock("../services/whatsappRegistration.js", () => ({
+  sendFirstValueAndBriefingPrompt: vi.fn().mockResolvedValue(undefined),
 }));
 
 const { authRoutes } = await import("./authRoutes.js");
 const { exchangeGoogleCode, handleGoogleCallback } = await import("../providers/google.js");
-const { handleMicrosoftCallback } = await import("../providers/microsoft.js");
-const { findOrCreateUserByEmail, listAccounts, upsertAccount, createSession } = await import("../db/store.js");
+const { exchangeMicrosoftCode, microsoftGetGraphUserId } = await import("../providers/microsoft.js");
+const {
+  findOrCreateUserByEmail,
+  getUserByEmail,
+  listAccounts,
+  upsertAccount,
+  createSession,
+  linkIdentity,
+  getUserIdByIdentity,
+  addInvitedPhone,
+  upsertPendingRegistration,
+  setPendingRegistrationToken,
+  listPhoneNumbersForUser,
+  resolveOwnerByPhone,
+} = await import("../db/store.js");
 
 function buildApp() {
   const app = express();
@@ -50,7 +70,8 @@ function parseSetCookie(res: request.Response, name: string): string | undefined
 beforeEach(() => {
   vi.mocked(exchangeGoogleCode).mockReset();
   vi.mocked(handleGoogleCallback).mockReset();
-  vi.mocked(handleMicrosoftCallback).mockReset();
+  vi.mocked(exchangeMicrosoftCode).mockReset();
+  vi.mocked(microsoftGetGraphUserId).mockReset().mockResolvedValue(null);
 });
 
 /** The same unsigned base64url JSON shape authRoutes.ts builds — what an attacker can hand-craft. */
@@ -285,7 +306,7 @@ describe("GET /auth/google/callback — connect intent", () => {
       .get(`/auth/microsoft/callback?code=fakecode&state=${forgeConnectState(victim.id, nonce)}`)
       .set("Cookie", nonceCookie);
 
-    expect(handleMicrosoftCallback).not.toHaveBeenCalled();
+    expect(exchangeMicrosoftCode).not.toHaveBeenCalled();
     expect(callback.headers.location).toBe("http://localhost:5173/settings?error=oauth_failed");
   });
 
@@ -293,5 +314,239 @@ describe("GET /auth/google/callback — connect intent", () => {
     const app = buildApp();
     const res = await request(app).get("/auth/google/login?from=onboarding");
     expect(res.status).toBe(401);
+  });
+});
+
+// --- Microsoft identity (review finding #2) ------------------------------------------------------
+// Microsoft sign-in used to find the user by Graph's `mail`, which any Entra tenant admin can set to
+// someone else's address. People are now identified by tenant id + object id; an existing user is
+// only linked when a Microsoft account already stored on their hub resolves to the same Graph user.
+
+let phoneCounter = 0;
+function freshPhone(): string {
+  phoneCounter += 1;
+  return `44700009${String(phoneCounter).padStart(4, "0")}`;
+}
+
+function msAuth(email: string, tenantId: string, objectId: string, graphUserId: string) {
+  return {
+    email,
+    accessToken: "ms-at",
+    refreshToken: "ms-rt",
+    expiryDate: Date.now() + 3600_000,
+    tenantId,
+    objectId,
+    graphUserId,
+  };
+}
+
+async function microsoftLogin(app: express.Express) {
+  const start = await request(app).get("/auth/microsoft/login-signin");
+  const nonceCookie = parseSetCookie(start, "oauth_nonce")!;
+  const state = new URL(start.headers.location).searchParams.get("state")!;
+  return request(app)
+    .get(`/auth/microsoft/callback?code=fakecode&state=${encodeURIComponent(state)}`)
+    .set("Cookie", nonceCookie);
+}
+
+function seedStoredMicrosoftAccount(userId: number, email: string) {
+  return upsertAccount(userId, {
+    provider: "microsoft",
+    email,
+    accessToken: "stored-at",
+    refreshToken: "stored-rt",
+    expiryDate: Date.now() + 3600_000,
+  });
+}
+
+describe("GET /auth/microsoft/callback — login intent identity", () => {
+  it("refuses an existing user's email when nothing proves it's the same Microsoft account", async () => {
+    const app = buildApp();
+    const email = uniqueEmail("ms-spoofed-victim");
+    findOrCreateUserByEmail(email);
+    vi.mocked(exchangeMicrosoftCode).mockResolvedValue(msAuth(email, "attacker-tenant", "attacker-obj", "attacker-graph"));
+
+    const callback = await microsoftLogin(app);
+
+    expect(callback.headers.location).toBe("http://localhost:5173/?error=microsoft_unverified");
+    expect(parseSetCookie(callback, "session")).toBeUndefined();
+  });
+
+  it("refuses when the victim's stored Microsoft account belongs to a different Graph user", async () => {
+    const app = buildApp();
+    const email = uniqueEmail("ms-mismatch-victim");
+    const victim = findOrCreateUserByEmail(email);
+    seedStoredMicrosoftAccount(victim.id, email);
+    vi.mocked(microsoftGetGraphUserId).mockResolvedValue("victim-graph");
+    vi.mocked(exchangeMicrosoftCode).mockResolvedValue(msAuth(email, "attacker-tenant", "attacker-obj", "attacker-graph"));
+
+    const callback = await microsoftLogin(app);
+
+    expect(callback.headers.location).toBe("http://localhost:5173/?error=microsoft_unverified");
+    expect(parseSetCookie(callback, "session")).toBeUndefined();
+  });
+
+  it("links and signs in an existing user whose stored Microsoft account is the same Graph user", async () => {
+    const app = buildApp();
+    const email = uniqueEmail("ms-grandfathered");
+    const user = findOrCreateUserByEmail(email);
+    seedStoredMicrosoftAccount(user.id, email);
+    vi.mocked(microsoftGetGraphUserId).mockResolvedValue("same-graph");
+    vi.mocked(exchangeMicrosoftCode).mockResolvedValue(msAuth(email, "tenant-g", "obj-g", "same-graph"));
+
+    const callback = await microsoftLogin(app);
+
+    expect(callback.headers.location).toBe("http://localhost:5173/assistant");
+    expect(parseSetCookie(callback, "session")).toBeDefined();
+    expect(getUserIdByIdentity("microsoft", "tenant-g:obj-g")).toBe(user.id);
+  });
+
+  it("signs in by linked identity, without needing the stored-account check", async () => {
+    const app = buildApp();
+    const email = uniqueEmail("ms-linked");
+    const user = findOrCreateUserByEmail(email);
+    linkIdentity(user.id, "microsoft", "tenant-l:obj-l");
+    vi.mocked(exchangeMicrosoftCode).mockResolvedValue(msAuth(email, "tenant-l", "obj-l", "graph-l"));
+
+    const callback = await microsoftLogin(app);
+
+    expect(parseSetCookie(callback, "session")).toBeDefined();
+    expect(microsoftGetGraphUserId).not.toHaveBeenCalled();
+  });
+
+  it("still turns away an email with no account at all", async () => {
+    const app = buildApp();
+    const email = uniqueEmail("ms-never-registered");
+    vi.mocked(exchangeMicrosoftCode).mockResolvedValue(msAuth(email, "t", "o", "g"));
+
+    const callback = await microsoftLogin(app);
+
+    expect(callback.headers.location).toBe("http://localhost:5173/?not_invited=1");
+    expect(getUserByEmail(email)).toBeNull();
+  });
+});
+
+describe("GET /auth/microsoft/callback — connect intent identity", () => {
+  it("links the connected Microsoft identity to the signed-in user, so it can sign in later", async () => {
+    const app = buildApp();
+    const user = findOrCreateUserByEmail(uniqueEmail("ms-connect-link"));
+    const token = createSession(user.id);
+
+    const start = await request(app).get("/auth/microsoft/login").set("Cookie", `session=${token}`);
+    const nonceCookie = parseSetCookie(start, "oauth_nonce")!;
+    const state = new URL(start.headers.location).searchParams.get("state")!;
+    const outlookEmail = uniqueEmail("ms-connect-outlook");
+    vi.mocked(exchangeMicrosoftCode).mockResolvedValue(msAuth(outlookEmail, "tenant-c", "obj-c", "graph-c"));
+
+    const callback = await request(app)
+      .get(`/auth/microsoft/callback?code=fakecode&state=${encodeURIComponent(state)}`)
+      .set("Cookie", [nonceCookie, `session=${token}`]);
+
+    expect(callback.headers.location).toBe(
+      `http://localhost:5173/settings?connected=${encodeURIComponent(outlookEmail)}`
+    );
+    expect(listAccounts(user.id, "microsoft").map((a) => a.email)).toEqual([outlookEmail]);
+    expect(getUserIdByIdentity("microsoft", "tenant-c:obj-c")).toBe(user.id);
+  });
+});
+
+describe("GET /auth/microsoft/callback — WhatsApp registration identity", () => {
+  async function registerViaMicrosoft(app: express.Express, phone: string, typedEmail: string) {
+    addInvitedPhone(phone);
+    upsertPendingRegistration(phone, { step: "awaiting_link_tap", typedEmail, provider: "microsoft" });
+    const token = setPendingRegistrationToken(phone);
+    const start = await request(app).get(`/auth/microsoft/register?token=${token}`);
+    const nonceCookie = parseSetCookie(start, "oauth_nonce")!;
+    const state = new URL(start.headers.location).searchParams.get("state")!;
+    return request(app)
+      .get(`/auth/microsoft/callback?code=fakecode&state=${encodeURIComponent(state)}`)
+      .set("Cookie", nonceCookie);
+  }
+
+  it("refuses to bind a new phone to an existing user's email without proof of the same Microsoft account", async () => {
+    const app = buildApp();
+    const phone = freshPhone();
+    const email = uniqueEmail("ms-reg-victim");
+    const victim = findOrCreateUserByEmail(email);
+    vi.mocked(exchangeMicrosoftCode).mockResolvedValue(msAuth(email, "attacker-tenant", "attacker-obj", "attacker-graph"));
+
+    const callback = await registerViaMicrosoft(app, phone, email);
+
+    expect(callback.headers.location).toBe("http://localhost:5173/connected?error=account_exists");
+    expect(listPhoneNumbersForUser(victim.id)).toEqual([]);
+    expect(resolveOwnerByPhone(phone)).toBeNull();
+  });
+
+  it("creates a brand-new user and links the identity when the email is unused", async () => {
+    const app = buildApp();
+    const phone = freshPhone();
+    const email = uniqueEmail("ms-reg-new");
+    vi.mocked(exchangeMicrosoftCode).mockResolvedValue(msAuth(email, "tenant-n", "obj-n", "graph-n"));
+
+    const callback = await registerViaMicrosoft(app, phone, email);
+
+    expect(callback.headers.location).toBe("http://localhost:5173/connected");
+    const user = getUserByEmail(email)!;
+    expect(resolveOwnerByPhone(phone)).toBe(user.id);
+    expect(getUserIdByIdentity("microsoft", "tenant-n:obj-n")).toBe(user.id);
+  });
+
+  it("reuses the user a linked identity belongs to", async () => {
+    const app = buildApp();
+    const phone = freshPhone();
+    const email = uniqueEmail("ms-reg-linked");
+    const user = findOrCreateUserByEmail(email);
+    linkIdentity(user.id, "microsoft", "tenant-r:obj-r");
+    vi.mocked(exchangeMicrosoftCode).mockResolvedValue(msAuth(email, "tenant-r", "obj-r", "graph-r"));
+
+    const callback = await registerViaMicrosoft(app, phone, email);
+
+    expect(callback.headers.location).toBe("http://localhost:5173/connected");
+    expect(resolveOwnerByPhone(phone)).toBe(user.id);
+  });
+});
+
+describe("Google sign-in can't take over a Microsoft-identified user", () => {
+  // Closes the pre-hijack path the Microsoft fix would otherwise leave: someone creates a user via
+  // Outlook registration with an unverified `mail` set to your address; your later Google sign-in
+  // must not land in (and auto-connect your Gmail to) that hub.
+  async function googleLogin(app: express.Express, email: string) {
+    const start = await request(app).get("/auth/google/login-signin");
+    const nonceCookie = parseSetCookie(start, "oauth_nonce")!;
+    const state = new URL(start.headers.location).searchParams.get("state")!;
+    vi.mocked(exchangeGoogleCode).mockResolvedValue({
+      email,
+      accessToken: "at",
+      refreshToken: "rt",
+      expiryDate: Date.now() + 3600_000,
+    });
+    return request(app)
+      .get(`/auth/google/callback?code=fakecode&state=${encodeURIComponent(state)}`)
+      .set("Cookie", nonceCookie);
+  }
+
+  it("refuses when the user has a Microsoft identity but no Google account with this email", async () => {
+    const app = buildApp();
+    const email = uniqueEmail("google-prehijack");
+    const user = findOrCreateUserByEmail(email);
+    linkIdentity(user.id, "microsoft", `tenant-p:obj-${email}`);
+
+    const callback = await googleLogin(app, email);
+
+    expect(callback.headers.location).toBe("http://localhost:5173/?error=google_unverified");
+    expect(parseSetCookie(callback, "session")).toBeUndefined();
+    expect(listAccounts(user.id, "google")).toEqual([]);
+  });
+
+  it("allows it once that user has already connected this Google account", async () => {
+    const app = buildApp();
+    const email = uniqueEmail("google-connected-too");
+    const user = findOrCreateUserByEmail(email);
+    linkIdentity(user.id, "microsoft", `tenant-q:obj-${email}`);
+    upsertAccount(user.id, { provider: "google", email, accessToken: "a", refreshToken: "r", expiryDate: null });
+
+    const callback = await googleLogin(app, email);
+
+    expect(parseSetCookie(callback, "session")).toBeDefined();
   });
 });

@@ -9,8 +9,10 @@ import {
 import {
   getMicrosoftAuthUrl,
   exchangeMicrosoftCode,
-  handleMicrosoftCallback,
   isMicrosoftConfigured,
+  microsoftGetGraphUserId,
+  microsoftIdentitySubject,
+  type ExchangedMicrosoftAuth,
 } from "../providers/microsoft.js";
 import {
   isPhoneInvited,
@@ -24,6 +26,9 @@ import {
   consumePendingRegistrationToken,
   peekPendingRegistrationByToken,
   addPhoneNumberForUser,
+  getUserIdByIdentity,
+  linkIdentity,
+  hasIdentity,
 } from "../db/store.js";
 import { sendWhatsAppMessage } from "../providers/whatsapp.js";
 import { sendFirstValueAndBriefingPrompt } from "../services/whatsappRegistration.js";
@@ -108,6 +113,56 @@ function connectOwnerFromSession(req: Request, state: OAuthState): number {
   }
   return sessionUserId;
 }
+
+// Which existing user (if any) a Microsoft sign-in belongs to. Graph's `mail` — which auth.email
+// usually is — can be set to any address by the admin of any Entra tenant, so an email match alone
+// proves nothing. A sign-in maps to a user only when:
+//  - its tenant id + object id is already linked to that user, or
+//  - a Microsoft account already stored on the user's hub (connected in an earlier, genuine OAuth
+//    round trip) still resolves to the same Graph user — the one-time link for users who predate
+//    user_identities. Must run BEFORE the new tokens are saved over that stored account.
+// Returns "none" when no user has this email at all, "unverified" when one does but nothing ties
+// this sign-in to them.
+async function resolveMicrosoftUser(auth: ExchangedMicrosoftAuth): Promise<number | "none" | "unverified"> {
+  const subject = microsoftIdentitySubject(auth);
+  const linked = getUserIdByIdentity("microsoft", subject);
+  if (linked !== null) return linked;
+
+  const existing = getUserByEmail(auth.email);
+  if (!existing) return "none";
+
+  for (const account of listAccounts(existing.id, "microsoft")) {
+    if ((await microsoftGetGraphUserId(account)) === auth.graphUserId) {
+      linkIdentity(existing.id, "microsoft", subject);
+      return existing.id;
+    }
+  }
+  return "unverified";
+}
+
+function saveMicrosoftAccount(userId: number, auth: ExchangedMicrosoftAuth) {
+  return upsertAccount(userId, {
+    provider: "microsoft",
+    email: auth.email,
+    accessToken: auth.accessToken,
+    refreshToken: auth.refreshToken,
+    expiryDate: auth.expiryDate,
+  });
+}
+
+// Google emails are verified, but a user row's email may have come from an unverified Microsoft
+// `mail` (a WhatsApp registration via Outlook). Without this, someone could pre-create a user with
+// your address that way, and your own later Google sign-in would land in their hub and connect your
+// Gmail to it. A Google sign-in may use an existing user only if that user has no Microsoft identity,
+// or has already connected this same Google account.
+function googleMayUseExistingUser(userId: number, googleEmail: string): boolean {
+  if (!hasIdentity(userId, "microsoft")) return true;
+  const normalized = googleEmail.trim().toLowerCase();
+  return listAccounts(userId, "google").some((a) => a.email.trim().toLowerCase() === normalized);
+}
+
+const ACCOUNT_EXISTS_WHATSAPP_TEXT =
+  "That email already belongs to a Marlowe account I can't confirm is yours. Sign in on the website the way you did before, then add this number from Settings.";
 
 function setNonceCookie(res: Response, nonce: string): void {
   res.cookie(NONCE_COOKIE, nonce, {
@@ -261,7 +316,13 @@ authRoutes.get("/auth/google/callback", async (req, res) => {
         ).catch(() => {});
         return;
       }
-      const user = findOrCreateUserByEmail(auth.email);
+      const existingUser = getUserByEmail(auth.email);
+      if (existingUser && !googleMayUseExistingUser(existingUser.id, auth.email)) {
+        res.redirect(`${CLIENT_URL}/connected?error=account_exists`);
+        sendWhatsAppMessage(reg.phone, ACCOUNT_EXISTS_WHATSAPP_TEXT).catch(() => {});
+        return;
+      }
+      const user = existingUser ?? findOrCreateUserByEmail(auth.email);
       try {
         addPhoneNumberForUser(user.id, reg.phone);
       } catch {
@@ -296,11 +357,15 @@ authRoutes.get("/auth/google/callback", async (req, res) => {
     // before, just no longer checked against an email invite list. A RETURNING user (already has
     // an account, from having gone through WhatsApp registration) is never blocked — this is
     // their normal sign-in, not a new signup.
-    if (!getUserByEmail(auth.email)) {
+    const user = getUserByEmail(auth.email);
+    if (!user) {
       res.redirect(`${CLIENT_URL}/?not_invited=1`);
       return;
     }
-    const user = findOrCreateUserByEmail(auth.email);
+    if (!googleMayUseExistingUser(user.id, auth.email)) {
+      res.redirect(`${CLIENT_URL}/?error=google_unverified`);
+      return;
+    }
     // Read BEFORE the auto-connect below — this is what decides onboarding vs. straight into the
     // app, and it must reflect what the user had connected walking in, not what signing in is
     // about to add. Otherwise a brand-new user's very first sign-in would immediately count as
@@ -345,7 +410,13 @@ authRoutes.get("/auth/microsoft/callback", async (req, res) => {
 
   try {
     if (state.intent === "connect") {
-      const account = await handleMicrosoftCallback(code, connectOwnerFromSession(req, state));
+      const ownerId = connectOwnerFromSession(req, state);
+      const auth = await exchangeMicrosoftCode(code);
+      const account = saveMicrosoftAccount(ownerId, auth);
+      // The session proves who the user is and the OAuth round trip proves the Microsoft account, so
+      // this is a verified link — it's what lets that account sign in on its own later. A no-op if
+      // the identity is already linked (to this user or, e.g. a shared mailbox, to someone else).
+      linkIdentity(ownerId, "microsoft", microsoftIdentitySubject(auth));
       res.redirect(`${CLIENT_URL}${connectReturnPath(state)}?connected=${encodeURIComponent(account.email)}`);
       return;
     }
@@ -370,9 +441,15 @@ authRoutes.get("/auth/microsoft/callback", async (req, res) => {
         ).catch(() => {});
         return;
       }
-      const user = findOrCreateUserByEmail(auth.email);
+      const resolved = await resolveMicrosoftUser(auth);
+      if (resolved === "unverified") {
+        res.redirect(`${CLIENT_URL}/connected?error=account_exists`);
+        sendWhatsAppMessage(reg.phone, ACCOUNT_EXISTS_WHATSAPP_TEXT).catch(() => {});
+        return;
+      }
+      const userId = resolved === "none" ? findOrCreateUserByEmail(auth.email).id : resolved;
       try {
-        addPhoneNumberForUser(user.id, reg.phone);
+        addPhoneNumberForUser(userId, reg.phone);
       } catch {
         res.redirect(`${CLIENT_URL}/connected?error=phone_taken`);
         sendWhatsAppMessage(reg.phone, "This WhatsApp number is already connected to a different Marlowe account.").catch(
@@ -380,38 +457,33 @@ authRoutes.get("/auth/microsoft/callback", async (req, res) => {
         );
         return;
       }
-      upsertAccount(user.id, {
-        provider: "microsoft",
-        email: auth.email,
-        accessToken: auth.accessToken,
-        refreshToken: auth.refreshToken,
-        expiryDate: auth.expiryDate,
-      });
-      setSessionCookie(res, createSession(user.id));
+      linkIdentity(userId, "microsoft", microsoftIdentitySubject(auth));
+      saveMicrosoftAccount(userId, auth);
+      setSessionCookie(res, createSession(userId));
       res.redirect(`${CLIENT_URL}/connected`);
-      sendFirstValueAndBriefingPrompt(user.id, reg.phone).catch((err) =>
+      sendFirstValueAndBriefingPrompt(userId, reg.phone).catch((err) =>
         console.error("whatsapp-register: post-connect message failed", err)
       );
       return;
     }
 
     const auth = await exchangeMicrosoftCode(code);
-    // See the matching comment on the Google callback above — blocks only a brand-new signup.
-    if (!getUserByEmail(auth.email)) {
+    // See the matching comment on the Google callback above — blocks only a brand-new signup. Unlike
+    // Google, an email match isn't enough to sign in as that user — see resolveMicrosoftUser.
+    const resolved = await resolveMicrosoftUser(auth);
+    if (resolved === "none") {
       res.redirect(`${CLIENT_URL}/?not_invited=1`);
       return;
     }
-    const user = findOrCreateUserByEmail(auth.email);
+    if (resolved === "unverified") {
+      res.redirect(`${CLIENT_URL}/?error=microsoft_unverified`);
+      return;
+    }
+    const userId = resolved;
     // Same ordering reasoning as the Google callback above.
-    const hasAccounts = listAccounts(user.id).length > 0;
-    upsertAccount(user.id, {
-      provider: "microsoft",
-      email: auth.email,
-      accessToken: auth.accessToken,
-      refreshToken: auth.refreshToken,
-      expiryDate: auth.expiryDate,
-    });
-    setSessionCookie(res, createSession(user.id));
+    const hasAccounts = listAccounts(userId).length > 0;
+    saveMicrosoftAccount(userId, auth);
+    setSessionCookie(res, createSession(userId));
     res.redirect(`${CLIENT_URL}${hasAccounts ? "/assistant" : "/onboarding"}`);
   } catch (err) {
     console.error("Microsoft OAuth callback failed", err);

@@ -13,12 +13,12 @@ the code by hand. Nothing has been changed yet.
 | # | Issue | Status |
 |---|---|---|
 | 1 | Forged OAuth connect state | **Fixed** — callback requires the session to match `state.ownerId` |
-| 2 | Microsoft sign-in by `mail` | Open — needs a decision (see below) |
+| 2 | Microsoft sign-in by `mail` | **Fixed** — identified by tenant id + object id (`user_identities`); existing users auto-link only when a stored Outlook account resolves to the same Graph user; Google sign-in can't take over a Microsoft-identified user |
 | 3 | Document delete FK failure | **Fixed** — match keys deleted first; file removed only after the row |
 | 4 | Gmail alerts lost | **Fixed** — checkpoint saved only after fetch/scan; scanners hold it on retryable failures (max 1h) |
 | 5 | Mid-reply message mishandled | **Fixed** — batches matched to history by row id, not position |
 
-Each fix has regression tests that failed before the change. Full server suite: 865 passing.
+Each fix has regression tests that failed before the change. Full server suite: 885 passing.
 
 ---
 
