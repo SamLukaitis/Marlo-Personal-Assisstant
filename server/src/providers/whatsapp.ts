@@ -180,7 +180,7 @@ export async function sendWhatsAppListMessage(
   to: string,
   bodyText: string,
   buttonLabel: string,
-  rows: { id: string; title: string }[]
+  rows: { id: string; title: string; description?: string }[]
 ): Promise<void> {
   const phoneNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID;
   const token = process.env.WHATSAPP_TOKEN;
@@ -201,7 +201,15 @@ export async function sendWhatsAppListMessage(
           body: { text: bodyText },
           action: {
             button: buttonLabel,
-            sections: [{ rows: rows.map((r) => ({ id: r.id, title: r.title })) }],
+            sections: [
+              {
+                rows: rows.map((r) => ({
+                  id: r.id,
+                  title: r.title,
+                  ...(r.description ? { description: r.description } : {}),
+                })),
+              },
+            ],
           },
         },
       }),
@@ -212,19 +220,74 @@ export async function sendWhatsAppListMessage(
   }
 }
 
+// Meta's hard limits for interactive messages — anything over these is rejected outright, not
+// truncated. Choice labels and questions come from the model (ask_user_choice), so they're
+// enforced here rather than trusted.
+const MAX_INTERACTIVE_BODY = 1024;
+const MAX_TEXT_BODY = 4096;
+const MAX_BUTTONS = 3;
+const MAX_BUTTON_TITLE = 20;
+const MAX_LIST_ROWS = 10;
+const MAX_LIST_ROW_TITLE = 24;
+const MAX_LIST_ROW_DESCRIPTION = 72;
+const FALLBACK_CHOICE_PROMPT = "What would you like to do?";
+
+function truncateLabel(text: string, max: number): string {
+  return text.length <= max ? text : `${text.slice(0, max - 1).trimEnd()}…`;
+}
+
+// Splits text into plain-message-sized pieces, preferring to break at a newline.
+function splitForTextMessages(text: string): string[] {
+  const pieces: string[] = [];
+  let rest = text;
+  while (rest.length > MAX_TEXT_BODY) {
+    const breakAt = rest.lastIndexOf("\n", MAX_TEXT_BODY);
+    const cut = breakAt > 0 ? breakAt : MAX_TEXT_BODY;
+    pieces.push(rest.slice(0, cut).trimEnd());
+    rest = rest.slice(cut).replace(/^\n+/, "");
+  }
+  if (rest.trim()) pieces.push(rest);
+  return pieces;
+}
+
 // Picks buttons (WhatsApp caps these at 3) or a list (up to 10) based on how many choices there
 // are — callers building a closed-set question use this instead of choosing between
 // sendWhatsAppReplyButtons and sendWhatsAppListMessage themselves.
+//
+// A question too long for an interactive body (e.g. a full email draft) goes out as a plain
+// message first, with the buttons following under its last paragraph (usually the actual
+// question, "Ready to send this?"). Labels that don't fit a button use a list instead, where the
+// full label can go in the row description.
 export async function sendChoiceMessage(
   to: string,
   bodyText: string,
   choices: { id: string; title: string }[]
 ): Promise<void> {
-  if (choices.length <= 3) {
-    await sendWhatsAppReplyButtons(to, bodyText, choices);
-  } else {
-    await sendWhatsAppListMessage(to, bodyText, "Choose", choices);
+  let prompt = bodyText;
+  if (bodyText.length > MAX_INTERACTIVE_BODY) {
+    for (const piece of splitForTextMessages(bodyText)) {
+      await sendWhatsAppMessage(to, piece);
+    }
+    const lastParagraph = bodyText.trim().split(/\n\s*\n/).pop()?.trim() ?? "";
+    prompt = lastParagraph && lastParagraph.length <= MAX_INTERACTIVE_BODY ? lastParagraph : FALLBACK_CHOICE_PROMPT;
   }
+
+  const labelsFitButtons = choices.every((c) => c.title.length <= MAX_BUTTON_TITLE);
+  if (choices.length <= MAX_BUTTONS && labelsFitButtons) {
+    await sendWhatsAppReplyButtons(to, prompt, choices);
+    return;
+  }
+
+  const rows = choices.slice(0, MAX_LIST_ROWS).map((c) =>
+    c.title.length <= MAX_LIST_ROW_TITLE
+      ? c
+      : {
+          id: c.id,
+          title: truncateLabel(c.title, MAX_LIST_ROW_TITLE),
+          description: truncateLabel(c.title, MAX_LIST_ROW_DESCRIPTION),
+        }
+  );
+  await sendWhatsAppListMessage(to, prompt, "Choose", rows);
 }
 
 // Uploads raw bytes to Meta so they can be referenced by media id in a subsequent send call —
