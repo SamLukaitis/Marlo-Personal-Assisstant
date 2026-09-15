@@ -462,6 +462,17 @@ const ALWAYS_ON_TOOLS: Anthropic.ToolUnion[] = [
     },
   },
   {
+    name: "get_current_time",
+    description:
+      "Get the current date and time in the user's own timezone. Call this whenever the user asks " +
+      "what time or date it is, or whenever you need 'now' to answer a time-relative question " +
+      "(e.g. 'how long until my flight', 'is the bank still open') — never guess or state a time " +
+      "from your own reasoning, you have no built-in clock. If the user's timezone isn't known yet, " +
+      "this tells you so directly instead of a time — ask what timezone/city they're in and call " +
+      "set_user_timezone, then retry.",
+    input_schema: { type: "object", properties: {} },
+  },
+  {
     name: "check_reminder_status",
     description:
       "Check whether a reminder you set with set_reminder actually went out, is still scheduled, " +
@@ -1178,6 +1189,21 @@ export async function runTool(
         input.query as string,
         (input.limit as number | undefined) ?? SEARCH_MEMORY_DEFAULT_LIMIT
       );
+    case "get_current_time": {
+      const timezone = getUserTimezone(ownerId);
+      if (!timezone) {
+        return {
+          error:
+            "I don't know the user's timezone yet. Ask what timezone or city they're in, call " +
+            "set_user_timezone with the answer, then retry get_current_time.",
+        };
+      }
+      const now = DateTime.now().setZone(timezone);
+      return {
+        timezone,
+        current_time: now.toFormat("cccc, LLLL d, yyyy, h:mm a"),
+      };
+    }
     case "check_reminder_status":
       return searchReminders(
         ownerId,
@@ -1626,6 +1652,7 @@ function buildRules(enabled: Set<ToolKey>): string {
     "- When a remember note is about a specific, nameable, recurring subject (a person, place, project, etc) the user might ask about again by name, pass entity_name + entity_type on that same remember call so it files onto a lookup-able entity instead of only a flat note — don't do this for one-off preferences with no clear subject. Use recall_entity (not search_memory) when the user later asks about that subject by name — it returns the entity's notes plus everything linked to it in one call.",
     "- Use flag_unmet_request whenever you have to tell the user you can't do something — call it in the same turn as your reply, don't wait to be asked.",
     "- Use set_reminder for anything the user wants to be nudged about at a specific time or on a recurring cadence — a one-shot ('remind me in 20 minutes'), a fixed burst in a window ('every 5 minutes between 10 and 10:30'), or repeat-until-they-reply. Never compute the date/time/timezone math yourself — pass through the raw numbers/clock-times the user said and let the tool do the arithmetic (see its description). remember's triggerAt no longer exists — set_reminder is the only way to schedule a WhatsApp push.",
+    "- Use get_current_time whenever the user asks what time or date it is, or you need 'now' for a time-relative answer — you have no built-in clock, so never state a time/date from your own reasoning. It also doubles as how the user can check you have their timezone right.",
     "- Use check_reminder_status or list_active_reminders when the user asks whether a reminder you set actually went out, or what's still scheduled (e.g. \"did that reminder send?\", \"did Henry get texted?\", \"what reminders do I have?\") — never guess from your own context or say you have no way to check.",
     '- Use search_documents/list_recent_documents when the user asks about something they photographed or sent via WhatsApp (boarding passes, licenses, tickets, receipts) — e.g. "when did I fly to X" or "what\'s the code on my license".',
     "- If the user wants the actual photo/file back rather than just its details (e.g. \"send me that photo again\", \"can I get the original image\"), find the right document with search_documents/list_recent_documents first, then call send_document with its id.",

@@ -577,6 +577,32 @@ describe("set_user_timezone tool", () => {
   });
 });
 
+describe("get_current_time tool", () => {
+  it("is always available, same as remember", () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("time-available"));
+    const names = buildToolsForOwner(user.id).map((t) => t.name);
+    expect(names).toContain("get_current_time");
+  });
+
+  it("refuses until the user's timezone is known, same as set_reminder", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("time-no-tz"));
+    const result = (await runTool(user.id, "get_current_time", {})) as { error: string };
+    expect(result.error).toMatch(/timezone/i);
+  });
+
+  it("reports the current time in the user's set timezone once known", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("time-with-tz"));
+    await runTool(user.id, "set_user_timezone", { timezone: "Europe/London" });
+
+    const result = (await runTool(user.id, "get_current_time", {})) as {
+      timezone: string;
+      current_time: string;
+    };
+    expect(result.timezone).toBe("Europe/London");
+    expect(result.current_time).toMatch(/\d{1,2}:\d{2}\s*(AM|PM)/);
+  });
+});
+
 describe("list_active_reminders / cancel_reminder tools", () => {
   it("lists a scheduled reminder and lets it be cancelled", async () => {
     const user = findOrCreateUserByEmail(uniqueEmail("reminder-list-cancel"));
