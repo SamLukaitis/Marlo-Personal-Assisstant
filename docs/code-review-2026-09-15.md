@@ -17,8 +17,16 @@ the code by hand. Nothing has been changed yet.
 | 3 | Document delete FK failure | **Fixed** — match keys deleted first; file removed only after the row |
 | 4 | Gmail alerts lost | **Fixed** — checkpoint saved only after fetch/scan; scanners hold it on retryable failures (max 1h) |
 | 5 | Mid-reply message mishandled | **Fixed** — batches matched to history by row id, not position |
+| 6 | Onboarding asks before answering | **Fixed** — the batch runs an after-reply callback; the setup chain advances from it, so the assistant still sees `ask_first_task` |
+| 7 | Choice messages over WhatsApp limits | **Fixed** — long questions sent as a plain message first, buttons under the last paragraph; long labels use a list (full label in the row description); rows capped at 10 |
+| 8 | Shared help-widget rate limit | **Fixed** — trusts one proxy hop in production (`TRUST_PROXY_HOPS` overrides); message/history length capped; expired visitors swept |
+| 9 | Calendar times wrong | **Fixed** — Outlook times carry an explicit `Z`; all-day events are plain dates flagged `allDay`; parsing/sorting/day bucketing go through `eventTime` helpers (server and client) |
+| 10 | Server file names listable | **Fixed** — local folders off when `NODE_ENV=production` unless `LOCAL_FOLDERS_ENABLED=true`; saved folders ignored too |
+| 11 | Summaries survive deletion | **Fixed** — `deleteUserCompletely` clears summaries for the owner's bound and messaged numbers |
+| 12 | Repeat pushes after partial failure | **Fixed** — per-number `proactive_deliveries` ledger; retries skip numbers that already got the item |
 
-Each fix has regression tests that failed before the change. Full server suite: 885 passing.
+Each fix has regression tests that failed before the change (the client calendar change is covered
+by typecheck only; the client has no test runner). Full server suite: 916 passing.
 
 ---
 
