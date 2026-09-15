@@ -20,11 +20,24 @@ const SKIP_DIRS = new Set([
 const MAX_FILES_SCANNED = 20000;
 const MAX_DEPTH = 12;
 
+// "This computer" is whatever machine the server runs on. That is the user's own PC for a local
+// install, but on a hosted deployment (Railway) it is the server itself, where letting any invited
+// user add a folder would let them list the server's file names (directly, or through the
+// assistant's search_files). Off in production unless a self-hosted install opts in; checked on
+// every call, so folders saved before this restriction are ignored too.
+export function localFoldersEnabled(): boolean {
+  return process.env.NODE_ENV !== "production" || process.env.LOCAL_FOLDERS_ENABLED === "true";
+}
+
 export function listLocalFolders(ownerId: number): LocalRootRow[] {
+  if (!localFoldersEnabled()) return [];
   return listLocalRoots(ownerId);
 }
 
 export async function addLocalFolder(ownerId: number, rootPath: string): Promise<LocalRootRow> {
+  if (!localFoldersEnabled()) {
+    throw new Error("Folders on this computer are only available when Marlowe runs on your own computer.");
+  }
   const resolved = path.resolve(rootPath);
   const stat = await fs.stat(resolved);
   if (!stat.isDirectory()) {
@@ -38,7 +51,7 @@ export function removeLocalFolder(ownerId: number, id: number): void {
 }
 
 export async function localSearchFiles(ownerId: number, query: string, limit = 15): Promise<FileHit[]> {
-  const roots = listLocalRoots(ownerId);
+  const roots = listLocalFolders(ownerId);
   const trimmed = query.trim().toLowerCase();
   if (!roots.length || !trimmed) return [];
 
