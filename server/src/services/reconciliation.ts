@@ -5,15 +5,11 @@
 import { hubListMessages, hubListNewMessages } from "./hub.js";
 import { isWhatsAppConfigured } from "../providers/whatsapp.js";
 import { sendProactiveMessage } from "./outbound.js";
+import { hasAlerted, markAlerted, listPhoneNumbersForUser, listRecentMatchKeys, getSetting } from "../db/store.js";
 import {
-  hasAlerted,
-  markAlerted,
-  listPhoneNumbersForUser,
-  listRecentMatchKeys,
-  getSetting,
-  getPendingSetup,
-} from "../db/store.js";
-import { incrementSuppressedOnboardingAlerts } from "./onboardingAlertSuppression.js";
+  isOnboardingSuppressionActive,
+  incrementSuppressedOnboardingAlerts,
+} from "./onboardingAlertSuppression.js";
 import type { UnifiedMessage } from "../providers/types.js";
 
 export interface MatchKeys {
@@ -161,7 +157,7 @@ export async function checkNewEmailsAgainstRecentDocuments(ownerId: number): Pro
   // postConnectSetup.ts's onboarding chain is still in progress, don't interleave individual
   // proactive alerts into that conversation. Matches are still recorded (both keys marked) so
   // they're never re-alerted later — only the push is deferred and counted.
-  const isOnboarding = getPendingSetup(ownerId) !== null;
+  const isOnboarding = isOnboardingSuppressionActive(ownerId);
 
   const userName = getSetting(ownerId, "user_name");
   let sent = 0;

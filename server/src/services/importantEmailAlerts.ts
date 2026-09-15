@@ -11,7 +11,6 @@ import {
   markAlerted,
   getSetting,
   setSetting,
-  getPendingSetup,
   listPhoneNumbersForUser,
   saveEntity,
 } from "../db/store.js";
@@ -25,7 +24,10 @@ import {
 } from "./importantEmailClassifier.js";
 import { getXeroForwardingEmail } from "./xero.js";
 import { setPendingInvoiceForward } from "./xeroInvoiceConfirmation.js";
-import { incrementSuppressedOnboardingAlerts } from "./onboardingAlertSuppression.js";
+import {
+  isOnboardingSuppressionActive,
+  incrementSuppressedOnboardingAlerts,
+} from "./onboardingAlertSuppression.js";
 import type { UnifiedMessage } from "../providers/types.js";
 
 const MAX_ALERTS_PER_CHECK = 5;
@@ -186,7 +188,7 @@ export async function checkForImportantEmails(ownerId: number): Promise<void> {
   // (list_flagged_emails and future ticks must see it as handled) — only the actual push and the
   // Xero forward offer (which needs a real delivered message to reply to) are deferred.
   // sendClosingMessage mentions the total once, via takeSuppressedOnboardingAlertCount.
-  if (getPendingSetup(ownerId) !== null) {
+  if (isOnboardingSuppressionActive(ownerId)) {
     for (const { m, match } of matches) {
       markAlerted(ownerId, messageKey(m));
       saveEntity<ImportantEmailEntityData>(ownerId, {

@@ -25,9 +25,8 @@ const { findOrCreateUserByEmail, getPendingSetup, getEnabledTools, getSetting, s
   await import("../db/store.js");
 const { getBriefingSettings } = await import("./briefing.js");
 const { todayKey } = await import("./dateKey.js");
-const { incrementSuppressedOnboardingAlerts, takeSuppressedOnboardingAlertCount } = await import(
-  "./onboardingAlertSuppression.js"
-);
+const { incrementSuppressedOnboardingAlerts, takeSuppressedOnboardingAlertCount, isOnboardingSuppressionActive } =
+  await import("./onboardingAlertSuppression.js");
 
 let counter = 0;
 function uniqueEmail(prefix: string): string {
@@ -110,6 +109,22 @@ describe("startPostConnectSetup", () => {
 
     expect(sendWhatsAppMessage).not.toHaveBeenCalledWith(PHONE, expect.stringContaining("what should I call you"));
     expect(getPendingSetup(ownerId)).toBe("ask_first_task");
+  });
+
+  // Regression test for the real bug behind onboardingAlertSuppression.ts's grace period: the
+  // chain finishes in well under a minute in this test (as it does for a real fast-tapping user),
+  // clearing pending_setup — suppression must still be active right after, on connection-recency
+  // alone, or the scanners' next scheduler tick floods the backlog exactly as before this fix.
+  it("keeps onboarding alert suppression active even after the whole chain finishes almost instantly", async () => {
+    const ownerId = newOwnerId();
+
+    await startPostConnectSetup(ownerId, PHONE);
+    await handleNameReply(ownerId, text("Sam"));
+    await handleFirstTaskReply(ownerId, text("skip"));
+    await handlePostConnectSetupReply(ownerId, tap("briefing_no"));
+
+    expect(getPendingSetup(ownerId)).toBeNull(); // chain really did finish
+    expect(isOnboardingSuppressionActive(ownerId)).toBe(true); // but suppression outlives it
   });
 });
 
@@ -339,31 +354,21 @@ describe("handlePostConnectSetupReply", () => {
     expect(sendWhatsAppMessage).toHaveBeenCalledWith(PHONE, expect.stringContaining("Sam"));
   });
 
-  // Regression test for a real bug: a backlog of already-existing important mail used to arrive
-  // as a burst of separate WhatsApp alerts right as onboarding finished, instead of one mention.
-  // The scanners (alerts.ts/importantEmailAlerts.ts/reconciliation.ts) record a suppressed count
-  // while pending setup is non-null (see onboardingAlertSuppression.ts) — the closing message
-  // must read-and-report that total exactly once.
-  it("mentions a suppressed alert backlog once in the closing message, when there was one", async () => {
+  // The closing message deliberately does NOT report a suppressed-alert backlog itself anymore —
+  // see the comment on sendClosingMessage. By the time this runs, the backlog usually hasn't even
+  // been discovered yet (the chain above typically finishes in well under a minute; the scanners
+  // run on scheduler.ts's own 5-minute tick, unrelated to this moment) — an earlier version of
+  // this fix reported it here and that mismatch was itself a bug. scheduler.ts's
+  // flushOnboardingAlertSummaryIfDue reports it later instead, as its own message.
+  it("never mentions a suppressed-alert backlog in the closing message, even if one exists at this moment", async () => {
     const ownerId = newOwnerId();
     await pastFirstTask(ownerId);
     incrementSuppressedOnboardingAlerts(ownerId, 3);
 
     await handlePostConnectSetupReply(ownerId, tap("briefing_no"));
 
-    expect(sendWhatsAppMessage).toHaveBeenCalledWith(PHONE, expect.stringContaining("3"));
-    expect(takeSuppressedOnboardingAlertCount(ownerId)).toBe(0); // consumed, not left to double-report
-  });
-
-  it("says nothing extra in the closing message when nothing was suppressed", async () => {
-    const ownerId = newOwnerId();
-    await pastFirstTask(ownerId);
-
-    await handlePostConnectSetupReply(ownerId, tap("briefing_no"));
-
-    const closingCall = vi
-      .mocked(sendWhatsAppMessage)
-      .mock.calls.find(([, text]) => text.includes("All set"));
+    const closingCall = vi.mocked(sendWhatsAppMessage).mock.calls.find(([, text]) => text.includes("All set"));
     expect(closingCall?.[1]).not.toMatch(/inbox|already/i);
+    expect(takeSuppressedOnboardingAlertCount(ownerId)).toBe(3); // left untouched for the scheduler to report
   });
 });
