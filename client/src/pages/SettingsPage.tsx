@@ -36,7 +36,7 @@ import {
   type WhatsAppStatus,
   type AlertSettings,
   type ImportantEmailAlertSettings,
-  type InvitedEmail,
+  type InvitedPhone,
   type AdminTimelineEntry,
 } from "../api/client";
 import { IconTrash, IconPlus, IconRefresh } from "../components/icons";
@@ -95,7 +95,7 @@ export function SettingsPage() {
     enabled: true,
   });
   const [importantEmailSaved, setImportantEmailSaved] = useState(false);
-  const [invites, setInvites] = useState<InvitedEmail[]>([]);
+  const [invites, setInvites] = useState<InvitedPhone[]>([]);
   const [newInvite, setNewInvite] = useState("");
   const [inviteError, setInviteError] = useState<string | null>(null);
   const [invitesLoaded, setInvitesLoaded] = useState(false);
@@ -215,20 +215,20 @@ export function SettingsPage() {
 
   async function handleAddInvite(e: React.FormEvent) {
     e.preventDefault();
-    const email = newInvite.trim();
-    if (!email) return;
+    const phone = newInvite.trim();
+    if (!phone) return;
     setInviteError(null);
     try {
-      setInvites(await addInvite(email));
+      setInvites(await addInvite(phone));
       setNewInvite("");
     } catch (err) {
       setInviteError((err as Error).message);
     }
   }
 
-  async function handleRemoveInvite(email: string) {
+  async function handleRemoveInvite(phone: string) {
     try {
-      setInvites(await removeInvite(email));
+      setInvites(await removeInvite(phone));
     } catch (err) {
       setInviteError((err as Error).message);
     }
@@ -320,10 +320,16 @@ export function SettingsPage() {
     load();
   }
 
+  // Replaces the number rather than adding to it — only one WhatsApp number is supported per
+  // account (server-enforced too, see whatsappSettingsRoutes.ts): every number on this list gets
+  // every proactive alert, not just a message-in permission, so letting the list grow silently
+  // led to a stale old number and, in one real case, someone else's number both still receiving
+  // an account's private alerts indefinitely. This form only renders when there's no number set
+  // (see below) — remove the current one first to set a new one.
   async function handleAddNumber(e: React.FormEvent) {
     e.preventDefault();
     if (!newNumber.trim()) return;
-    const next = [...allowedNumbers, newNumber.trim()];
+    const next = [newNumber.trim()];
     setAllowedNumbers(next);
     setNewNumber("");
     await saveWhatsAppAllowedNumbers(next);
@@ -613,23 +619,27 @@ export function SettingsPage() {
                   )}
 
                   <div className="settings-field" style={{ marginTop: 16 }}>
-                    <span className="settings-field-label">Numbers that can message it</span>
+                    <span className="settings-field-label">Your WhatsApp number</span>
                     <span className="settings-field-hint">
+                      One number per account — it's both what can message Marlowe and what
+                      receives every proactive alert, so only add a number you want getting that.
                       Include the country code, no spaces or plus sign — for example
-                      447911123456.
+                      447911123456. Remove the current one before setting a new one.
                     </span>
                   </div>
-                  <form className="row" onSubmit={handleAddNumber}>
-                    <input
-                      value={newNumber}
-                      onChange={(e) => setNewNumber(e.target.value)}
-                      placeholder="447911123456"
-                    />
-                    <button className="btn-primary" type="submit">
-                      <IconPlus />
-                      Add
-                    </button>
-                  </form>
+                  {allowedNumbers.length === 0 && (
+                    <form className="row" onSubmit={handleAddNumber}>
+                      <input
+                        value={newNumber}
+                        onChange={(e) => setNewNumber(e.target.value)}
+                        placeholder="447911123456"
+                      />
+                      <button className="btn-primary" type="submit">
+                        <IconPlus />
+                        Add
+                      </button>
+                    </form>
+                  )}
                   {numbersSaved && (
                     <span className="saved-note" style={{ display: "block", marginTop: 8 }}>
                       Saved
@@ -637,9 +647,12 @@ export function SettingsPage() {
                   )}
                   {allowedNumbers.length === 0 ? (
                     <p className="muted" style={{ marginTop: 12 }}>
-                      No numbers added yet.
+                      No number set yet.
                     </p>
                   ) : (
+                    // Normally exactly one row — an account could still show more than one here
+                    // only if it predates this one-number limit; removing extras is how to clean
+                    // that up, since the add form above stays hidden until the list is empty.
                     allowedNumbers.map((n) => (
                       <div key={n} className="data-row row" style={{ justifyContent: "space-between" }}>
                         <span style={{ fontSize: 13.5 }}>{n}</span>
@@ -771,16 +784,16 @@ export function SettingsPage() {
               <>
                 <h2>Invited testers</h2>
                 <p className="settings-section-intro">
-                  Only people on this list can sign in. Add an email and they can sign in with
-                  Google right away — no separate setup needed on their end.
+                  Only numbers on this list can message Marlowe and sign up. Add a number, then
+                  send that person the WhatsApp number to message — no need to know their email in
+                  advance.
                 </p>
                 <div className="card card-padded" style={{ marginBottom: 20 }}>
                   <form className="row" onSubmit={handleAddInvite}>
                     <input
-                      type="email"
                       value={newInvite}
                       onChange={(e) => setNewInvite(e.target.value)}
-                      placeholder="someone@example.com"
+                      placeholder="447911123456"
                     />
                     <button className="btn-primary" type="submit">
                       <IconPlus />
@@ -802,9 +815,9 @@ export function SettingsPage() {
                     </p>
                   ) : (
                     invites.map((inv) => (
-                      <div key={inv.email} className="data-row row" style={{ justifyContent: "space-between" }}>
+                      <div key={inv.phone} className="data-row row" style={{ justifyContent: "space-between" }}>
                         <div>
-                          <span style={{ fontSize: 13.5 }}>{inv.email}</span>{" "}
+                          <span style={{ fontSize: 13.5 }}>{inv.phone}</span>{" "}
                           <span className="muted" style={{ fontSize: 12 }}>
                             invited {new Date(inv.invitedAt).toLocaleDateString(undefined, {
                               day: "numeric",
@@ -813,7 +826,7 @@ export function SettingsPage() {
                             })}
                           </span>
                         </div>
-                        <button className="btn-danger" onClick={() => handleRemoveInvite(inv.email)}>
+                        <button className="btn-danger" onClick={() => handleRemoveInvite(inv.phone)}>
                           <IconTrash />
                           Remove
                         </button>
