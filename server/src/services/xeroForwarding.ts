@@ -1,7 +1,6 @@
-// Runs fire-and-forget right after a receipt saves (see documents.ts) — mirrors
-// reconciliation.ts's checkDocumentAgainstRecentEmails in shape: must never delay the "document
-// saved" WhatsApp confirmation the user is waiting on, so any outcome (success or failure)
-// arrives as a separate follow-up message instead.
+// Runs fire-and-forget right after a receipt saves (see documents.ts): must never delay the
+// "document saved" WhatsApp confirmation the user is waiting on, so any outcome (success or
+// failure) arrives as a separate follow-up message instead.
 import { listAccounts, listPhoneNumbersForUser, markDocumentXeroForwarded, type DocumentRow } from "../db/store.js";
 import { isWhatsAppConfigured } from "../providers/whatsapp.js";
 import { sendProactiveMessage } from "./outbound.js";
