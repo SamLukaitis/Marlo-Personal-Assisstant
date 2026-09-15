@@ -353,7 +353,7 @@ const ALWAYS_ON_TOOLS: Anthropic.ToolUnion[] = [
   {
     name: "create_calendar_event",
     description:
-      "Create a new event on the user's own calendar. This never invites other people — it only ever creates a personal event on the specified account's calendar. Times must be ISO 8601 datetimes (e.g. 2026-07-23T14:00:00Z).",
+      'Create a new event on the user\'s own calendar. This never invites other people — it only ever creates a personal event on the specified account\'s calendar. For an ordinary event in the user\'s own timezone, pass start/end as ISO 8601 UTC datetimes (e.g. 2026-07-23T14:00:00Z). For an event tied to a specific place in a DIFFERENT timezone — a flight, a trip abroad, anything happening somewhere the user isn\'t — do NOT convert to UTC yourself: pass start/end as the plain LOCAL clock time at that place with no Z/offset (e.g. 2026-09-19T17:29:00) and set start_timezone/end_timezone to the IANA zone for that place (e.g. "America/Bogota"). A flight\'s departure and arrival cities are often in different zones, so start_timezone and end_timezone are independent — get this right so the event shows the correct local time instead of silently defaulting to the user\'s home timezone.',
     input_schema: {
       type: "object",
       properties: {
@@ -361,6 +361,16 @@ const ALWAYS_ON_TOOLS: Anthropic.ToolUnion[] = [
         title: { type: "string" },
         start: { type: "string", description: "ISO 8601 start datetime" },
         end: { type: "string", description: "ISO 8601 end datetime" },
+        start_timezone: {
+          type: "string",
+          description:
+            'IANA timezone name (e.g. "America/Bogota") to interpret `start` in — only when this event is somewhere other than the user\'s home timezone. Omit for an ordinary home-timezone event.',
+        },
+        end_timezone: {
+          type: "string",
+          description:
+            "Same as start_timezone but for `end` — independent, since arrival can be a different timezone than departure.",
+        },
         location: { type: "string" },
         description: { type: "string" },
       },
@@ -370,7 +380,7 @@ const ALWAYS_ON_TOOLS: Anthropic.ToolUnion[] = [
   {
     name: "update_calendar_event",
     description:
-      "Reschedule or edit an existing calendar event. Get the event_id from list_upcoming_events first. Only pass the fields that should change.",
+      "Reschedule or edit an existing calendar event. Get the event_id from list_upcoming_events first. Only pass the fields that should change. See create_calendar_event's description for start_timezone/end_timezone — the same local-time-plus-IANA-zone rule applies whenever start/end are being changed for an event outside the user's home timezone.",
     input_schema: {
       type: "object",
       properties: {
@@ -379,6 +389,8 @@ const ALWAYS_ON_TOOLS: Anthropic.ToolUnion[] = [
         title: { type: "string" },
         start: { type: "string", description: "ISO 8601 start datetime" },
         end: { type: "string", description: "ISO 8601 end datetime" },
+        start_timezone: { type: "string", description: "IANA timezone name for `start` — see create_calendar_event" },
+        end_timezone: { type: "string", description: "IANA timezone name for `end` — see create_calendar_event" },
         location: { type: "string" },
         description: { type: "string" },
       },
@@ -1014,6 +1026,8 @@ export async function runTool(
         title: input.title as string,
         start: input.start as string,
         end: input.end as string,
+        startTimeZone: input.start_timezone as string | undefined,
+        endTimeZone: input.end_timezone as string | undefined,
         location: input.location as string | undefined,
         description: input.description as string | undefined,
       });
@@ -1022,6 +1036,8 @@ export async function runTool(
         title: input.title as string | undefined,
         start: input.start as string | undefined,
         end: input.end as string | undefined,
+        startTimeZone: input.start_timezone as string | undefined,
+        endTimeZone: input.end_timezone as string | undefined,
         location: input.location as string | undefined,
         description: input.description as string | undefined,
       });
