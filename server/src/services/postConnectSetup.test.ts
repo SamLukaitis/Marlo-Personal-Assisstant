@@ -11,6 +11,10 @@ vi.mock("./hub.js", () => ({
 vi.mock("./chatDispatch.js", () => ({
   handleText: vi.fn().mockResolvedValue(undefined),
 }));
+const mockScanAndCurate = vi.fn();
+vi.mock("./importantEmailAlerts.js", () => ({
+  scanAndCurateImportantEmailsForOnboarding: (...args: unknown[]) => mockScanAndCurate(...args),
+}));
 
 const { sendWhatsAppMessage, sendWhatsAppReplyButtons } = await import("../providers/whatsapp.js");
 const { hubListMessages, hubListEvents } = await import("./hub.js");
@@ -51,6 +55,7 @@ beforeEach(() => {
   vi.mocked(hubListMessages).mockClear().mockResolvedValue([]);
   vi.mocked(hubListEvents).mockClear().mockResolvedValue([]);
   vi.mocked(handleText).mockClear().mockResolvedValue(undefined);
+  mockScanAndCurate.mockClear().mockResolvedValue(null);
 });
 
 describe("startPostConnectSetup", () => {
@@ -94,6 +99,72 @@ describe("startPostConnectSetup", () => {
 
     const [, confirmText] = vi.mocked(sendWhatsAppMessage).mock.calls[0];
     expect(confirmText).toContain("2 unread emails");
+  });
+
+  // A real, curated finding replaces the plain unread count entirely — see this feature's design:
+  // a user's own feedback was "instead of something like 20 unread emails it should say the most
+  // important emails".
+  it("leads with the curated important-email preview instead of a plain unread count, when one is found", async () => {
+    const ownerId = newOwnerId();
+    vi.mocked(hubListMessages).mockResolvedValue([
+      { unread: true, subject: "A" } as never,
+      { unread: true, subject: "B" } as never,
+    ]);
+    mockScanAndCurate.mockResolvedValue({
+      lines: ["🔐 New sign-in detected.", "✈️ Gate moved to B12."],
+      moreCount: 7,
+    });
+
+    await startPostConnectSetup(ownerId, PHONE);
+
+    expect(mockScanAndCurate).toHaveBeenCalledWith(ownerId);
+    const [, confirmText] = vi.mocked(sendWhatsAppMessage).mock.calls[0];
+    expect(confirmText).toContain("🔐 New sign-in detected.");
+    expect(confirmText).toContain("✈️ Gate moved to B12.");
+    expect(confirmText).toContain("7 more");
+    expect(confirmText).not.toContain("2 unread emails");
+  });
+
+  it("still mentions the next calendar event alongside a curated preview", async () => {
+    const ownerId = newOwnerId();
+    vi.mocked(hubListEvents).mockResolvedValue([{ title: "Team standup", start: "2026-09-15T09:00:00.000Z" } as never]);
+    mockScanAndCurate.mockResolvedValue({ lines: ["🔐 New sign-in detected."], moreCount: 0 });
+
+    await startPostConnectSetup(ownerId, PHONE);
+
+    const [, confirmText] = vi.mocked(sendWhatsAppMessage).mock.calls[0];
+    expect(confirmText).toContain("🔐 New sign-in detected.");
+    expect(confirmText).toContain("Team standup");
+  });
+
+  it("omits the '...and N more' line when the preview covers everything found", async () => {
+    const ownerId = newOwnerId();
+    mockScanAndCurate.mockResolvedValue({ lines: ["🔐 New sign-in detected."], moreCount: 0 });
+
+    await startPostConnectSetup(ownerId, PHONE);
+
+    const [, confirmText] = vi.mocked(sendWhatsAppMessage).mock.calls[0];
+    expect(confirmText).not.toContain("more");
+  });
+
+  it("falls back to the plain unread count when the curated scan finds nothing (unchanged behavior)", async () => {
+    const ownerId = newOwnerId();
+    vi.mocked(hubListMessages).mockResolvedValue([{ unread: true, subject: "A" } as never]);
+    mockScanAndCurate.mockResolvedValue(null);
+
+    await startPostConnectSetup(ownerId, PHONE);
+
+    const [, confirmText] = vi.mocked(sendWhatsAppMessage).mock.calls[0];
+    expect(confirmText).toContain("1 unread email");
+  });
+
+  it("still sends 'Connected!' even if the curated scan itself throws", async () => {
+    const ownerId = newOwnerId();
+    mockScanAndCurate.mockRejectedValue(new Error("classification API down"));
+
+    await startPostConnectSetup(ownerId, PHONE);
+
+    expect(sendWhatsAppMessage).toHaveBeenCalledWith(PHONE, expect.stringContaining("Connected"));
   });
 
   // Regression test: the pre-connect registration flow (whatsappRegistration.ts) already asks

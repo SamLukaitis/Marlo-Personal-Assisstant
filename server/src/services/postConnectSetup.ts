@@ -35,6 +35,7 @@ import { hubListMessages, hubListEvents } from "./hub.js";
 import { handleText } from "./chatDispatch.js";
 import { isPlausibleName } from "./plausibleName.js";
 import { markOnboardingConnected } from "./onboardingAlertSuppression.js";
+import { scanAndCurateImportantEmailsForOnboarding } from "./importantEmailAlerts.js";
 import type { IncomingWhatsAppMessage } from "../providers/whatsapp.js";
 import type { NewsTopic } from "../providers/news.js";
 
@@ -141,34 +142,53 @@ export async function startPostConnectSetup(ownerId: number, phone: string): Pro
   markOnboardingConnected(ownerId);
   let fact = "";
   try {
-    const [messages, events] = await Promise.all([
+    const [messages, events, importantPreview] = await Promise.all([
       hubListMessages(ownerId, { limit: 20 }).catch(() => []),
       hubListEvents(ownerId, 1).catch(() => []),
+      scanAndCurateImportantEmailsForOnboarding(ownerId).catch((err) => {
+        console.error(`postConnectSetup: onboarding important-email scan failed for owner ${ownerId}`, err);
+        return null;
+      }),
     ]);
-    const unreadMessages = messages.filter((m) => m.unread);
-    const unread = unreadMessages.length;
-    const parts: string[] = [];
-    // A single unread email names its actual subject instead of just a count — this and the
-    // event title below are the one genuine "wow" moment in the whole chain: Marlowe visibly
-    // already knows something real about the user's day before they've answered a single
-    // question. More than one unread falls back to a count — picking which one matters most
-    // would need the importantEmailClassifier LLM call, overkill for a best-effort onboarding fact.
-    if (unread === 1 && unreadMessages[0].subject) {
-      parts.push(`*1 unread email* — "${unreadMessages[0].subject}"`);
-    } else if (unread > 0) {
-      parts.push(`*${unread} unread emails*`);
-    }
-    const nextEvent = events[0];
-    if (nextEvent?.title) {
-      parts.push(
-        events.length > 1
+
+    const calendarSentence = (() => {
+      const nextEvent = events[0];
+      if (nextEvent?.title) {
+        return events.length > 1
           ? `*${nextEvent.title}* on today's calendar (plus ${events.length - 1} more)`
-          : `*${nextEvent.title}* on today's calendar`
-      );
-    } else if (events.length > 0) {
-      parts.push(`*${events.length} thing${events.length === 1 ? "" : "s"}* on today's calendar`);
+          : `*${nextEvent.title}* on today's calendar`;
+      }
+      if (events.length > 0) return `*${events.length} thing${events.length === 1 ? "" : "s"}* on today's calendar`;
+      return null;
+    })();
+
+    if (importantPreview && importantPreview.lines.length > 0) {
+      // A real, curated finding replaces the plain unread count entirely — a user's own
+      // feedback: "instead of something like 20 unread emails it should say the most important
+      // emails". Its own paragraph (it's multi-line), with the calendar fact folded in as a
+      // trailing sentence rather than forced into the single joined sentence used below.
+      const more =
+        importantPreview.moreCount > 0
+          ? `\n...and ${importantPreview.moreCount} more — just ask any time.`
+          : "";
+      const calendarNote = calendarSentence ? ` I can also see ${calendarSentence}.` : "";
+      fact = `\n\nAlready found a few things worth knowing about:\n${importantPreview.lines.join("\n")}${more}${calendarNote}`;
+    } else {
+      const parts: string[] = [];
+      const unreadMessages = messages.filter((m) => m.unread);
+      const unread = unreadMessages.length;
+      // A single unread email names its actual subject instead of just a count — this and the
+      // event sentence below are the one genuine "wow" moment in the whole chain when there's no
+      // curated preview to lead with: Marlowe visibly already knows something real about the
+      // user's day before they've answered a single question.
+      if (unread === 1 && unreadMessages[0].subject) {
+        parts.push(`*1 unread email* — "${unreadMessages[0].subject}"`);
+      } else if (unread > 0) {
+        parts.push(`*${unread} unread emails*`);
+      }
+      if (calendarSentence) parts.push(calendarSentence);
+      fact = parts.length ? ` I can already see ${parts.join(" and ")}.` : "";
     }
-    fact = parts.length ? ` I can already see ${parts.join(" and ")}.` : "";
   } catch {
     // best-effort — a missing first-value fact shouldn't block the confirmation message itself
   }

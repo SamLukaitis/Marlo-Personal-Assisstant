@@ -1,10 +1,18 @@
 // Shared suppression for the post-connect onboarding window (see postConnectSetup.ts's
-// startPostConnectSetup). Each proactive scanner (alerts.ts, importantEmailAlerts.ts,
-// reconciliation.ts) calls isOnboardingSuppressionActive before pushing a WhatsApp message, and
-// records-but-doesn't-send (incrementSuppressedOnboardingAlerts) while it's true — a user who is
+// startPostConnectSetup). alerts.ts (real-person mail) and reconciliation.ts (matches against
+// saved documents) call isOnboardingSuppressionActive before pushing a WhatsApp message, and
+// record-but-don't-send (incrementSuppressedOnboardingAlerts) while it's true — a user who is
 // mid-onboarding, answering its own yes/no questions, must not also get hit with a burst of
 // separate alerts about a backlog of mail that was already sitting in their inbox before they
 // connected.
+//
+// importantEmailAlerts.ts (flagged categories: flight change, reservation confirmed, security
+// alert, etc.) doesn't use this anymore — it has its own classifier, so
+// scanAndCurateImportantEmailsForOnboarding runs synchronously at connect time instead
+// (startPostConnectSetup), baselining that backlog deterministically and surfacing a curated
+// preview right in the "Connected!" message rather than suppressing-then-flushing it later.
+// alerts.ts/reconciliation.ts still need this module because neither has a classifier to curate a
+// preview from.
 //
 // isOnboardingSuppressionActive is true for two overlapping reasons:
 //  1. postConnectSetup.ts's own question chain is still in progress (getPendingSetup non-null).
