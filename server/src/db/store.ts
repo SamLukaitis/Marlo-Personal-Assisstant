@@ -1363,14 +1363,15 @@ export function getWhatsAppHistory(phone: string, limit = 20): WhatsAppMessageRo
 // an inbound message, or one element per chunk for an outbound reply split across several sends
 // (services/messageSplitting.ts). Optional and omitted by most existing callers (reactions,
 // short-circuit replies like "help"/version text) that don't need to be resolvable as a quote
-// target.
+// target. Returns the new row's id — messageBatching.ts uses it to find this exact row again when
+// the batch flushes, rather than guessing by position.
 export function appendWhatsAppMessage(
   ownerId: number,
   phone: string,
   role: "user" | "assistant",
   content: string,
   wamids?: string[]
-): void {
+): number {
   const info = db
     .prepare(
       `INSERT INTO whatsapp_messages (owner_id, phone, role, content, created_at) VALUES (?, ?, ?, ?, ?)`
@@ -1382,6 +1383,7 @@ export function appendWhatsAppMessage(
     );
     for (const wamid of wamids) insertWamid.run(wamid, info.lastInsertRowid);
   }
+  return Number(info.lastInsertRowid);
 }
 
 // Resolves a swipe-to-reply (Meta's `context.id`) back to the message it quoted, no matter how
