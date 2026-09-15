@@ -4,6 +4,7 @@ import {
   saveBriefingSettings,
   selectUnreadSinceMidnight,
   describeLocationStreak,
+  describeEventTime,
   type BriefingSettings,
 } from "./briefing.js";
 import { findOrCreateUserByEmail } from "../db/store.js";
@@ -107,5 +108,19 @@ describe("describeLocationStreak", () => {
     const result = describeLocationStreak(c, now);
     expect(result).toMatch(/Rio de Janeiro/);
     expect(result).toMatch(/6 days/);
+  });
+});
+
+describe("describeEventTime", () => {
+  const base = { id: "e", accountId: 1, accountEmail: "me@example.com", provider: "google" as const, title: "Offsite" };
+
+  it("describes an all-day event as all day rather than a midnight start", () => {
+    expect(describeEventTime({ ...base, start: "2026-09-15", end: "2026-09-16", allDay: true })).toBe("Offsite (all day)");
+  });
+
+  it("keeps the zoned time for a timed event", () => {
+    expect(describeEventTime({ ...base, start: "2026-09-15T09:00:00.000Z", end: "2026-09-15T10:00:00.000Z" })).toBe(
+      "Offsite at 2026-09-15T09:00:00.000Z"
+    );
   });
 });

@@ -160,10 +160,10 @@ async function accessTokenFor(account: AccountRow): Promise<string> {
   return tokens.access_token;
 }
 
-async function graphGet<T>(account: AccountRow, path: string): Promise<T> {
+async function graphGet<T>(account: AccountRow, path: string, extraHeaders: Record<string, string> = {}): Promise<T> {
   const token = await accessTokenFor(account);
   const res = await fetch(`${GRAPH}${path}`, {
-    headers: { Authorization: `Bearer ${token}` },
+    headers: { Authorization: `Bearer ${token}`, ...extraHeaders },
   });
   if (!res.ok) throw new Error(`Graph ${path} returned ${res.status}: ${await res.text()}`);
   return (await res.json()) as T;
@@ -319,31 +319,14 @@ export async function microsoftListEvents(
 ): Promise<CalendarEvent[]> {
   const now = new Date();
   const until = new Date(now.getTime() + days * 24 * 60 * 60 * 1000);
-  const data = await graphGet<{
-    value: Array<{
-      id: string;
-      subject?: string;
-      start?: { dateTime?: string };
-      end?: { dateTime?: string };
-      location?: { displayName?: string };
-      webLink?: string;
-    }>;
-  }>(
+  const data = await graphGet<{ value: GraphEvent[] }>(
     account,
     `/me/calendarview?startDateTime=${now.toISOString()}&endDateTime=${until.toISOString()}` +
-      `&$orderby=start/dateTime&$top=50&$select=id,subject,start,end,location,webLink`
+      `&$orderby=start/dateTime&$top=50&$select=id,subject,start,end,isAllDay,location,webLink`,
+    // UTC is Graph's default too, but pin it so graphDateTimeToIso can rely on it.
+    { Prefer: 'outlook.timezone="UTC"' }
   );
-  return data.value.map((e) => ({
-    id: e.id,
-    accountId: account.id,
-    accountEmail: account.email,
-    provider: "microsoft" as const,
-    title: e.subject ?? "(untitled)",
-    start: e.start?.dateTime ?? "",
-    end: e.end?.dateTime ?? "",
-    location: e.location?.displayName || undefined,
-    link: e.webLink,
-  }));
+  return data.value.map((e) => graphEventToCalendarEvent(account, e));
 }
 
 export async function microsoftCreateDraft(
@@ -499,24 +482,45 @@ export async function microsoftSearchFiles(
   }));
 }
 
+interface GraphDateTime {
+  dateTime?: string;
+  timeZone?: string;
+}
+
 interface GraphEvent {
   id: string;
   subject?: string;
-  start?: { dateTime?: string };
-  end?: { dateTime?: string };
+  isAllDay?: boolean;
+  start?: GraphDateTime;
+  end?: GraphDateTime;
   location?: { displayName?: string };
   webLink?: string;
 }
 
+// Graph gives a wall-clock dateTime ("2026-09-15T09:00:00.0000000") plus a separate timeZone, and
+// the string alone parses as local time everywhere downstream. A UTC value gets an explicit "Z";
+// an all-day event becomes a plain date, matching Google (see services/eventTime.ts). A value in
+// any other zone (only an event just created/updated with an explicit zone) is left as-is.
+function graphDateTimeToIso(value: GraphDateTime | undefined, allDay: boolean): string {
+  const dateTime = value?.dateTime;
+  if (!dateTime) return "";
+  if (allDay) return dateTime.slice(0, 10);
+  if ((value?.timeZone ?? "UTC") !== "UTC" || /(Z|[+-]d{2}:d{2})$/.test(dateTime)) return dateTime;
+  const ms = Date.parse(`${dateTime}Z`);
+  return Number.isFinite(ms) ? new Date(ms).toISOString() : dateTime;
+}
+
 function graphEventToCalendarEvent(account: AccountRow, e: GraphEvent): CalendarEvent {
+  const allDay = e.isAllDay === true;
   return {
     id: e.id,
     accountId: account.id,
     accountEmail: account.email,
     provider: "microsoft",
     title: e.subject ?? "(untitled)",
-    start: e.start?.dateTime ?? "",
-    end: e.end?.dateTime ?? "",
+    start: graphDateTimeToIso(e.start, allDay),
+    end: graphDateTimeToIso(e.end, allDay),
+    ...(allDay ? { allDay: true } : {}),
     location: e.location?.displayName || undefined,
     link: e.webLink,
   };

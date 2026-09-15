@@ -8,12 +8,14 @@ const mockGoogleSendMessage = vi.fn();
 const mockGoogleArchiveMessages = vi.fn();
 const mockGoogleGetMessage = vi.fn();
 const mockGoogleListNewMessages = vi.fn();
+const mockGoogleListEvents = vi.fn();
 vi.mock("../providers/google.js", () => ({
   googleListMessages: (...args: unknown[]) => mockGoogleListMessages(...args),
   googleSendMessage: (...args: unknown[]) => mockGoogleSendMessage(...args),
   googleArchiveMessages: (...args: unknown[]) => mockGoogleArchiveMessages(...args),
   googleGetMessage: (...args: unknown[]) => mockGoogleGetMessage(...args),
   googleListNewMessages: (...args: unknown[]) => mockGoogleListNewMessages(...args),
+  googleListEvents: (...args: unknown[]) => mockGoogleListEvents(...args),
 }));
 vi.mock("../providers/microsoft.js", () => ({}));
 
@@ -28,6 +30,7 @@ const {
   holdNewMessageCheckpoint,
   withMessageCache,
   senderDisplayName,
+  hubListEvents,
 } = await import("./hub.js");
 
 let counter = 0;
@@ -508,5 +511,23 @@ describe("senderDisplayName", () => {
 
   it("returns a bare display name with no address as-is", () => {
     expect(senderDisplayName("Jane Doe")).toBe("Jane Doe");
+  });
+});
+
+describe("hubListEvents", () => {
+  // Outlook times come back as "...Z" and Google's as "...+02:00" (or plain dates for all-day), so
+  // comparing the strings put 10:00+02:00 (08:00 UTC) after 09:00Z.
+  it("sorts events by their actual start instant, not by string", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("events-sort"));
+    upsertAccount(user.id, { provider: "google", email: uniqueEmail("events-sort-inbox"), accessToken: "t", refreshToken: "r", expiryDate: null });
+    const event = (id: string, start: string) => ({ id, accountId: 1, accountEmail: "a@example.com", provider: "google", title: id, start, end: start });
+    mockGoogleListEvents.mockResolvedValueOnce([
+      event("utc-nine", "2026-09-15T09:00:00.000Z"),
+      event("berlin-ten", "2026-09-15T10:00:00+02:00"),
+    ]);
+
+    const events = await hubListEvents(user.id, 7);
+
+    expect(events.map((e) => e.id)).toEqual(["berlin-ten", "utc-nine"]);
   });
 });

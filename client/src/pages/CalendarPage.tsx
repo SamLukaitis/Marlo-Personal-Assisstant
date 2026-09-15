@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { fetchEvents, type CalendarEvent } from "../api/client";
+import { isDateOnly, parseEventTime } from "../lib/eventTime";
 
 // 11 colors so the mapping lines up conceptually with Google Calendar's own 11 event colors
 // (server/src/providers/google.ts's colorForAccount uses the same `% 11` idea for the colorId
@@ -15,7 +16,10 @@ function colorForAccount(accountId: number): string {
 
 function fmt(iso: string): string {
   if (!iso) return "";
-  const d = new Date(iso);
+  const d = parseEventTime(iso);
+  if (isDateOnly(iso)) {
+    return d.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" });
+  }
   return d.toLocaleString(undefined, {
     weekday: "short",
     month: "short",
@@ -86,7 +90,7 @@ export function CalendarPage() {
                   </span>
                 </div>
                 <div className="list-sub">
-                  {fmt(e.start)} → {fmt(e.end)}
+                  {e.allDay ? `${fmt(e.start)} · All day` : `${fmt(e.start)} → ${fmt(e.end)}`}
                   {e.location ? ` · ${e.location}` : ""}
                 </div>
               </a>

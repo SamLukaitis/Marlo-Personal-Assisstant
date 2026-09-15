@@ -94,3 +94,20 @@ describe("findFreeSlots", () => {
     expect(slots[1].start).toBe(localIso(2026, 7, 25, 9, 0));
   });
 });
+
+describe("findFreeSlots — all-day events", () => {
+  it("blocks the whole local day for an all-day event given as plain dates", () => {
+    const allDay = { ...event("2026-08-24", "2026-08-25"), allDay: true };
+
+    const slots = findFreeSlots([allDay], {
+      days: 2,
+      durationMinutes: 30,
+      // The full day, so a UTC-midnight misread (off by the local offset) shows up as a stray slot.
+      earliestHour: 0,
+      latestHour: 24,
+      now: NOW,
+    });
+
+    expect(slots).toEqual([{ start: localIso(2026, 7, 25, 0, 0), end: localIso(2026, 7, 26, 0, 0) }]);
+  });
+});

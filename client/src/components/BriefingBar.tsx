@@ -13,13 +13,15 @@ import {
   type CalendarEvent,
 } from "../api/client";
 import { IconChevronDown, IconRefresh } from "./icons";
+import { isDateOnly, parseEventTime } from "../lib/eventTime";
 
 function fmtTime(iso: string): string {
-  return new Date(iso).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+  if (isDateOnly(iso)) return "All day";
+  return parseEventTime(iso).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
 }
 
 function isToday(iso: string): boolean {
-  const d = new Date(iso);
+  const d = parseEventTime(iso);
   const now = new Date();
   return d.toDateString() === now.toDateString();
 }
