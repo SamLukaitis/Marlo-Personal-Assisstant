@@ -13,12 +13,14 @@ vi.mock("../providers/whatsapp.js", async (importOriginal) => {
 
 const mockHubListNewMessages = vi.fn();
 const mockHubGetMessage = vi.fn();
+const mockHoldCheckpoint = vi.fn();
 vi.mock("./hub.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./hub.js")>();
   return {
     ...actual,
     hubListNewMessages: (...args: unknown[]) => mockHubListNewMessages(...args),
     hubGetMessage: (...args: unknown[]) => mockHubGetMessage(...args),
+    holdNewMessageCheckpoint: (...args: unknown[]) => mockHoldCheckpoint(...args),
   };
 });
 
@@ -101,6 +103,7 @@ beforeEach(() => {
   vi.mocked(isWhatsAppConfigured).mockReset().mockReturnValue(true);
   mockHubListNewMessages.mockReset();
   mockHubGetMessage.mockReset();
+  mockHoldCheckpoint.mockReset();
   mockClassify.mockReset().mockResolvedValue(new Map());
 });
 
@@ -255,6 +258,49 @@ describe("checkForImportantEmails", () => {
     expect(mockClassify).toHaveBeenCalledTimes(1);
     expect(hasAlerted(user.id, "important-email:1:err-1")).toBe(false);
     expect(sendWhatsAppMessage).not.toHaveBeenCalled();
+  });
+
+  // Unmarked isn't enough on its own for Gmail: without holding the history checkpoint, the next
+  // tick's incremental fetch starts past this mail and never returns it again.
+  it("holds the mail checkpoint when classification fails, so the mail is listed again next tick", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("classify-fail-hold"));
+    registerActivePhone(user.id);
+    await baseline(user.id);
+
+    mockHubListNewMessages.mockResolvedValueOnce([fakeMessage({ id: "err-hold-1" })]);
+    mockClassify.mockRejectedValueOnce(new Error("API down"));
+
+    await checkForImportantEmails(user.id);
+
+    expect(mockHoldCheckpoint).toHaveBeenCalledWith(user.id);
+  });
+
+  it("holds the mail checkpoint when an alert fails to deliver", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("deliver-fail-hold"));
+    registerActivePhone(user.id);
+    await baseline(user.id);
+
+    mockHubListNewMessages.mockResolvedValueOnce([fakeMessage({ id: "fail-hold-1" })]);
+    mockClassify.mockResolvedValueOnce(new Map([[0, { category: "invoice_due", summary: "" }]]));
+    vi.mocked(sendWhatsAppMessage).mockRejectedValueOnce(new Error("network down"));
+
+    await checkForImportantEmails(user.id);
+
+    expect(mockHoldCheckpoint).toHaveBeenCalledWith(user.id);
+  });
+
+  it("does not hold the checkpoint when everything was handled", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("all-handled-no-hold"));
+    registerActivePhone(user.id);
+    await baseline(user.id);
+
+    mockHubListNewMessages.mockResolvedValueOnce([fakeMessage({ id: "ok-1" })]);
+    mockClassify.mockResolvedValueOnce(new Map([[0, { category: "invoice_due", summary: "" }]]));
+    vi.mocked(sendWhatsAppMessage).mockResolvedValue(undefined);
+
+    await checkForImportantEmails(user.id);
+
+    expect(mockHoldCheckpoint).not.toHaveBeenCalled();
   });
 
   it("leaves a matched message unmarked (retriable) when delivery fails", async () => {
@@ -468,6 +514,8 @@ describe("scanAndCurateImportantEmailsForOnboarding", () => {
 
     expect(result).toBeNull();
     expect(hasAlerted(user.id, "important-email:1:err-1")).toBe(false);
+    // "Left for the scheduler" only holds on Gmail if the checkpoint doesn't move past this mail.
+    expect(mockHoldCheckpoint).toHaveBeenCalledWith(user.id);
   });
 
   it("does nothing (and returns null) if the owner was somehow already baselined", async () => {

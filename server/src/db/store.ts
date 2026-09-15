@@ -950,6 +950,22 @@ db.exec(`
   );
 `);
 
+// Which provider account a person actually signed in with, keyed on the provider's own immutable
+// ids — for Microsoft, "<tenant id>:<object id>" from the id_token. Microsoft sign-in used to find
+// the user by Graph's `mail`, which any Entra tenant admin can set to someone else's address; see
+// authRoutes.ts's resolveMicrosoftUser for how these rows get created and checked. A subject is
+// linked to exactly one user and never re-pointed.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS user_identities (
+    provider   TEXT NOT NULL,
+    subject    TEXT NOT NULL,
+    user_id    INTEGER NOT NULL REFERENCES users(id),
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY (provider, subject)
+  );
+  CREATE INDEX IF NOT EXISTS idx_user_identities_user ON user_identities(user_id);
+`);
+
 export const uploadsDir = path.join(dataDir, "uploads");
 if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
 
@@ -1363,14 +1379,15 @@ export function getWhatsAppHistory(phone: string, limit = 20): WhatsAppMessageRo
 // an inbound message, or one element per chunk for an outbound reply split across several sends
 // (services/messageSplitting.ts). Optional and omitted by most existing callers (reactions,
 // short-circuit replies like "help"/version text) that don't need to be resolvable as a quote
-// target.
+// target. Returns the new row's id — messageBatching.ts uses it to find this exact row again when
+// the batch flushes, rather than guessing by position.
 export function appendWhatsAppMessage(
   ownerId: number,
   phone: string,
   role: "user" | "assistant",
   content: string,
   wamids?: string[]
-): void {
+): number {
   const info = db
     .prepare(
       `INSERT INTO whatsapp_messages (owner_id, phone, role, content, created_at) VALUES (?, ?, ?, ?, ?)`
@@ -1382,6 +1399,7 @@ export function appendWhatsAppMessage(
     );
     for (const wamid of wamids) insertWamid.run(wamid, info.lastInsertRowid);
   }
+  return Number(info.lastInsertRowid);
 }
 
 // Resolves a swipe-to-reply (Meta's `context.id`) back to the message it quoted, no matter how
@@ -1708,8 +1726,14 @@ export function getDocumentByWamid(ownerId: number, wamid: string): DocumentRow 
     .get(ownerId, wamid) as DocumentRow | undefined;
 }
 
+// document_match_keys.document_id REFERENCES documents(id) — children first, same manual-cascade
+// order as deleteUserCompletely, or the documents delete fails the foreign key.
 export function deleteDocument(ownerId: number, id: number): void {
-  db.prepare(`DELETE FROM documents WHERE id = ? AND owner_id = ?`).run(id, ownerId);
+  const purge = db.transaction(() => {
+    db.prepare(`DELETE FROM document_match_keys WHERE document_id = ? AND owner_id = ?`).run(id, ownerId);
+    db.prepare(`DELETE FROM documents WHERE id = ? AND owner_id = ?`).run(id, ownerId);
+  });
+  purge();
 }
 
 export function markDocumentXeroForwarded(ownerId: number, id: number, forwardedAt: number): void {
@@ -2272,6 +2296,27 @@ export function getUser(id: number): UserRow | null {
   return row ?? null;
 }
 
+export type IdentityProvider = "microsoft";
+
+export function getUserIdByIdentity(provider: IdentityProvider, subject: string): number | null {
+  const row = db
+    .prepare(`SELECT user_id AS userId FROM user_identities WHERE provider = ? AND subject = ?`)
+    .get(provider, subject) as { userId: number } | undefined;
+  return row?.userId ?? null;
+}
+
+// INSERT OR IGNORE on purpose: once a provider identity belongs to a user it's never moved to
+// another one — the caller has to have proven the link before calling this.
+export function linkIdentity(userId: number, provider: IdentityProvider, subject: string): void {
+  db.prepare(
+    `INSERT OR IGNORE INTO user_identities (provider, subject, user_id, created_at) VALUES (?, ?, ?, ?)`
+  ).run(provider, subject, userId, Date.now());
+}
+
+export function hasIdentity(userId: number, provider: IdentityProvider): boolean {
+  return !!db.prepare(`SELECT 1 FROM user_identities WHERE user_id = ? AND provider = ?`).get(userId, provider);
+}
+
 // Invite-gating moved from email to phone (see isPhoneInvited/addInvitedPhone below) — this
 // table and the historical migration bootstrap row that seeds APP_OWNER_EMAIL into it are left
 // in place (harmless, inert) rather than dropped, but nothing reads or writes it going forward.
@@ -2821,6 +2866,7 @@ export function deleteUserCompletely(ownerId: number): { deletedDocumentPaths: s
     db.prepare(`DELETE FROM admin_todos WHERE created_by = ?`).run(ownerId);
     db.prepare(`DELETE FROM poster_notes WHERE author_id = ?`).run(ownerId);
     db.prepare(`DELETE FROM user_phone_numbers WHERE user_id = ?`).run(ownerId);
+    db.prepare(`DELETE FROM user_identities WHERE user_id = ?`).run(ownerId);
     db.prepare(`DELETE FROM sessions WHERE user_id = ?`).run(ownerId);
     db.prepare(`DELETE FROM users WHERE id = ?`).run(ownerId);
   });

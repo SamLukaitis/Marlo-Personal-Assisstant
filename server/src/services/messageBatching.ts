@@ -8,7 +8,7 @@
 // message's id. The delay is picked per message via looksComplete below — a message that reads as
 // a finished thought gets a short window, one that looks like it's still being typed out gets a
 // longer one, and the window keeps sliding on whichever message arrived most recently.
-import { getWhatsAppHistory } from "../db/store.js";
+import { getWhatsAppHistory, type WhatsAppMessageRow } from "../db/store.js";
 import { runAssistantChat, MAX_HISTORY_MESSAGES, type ChatMessage } from "../ai/assistant.js";
 import { sendAssistantReply } from "./whatsappReply.js";
 import { sendWhatsAppMessage } from "../providers/whatsapp.js";
@@ -17,6 +17,9 @@ export const SHORT_DEBOUNCE_MS = Number(process.env.WHATSAPP_DEBOUNCE_SHORT_MS ?
 export const LONG_DEBOUNCE_MS = Number(process.env.WHATSAPP_DEBOUNCE_LONG_MS ?? 5000);
 
 interface BufferedEntry {
+  // The whatsapp_messages row this message was saved as. Undefined only when a caller had nothing
+  // saved to point at (tests with a mocked store) — its override, if any, is then just appended.
+  rowId: number | undefined;
   override: string | null;
 }
 
@@ -35,12 +38,14 @@ const batches = new Map<string, BatchState>();
 // Called as the last step by every handler that would otherwise call runAssistantChat directly
 // for one message. contentOverride is the richer content the model should see in place of the
 // persisted history line (extracted document/link text, a resolved quoted-reply) — null means the
-// persisted line is already what the model should see. fastPath is looksComplete(text) for text
-// messages, true for location, and looksComplete(caption) (or false with no caption) for media.
+// persisted line is already what the model should see. historyRowId is the id appendWhatsAppMessage
+// returned for this message's own row. fastPath is looksComplete(text) for text messages, true for
+// location, and looksComplete(caption) (or false with no caption) for media.
 export function queueForAssistant(
   ownerId: number,
   from: string,
   messageId: string,
+  historyRowId: number | undefined,
   contentOverride: string | null,
   fastPath: boolean
 ): void {
@@ -57,7 +62,7 @@ export function queueForAssistant(
     };
     batches.set(from, state);
   }
-  state.entries.push({ override: contentOverride });
+  state.entries.push({ rowId: historyRowId, override: contentOverride });
   state.lastMessageId = messageId;
   state.lastFastPath = fastPath;
 
@@ -85,26 +90,7 @@ async function flush(from: string): Promise<void> {
   const ownerId = state.ownerId;
 
   try {
-    const history: ChatMessage[] = getWhatsAppHistory(from, MAX_HISTORY_MESSAGES).map((m) => ({
-      role: m.role,
-      content: m.content,
-    }));
-
-    // Splice each buffered message's override into the history position it corresponds to (the
-    // last entries.length rows, in the same order they were appended) — a plain-text message with
-    // no override leaves the persisted row untouched.
-    const start = Math.max(0, history.length - entries.length);
-    for (let i = 0; i < entries.length; i++) {
-      const { override } = entries[i];
-      if (override === null) continue;
-      const idx = start + i;
-      if (idx < history.length) {
-        history[idx] = { role: "user", content: override };
-      } else {
-        history.push({ role: "user", content: override });
-      }
-    }
-
+    const history = buildBatchHistory(getWhatsAppHistory(from, MAX_HISTORY_MESSAGES), entries);
     const reply = await runAssistantChat(ownerId, history, from);
     await sendAssistantReply(ownerId, from, reply, replyToMessageId);
   } catch (err) {
@@ -123,6 +109,38 @@ async function flush(from: string): Promise<void> {
       batches.delete(from);
     }
   }
+}
+
+// Finds this batch's own rows by id — never by position. A reply to an earlier batch is saved after
+// any message that arrived while it was being generated, and a photo's row is saved before its slow
+// extraction lets it queue, so "the last N rows" is routinely the wrong set. Batched messages go
+// last (in the order they were saved, with overrides swapped in) so the request always ends on what
+// the user is waiting for an answer to; everything else keeps its place.
+function buildBatchHistory(rows: WhatsAppMessageRow[], entries: BufferedEntry[]): ChatMessage[] {
+  const overrideByRowId = new Map<number, string | null>();
+  for (const entry of entries) {
+    if (entry.rowId !== undefined) overrideByRowId.set(entry.rowId, entry.override);
+  }
+
+  const earlier: ChatMessage[] = [];
+  const batch: ChatMessage[] = [];
+  for (const row of rows) {
+    if (overrideByRowId.has(row.id)) {
+      batch.push({ role: "user", content: overrideByRowId.get(row.id) ?? row.content });
+    } else {
+      earlier.push({ role: row.role, content: row.content });
+    }
+  }
+
+  // A batched row outside the history window has no saved content to fall back on — only its
+  // override (if any) can still be shown.
+  const rowIdsInWindow = new Set(rows.map((r) => r.id));
+  for (const entry of entries) {
+    const inWindow = entry.rowId !== undefined && rowIdsInWindow.has(entry.rowId);
+    if (!inWindow && entry.override !== null) batch.push({ role: "user", content: entry.override });
+  }
+
+  return [...earlier, ...batch];
 }
 
 // Heuristic guess at whether a text message reads as a finished thought or as someone still

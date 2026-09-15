@@ -1,8 +1,4 @@
-import {
-  upsertAccount,
-  updateAccountTokens,
-  type AccountRow,
-} from "../db/store.js";
+import { updateAccountTokens, type AccountRow } from "../db/store.js";
 import type {
   UnifiedMessage,
   CalendarEvent,
@@ -15,8 +11,10 @@ import type {
 
 const AUTH_BASE = "https://login.microsoftonline.com/common/oauth2/v2.0";
 const GRAPH = "https://graph.microsoft.com/v1.0";
+// openid makes the token endpoint return an id_token — the tenant id + object id in it are how a
+// person is identified (see exchangeMicrosoftCode), never the editable `mail` profile field.
 const SCOPES =
-  "offline_access User.Read Mail.Read Mail.ReadWrite Calendars.ReadWrite Chat.Read Files.Read People.Read";
+  "openid offline_access User.Read Mail.Read Mail.ReadWrite Calendars.ReadWrite Chat.Read Files.Read People.Read";
 
 export function isMicrosoftConfigured(): boolean {
   return !!(process.env.MS_CLIENT_ID && process.env.MS_CLIENT_SECRET);
@@ -49,6 +47,25 @@ interface TokenResponse {
   access_token: string;
   refresh_token?: string;
   expires_in: number;
+  id_token?: string;
+}
+
+// The id_token comes straight back from Microsoft's token endpoint over TLS, in exchange for this
+// app's own code + client secret — the OIDC authorization-code case where its claims can be read
+// without separately verifying the signature.
+function readIdTokenIdentity(idToken: string | undefined): { tenantId: string; objectId: string } {
+  const payload = idToken?.split(".")[1];
+  if (!payload) throw new Error("Microsoft did not return an id_token for this sign-in");
+  let claims: { tid?: unknown; oid?: unknown };
+  try {
+    claims = JSON.parse(Buffer.from(payload, "base64url").toString("utf8"));
+  } catch {
+    throw new Error("Microsoft returned an unreadable id_token");
+  }
+  if (typeof claims.tid !== "string" || typeof claims.oid !== "string") {
+    throw new Error("Microsoft's id_token is missing the tenant/object id claims");
+  }
+  return { tenantId: claims.tid, objectId: claims.oid };
 }
 
 async function exchangeToken(body: Record<string, string>): Promise<TokenResponse> {
@@ -68,14 +85,25 @@ async function exchangeToken(body: Record<string, string>): Promise<TokenRespons
 }
 
 export interface ExchangedMicrosoftAuth {
+  // A display label and the mailbox address only — a tenant admin can set this to anything, so it
+  // must never decide which user someone is. Use tenantId/objectId for that.
   email: string;
   accessToken: string;
   refreshToken: string | null;
   expiryDate: number;
+  tenantId: string;
+  objectId: string;
+  // Graph's /me id — compared against microsoftGetGraphUserId(stored account) to prove a new sign-in
+  // is the same Microsoft account already connected to an existing user (see authRoutes.ts).
+  graphUserId: string;
 }
 
-// Exchanges an OAuth code for tokens + the account's email, with no DB write — shared by both
-// the "log into the app" flow (identity only) and the "connect a data source" flow below.
+export function microsoftIdentitySubject(auth: Pick<ExchangedMicrosoftAuth, "tenantId" | "objectId">): string {
+  return `${auth.tenantId}:${auth.objectId}`;
+}
+
+// Exchanges an OAuth code for tokens + the account's identity, with no DB write — shared by the
+// "log into the app", "connect a data source", and WhatsApp registration flows (authRoutes.ts).
 export async function exchangeMicrosoftCode(code: string): Promise<ExchangedMicrosoftAuth> {
   const tokens = await exchangeToken({
     grant_type: "authorization_code",
@@ -87,27 +115,30 @@ export async function exchangeMicrosoftCode(code: string): Promise<ExchangedMicr
     headers: { Authorization: `Bearer ${tokens.access_token}` },
   });
   if (!profileRes.ok) throw new Error(`Graph /me returned ${profileRes.status}`);
-  const profile = (await profileRes.json()) as { mail?: string; userPrincipalName?: string };
+  const profile = (await profileRes.json()) as { id?: string; mail?: string; userPrincipalName?: string };
   const email = profile.mail ?? profile.userPrincipalName;
   if (!email) throw new Error("Microsoft did not return an email for this account");
+  if (!profile.id) throw new Error("Microsoft did not return a user id for this account");
 
   return {
     email,
     accessToken: tokens.access_token,
     refreshToken: tokens.refresh_token ?? null,
     expiryDate: Date.now() + tokens.expires_in * 1000,
+    ...readIdTokenIdentity(tokens.id_token),
+    graphUserId: profile.id,
   };
 }
 
-export async function handleMicrosoftCallback(code: string, ownerId: number): Promise<AccountRow> {
-  const auth = await exchangeMicrosoftCode(code);
-  return upsertAccount(ownerId, {
-    provider: "microsoft",
-    email: auth.email,
-    accessToken: auth.accessToken,
-    refreshToken: auth.refreshToken,
-    expiryDate: auth.expiryDate,
-  });
+// Which Microsoft user a stored account's tokens belong to — null if they no longer work (revoked,
+// expired refresh token), in which case nothing can be proven with it.
+export async function microsoftGetGraphUserId(account: AccountRow): Promise<string | null> {
+  try {
+    const me = await graphGet<{ id?: string }>(account, "/me?$select=id");
+    return me.id ?? null;
+  } catch {
+    return null;
+  }
 }
 
 /** Returns a valid access token, refreshing (and persisting) if near expiry. */

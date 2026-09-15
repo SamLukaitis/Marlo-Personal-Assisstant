@@ -5,7 +5,13 @@
 // match against) can catch. See
 // docs/superpowers/specs/2026-08-26-important-email-alerts-design.md.
 
-import { hubListNewMessages, hubGetMessage, AUTOMATED_SENDER_PATTERN } from "./hub.js";
+import {
+  hubListNewMessages,
+  hubGetMessage,
+  holdNewMessageCheckpoint,
+  withMessageCache,
+  AUTOMATED_SENDER_PATTERN,
+} from "./hub.js";
 import {
   hasAlerted,
   markAlerted,
@@ -164,7 +170,8 @@ export async function checkForImportantEmails(ownerId: number): Promise<void> {
   // and reconciliation.ts — this feature is on by default, so every deployment without WhatsApp
   // configured (or every user with no registered numbers) must not pay for classification on
   // every tick, forever, for a message that can never be delivered. `unscanned` candidates are
-  // left unmarked/retriable, same as today.
+  // left unmarked, but the Gmail checkpoint is deliberately NOT held here: this isn't a transient
+  // failure, and holding it would re-fetch the same growing window of mail on every tick.
   if (!isWhatsAppConfigured()) return;
   const numbers = listPhoneNumbersForUser(ownerId).map((r) => r.phone);
   if (numbers.length === 0) return;
@@ -177,7 +184,10 @@ export async function checkForImportantEmails(ownerId: number): Promise<void> {
     );
   } catch (err) {
     console.error(`importantEmailAlerts: classification failed for owner ${ownerId}`, err);
-    return; // leave every candidate unscanned so the next tick retries classification
+    // Leave every candidate unscanned so the next tick retries classification — and hold the
+    // Gmail checkpoint, or the next tick's incremental fetch would never list them again.
+    holdNewMessageCheckpoint(ownerId);
+    return;
   }
 
   // A non-match has been fully examined and settled — mark it scanned now so it isn't
@@ -232,6 +242,8 @@ export async function checkForImportantEmails(ownerId: number): Promise<void> {
         setPendingInvoiceForward(ownerId, confirmable);
         offeredInvoiceConfirm = true;
       }
+    } else {
+      holdNewMessageCheckpoint(ownerId); // left unmarked to retry — see the classification catch above
     }
   }
 
@@ -241,6 +253,8 @@ export async function checkForImportantEmails(ownerId: number): Promise<void> {
     const delivered = await notifyAll(numbers, summary);
     if (delivered) {
       for (const { m } of rest) markAlerted(ownerId, messageKey(m));
+    } else {
+      holdNewMessageCheckpoint(ownerId);
     }
   }
 }
@@ -262,7 +276,15 @@ export interface OnboardingImportantEmailPreview {
 // whenever the next 5-minute scheduler tick happens to land, which was a real, reported bug (see
 // onboardingAlertSuppression.ts's module comment) — alerts.ts/reconciliation.ts still rely on
 // that grace-period approach since neither has a classifier to curate a preview from.
-export async function scanAndCurateImportantEmailsForOnboarding(
+export function scanAndCurateImportantEmailsForOnboarding(
+  ownerId: number
+): Promise<OnboardingImportantEmailPreview | null> {
+  // Its own message scope, so the Gmail checkpoint isn't saved until this scan has handled the
+  // backlog (and can be held if classification fails) — see hub.ts's withMessageCache.
+  return withMessageCache(() => scanAndCurateImportantEmailsForOnboardingInScope(ownerId));
+}
+
+async function scanAndCurateImportantEmailsForOnboardingInScope(
   ownerId: number
 ): Promise<OnboardingImportantEmailPreview | null> {
   // Already baselined (e.g. a scheduler tick somehow beat this call to it) — nothing left for a
@@ -300,7 +322,9 @@ export async function scanAndCurateImportantEmailsForOnboarding(
     // Candidates deliberately stay unmarked even though BASELINE_KEY is now true —
     // checkForImportantEmails's `unscanned` filter will pick every one of them straight back up
     // on its first tick and classify+alert normally, same as any other new mail. Losing the
-    // one-time curated preview here is acceptable; losing the alerts entirely would not be.
+    // one-time curated preview here is acceptable; losing the alerts entirely would not be — hence
+    // holding the Gmail checkpoint, without which that next tick would never list them.
+    holdNewMessageCheckpoint(ownerId);
     return null;
   }
 

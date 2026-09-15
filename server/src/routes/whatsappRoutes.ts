@@ -63,7 +63,7 @@ async function handleMedia(
   forwarded?: boolean
 ): Promise<void> {
   const label = filename ?? caption ?? "a file";
-  appendWhatsAppMessage(ownerId, from, "user", `[Sent ${label}]`);
+  const rowId = appendWhatsAppMessage(ownerId, from, "user", `[Sent ${label}]`);
 
   const doc = await ingestWhatsAppMedia({
     ownerId,
@@ -97,7 +97,7 @@ async function handleMedia(
   // A caption that reads as a complete thought ("what does this say?") takes the short debounce
   // path; no caption (or one that trails off) defaults to waiting longer, since a document often
   // arrives with the explanatory text as its own separate follow-up message.
-  queueForAssistant(ownerId, from, messageId, docContext, !!caption && looksComplete(caption));
+  queueForAssistant(ownerId, from, messageId, rowId, docContext, !!caption && looksComplete(caption));
 }
 
 export async function handleIncoming(message: IncomingWhatsAppMessage): Promise<void> {

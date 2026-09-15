@@ -49,9 +49,10 @@ documentRoutes.delete("/api/documents/:id", (req, res) => {
   const ownerId = (req as unknown as AuthedRequest).userId;
   const id = Number(req.params.id);
   const doc = getDocument(ownerId, id);
+  // Row first, file second — if the DB delete throws, the document must still be viewable.
+  deleteDocument(ownerId, id);
   if (doc && fs.existsSync(doc.storedPath)) {
     fs.unlinkSync(doc.storedPath);
   }
-  deleteDocument(ownerId, id);
   res.json({ ok: true });
 });

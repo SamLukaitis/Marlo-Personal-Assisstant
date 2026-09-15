@@ -337,6 +337,16 @@ function TravelFilmstrip() {
   );
 }
 
+// Sign-ins the server refused because nothing ties that provider account to the existing Marlowe
+// account with the same email (server/src/routes/authRoutes.ts's resolveMicrosoftUser /
+// googleMayUseExistingUser).
+const SIGN_IN_ERROR_TEXT: Record<string, string> = {
+  microsoft_unverified:
+    "We couldn't confirm that Microsoft account belongs to the Marlowe account with that email. Sign in the way you did before, then connect Outlook from Settings.",
+  google_unverified:
+    "We couldn't confirm that Google account belongs to the Marlowe account with that email. Sign in the way you did before, then connect Gmail from Settings.",
+};
+
 export function HomePage() {
   const { user, loading, refresh } = useAuth();
   const [params] = useSearchParams();
@@ -392,7 +402,7 @@ export function HomePage() {
           )}
           {error && !notInvited && (
             <div className="home-banner warn" style={{ marginTop: 24 }}>
-              That sign-in didn't go through. Give it another try.
+              {SIGN_IN_ERROR_TEXT[error] ?? "That sign-in didn't go through. Give it another try."}
             </div>
           )}
 

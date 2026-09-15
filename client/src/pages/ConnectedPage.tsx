@@ -10,6 +10,8 @@ const ERROR_COPY: Record<string, string> = {
   expired: "That link has expired or was already used. Go back to WhatsApp and ask for a new one.",
   not_invited: "That email isn't on the early-access list yet. Go back to WhatsApp and try a different address.",
   phone_taken: "This WhatsApp number is already connected to a different Marlowe account.",
+  account_exists:
+    "That email already belongs to a Marlowe account we can't confirm is yours. Sign in on the website the way you did before, then add this number from Settings.",
   oauth_failed: "Something went wrong connecting your account. Go back to WhatsApp and try again.",
 };
 
