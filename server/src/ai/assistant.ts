@@ -1533,25 +1533,18 @@ export function buildSystemPrompt(ownerId: number, conversationSummary?: string)
     : "";
 
   // Mid-onboarding context, keyed off the WhatsApp post-connect chain's own pending step
-  // (postConnectSetup.ts / db/store.ts's pending_setup) rather than whether briefing settings
-  // exist yet — that flag flips true the instant the yes/no briefing question is answered, before
-  // the user has actually answered the content question below it, which used to make this note
-  // disappear before it was ever useful. Each of these two free-text steps forwards the user's
-  // reply straight into this same runAssistantChat call (see postConnectSetup.ts's
-  // advancePastFreeTextStep), then sends the next scripted question itself once this reply is
-  // sent — the note only needs to shape this one turn, not chain anything further.
+  // (postConnectSetup.ts / db/store.ts's pending_setup). The ask_first_task free-text step
+  // forwards the user's reply straight into this same runAssistantChat call (see
+  // postConnectSetup.ts's advancePastFreeTextStep), then sends the next scripted question itself
+  // once this reply is sent — the note only needs to shape this one turn, not chain anything
+  // further.
   const pendingSetupStep = getPendingSetup(ownerId);
   const onboardingNote =
     pendingSetupStep === "ask_first_task"
       ? "The user is mid-setup and was just asked if there's anything they'd like help with before " +
         "finishing. Answer their request normally — a scripted setup question will follow " +
         "automatically right after your reply, so don't try to ask it yourself."
-      : pendingSetupStep === "ask_briefing_content"
-        ? "The user is mid-setup, just said yes to a daily briefing, and was asked what to include " +
-          "(news, business headlines, weather). Call set_briefing_preferences with whatever they " +
-          "said and confirm briefly — a scripted setup question about other tools will follow " +
-          "automatically right after your reply, so don't ask about that yourself."
-        : "";
+      : "";
 
   return [
     `You are ${name}, a personal assistant that manages the user's connected accounts. Today's date is ${new Date().toDateString()}.`,

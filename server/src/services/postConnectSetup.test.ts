@@ -20,11 +20,9 @@ const {
   handleNameReply,
   handleFirstTaskReply,
   handlePostConnectSetupReply,
-  handleBriefingContentReply,
 } = await import("./postConnectSetup.js");
-const { findOrCreateUserByEmail, getPendingSetup, getEnabledTools, getSetting } = await import(
-  "../db/store.js"
-);
+const { findOrCreateUserByEmail, getPendingSetup, getEnabledTools, getSetting, upsertAccount } =
+  await import("../db/store.js");
 const { getBriefingSettings } = await import("./briefing.js");
 const { todayKey } = await import("./dateKey.js");
 
@@ -65,20 +63,35 @@ describe("startPostConnectSetup", () => {
     expect(getPendingSetup(ownerId)).toBe("ask_name");
   });
 
-  it("includes unread mail / calendar counts in the confirmation as a best-effort fact", async () => {
+  it("volunteers a concrete insight — the next event's title and a single unread email's subject — rather than just counts", async () => {
     const ownerId = newOwnerId();
     vi.mocked(hubListMessages).mockResolvedValue([
-      { unread: true } as never,
+      { unread: true, subject: "Invoice from Acme due Friday" } as never,
       { unread: false } as never,
     ]);
-    vi.mocked(hubListEvents).mockResolvedValue([{} as never]);
+    vi.mocked(hubListEvents).mockResolvedValue([
+      { title: "Team standup", start: "2026-09-15T09:00:00.000Z" } as never,
+    ]);
 
     await startPostConnectSetup(ownerId, PHONE);
 
     const [, confirmText] = vi.mocked(sendWhatsAppMessage).mock.calls[0];
-    expect(confirmText).toContain("1 unread email");
-    expect(confirmText).toContain("1 thing");
-    expect(confirmText).toContain("today's calendar");
+    expect(confirmText).toContain("Invoice from Acme due Friday");
+    expect(confirmText).toContain("Team standup");
+  });
+
+  it("falls back to a plain count when there's more than one unread email or no calendar events", async () => {
+    const ownerId = newOwnerId();
+    vi.mocked(hubListMessages).mockResolvedValue([
+      { unread: true, subject: "A" } as never,
+      { unread: true, subject: "B" } as never,
+    ]);
+    vi.mocked(hubListEvents).mockResolvedValue([]);
+
+    await startPostConnectSetup(ownerId, PHONE);
+
+    const [, confirmText] = vi.mocked(sendWhatsAppMessage).mock.calls[0];
+    expect(confirmText).toContain("2 unread emails");
   });
 });
 
@@ -182,6 +195,16 @@ describe("handlePostConnectSetupReply", () => {
     vi.mocked(sendWhatsAppMessage).mockClear();
   }
 
+  function connectMicrosoft(ownerId: number) {
+    upsertAccount(ownerId, {
+      provider: "microsoft",
+      email: uniqueEmail("post-connect-setup-ms"),
+      accessToken: "t",
+      refreshToken: "r",
+      expiryDate: null,
+    });
+  }
+
   it("returns false and does nothing for a non-interactive message", async () => {
     const ownerId = newOwnerId();
     await pastFirstTask(ownerId);
@@ -208,36 +231,66 @@ describe("handlePostConnectSetupReply", () => {
     expect(getPendingSetup(ownerId)).toBe("ask_briefing"); // unchanged
   });
 
-  it("on a Yes to the briefing question: saves proactive=true, stamps last_proactive_send_date to today, and asks about content next — without touching Teams yet", async () => {
+  it("on a Yes to the briefing question: saves proactive=true, defaults the content, stamps last_proactive_send_date, and finishes setup when no Microsoft account is connected", async () => {
     const ownerId = newOwnerId();
     await pastFirstTask(ownerId);
 
     const handled = await handlePostConnectSetupReply(ownerId, tap("briefing_yes"));
 
     expect(handled).toBe(true);
-    expect(getBriefingSettings(ownerId).proactive).toBe(true);
+    const settings = getBriefingSettings(ownerId);
+    expect(settings.proactive).toBe(true);
+    expect(settings.includeNews).toBe(true);
+    expect(settings.topics.length).toBeGreaterThan(0);
     expect(getSetting(ownerId, "last_proactive_send_date")).toBe(todayKey());
     expect(sendWhatsAppMessage).toHaveBeenCalledWith(PHONE, expect.stringContaining("news"));
-    expect(sendWhatsAppReplyButtons).not.toHaveBeenCalled(); // Teams question not sent yet
-    expect(getPendingSetup(ownerId)).toBe("ask_briefing_content");
+    expect(sendWhatsAppReplyButtons).not.toHaveBeenCalled(); // no Microsoft account, so no Teams question
+    expect(getPendingSetup(ownerId)).toBeNull();
+    expect(sendWhatsAppMessage).toHaveBeenCalledWith(PHONE, expect.stringContaining("All set"));
   });
 
-  it("on a No to the briefing question: saves proactive=false and skips straight to asking about Teams", async () => {
+  it("on a Yes to the briefing question, with a Microsoft account connected: asks about Teams next instead of finishing", async () => {
     const ownerId = newOwnerId();
+    connectMicrosoft(ownerId);
     await pastFirstTask(ownerId);
 
-    await handlePostConnectSetupReply(ownerId, tap("briefing_no"));
+    const handled = await handlePostConnectSetupReply(ownerId, tap("briefing_yes"));
 
-    expect(getBriefingSettings(ownerId).proactive).toBe(false);
-    expect(getSetting(ownerId, "last_proactive_send_date")).toBeNull();
-    expect(sendWhatsAppMessage).not.toHaveBeenCalled(); // no content follow-up
+    expect(handled).toBe(true);
     const [, , buttons] = vi.mocked(sendWhatsAppReplyButtons).mock.calls[0];
     expect(buttons.map((b) => b.id)).toEqual(["teams_yes", "teams_no"]);
     expect(getPendingSetup(ownerId)).toBe("ask_teams");
   });
 
-  it("on the Teams question: toggles the teams tool, clears pending setup, and sends the closing message — no Schengen question", async () => {
+  it("on a No to the briefing question: saves proactive=false and finishes setup when no Microsoft account is connected", async () => {
     const ownerId = newOwnerId();
+    await pastFirstTask(ownerId);
+
+    const handled = await handlePostConnectSetupReply(ownerId, tap("briefing_no"));
+
+    expect(handled).toBe(true);
+    expect(getBriefingSettings(ownerId).proactive).toBe(false);
+    expect(getSetting(ownerId, "last_proactive_send_date")).toBeNull();
+    expect(sendWhatsAppReplyButtons).not.toHaveBeenCalled();
+    expect(getPendingSetup(ownerId)).toBeNull();
+    expect(sendWhatsAppMessage).toHaveBeenCalledWith(PHONE, expect.stringContaining("All set"));
+  });
+
+  it("on a No to the briefing question, with a Microsoft account connected: asks about Teams next", async () => {
+    const ownerId = newOwnerId();
+    connectMicrosoft(ownerId);
+    await pastFirstTask(ownerId);
+
+    await handlePostConnectSetupReply(ownerId, tap("briefing_no"));
+
+    const [, , buttons] = vi.mocked(sendWhatsAppReplyButtons).mock.calls[0];
+    expect(buttons.map((b) => b.id)).toEqual(["teams_yes", "teams_no"]);
+    expect(getPendingSetup(ownerId)).toBe("ask_teams");
+  });
+
+  it("on the Teams question: toggles the teams tool, clears pending setup, and sends the closing message", async () => {
+    const ownerId = newOwnerId();
+    connectMicrosoft(ownerId);
     await pastFirstTask(ownerId);
     await handlePostConnectSetupReply(ownerId, tap("briefing_no"));
     vi.mocked(sendWhatsAppMessage).mockClear();
@@ -251,46 +304,5 @@ describe("handlePostConnectSetupReply", () => {
     expect(getPendingSetup(ownerId)).toBeNull();
     expect(sendWhatsAppMessage).toHaveBeenCalledWith(PHONE, expect.stringContaining("All set"));
     expect(sendWhatsAppMessage).toHaveBeenCalledWith(PHONE, expect.stringContaining("Sam"));
-  });
-});
-
-describe("handleBriefingContentReply", () => {
-  async function atBriefingContent(ownerId: number) {
-    await startPostConnectSetup(ownerId, PHONE);
-    await handleNameReply(ownerId, text("skip"));
-    await handleFirstTaskReply(ownerId, text("skip"));
-    await handlePostConnectSetupReply(ownerId, tap("briefing_yes"));
-    vi.mocked(sendWhatsAppReplyButtons).mockClear();
-    vi.mocked(sendWhatsAppMessage).mockClear();
-  }
-
-  it("returns false for a non-text message or when a different step is pending", async () => {
-    const ownerId = newOwnerId();
-    expect(await handleBriefingContentReply(ownerId, tap("anything"))).toBe(false);
-    expect(await handleBriefingContentReply(ownerId, text("news please"))).toBe(false);
-  });
-
-  it("on skip: acknowledges without calling the assistant, and asks the Teams question next", async () => {
-    const ownerId = newOwnerId();
-    await atBriefingContent(ownerId);
-
-    const handled = await handleBriefingContentReply(ownerId, text("skip"));
-
-    expect(handled).toBe(true);
-    expect(handleText).not.toHaveBeenCalled();
-    const [, , buttons] = vi.mocked(sendWhatsAppReplyButtons).mock.calls[0];
-    expect(buttons.map((b) => b.id)).toEqual(["teams_yes", "teams_no"]);
-    expect(getPendingSetup(ownerId)).toBe("ask_teams");
-  });
-
-  it("on a real preference: forwards it to ordinary chat handling, then asks about Teams right after", async () => {
-    const ownerId = newOwnerId();
-    await atBriefingContent(ownerId);
-
-    const handled = await handleBriefingContentReply(ownerId, text("news and weather please"));
-
-    expect(handled).toBe(true);
-    expect(handleText).toHaveBeenCalledWith(ownerId, PHONE, "news and weather please", expect.any(String));
-    expect(getPendingSetup(ownerId)).toBe("ask_teams");
   });
 });

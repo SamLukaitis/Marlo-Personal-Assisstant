@@ -12,6 +12,8 @@ import {
   findRemainingOwnerReferences,
   listPhoneNumbersForUser,
   resetOnboardingConnectionState,
+  getWhatsAppHistory,
+  getOnboardingStepEvents,
 } from "../db/store.js";
 import type { AuthedRequest } from "../middleware/auth.js";
 
@@ -121,4 +123,42 @@ adminRoutes.post("/api/admin/replay-onboarding", (req, res) => {
   }
   resetOnboardingConnectionState(userId);
   res.json({ ok: true, unboundPhones: phones.map((p) => p.phone) });
+});
+
+// The conversation viewer for watching a test user's onboarding/chat play out instead of guessing
+// from server logs — merges the raw WhatsApp history (getWhatsAppHistory) with that owner's
+// onboarding_step_events log (see db/store.ts) into one chronological timeline, so a "reached
+// ask_briefing" marker sits right where it actually happened relative to the messages around it.
+// 200 messages is generous for a test conversation without being an unbounded query.
+adminRoutes.get("/api/admin/messages", (req, res) => {
+  if (!isAppOwner((req as unknown as AuthedRequest).userId)) {
+    res.status(403).json({ error: "not allowed" });
+    return;
+  }
+  const phone = typeof req.query.phone === "string" ? normalizePhone(req.query.phone) : "";
+  if (!phone) {
+    res.status(400).json({ error: "phone is required" });
+    return;
+  }
+  const ownerId = resolveOwnerByPhone(phone);
+  if (ownerId === null) {
+    res.status(404).json({ error: "no account found for that phone number" });
+    return;
+  }
+
+  const messages = getWhatsAppHistory(phone, 200).map((m) => ({
+    kind: "message" as const,
+    createdAt: m.createdAt,
+    role: m.role,
+    content: m.content,
+  }));
+  const stepEvents = getOnboardingStepEvents(ownerId).map((e) => ({
+    kind: "step" as const,
+    createdAt: e.createdAt,
+    step: e.step,
+    event: e.event,
+  }));
+  const timeline = [...messages, ...stepEvents].sort((a, b) => a.createdAt - b.createdAt);
+
+  res.json({ ownerId, timeline });
 });

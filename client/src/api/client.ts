@@ -606,6 +606,22 @@ export async function replayOnboarding(): Promise<{ ok: true; unboundPhones: str
   return res.json();
 }
 
+// One entry in the admin conversation viewer's timeline — either a real WhatsApp message or an
+// onboarding_step_events marker (see db/store.ts), already merged and sorted server-side.
+export interface AdminTimelineEntry {
+  kind: "message" | "step";
+  createdAt: number;
+  role?: "user" | "assistant";
+  content?: string;
+  step?: string;
+  event?: "reached" | "completed";
+}
+
+export const fetchAdminMessages = (phone: string) =>
+  getJson<{ ownerId: number; timeline: AdminTimelineEntry[] }>(
+    `/api/admin/messages?phone=${encodeURIComponent(phone)}`
+  );
+
 // --- Admin Portal -----------------------------------------------------------------------------
 
 export interface AdminCandidate {

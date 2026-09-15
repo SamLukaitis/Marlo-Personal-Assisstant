@@ -26,6 +26,7 @@ import {
   removeInvite,
   resetTestPhone,
   replayOnboarding,
+  fetchAdminMessages,
   DEFAULT_BRIEFING_SETTINGS,
   type ProviderInfo,
   type Account,
@@ -36,6 +37,7 @@ import {
   type AlertSettings,
   type ImportantEmailAlertSettings,
   type InvitedEmail,
+  type AdminTimelineEntry,
 } from "../api/client";
 import { IconTrash, IconPlus, IconRefresh } from "../components/icons";
 import { useTools } from "../context/ToolsContext";
@@ -102,6 +104,10 @@ export function SettingsPage() {
   const [resetMessage, setResetMessage] = useState<string | null>(null);
   const [replaying, setReplaying] = useState(false);
   const [replayMessage, setReplayMessage] = useState<string | null>(null);
+  const [viewerPhone, setViewerPhone] = useState("");
+  const [viewerLoading, setViewerLoading] = useState(false);
+  const [viewerError, setViewerError] = useState<string | null>(null);
+  const [viewerTimeline, setViewerTimeline] = useState<AdminTimelineEntry[] | null>(null);
 
   const { tools, setEnabled } = useTools();
   const { user } = useAuth();
@@ -277,6 +283,23 @@ export function SettingsPage() {
       setReplayMessage((err as Error).message);
     } finally {
       setReplaying(false);
+    }
+  }
+
+  async function handleLoadConversation(e: React.FormEvent) {
+    e.preventDefault();
+    const phone = viewerPhone.trim();
+    if (!phone) return;
+    setViewerLoading(true);
+    setViewerError(null);
+    setViewerTimeline(null);
+    try {
+      const { timeline } = await fetchAdminMessages(phone);
+      setViewerTimeline(timeline);
+    } catch (err) {
+      setViewerError((err as Error).message);
+    } finally {
+      setViewerLoading(false);
     }
   }
 
@@ -841,6 +864,52 @@ export function SettingsPage() {
                     <p className="muted" style={{ marginTop: 8 }}>
                       {replayMessage}
                     </p>
+                  )}
+                </div>
+
+                <h2>Watch a test conversation</h2>
+                <p className="settings-section-intro">
+                  See exactly what a test user's WhatsApp conversation with Marlowe looked like —
+                  including where onboarding stalled, if it did.
+                </p>
+                <div className="card card-padded">
+                  <form className="row" onSubmit={handleLoadConversation}>
+                    <input
+                      value={viewerPhone}
+                      onChange={(e) => setViewerPhone(e.target.value)}
+                      placeholder="447911123456"
+                    />
+                    <button className="btn-secondary" type="submit" disabled={viewerLoading || !viewerPhone.trim()}>
+                      Load conversation
+                    </button>
+                  </form>
+                  {viewerError && (
+                    <p className="error" style={{ marginTop: 8 }}>
+                      {viewerError}
+                    </p>
+                  )}
+                  {viewerTimeline && (
+                    <div style={{ marginTop: 16 }}>
+                      {viewerTimeline.length === 0 ? (
+                        <p className="muted">No messages yet for that number.</p>
+                      ) : (
+                        viewerTimeline.map((entry, i) =>
+                          entry.kind === "step" ? (
+                            <p
+                              key={i}
+                              className="muted"
+                              style={{ textAlign: "center", fontSize: 12, margin: "8px 0" }}
+                            >
+                              — {entry.event} {entry.step} —
+                            </p>
+                          ) : (
+                            <div key={i} className={`chat-bubble ${entry.role}`}>
+                              {entry.content}
+                            </div>
+                          )
+                        )
+                      )}
+                    </div>
                   )}
                 </div>
               </>
