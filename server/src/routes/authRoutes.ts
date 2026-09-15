@@ -1,4 +1,4 @@
-import { Router, type Response } from "express";
+import { Router, type Request, type Response } from "express";
 import crypto from "node:crypto";
 import {
   getGoogleAuthUrl,
@@ -18,6 +18,7 @@ import {
   getUserByEmail,
   createSession,
   deleteSession,
+  getUserIdBySessionToken,
   listAccounts,
   upsertAccount,
   consumePendingRegistrationToken,
@@ -92,6 +93,20 @@ function parseState(raw: string | undefined): OAuthState | null {
 // page's Connect button the user actually clicked, not always Settings.
 function connectReturnPath(state: OAuthState): string {
   return state.returnTo === "onboarding" ? "/onboarding" : "/settings";
+}
+
+// The state is unsigned JSON and any visitor can get a valid nonce cookie from the public
+// login-signin routes, so state.ownerId alone proves nothing — an attacker could forge a connect
+// state naming someone else's id and attach their own mailbox to that person's hub. The browser
+// finishing a genuine connect still carries the session that started it (path "/", SameSite=Lax
+// is sent on the top-level redirect back from the provider), so require it to match.
+function connectOwnerFromSession(req: Request, state: OAuthState): number {
+  const raw = req.cookies?.[SESSION_COOKIE_NAME] as string | undefined;
+  const sessionUserId = raw ? getUserIdBySessionToken(raw) : null;
+  if (!state.ownerId || sessionUserId === null || sessionUserId !== state.ownerId) {
+    throw new Error("connect callback: session does not match the state's ownerId");
+  }
+  return sessionUserId;
 }
 
 function setNonceCookie(res: Response, nonce: string): void {
@@ -219,8 +234,7 @@ authRoutes.get("/auth/google/callback", async (req, res) => {
 
   try {
     if (state.intent === "connect") {
-      if (!state.ownerId) throw new Error("connect intent missing ownerId");
-      const account = await handleGoogleCallback(code, state.ownerId);
+      const account = await handleGoogleCallback(code, connectOwnerFromSession(req, state));
       res.redirect(`${CLIENT_URL}${connectReturnPath(state)}?connected=${encodeURIComponent(account.email)}`);
       return;
     }
@@ -331,8 +345,7 @@ authRoutes.get("/auth/microsoft/callback", async (req, res) => {
 
   try {
     if (state.intent === "connect") {
-      if (!state.ownerId) throw new Error("connect intent missing ownerId");
-      const account = await handleMicrosoftCallback(code, state.ownerId);
+      const account = await handleMicrosoftCallback(code, connectOwnerFromSession(req, state));
       res.redirect(`${CLIENT_URL}${connectReturnPath(state)}?connected=${encodeURIComponent(account.email)}`);
       return;
     }

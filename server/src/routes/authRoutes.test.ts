@@ -14,8 +14,16 @@ vi.mock("../providers/google.js", () => ({
   handleGoogleCallback: vi.fn(),
 }));
 
+vi.mock("../providers/microsoft.js", () => ({
+  isMicrosoftConfigured: () => true,
+  getMicrosoftAuthUrl: (state: string) => `https://login.microsoftonline.com/mock?state=${state}`,
+  exchangeMicrosoftCode: vi.fn(),
+  handleMicrosoftCallback: vi.fn(),
+}));
+
 const { authRoutes } = await import("./authRoutes.js");
 const { exchangeGoogleCode, handleGoogleCallback } = await import("../providers/google.js");
+const { handleMicrosoftCallback } = await import("../providers/microsoft.js");
 const { findOrCreateUserByEmail, listAccounts, upsertAccount, createSession } = await import("../db/store.js");
 
 function buildApp() {
@@ -42,7 +50,15 @@ function parseSetCookie(res: request.Response, name: string): string | undefined
 beforeEach(() => {
   vi.mocked(exchangeGoogleCode).mockReset();
   vi.mocked(handleGoogleCallback).mockReset();
+  vi.mocked(handleMicrosoftCallback).mockReset();
 });
+
+/** The same unsigned base64url JSON shape authRoutes.ts builds — what an attacker can hand-craft. */
+function forgeConnectState(ownerId: number, nonce: string): string {
+  return Buffer.from(JSON.stringify({ intent: "connect", ownerId, returnTo: "settings", nonce })).toString(
+    "base64url"
+  );
+}
 
 describe("GET /auth/google/callback — login intent", () => {
   // Registration only happens via WhatsApp now (gated by phone invite there, see
@@ -178,9 +194,11 @@ describe("GET /auth/google/callback — connect intent", () => {
       authBrokenAt: null,
     });
 
+    // A real browser sends the session cookie (path "/", SameSite=Lax) along with the nonce on the
+    // top-level redirect back from Google.
     const callback = await request(app)
       .get(`/auth/google/callback?code=fakecode&state=${encodeURIComponent(state)}`)
-      .set("Cookie", nonceCookie!);
+      .set("Cookie", [nonceCookie!, `session=${token}`]);
 
     expect(callback.headers.location).toBe(
       "http://localhost:5173/onboarding?connected=connected%40example.com"
@@ -211,11 +229,64 @@ describe("GET /auth/google/callback — connect intent", () => {
 
     const callback = await request(app)
       .get(`/auth/google/callback?code=fakecode&state=${encodeURIComponent(state)}`)
-      .set("Cookie", nonceCookie!);
+      .set("Cookie", [nonceCookie!, `session=${token}`]);
 
     expect(callback.headers.location).toBe(
       "http://localhost:5173/settings?connected=connected2%40example.com"
     );
+  });
+
+  // Security regression: the state is unsigned JSON and any visitor can obtain a valid nonce cookie
+  // from the public login-signin route, so a hand-crafted connect state naming someone else's
+  // ownerId used to attach the attacker's mailbox to that victim's hub.
+  it("rejects a forged connect state naming another user when the caller has no session", async () => {
+    const app = buildApp();
+    const victim = findOrCreateUserByEmail(uniqueEmail("forged-victim"));
+
+    const start = await request(app).get("/auth/google/login-signin");
+    const nonceCookie = parseSetCookie(start, "oauth_nonce")!;
+    const nonce = nonceCookie.split("=")[1];
+
+    const callback = await request(app)
+      .get(`/auth/google/callback?code=fakecode&state=${forgeConnectState(victim.id, nonce)}`)
+      .set("Cookie", nonceCookie);
+
+    expect(handleGoogleCallback).not.toHaveBeenCalled();
+    expect(callback.headers.location).toBe("http://localhost:5173/settings?error=oauth_failed");
+  });
+
+  it("rejects a forged connect state naming another user even with the attacker's own session", async () => {
+    const app = buildApp();
+    const victim = findOrCreateUserByEmail(uniqueEmail("forged-victim-2"));
+    const attacker = findOrCreateUserByEmail(uniqueEmail("forged-attacker"));
+    const attackerToken = createSession(attacker.id);
+
+    const start = await request(app).get("/auth/google/login-signin");
+    const nonceCookie = parseSetCookie(start, "oauth_nonce")!;
+    const nonce = nonceCookie.split("=")[1];
+
+    const callback = await request(app)
+      .get(`/auth/google/callback?code=fakecode&state=${forgeConnectState(victim.id, nonce)}`)
+      .set("Cookie", [nonceCookie, `session=${attackerToken}`]);
+
+    expect(handleGoogleCallback).not.toHaveBeenCalled();
+    expect(callback.headers.location).toBe("http://localhost:5173/settings?error=oauth_failed");
+  });
+
+  it("rejects a forged connect state on the Microsoft callback too", async () => {
+    const app = buildApp();
+    const victim = findOrCreateUserByEmail(uniqueEmail("forged-victim-ms"));
+
+    const start = await request(app).get("/auth/microsoft/login-signin");
+    const nonceCookie = parseSetCookie(start, "oauth_nonce")!;
+    const nonce = nonceCookie.split("=")[1];
+
+    const callback = await request(app)
+      .get(`/auth/microsoft/callback?code=fakecode&state=${forgeConnectState(victim.id, nonce)}`)
+      .set("Cookie", nonceCookie);
+
+    expect(handleMicrosoftCallback).not.toHaveBeenCalled();
+    expect(callback.headers.location).toBe("http://localhost:5173/settings?error=oauth_failed");
   });
 
   it("rejects /auth/google/login (connect) with no session", async () => {
