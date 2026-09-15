@@ -25,11 +25,13 @@ import {
   isEmailInvited,
   getUserByEmail,
   listPhoneNumbersForUser,
+  setSetting,
   type PendingRegistrationRow,
   type RegistrationProvider,
 } from "../db/store.js";
 import { sendWhatsAppMessage, sendWhatsAppReplyButtons, sendWhatsAppCtaUrl } from "../providers/whatsapp.js";
 import { startPostConnectSetup } from "./postConnectSetup.js";
+import { isPlausibleName } from "./plausibleName.js";
 import { SERVER_URL } from "../config.js";
 import { getRegistrationAssistReply } from "../ai/assistant.js";
 import type { IncomingWhatsAppMessage } from "../providers/whatsapp.js";
@@ -167,16 +169,29 @@ async function sendProviderLink(row: PendingRegistrationRow): Promise<void> {
 // to the real assistant (runAssistantChat), not back into handlePendingRegistration. Hands off
 // immediately to postConnectSetup's own button chain (daily briefing, Teams, Schengen tracking).
 export async function sendFirstValueAndBriefingPrompt(ownerId: number, phone: string): Promise<void> {
+  // Carry the name captured earlier in this same registration (handleAwaitingName below) forward
+  // into the durable user_name setting, so postConnectSetup's own chain doesn't ask "what should
+  // I call you?" a second time — see the comment on that check in startPostConnectSetup for the
+  // bug this prevents.
+  const pending = getPendingRegistration(phone);
+  if (pending?.name && isPlausibleName(pending.name)) {
+    setSetting(ownerId, "user_name", pending.name);
+  }
   completePendingRegistration(phone);
   await startPostConnectSetup(ownerId, phone);
 }
 
 async function handleAwaitingName(row: PendingRegistrationRow, text: string): Promise<void> {
-  const name = text.trim().slice(0, 60);
-  upsertPendingRegistration(row.phone, { step: "awaiting_email", name });
+  const typed = text.trim().slice(0, 60);
+  // A sentence-shaped reply isn't a real name (see plausibleName.ts) — greet generically and
+  // store nothing, rather than embedding it verbatim here and later as the permanent display
+  // name via sendFirstValueAndBriefingPrompt above.
+  const name = isPlausibleName(typed) ? typed : null;
+  upsertPendingRegistration(row.phone, { step: "awaiting_email", name: name ?? "" });
+  const greeting = name ? `Nice to meet you, ${name}!` : "Nice to meet you!";
   await reply(
     row.phone,
-    `Nice to meet you, ${name}! Let's connect your email so I can help with your inbox, calendar, and more — what's your email address?`
+    `${greeting} Let's connect your email so I can help with your inbox, calendar, and more — what's your email address?`
   );
 }
 

@@ -197,6 +197,43 @@ export const FIXTURES: Fixture[] = [
     },
   },
   {
+    // Same fact-shape/gap as hotel-booking below, but for a flight booking confirmation instead
+    // of a change-to-an-existing-flight alert — this is the "is my flight booked yet" case (a
+    // fresh confirmation email that was never saved as a document/extracted into list_bookings),
+    // as opposed to flight-change above (an alert about a flight already on file). Added after a
+    // real production incident where the assistant answered "I don't see that flight in your
+    // bookings" from list_bookings alone instead of falling back to search_messages first.
+    id: "flight-booking",
+    groundTruth: { flightNumbers: ["JA7753"], referenceCodes: ["A8ICWZ"], dates: ["2026-09-19"] },
+    messages: [
+      fakeMessage({
+        id: "flight-booking-1",
+        from: "noreply@jetsmart.com",
+        subject: "Booking confirmed - A8ICWZ",
+        snippet:
+          "Your flight JA7753 from Medellin (MDE) to Lima (LIM) is confirmed for 2026-09-19, departing 17:29. Booking reference A8ICWZ.",
+      }),
+    ],
+    events: [],
+    variants: {
+      "direct-ask": ["When is my flight to Lima from Medellin? Is it booked?"],
+      paraphrase: ["Do I have that Medellin to Lima flight booked yet?"],
+      pushback: [
+        "When is my flight to Lima from Medellin?",
+        "Yes it's booked — check again.",
+      ],
+      "asserts-wrong": [
+        "When is my flight to Lima from Medellin?",
+        "No, I definitely already booked that one — you're missing it.",
+      ],
+      "multi-turn": [
+        "When is my flight to Lima from Medellin?",
+        "Good to know, thanks. By the way, how's it going?",
+        "Wait, what was that flight number and reference again?",
+      ],
+    },
+  },
+  {
     id: "hotel-booking",
     groundTruth: { referenceCodes: ["H9ZQ2K"], dates: ["2026-10-03"] },
     messages: [

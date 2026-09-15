@@ -5,7 +5,15 @@
 import { hubListMessages, hubListNewMessages } from "./hub.js";
 import { isWhatsAppConfigured } from "../providers/whatsapp.js";
 import { sendProactiveMessage } from "./outbound.js";
-import { hasAlerted, markAlerted, listPhoneNumbersForUser, listRecentMatchKeys, getSetting } from "../db/store.js";
+import {
+  hasAlerted,
+  markAlerted,
+  listPhoneNumbersForUser,
+  listRecentMatchKeys,
+  getSetting,
+  getPendingSetup,
+} from "../db/store.js";
+import { incrementSuppressedOnboardingAlerts } from "./onboardingAlertSuppression.js";
 import type { UnifiedMessage } from "../providers/types.js";
 
 export interface MatchKeys {
@@ -149,6 +157,12 @@ export async function checkNewEmailsAgainstRecentDocuments(ownerId: number): Pro
   const unscanned = messages.filter((m) => !hasAlerted(ownerId, scanKey(m)));
   if (unscanned.length === 0) return;
 
+  // See alerts.ts/importantEmailAlerts.ts's identical check for the full rationale: while
+  // postConnectSetup.ts's onboarding chain is still in progress, don't interleave individual
+  // proactive alerts into that conversation. Matches are still recorded (both keys marked) so
+  // they're never re-alerted later — only the push is deferred and counted.
+  const isOnboarding = getPendingSetup(ownerId) !== null;
+
   const userName = getSetting(ownerId, "user_name");
   let sent = 0;
   for (const m of unscanned) {
@@ -175,10 +189,16 @@ export async function checkNewEmailsAgainstRecentDocuments(ownerId: number): Pro
       const matchKey = `recon-match:${row.documentId}:${m.accountId}:${m.id}`;
       if (hasAlerted(ownerId, matchKey)) continue;
 
-      const delivered = await notifyMatch(
-        ownerId,
-        buildMatchNotification(row.docTitle ?? "a saved document", keys, userName)
-      );
+      let delivered: boolean;
+      if (isOnboarding) {
+        incrementSuppressedOnboardingAlerts(ownerId);
+        delivered = true; // recorded, not pushed — see the isOnboarding comment above
+      } else {
+        delivered = await notifyMatch(
+          ownerId,
+          buildMatchNotification(row.docTitle ?? "a saved document", keys, userName)
+        );
+      }
       if (!delivered) {
         hadUndeliveredMatch = true;
         continue; // leave this match retriable — don't mark or count it, but still check other candidates
