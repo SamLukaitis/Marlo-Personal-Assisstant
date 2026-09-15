@@ -34,7 +34,13 @@ function linkFailureMessage(reason: FetchFailureReason): string {
   }
 }
 
-async function handleLink(ownerId: number, from: string, url: string, messageId: string): Promise<void> {
+async function handleLink(
+  ownerId: number,
+  from: string,
+  url: string,
+  messageId: string,
+  historyRowId: number
+): Promise<void> {
   const result = await ingestWhatsAppLink({ ownerId, phone: from, url });
 
   if (!result.ok) {
@@ -52,7 +58,7 @@ async function handleLink(ownerId: number, from: string, url: string, messageId:
     `confirm and/or act on it. Extracted content:\n${result.doc.extractedText}`;
   // No caption to judge completeness from — same default as an uncaptioned media attachment,
   // biased toward waiting since a bare link is often followed by an explanatory message.
-  queueForAssistant(ownerId, from, messageId, docContext, false);
+  queueForAssistant(ownerId, from, messageId, historyRowId, docContext, false);
 }
 
 // Folds a dropped WhatsApp pin into the conversation the same way handleLink folds in a saved
@@ -71,11 +77,11 @@ export async function handleLocation(
 ): Promise<void> {
   const label = name ? `${name}${address ? `, ${address}` : ""}` : undefined;
   const locationText = `[User shared their location: ${latitude}, ${longitude}${label ? ` (${label})` : ""}]`;
-  appendWhatsAppMessage(ownerId, from, "user", locationText);
+  const rowId = appendWhatsAppMessage(ownerId, from, "user", locationText);
 
   // The persisted line is already exactly what the model should see, so no override — a dropped
   // pin is rarely followed by more, so it takes the short debounce path like a complete message.
-  queueForAssistant(ownerId, from, messageId, null, true);
+  queueForAssistant(ownerId, from, messageId, rowId, null, true);
 }
 
 export async function handleText(
@@ -86,7 +92,7 @@ export async function handleText(
   quotedMessageId?: string,
   forwarded?: boolean
 ): Promise<void> {
-  appendWhatsAppMessage(ownerId, from, "user", text);
+  const rowId = appendWhatsAppMessage(ownerId, from, "user", text);
 
   // "help"/"menu" short-circuits straight to the same canned overview used at first contact —
   // instant, free, and worded consistently regardless of how the model might otherwise phrase
@@ -113,7 +119,7 @@ export async function handleText(
   // document store; a false negative just means the user re-sends the bare link).
   const url = findSaveableUrl(text);
   if (url) {
-    await handleLink(ownerId, from, url, messageId);
+    await handleLink(ownerId, from, url, messageId, rowId);
     return;
   }
 
@@ -122,5 +128,5 @@ export async function handleText(
   // actually pointed at instead of guessing — see quotedMessage.ts.
   const quotedContext = resolveQuotedMessageContext(ownerId, quotedMessageId, forwarded);
   const override = quotedContext ? `${quotedContext}\n\n${text}` : null;
-  queueForAssistant(ownerId, from, messageId, override, looksComplete(text));
+  queueForAssistant(ownerId, from, messageId, rowId, override, looksComplete(text));
 }

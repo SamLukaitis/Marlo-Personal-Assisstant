@@ -45,7 +45,7 @@ afterEach(() => {
 describe("queueForAssistant", () => {
   it("flushes after the short delay for a fast-path (complete-looking) message", async () => {
     const from = nextPhone();
-    queueForAssistant(1, from, "wamid1", null, true);
+    queueForAssistant(1, from, "wamid1", undefined, null, true);
 
     await vi.advanceTimersByTimeAsync(SHORT_DEBOUNCE_MS - 1);
     expect(runAssistantChat).not.toHaveBeenCalled();
@@ -57,7 +57,7 @@ describe("queueForAssistant", () => {
 
   it("flushes after the long delay for a non-fast-path message", async () => {
     const from = nextPhone();
-    queueForAssistant(1, from, "wamid1", null, false);
+    queueForAssistant(1, from, "wamid1", undefined, null, false);
 
     await vi.advanceTimersByTimeAsync(LONG_DEBOUNCE_MS - 1);
     expect(runAssistantChat).not.toHaveBeenCalled();
@@ -68,10 +68,10 @@ describe("queueForAssistant", () => {
 
   it("slides the timer when a new message arrives before it fires", async () => {
     const from = nextPhone();
-    queueForAssistant(1, from, "wamid1", null, false);
+    queueForAssistant(1, from, "wamid1", undefined, null, false);
 
     await vi.advanceTimersByTimeAsync(LONG_DEBOUNCE_MS - 1000);
-    queueForAssistant(1, from, "wamid2", null, false);
+    queueForAssistant(1, from, "wamid2", undefined, null, false);
 
     // Original timer would have fired here had it not been reset.
     await vi.advanceTimersByTimeAsync(1000);
@@ -90,8 +90,8 @@ describe("queueForAssistant", () => {
       { id: 3, phone: from, role: "user", content: "what does this say", createdAt: 0 },
     ] as never);
 
-    queueForAssistant(1, from, "wamid-media", "ENRICHED DOC TEXT", false);
-    queueForAssistant(1, from, "wamid-text", null, true);
+    queueForAssistant(1, from, "wamid-media", 2, "ENRICHED DOC TEXT", false);
+    queueForAssistant(1, from, "wamid-text", 3, null, true);
 
     await vi.advanceTimersByTimeAsync(SHORT_DEBOUNCE_MS);
 
@@ -102,6 +102,64 @@ describe("queueForAssistant", () => {
     ], from);
   });
 
+  // Regression: overrides used to be matched to "the last N rows" by position. A reply to an
+  // earlier message is saved after a message that arrived while that reply was being generated,
+  // so the request ended on Marlowe's own reply (read as a prefill) instead of the user's message.
+  it("puts a batched message after an assistant reply that was saved while it waited", async () => {
+    const from = nextPhone();
+    vi.mocked(getWhatsAppHistory).mockReturnValue([
+      { id: 10, phone: from, role: "user", content: "A", createdAt: 0 },
+      { id: 11, phone: from, role: "user", content: "B", createdAt: 0 },
+      { id: 12, phone: from, role: "assistant", content: "reply to A", createdAt: 0 },
+    ] as never);
+
+    queueForAssistant(1, from, "wamid-b", 11, null, true);
+    await vi.advanceTimersByTimeAsync(SHORT_DEBOUNCE_MS);
+
+    expect(runAssistantChat).toHaveBeenCalledWith(1, [
+      { role: "user", content: "A" },
+      { role: "assistant", content: "reply to A" },
+      { role: "user", content: "B" },
+    ], from);
+  });
+
+  it("swaps an override into its own message's row, never over a later assistant reply", async () => {
+    const from = nextPhone();
+    vi.mocked(getWhatsAppHistory).mockReturnValue([
+      { id: 20, phone: from, role: "user", content: "A", createdAt: 0 },
+      { id: 21, phone: from, role: "user", content: "what's this", createdAt: 0 },
+      { id: 22, phone: from, role: "assistant", content: "reply to A", createdAt: 0 },
+    ] as never);
+
+    queueForAssistant(1, from, "wamid-quote", 21, "[quoted context]\n\nwhat's this", true);
+    await vi.advanceTimersByTimeAsync(SHORT_DEBOUNCE_MS);
+
+    expect(runAssistantChat).toHaveBeenCalledWith(1, [
+      { role: "user", content: "A" },
+      { role: "assistant", content: "reply to A" },
+      { role: "user", content: "[quoted context]\n\nwhat's this" },
+    ], from);
+  });
+
+  // A photo's history row is saved before its (slow) extraction finishes, so a follow-up text can
+  // be queued first even though it was sent second.
+  it("keeps batched messages in the order they were sent, not the order they were queued", async () => {
+    const from = nextPhone();
+    vi.mocked(getWhatsAppHistory).mockReturnValue([
+      { id: 30, phone: from, role: "user", content: "[Sent receipt.jpg]", createdAt: 0 },
+      { id: 31, phone: from, role: "user", content: "add this to expenses", createdAt: 0 },
+    ] as never);
+
+    queueForAssistant(1, from, "wamid-text", 31, null, false);
+    queueForAssistant(1, from, "wamid-media", 30, "RECEIPT TEXT", false);
+    await vi.advanceTimersByTimeAsync(LONG_DEBOUNCE_MS);
+
+    expect(runAssistantChat).toHaveBeenCalledWith(1, [
+      { role: "user", content: "RECEIPT TEXT" },
+      { role: "user", content: "add this to expenses" },
+    ], from);
+  });
+
   it("queues messages that arrive while a call is in flight instead of running concurrently", async () => {
     const from = nextPhone();
     let resolveFirst!: (v: { text: string }) => void;
@@ -109,12 +167,12 @@ describe("queueForAssistant", () => {
       () => new Promise((resolve) => (resolveFirst = resolve))
     );
 
-    queueForAssistant(1, from, "wamid1", null, true);
+    queueForAssistant(1, from, "wamid1", undefined, null, true);
     await vi.advanceTimersByTimeAsync(SHORT_DEBOUNCE_MS);
     expect(runAssistantChat).toHaveBeenCalledTimes(1);
 
     // Second message arrives mid-call — must not start a second concurrent call.
-    queueForAssistant(1, from, "wamid2", null, true);
+    queueForAssistant(1, from, "wamid2", undefined, null, true);
     await vi.advanceTimersByTimeAsync(SHORT_DEBOUNCE_MS);
     expect(runAssistantChat).toHaveBeenCalledTimes(1);
 
@@ -132,7 +190,7 @@ describe("queueForAssistant", () => {
     const from = nextPhone();
     vi.mocked(runAssistantChat).mockReset().mockRejectedValueOnce(new Error("boom"));
 
-    queueForAssistant(1, from, "wamid1", null, true);
+    queueForAssistant(1, from, "wamid1", undefined, null, true);
     await vi.advanceTimersByTimeAsync(SHORT_DEBOUNCE_MS);
 
     expect(sendWhatsAppMessage).toHaveBeenCalledWith(

@@ -2,7 +2,10 @@ import { describe, it, expect } from "vitest";
 import express from "express";
 import request from "supertest";
 import { documentRoutes } from "./documentRoutes.js";
-import { findOrCreateUserByEmail, saveDocument } from "../db/store.js";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { findOrCreateUserByEmail, saveDocument, saveMatchKeys, getDocument } from "../db/store.js";
 import type { AuthedRequest } from "../middleware/auth.js";
 import type { DocumentCategory } from "../db/store.js";
 
@@ -68,5 +71,37 @@ describe("GET /api/documents category filter", () => {
     const res = await request(app).get("/api/documents");
     expect(res.status).toBe(200);
     expect(res.body).toHaveLength(2);
+  });
+});
+
+describe("DELETE /api/documents/:id", () => {
+  function seedDocWithFile(ownerId: number) {
+    const storedPath = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "doc-delete-")), "file.bin");
+    fs.writeFileSync(storedPath, "bytes");
+    const doc = saveDocument(ownerId, {
+      phone: "447000000002",
+      filename: null,
+      mimeType: "image/jpeg",
+      storedPath,
+      caption: null,
+      title: "Boarding pass",
+      extractedText: "text",
+      category: "travel",
+    });
+    return { doc, storedPath };
+  }
+
+  // Regression: document_match_keys.document_id REFERENCES documents(id), so deleting a document
+  // that had match keys threw "FOREIGN KEY constraint failed" — after the file was already gone.
+  it("deletes a document that has match keys, along with its file", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("route-delete-keys"));
+    const { doc, storedPath } = seedDocWithFile(user.id);
+    saveMatchKeys(user.id, doc.id, { referenceCode: "K4X9QP" });
+
+    const res = await request(buildTestApp(user.id)).delete(`/api/documents/${doc.id}`);
+
+    expect(res.status).toBe(200);
+    expect(getDocument(user.id, doc.id)).toBeUndefined();
+    expect(fs.existsSync(storedPath)).toBe(false);
   });
 });

@@ -52,13 +52,19 @@ vi.mock("./importantEmailAlerts.js", () => ({
   checkForImportantEmails: vi.fn(),
 }));
 
+vi.mock("./onboardingAlertSuppression.js", () => ({
+  flushOnboardingAlertSummaryIfDue: vi.fn(() => Promise.resolve()),
+}));
+
 const { listAllUserIds } = await import("../db/store.js");
 const { checkNewEmailsAgainstRecentDocuments } = await import("./reconciliation.js");
+const { flushOnboardingAlertSummaryIfDue } = await import("./onboardingAlertSuppression.js");
 const { tickGuarded } = await import("./scheduler.js");
 
 beforeEach(() => {
   vi.mocked(listAllUserIds).mockClear();
   vi.mocked(checkNewEmailsAgainstRecentDocuments).mockClear();
+  vi.mocked(flushOnboardingAlertSummaryIfDue).mockClear();
 });
 
 describe("tickGuarded", () => {
@@ -87,5 +93,17 @@ describe("tickGuarded", () => {
 
     releaseReconciliationCheck();
     await second;
+  });
+
+  // Regression coverage: the onboarding alert flood fix depends on this actually running every
+  // tick for every tenant — see onboardingAlertSuppression.ts's own tests for the suppression
+  // logic itself, this just proves the scheduler wires it in at all.
+  it("flushes any due onboarding alert summary for every tenant", async () => {
+    const first = tickGuarded();
+    await vi.waitFor(() => expect(checkNewEmailsAgainstRecentDocuments).toHaveBeenCalledTimes(1));
+    releaseReconciliationCheck();
+    await first;
+
+    expect(flushOnboardingAlertSummaryIfDue).toHaveBeenCalledWith(1);
   });
 });

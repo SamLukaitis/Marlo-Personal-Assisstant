@@ -11,6 +11,10 @@ vi.mock("./hub.js", () => ({
 vi.mock("./chatDispatch.js", () => ({
   handleText: vi.fn().mockResolvedValue(undefined),
 }));
+const mockScanAndCurate = vi.fn();
+vi.mock("./importantEmailAlerts.js", () => ({
+  scanAndCurateImportantEmailsForOnboarding: (...args: unknown[]) => mockScanAndCurate(...args),
+}));
 
 const { sendWhatsAppMessage, sendWhatsAppReplyButtons } = await import("../providers/whatsapp.js");
 const { hubListMessages, hubListEvents } = await import("./hub.js");
@@ -25,9 +29,8 @@ const { findOrCreateUserByEmail, getPendingSetup, getEnabledTools, getSetting, s
   await import("../db/store.js");
 const { getBriefingSettings } = await import("./briefing.js");
 const { todayKey } = await import("./dateKey.js");
-const { incrementSuppressedOnboardingAlerts, takeSuppressedOnboardingAlertCount } = await import(
-  "./onboardingAlertSuppression.js"
-);
+const { incrementSuppressedOnboardingAlerts, takeSuppressedOnboardingAlertCount, isOnboardingSuppressionActive } =
+  await import("./onboardingAlertSuppression.js");
 
 let counter = 0;
 function uniqueEmail(prefix: string): string {
@@ -52,6 +55,7 @@ beforeEach(() => {
   vi.mocked(hubListMessages).mockClear().mockResolvedValue([]);
   vi.mocked(hubListEvents).mockClear().mockResolvedValue([]);
   vi.mocked(handleText).mockClear().mockResolvedValue(undefined);
+  mockScanAndCurate.mockClear().mockResolvedValue(null);
 });
 
 describe("startPostConnectSetup", () => {
@@ -97,6 +101,72 @@ describe("startPostConnectSetup", () => {
     expect(confirmText).toContain("2 unread emails");
   });
 
+  // A real, curated finding replaces the plain unread count entirely — see this feature's design:
+  // a user's own feedback was "instead of something like 20 unread emails it should say the most
+  // important emails".
+  it("leads with the curated important-email preview instead of a plain unread count, when one is found", async () => {
+    const ownerId = newOwnerId();
+    vi.mocked(hubListMessages).mockResolvedValue([
+      { unread: true, subject: "A" } as never,
+      { unread: true, subject: "B" } as never,
+    ]);
+    mockScanAndCurate.mockResolvedValue({
+      lines: ["🔐 New sign-in detected.", "✈️ Gate moved to B12."],
+      moreCount: 7,
+    });
+
+    await startPostConnectSetup(ownerId, PHONE);
+
+    expect(mockScanAndCurate).toHaveBeenCalledWith(ownerId);
+    const [, confirmText] = vi.mocked(sendWhatsAppMessage).mock.calls[0];
+    expect(confirmText).toContain("🔐 New sign-in detected.");
+    expect(confirmText).toContain("✈️ Gate moved to B12.");
+    expect(confirmText).toContain("7 more");
+    expect(confirmText).not.toContain("2 unread emails");
+  });
+
+  it("still mentions the next calendar event alongside a curated preview", async () => {
+    const ownerId = newOwnerId();
+    vi.mocked(hubListEvents).mockResolvedValue([{ title: "Team standup", start: "2026-09-15T09:00:00.000Z" } as never]);
+    mockScanAndCurate.mockResolvedValue({ lines: ["🔐 New sign-in detected."], moreCount: 0 });
+
+    await startPostConnectSetup(ownerId, PHONE);
+
+    const [, confirmText] = vi.mocked(sendWhatsAppMessage).mock.calls[0];
+    expect(confirmText).toContain("🔐 New sign-in detected.");
+    expect(confirmText).toContain("Team standup");
+  });
+
+  it("omits the '...and N more' line when the preview covers everything found", async () => {
+    const ownerId = newOwnerId();
+    mockScanAndCurate.mockResolvedValue({ lines: ["🔐 New sign-in detected."], moreCount: 0 });
+
+    await startPostConnectSetup(ownerId, PHONE);
+
+    const [, confirmText] = vi.mocked(sendWhatsAppMessage).mock.calls[0];
+    expect(confirmText).not.toContain("more");
+  });
+
+  it("falls back to the plain unread count when the curated scan finds nothing (unchanged behavior)", async () => {
+    const ownerId = newOwnerId();
+    vi.mocked(hubListMessages).mockResolvedValue([{ unread: true, subject: "A" } as never]);
+    mockScanAndCurate.mockResolvedValue(null);
+
+    await startPostConnectSetup(ownerId, PHONE);
+
+    const [, confirmText] = vi.mocked(sendWhatsAppMessage).mock.calls[0];
+    expect(confirmText).toContain("1 unread email");
+  });
+
+  it("still sends 'Connected!' even if the curated scan itself throws", async () => {
+    const ownerId = newOwnerId();
+    mockScanAndCurate.mockRejectedValue(new Error("classification API down"));
+
+    await startPostConnectSetup(ownerId, PHONE);
+
+    expect(sendWhatsAppMessage).toHaveBeenCalledWith(PHONE, expect.stringContaining("Connected"));
+  });
+
   // Regression test: the pre-connect registration flow (whatsappRegistration.ts) already asks
   // "what should I call you?" once. If a name was already captured and persisted to user_name
   // before this chain starts, asking again is a redundant, annoying repeat of a question the user
@@ -110,6 +180,22 @@ describe("startPostConnectSetup", () => {
 
     expect(sendWhatsAppMessage).not.toHaveBeenCalledWith(PHONE, expect.stringContaining("what should I call you"));
     expect(getPendingSetup(ownerId)).toBe("ask_first_task");
+  });
+
+  // Regression test for the real bug behind onboardingAlertSuppression.ts's grace period: the
+  // chain finishes in well under a minute in this test (as it does for a real fast-tapping user),
+  // clearing pending_setup — suppression must still be active right after, on connection-recency
+  // alone, or the scanners' next scheduler tick floods the backlog exactly as before this fix.
+  it("keeps onboarding alert suppression active even after the whole chain finishes almost instantly", async () => {
+    const ownerId = newOwnerId();
+
+    await startPostConnectSetup(ownerId, PHONE);
+    await handleNameReply(ownerId, text("Sam"));
+    await handleFirstTaskReply(ownerId, text("skip"));
+    await handlePostConnectSetupReply(ownerId, tap("briefing_no"));
+
+    expect(getPendingSetup(ownerId)).toBeNull(); // chain really did finish
+    expect(isOnboardingSuppressionActive(ownerId)).toBe(true); // but suppression outlives it
   });
 });
 
@@ -339,31 +425,21 @@ describe("handlePostConnectSetupReply", () => {
     expect(sendWhatsAppMessage).toHaveBeenCalledWith(PHONE, expect.stringContaining("Sam"));
   });
 
-  // Regression test for a real bug: a backlog of already-existing important mail used to arrive
-  // as a burst of separate WhatsApp alerts right as onboarding finished, instead of one mention.
-  // The scanners (alerts.ts/importantEmailAlerts.ts/reconciliation.ts) record a suppressed count
-  // while pending setup is non-null (see onboardingAlertSuppression.ts) — the closing message
-  // must read-and-report that total exactly once.
-  it("mentions a suppressed alert backlog once in the closing message, when there was one", async () => {
+  // The closing message deliberately does NOT report a suppressed-alert backlog itself anymore —
+  // see the comment on sendClosingMessage. By the time this runs, the backlog usually hasn't even
+  // been discovered yet (the chain above typically finishes in well under a minute; the scanners
+  // run on scheduler.ts's own 5-minute tick, unrelated to this moment) — an earlier version of
+  // this fix reported it here and that mismatch was itself a bug. scheduler.ts's
+  // flushOnboardingAlertSummaryIfDue reports it later instead, as its own message.
+  it("never mentions a suppressed-alert backlog in the closing message, even if one exists at this moment", async () => {
     const ownerId = newOwnerId();
     await pastFirstTask(ownerId);
     incrementSuppressedOnboardingAlerts(ownerId, 3);
 
     await handlePostConnectSetupReply(ownerId, tap("briefing_no"));
 
-    expect(sendWhatsAppMessage).toHaveBeenCalledWith(PHONE, expect.stringContaining("3"));
-    expect(takeSuppressedOnboardingAlertCount(ownerId)).toBe(0); // consumed, not left to double-report
-  });
-
-  it("says nothing extra in the closing message when nothing was suppressed", async () => {
-    const ownerId = newOwnerId();
-    await pastFirstTask(ownerId);
-
-    await handlePostConnectSetupReply(ownerId, tap("briefing_no"));
-
-    const closingCall = vi
-      .mocked(sendWhatsAppMessage)
-      .mock.calls.find(([, text]) => text.includes("All set"));
+    const closingCall = vi.mocked(sendWhatsAppMessage).mock.calls.find(([, text]) => text.includes("All set"));
     expect(closingCall?.[1]).not.toMatch(/inbox|already/i);
+    expect(takeSuppressedOnboardingAlertCount(ownerId)).toBe(3); // left untouched for the scheduler to report
   });
 });

@@ -230,7 +230,7 @@ app.get(/^(?!\/api|\/auth|\/health|\/webhooks).*/, (_req, res) => {
   res.sendFile(path.join(clientDist, "index.html"));
 });
 
-app.listen(PORT, () => {
+const server = app.listen(PORT, () => {
   console.log(`Server listening on http://localhost:${PORT}`);
 });
 
@@ -239,3 +239,25 @@ startScheduler();
 // Separate, much tighter interval than startScheduler's 5-minute tick — see
 // reminderScheduler.ts for why reminders need their own accurate clock.
 startReminderScheduler();
+
+// Railway sends SIGTERM to the old instance the moment a new deploy's replacement is ready and
+// serving, then SIGKILLs after a grace period. Node's default disposition for SIGTERM with no
+// handler registered is immediate termination — and the `npm run start` wrapper this runs under
+// reports that signal-kill as `npm error signal SIGTERM` with a non-zero exit code, which
+// Railway's crash detector reads as "deployment crashed" on every single deploy, even though
+// this is the normal, expected shutdown of the instance being replaced (the new one is already
+// up by the time this fires). Handling the signal and exiting 0 ourselves stops that false alarm
+// — confirmed via `railway logs <old-deployment-id>`: "Server listening..." then "Stopping
+// Container" then "npm error signal SIGTERM", immediately followed by the new deployment's own
+// clean "Server listening..." with nothing actually broken in between.
+function shutdown(signal: NodeJS.Signals): void {
+  console.log(`${signal} received — shutting down`);
+  server.close(() => process.exit(0));
+  // Safety net: force-exit if something (a lingering keep-alive connection, a stuck handler)
+  // stops server.close()'s callback from ever firing — well inside Railway's SIGKILL grace
+  // period, and unref'd so this timer itself never keeps the process alive if shutdown finishes
+  // first.
+  setTimeout(() => process.exit(0), 5000).unref();
+}
+process.on("SIGTERM", () => shutdown("SIGTERM"));
+process.on("SIGINT", () => shutdown("SIGINT"));

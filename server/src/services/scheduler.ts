@@ -17,6 +17,7 @@ import { countTravelDays } from "./travelDays.js";
 import { checkForNewImportantMessages } from "./alerts.js";
 import { checkNewEmailsAgainstRecentDocuments } from "./reconciliation.js";
 import { checkForImportantEmails } from "./importantEmailAlerts.js";
+import { flushOnboardingAlertSummaryIfDue } from "./onboardingAlertSuppression.js";
 import { checkTripPrepNudges } from "./tripPrep.js";
 import { todayKey } from "./dateKey.js";
 
@@ -120,6 +121,20 @@ async function runImportantEmailAlertsCheckForUser(ownerId: number): Promise<voi
   }
 }
 
+// Reports (once) any important-mail backlog the three checks above held back while
+// onboardingAlertSuppression.ts's suppression window was active — see that file's own comment.
+// Deliberately outside runAlertsCheckForUser/runImportantEmailAlertsCheckForUser's "enabled"
+// gates: those gates decide whether *ongoing* alerts are wanted, but a backlog can only have been
+// suppressed if the relevant check ran and matched something while it was still enabled, so
+// there's nothing to leak past a disabled setting here.
+async function runOnboardingAlertSummaryFlushForUser(ownerId: number): Promise<void> {
+  try {
+    await flushOnboardingAlertSummaryIfDue(ownerId);
+  } catch (err) {
+    console.error(`scheduler: onboarding alert summary flush failed for user ${ownerId}`, err);
+  }
+}
+
 // Loops over every tenant rather than assuming a single global run — each user's iteration is
 // caught independently so one tenant's failure (a broken account, a transient API error) can't
 // block or crash another tenant's briefing/alerts.
@@ -149,6 +164,9 @@ async function tick(): Promise<void> {
       );
       await runImportantEmailAlertsCheckForUser(ownerId).catch((err) =>
         console.error(`scheduler: important-email check failed for user ${ownerId}`, err)
+      );
+      await runOnboardingAlertSummaryFlushForUser(ownerId).catch((err) =>
+        console.error(`scheduler: onboarding alert summary flush failed for user ${ownerId}`, err)
       );
     });
   }

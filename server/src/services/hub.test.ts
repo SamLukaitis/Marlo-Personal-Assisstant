@@ -17,15 +17,15 @@ vi.mock("../providers/google.js", () => ({
 }));
 vi.mock("../providers/microsoft.js", () => ({}));
 
-const { findOrCreateUserByEmail, upsertAccount, updateAccountPermissions, searchReadEmails } = await import(
-  "../db/store.js"
-);
+const { findOrCreateUserByEmail, upsertAccount, updateAccountPermissions, searchReadEmails, getAccount } =
+  await import("../db/store.js");
 const {
   hubListMessages,
   hubSendMessage,
   hubArchiveMessages,
   hubGetMessage,
   hubListNewMessages,
+  holdNewMessageCheckpoint,
   withMessageCache,
   senderDisplayName,
 } = await import("./hub.js");
@@ -239,7 +239,7 @@ describe("hubListNewMessages", () => {
       refreshToken: "r",
       expiryDate: null,
     });
-    mockGoogleListNewMessages.mockResolvedValueOnce([fakeMessage(account.id, "new-1")]);
+    mockGoogleListNewMessages.mockResolvedValueOnce({ messages: [fakeMessage(account.id, "new-1")], historyId: null });
 
     const results = await hubListNewMessages(user.id);
 
@@ -260,7 +260,7 @@ describe("hubListNewMessages", () => {
       expiryDate: null,
     });
     updateAccountPermissions(user.id, restricted.id, { canRead: false });
-    mockGoogleListNewMessages.mockResolvedValue([]);
+    mockGoogleListNewMessages.mockResolvedValue({ messages: [], historyId: null });
 
     await hubListNewMessages(user.id);
 
@@ -276,9 +276,10 @@ describe("hubListNewMessages", () => {
       refreshToken: "r",
       expiryDate: null,
     });
-    mockGoogleListNewMessages.mockResolvedValueOnce([
-      { ...fakeMessage(account.id, "new-2"), subject: "Package delayed" },
-    ]);
+    mockGoogleListNewMessages.mockResolvedValueOnce({
+      messages: [{ ...fakeMessage(account.id, "new-2"), subject: "Package delayed" }],
+      historyId: null,
+    });
 
     await hubListNewMessages(user.id);
 
@@ -294,7 +295,7 @@ describe("hubListNewMessages", () => {
       refreshToken: "r",
       expiryDate: null,
     });
-    mockGoogleListNewMessages.mockResolvedValue([]);
+    mockGoogleListNewMessages.mockResolvedValue({ messages: [], historyId: null });
 
     await withMessageCache(async () => {
       await hubListNewMessages(user.id);
@@ -314,12 +315,102 @@ describe("hubListNewMessages", () => {
       refreshToken: "r",
       expiryDate: null,
     });
-    mockGoogleListNewMessages.mockResolvedValue([]);
+    mockGoogleListNewMessages.mockResolvedValue({ messages: [], historyId: null });
 
     await withMessageCache(() => hubListNewMessages(user.id));
     await withMessageCache(() => hubListNewMessages(user.id));
 
     expect(mockGoogleListNewMessages).toHaveBeenCalledTimes(2);
+  });
+});
+
+// Regression coverage for losing alerts on Gmail: the history checkpoint used to be saved the moment
+// new mail was listed, so anything a scanner deliberately left unhandled (failed classification,
+// failed WhatsApp delivery) never came back on the next tick. The checkpoint is now saved only once
+// the work is done, and a scanner can hold it so the same mail is listed again.
+describe("hubListNewMessages checkpoint", () => {
+  function seedGmail(prefix: string) {
+    const user = findOrCreateUserByEmail(uniqueEmail(prefix));
+    const account = upsertAccount(user.id, {
+      provider: "google",
+      email: uniqueEmail(`${prefix}-inbox`),
+      accessToken: "t",
+      refreshToken: "r",
+      expiryDate: null,
+    });
+    return { user, account };
+  }
+
+  it("saves the checkpoint right away for a call outside any tick scope", async () => {
+    const { user, account } = seedGmail("ckpt-unscoped");
+    mockGoogleListNewMessages.mockResolvedValue({ messages: [], historyId: "123" });
+
+    await hubListNewMessages(user.id);
+
+    expect(getAccount(user.id, account.id)?.historyId).toBe("123");
+  });
+
+  it("inside a tick scope, saves the checkpoint only once the scope finishes", async () => {
+    const { user, account } = seedGmail("ckpt-scoped");
+    mockGoogleListNewMessages.mockResolvedValue({ messages: [], historyId: "456" });
+
+    let seenDuringScope: string | null | undefined;
+    await withMessageCache(async () => {
+      await hubListNewMessages(user.id);
+      seenDuringScope = getAccount(user.id, account.id)?.historyId;
+    });
+
+    expect(seenDuringScope).toBeNull();
+    expect(getAccount(user.id, account.id)?.historyId).toBe("456");
+  });
+
+  it("keeps the old checkpoint when a scanner holds it during the scope", async () => {
+    const { user, account } = seedGmail("ckpt-held");
+    mockGoogleListNewMessages.mockResolvedValue({ messages: [], historyId: "789" });
+
+    await withMessageCache(async () => {
+      await hubListNewMessages(user.id);
+      holdNewMessageCheckpoint(user.id);
+    });
+
+    expect(getAccount(user.id, account.id)?.historyId).toBeNull();
+  });
+
+  it("does not save the checkpoint if the scope throws", async () => {
+    const { user, account } = seedGmail("ckpt-throws");
+    mockGoogleListNewMessages.mockResolvedValue({ messages: [], historyId: "321" });
+
+    await expect(
+      withMessageCache(async () => {
+        await hubListNewMessages(user.id);
+        throw new Error("scanner crashed");
+      })
+    ).rejects.toThrow("scanner crashed");
+
+    expect(getAccount(user.id, account.id)?.historyId).toBeNull();
+  });
+
+  it("stops honoring a hold that has lasted over an hour, so a permanent failure can't pin the checkpoint", async () => {
+    const { user, account } = seedGmail("ckpt-stale-hold");
+    mockGoogleListNewMessages.mockResolvedValue({ messages: [], historyId: "999" });
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date("2026-09-15T10:00:00Z"));
+      await withMessageCache(async () => {
+        await hubListNewMessages(user.id);
+        holdNewMessageCheckpoint(user.id);
+      });
+      expect(getAccount(user.id, account.id)?.historyId).toBeNull();
+
+      vi.setSystemTime(new Date("2026-09-15T11:01:00Z"));
+      await withMessageCache(async () => {
+        await hubListNewMessages(user.id);
+        holdNewMessageCheckpoint(user.id);
+      });
+      expect(getAccount(user.id, account.id)?.historyId).toBe("999");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

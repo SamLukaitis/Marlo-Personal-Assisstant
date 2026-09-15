@@ -25,10 +25,21 @@ whatsappSettingsRoutes.get("/api/whatsapp/allowed-numbers", (req, res) => {
 // Replace-the-whole-list semantics, same as the old global-setting version — backed by
 // user_phone_numbers now instead of one shared allow-list, so a number registered to a
 // different user is rejected (addPhoneNumberForUser throws) rather than silently reassigned.
+//
+// Capped at one number per account (server-side, independent of whatever the client sends) —
+// every number on this list receives every proactive alert for the account, not just the ones
+// the owner meant to keep using, and there's no separate "can message this account" vs. "gets my
+// private alerts" distinction. A stale old number left on the list after switching to a new one,
+// or a second person's number added for shared testing, both silently keep receiving the
+// account's alerts indefinitely — a real incident, not a hypothetical one.
 whatsappSettingsRoutes.put("/api/whatsapp/allowed-numbers", (req, res) => {
   const numbers = req.body?.numbers;
   if (!Array.isArray(numbers) || !numbers.every((n) => typeof n === "string")) {
     res.status(400).json({ error: "numbers must be an array of strings" });
+    return;
+  }
+  if (numbers.length > 1) {
+    res.status(400).json({ error: "Only one WhatsApp number is supported per account right now." });
     return;
   }
 

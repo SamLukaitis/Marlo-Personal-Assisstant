@@ -13,12 +13,14 @@ vi.mock("../providers/whatsapp.js", async (importOriginal) => {
 
 const mockHubListNewMessages = vi.fn();
 const mockHubGetMessage = vi.fn();
+const mockHoldCheckpoint = vi.fn();
 vi.mock("./hub.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./hub.js")>();
   return {
     ...actual,
     hubListNewMessages: (...args: unknown[]) => mockHubListNewMessages(...args),
     hubGetMessage: (...args: unknown[]) => mockHubGetMessage(...args),
+    holdNewMessageCheckpoint: (...args: unknown[]) => mockHoldCheckpoint(...args),
   };
 });
 
@@ -29,21 +31,16 @@ vi.mock("./importantEmailClassifier.js", async (importOriginal) => {
 });
 
 const { sendWhatsAppMessage, sendWhatsAppTemplate, isWhatsAppConfigured } = await import("../providers/whatsapp.js");
+const { findOrCreateUserByEmail, addPhoneNumberForUser, recordInboundMessage, hasAlerted, listEntities, setSetting } =
+  await import("../db/store.js");
 const {
-  findOrCreateUserByEmail,
-  addPhoneNumberForUser,
-  recordInboundMessage,
-  hasAlerted,
-  listEntities,
-  setSetting,
-  setPendingSetup,
-} = await import("../db/store.js");
-const { checkForImportantEmails, formatImportantEmailAlert, IMPORTANT_EMAIL_ENTITY_TYPE } = await import(
-  "./importantEmailAlerts.js"
-);
+  checkForImportantEmails,
+  formatImportantEmailAlert,
+  scanAndCurateImportantEmailsForOnboarding,
+  IMPORTANT_EMAIL_ENTITY_TYPE,
+} = await import("./importantEmailAlerts.js");
 const { setXeroForwardingEmail } = await import("./xero.js");
 const { getPendingInvoiceForward } = await import("./xeroInvoiceConfirmation.js");
-const { takeSuppressedOnboardingAlertCount } = await import("./onboardingAlertSuppression.js");
 
 let counter = 0;
 function uniqueEmail(prefix: string): string {
@@ -106,6 +103,7 @@ beforeEach(() => {
   vi.mocked(isWhatsAppConfigured).mockReset().mockReturnValue(true);
   mockHubListNewMessages.mockReset();
   mockHubGetMessage.mockReset();
+  mockHoldCheckpoint.mockReset();
   mockClassify.mockReset().mockResolvedValue(new Map());
 });
 
@@ -262,6 +260,49 @@ describe("checkForImportantEmails", () => {
     expect(sendWhatsAppMessage).not.toHaveBeenCalled();
   });
 
+  // Unmarked isn't enough on its own for Gmail: without holding the history checkpoint, the next
+  // tick's incremental fetch starts past this mail and never returns it again.
+  it("holds the mail checkpoint when classification fails, so the mail is listed again next tick", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("classify-fail-hold"));
+    registerActivePhone(user.id);
+    await baseline(user.id);
+
+    mockHubListNewMessages.mockResolvedValueOnce([fakeMessage({ id: "err-hold-1" })]);
+    mockClassify.mockRejectedValueOnce(new Error("API down"));
+
+    await checkForImportantEmails(user.id);
+
+    expect(mockHoldCheckpoint).toHaveBeenCalledWith(user.id);
+  });
+
+  it("holds the mail checkpoint when an alert fails to deliver", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("deliver-fail-hold"));
+    registerActivePhone(user.id);
+    await baseline(user.id);
+
+    mockHubListNewMessages.mockResolvedValueOnce([fakeMessage({ id: "fail-hold-1" })]);
+    mockClassify.mockResolvedValueOnce(new Map([[0, { category: "invoice_due", summary: "" }]]));
+    vi.mocked(sendWhatsAppMessage).mockRejectedValueOnce(new Error("network down"));
+
+    await checkForImportantEmails(user.id);
+
+    expect(mockHoldCheckpoint).toHaveBeenCalledWith(user.id);
+  });
+
+  it("does not hold the checkpoint when everything was handled", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("all-handled-no-hold"));
+    registerActivePhone(user.id);
+    await baseline(user.id);
+
+    mockHubListNewMessages.mockResolvedValueOnce([fakeMessage({ id: "ok-1" })]);
+    mockClassify.mockResolvedValueOnce(new Map([[0, { category: "invoice_due", summary: "" }]]));
+    vi.mocked(sendWhatsAppMessage).mockResolvedValue(undefined);
+
+    await checkForImportantEmails(user.id);
+
+    expect(mockHoldCheckpoint).not.toHaveBeenCalled();
+  });
+
   it("leaves a matched message unmarked (retriable) when delivery fails", async () => {
     const user = findOrCreateUserByEmail(uniqueEmail("deliver-fail"));
     const phone = registerActivePhone(user.id);
@@ -369,36 +410,122 @@ describe("checkForImportantEmails", () => {
     }
   });
 
-  // Regression test for a real bug: right after onboarding finishes connecting a mailbox, a
-  // backlog of already-existing important-looking mail would get pushed as a burst of separate
-  // WhatsApp alerts, interleaved with the onboarding chain's own yes/no questions. While
-  // postConnectSetup.ts's chain is still in progress (getPendingSetup non-null), matches must be
-  // recorded exactly as before (so list_flagged_emails/dedup still work) but not actually sent —
-  // instead counted, so postConnectSetup can mention the total once in its closing message.
-  it("records matches but does not send any WhatsApp alert while onboarding is still in progress", async () => {
-    const user = findOrCreateUserByEmail(uniqueEmail("mid-onboarding"));
-    registerActivePhone(user.id);
-    await baseline(user.id);
-    setPendingSetup(user.id, "ask_briefing");
+  // checkForImportantEmails no longer needs to suppress mid-onboarding: since
+  // scanAndCurateImportantEmailsForOnboarding (see its own describe block below) now runs
+  // synchronously the moment a mailbox connects and baselines the whole backlog right there, the
+  // scheduler's own first tick for a freshly-onboarded owner only ever sees genuinely new mail —
+  // there's nothing left for this function to suppress. (An onboarding-mid-progress owner used to
+  // get its matches recorded-but-not-sent here; that mechanism moved to onboardingAlertSuppression.ts
+  // and is now only exercised by alerts.ts/reconciliation.ts, which have no classifier to curate a
+  // preview from and so can't baseline synchronously the same way.)
+});
 
+describe("scanAndCurateImportantEmailsForOnboarding", () => {
+  it("returns null and baselines silently when there's nothing automated in the inbox", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("onboard-empty"));
+    mockHubListNewMessages.mockResolvedValueOnce([]);
+
+    const result = await scanAndCurateImportantEmailsForOnboarding(user.id);
+
+    expect(result).toBeNull();
+    expect(mockClassify).not.toHaveBeenCalled();
+  });
+
+  it("baselines every candidate (matched and not) so the scheduler's next tick sees only new mail", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("onboard-baseline"));
     mockHubListNewMessages.mockResolvedValueOnce([
-      fakeMessage({ id: "onb-1", subject: "Your flight changed" }),
-      fakeMessage({ id: "onb-2", subject: "Reservation confirmed" }),
+      fakeMessage({ id: "match-1", subject: "Your flight changed" }),
+      fakeMessage({ id: "boring-1", subject: "Newsletter" }),
+    ]);
+    mockClassify.mockResolvedValueOnce(new Map([[0, { category: "flight_change", summary: "Gate moved to B12." }]]));
+
+    await scanAndCurateImportantEmailsForOnboarding(user.id);
+
+    expect(hasAlerted(user.id, "important-email:1:match-1")).toBe(true);
+    expect(hasAlerted(user.id, "important-email:1:boring-1")).toBe(true);
+
+    // The scheduler's own scan must now see nothing left to do — this IS the baseline.
+    mockHubListNewMessages.mockResolvedValueOnce([
+      fakeMessage({ id: "match-1", subject: "Your flight changed" }),
+      fakeMessage({ id: "boring-1", subject: "Newsletter" }),
+    ]);
+    mockClassify.mockClear();
+    await checkForImportantEmails(user.id);
+    expect(mockClassify).not.toHaveBeenCalled();
+  });
+
+  it("stores every match as a queryable entity, same as the scheduler-driven scan", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("onboard-entities"));
+    mockHubListNewMessages.mockResolvedValueOnce([fakeMessage({ id: "flight-1", subject: "Your flight changed" })]);
+    mockClassify.mockResolvedValueOnce(
+      new Map([[0, { category: "flight_change", summary: "Gate moved to B12." }]])
+    );
+
+    await scanAndCurateImportantEmailsForOnboarding(user.id);
+
+    expect(listEntities(user.id, { type: IMPORTANT_EMAIL_ENTITY_TYPE })).toHaveLength(1);
+  });
+
+  it("orders the preview by fixed category priority, not discovery order", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("onboard-priority"));
+    mockHubListNewMessages.mockResolvedValueOnce([
+      fakeMessage({ id: "a", subject: "Newsletter renewal" }),
+      fakeMessage({ id: "b", subject: "New sign-in" }),
+      fakeMessage({ id: "c", subject: "Flight changed" }),
     ]);
     mockClassify.mockResolvedValueOnce(
       new Map([
-        [0, { category: "flight_change", summary: "Your gate moved to B12." }],
-        [1, { category: "reservation_confirmed", summary: "Hotel confirmed for the 3rd." }],
+        [0, { category: "subscription_renewal", summary: "Renews tomorrow." }],
+        [1, { category: "security_alert", summary: "New sign-in detected." }],
+        [2, { category: "flight_change", summary: "Gate moved to B12." }],
       ])
     );
 
-    await checkForImportantEmails(user.id);
+    const result = await scanAndCurateImportantEmailsForOnboarding(user.id);
 
-    expect(sendWhatsAppMessage).not.toHaveBeenCalled();
-    expect(hasAlerted(user.id, "important-email:1:onb-1")).toBe(true);
-    expect(hasAlerted(user.id, "important-email:1:onb-2")).toBe(true);
-    expect(listEntities(user.id, { type: IMPORTANT_EMAIL_ENTITY_TYPE })).toHaveLength(2);
-    expect(takeSuppressedOnboardingAlertCount(user.id)).toBe(2);
+    expect(result?.lines).toEqual([
+      "🔐 New sign-in detected.",
+      "✈️ Gate moved to B12.",
+      "🔁 Renews tomorrow.",
+    ]);
+    expect(result?.moreCount).toBe(0);
+  });
+
+  it("caps the preview at 3 and reports the rest as a count", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("onboard-cap"));
+    const messages = Array.from({ length: 5 }, (_, i) => fakeMessage({ id: `m${i}`, subject: `Notice ${i}` }));
+    mockHubListNewMessages.mockResolvedValueOnce(messages);
+    const classified = new Map<number, { category: "invoice_due"; summary: string }>();
+    for (let i = 0; i < 5; i++) classified.set(i, { category: "invoice_due", summary: `Invoice ${i} due.` });
+    mockClassify.mockResolvedValueOnce(classified);
+
+    const result = await scanAndCurateImportantEmailsForOnboarding(user.id);
+
+    expect(result?.lines).toHaveLength(3);
+    expect(result?.moreCount).toBe(2);
+  });
+
+  it("returns null (and leaves the backlog for the scheduler to pick up normally) when classification fails", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("onboard-classify-fail"));
+    mockHubListNewMessages.mockResolvedValueOnce([fakeMessage({ id: "err-1" })]);
+    mockClassify.mockRejectedValueOnce(new Error("API down"));
+
+    const result = await scanAndCurateImportantEmailsForOnboarding(user.id);
+
+    expect(result).toBeNull();
+    expect(hasAlerted(user.id, "important-email:1:err-1")).toBe(false);
+    // "Left for the scheduler" only holds on Gmail if the checkpoint doesn't move past this mail.
+    expect(mockHoldCheckpoint).toHaveBeenCalledWith(user.id);
+  });
+
+  it("does nothing (and returns null) if the owner was somehow already baselined", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("onboard-already-baselined"));
+    await baseline(user.id); // simulates a scheduler tick having already run first
+
+    const result = await scanAndCurateImportantEmailsForOnboarding(user.id);
+
+    expect(result).toBeNull();
+    expect(mockHubListNewMessages).toHaveBeenCalledTimes(1); // only the baseline() call above — no second scan
   });
 });
 

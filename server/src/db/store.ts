@@ -93,6 +93,10 @@ db.exec(`
     email TEXT PRIMARY KEY,
     invited_at INTEGER NOT NULL
   );
+  CREATE TABLE IF NOT EXISTS invited_phones (
+    phone TEXT PRIMARY KEY,
+    invited_at INTEGER NOT NULL
+  );
   CREATE TABLE IF NOT EXISTS sessions (
     id TEXT PRIMARY KEY,
     user_id INTEGER NOT NULL REFERENCES users(id),
@@ -999,6 +1003,22 @@ db.exec(`
   );
 `);
 
+// Which provider account a person actually signed in with, keyed on the provider's own immutable
+// ids — for Microsoft, "<tenant id>:<object id>" from the id_token. Microsoft sign-in used to find
+// the user by Graph's `mail`, which any Entra tenant admin can set to someone else's address; see
+// authRoutes.ts's resolveMicrosoftUser for how these rows get created and checked. A subject is
+// linked to exactly one user and never re-pointed.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS user_identities (
+    provider   TEXT NOT NULL,
+    subject    TEXT NOT NULL,
+    user_id    INTEGER NOT NULL REFERENCES users(id),
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY (provider, subject)
+  );
+  CREATE INDEX IF NOT EXISTS idx_user_identities_user ON user_identities(user_id);
+`);
+
 export const uploadsDir = path.join(dataDir, "uploads");
 if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
 
@@ -1554,14 +1574,15 @@ export function getWhatsAppHistory(phone: string, limit = 20): WhatsAppMessageRo
 // an inbound message, or one element per chunk for an outbound reply split across several sends
 // (services/messageSplitting.ts). Optional and omitted by most existing callers (reactions,
 // short-circuit replies like "help"/version text) that don't need to be resolvable as a quote
-// target.
+// target. Returns the new row's id — messageBatching.ts uses it to find this exact row again when
+// the batch flushes, rather than guessing by position.
 export function appendWhatsAppMessage(
   ownerId: number,
   phone: string,
   role: "user" | "assistant",
   content: string,
   wamids?: string[]
-): void {
+): number {
   const info = db
     .prepare(
       `INSERT INTO whatsapp_messages (owner_id, phone, role, content, created_at) VALUES (?, ?, ?, ?, ?)`
@@ -1573,6 +1594,7 @@ export function appendWhatsAppMessage(
     );
     for (const wamid of wamids) insertWamid.run(wamid, info.lastInsertRowid);
   }
+  return Number(info.lastInsertRowid);
 }
 
 // Resolves a swipe-to-reply (Meta's `context.id`) back to the message it quoted, no matter how
@@ -1899,8 +1921,14 @@ export function getDocumentByWamid(ownerId: number, wamid: string): DocumentRow 
     .get(ownerId, wamid) as DocumentRow | undefined;
 }
 
+// document_match_keys.document_id REFERENCES documents(id) — children first, same manual-cascade
+// order as deleteUserCompletely, or the documents delete fails the foreign key.
 export function deleteDocument(ownerId: number, id: number): void {
-  db.prepare(`DELETE FROM documents WHERE id = ? AND owner_id = ?`).run(id, ownerId);
+  const purge = db.transaction(() => {
+    db.prepare(`DELETE FROM document_match_keys WHERE document_id = ? AND owner_id = ?`).run(id, ownerId);
+    db.prepare(`DELETE FROM documents WHERE id = ? AND owner_id = ?`).run(id, ownerId);
+  });
+  purge();
 }
 
 export function markDocumentXeroForwarded(ownerId: number, id: number, forwardedAt: number): void {
@@ -2427,12 +2455,9 @@ function normalizeEmail(email: string): string {
   return email.trim().toLowerCase();
 }
 
-export function isEmailInvited(email: string): boolean {
-  return !!db.prepare(`SELECT 1 FROM invited_emails WHERE email = ?`).get(normalizeEmail(email));
-}
-
-// Only call this once isEmailInvited(email) has already been checked true — this does not
-// itself gate access, it just finds-or-creates the row for an already-authorized email.
+// Only call this once the caller has already established the phone/account is authorized (see
+// isPhoneInvited below, or an already-existing account) — this does not itself gate access, it
+// just finds-or-creates the row for an already-authorized email.
 export function findOrCreateUserByEmail(email: string): UserRow {
   const normalized = normalizeEmail(email);
   let row = db.prepare(`SELECT id, email, created_at AS createdAt FROM users WHERE email = ?`).get(normalized) as
@@ -2466,13 +2491,30 @@ export function getUser(id: number): UserRow | null {
   return row ?? null;
 }
 
-// Used by server/src/scripts/invite.ts — the app owner's manual "grant this person a hub" tool.
-export function addInvitedEmail(email: string): void {
-  db.prepare(`INSERT OR IGNORE INTO invited_emails (email, invited_at) VALUES (?, ?)`).run(
-    normalizeEmail(email),
-    Date.now()
-  );
+export type IdentityProvider = "microsoft";
+
+export function getUserIdByIdentity(provider: IdentityProvider, subject: string): number | null {
+  const row = db
+    .prepare(`SELECT user_id AS userId FROM user_identities WHERE provider = ? AND subject = ?`)
+    .get(provider, subject) as { userId: number } | undefined;
+  return row?.userId ?? null;
 }
+
+// INSERT OR IGNORE on purpose: once a provider identity belongs to a user it's never moved to
+// another one — the caller has to have proven the link before calling this.
+export function linkIdentity(userId: number, provider: IdentityProvider, subject: string): void {
+  db.prepare(
+    `INSERT OR IGNORE INTO user_identities (provider, subject, user_id, created_at) VALUES (?, ?, ?, ?)`
+  ).run(provider, subject, userId, Date.now());
+}
+
+export function hasIdentity(userId: number, provider: IdentityProvider): boolean {
+  return !!db.prepare(`SELECT 1 FROM user_identities WHERE user_id = ? AND provider = ?`).get(userId, provider);
+}
+
+// Invite-gating moved from email to phone (see isPhoneInvited/addInvitedPhone below) — this
+// table and the historical migration bootstrap row that seeds APP_OWNER_EMAIL into it are left
+// in place (harmless, inert) rather than dropped, but nothing reads or writes it going forward.
 
 // Per-tenant background jobs (scheduler.ts, alerts.ts) loop over every user rather than
 // assuming a single global run.
@@ -2922,19 +2964,37 @@ export function deletePosterNote(id: number): void {
   db.prepare(`DELETE FROM poster_notes WHERE id = ?`).run(id);
 }
 
-export interface InvitedEmailRow {
-  email: string;
+// Invite-only access, gated by phone number rather than email — a tester just needs the number
+// to message, no need to collect their email address in advance. isPhoneInvited is checked at
+// the very first inbound WhatsApp message from an unregistered number
+// (whatsappRegistration.ts) and again, authoritatively, at the OAuth callback that completes
+// registration (authRoutes.ts) — same fast-UX-check-then-authoritative-recheck shape the email
+// version used.
+export function isPhoneInvited(phone: string): boolean {
+  return !!db.prepare(`SELECT 1 FROM invited_phones WHERE phone = ?`).get(normalizePhone(phone));
+}
+
+// Used by server/src/scripts/invite.ts — the app owner's manual "grant this person a hub" tool.
+export function addInvitedPhone(phone: string): void {
+  db.prepare(`INSERT OR IGNORE INTO invited_phones (phone, invited_at) VALUES (?, ?)`).run(
+    normalizePhone(phone),
+    Date.now()
+  );
+}
+
+export interface InvitedPhoneRow {
+  phone: string;
   invitedAt: number;
 }
 
-export function listInvitedEmails(): InvitedEmailRow[] {
+export function listInvitedPhones(): InvitedPhoneRow[] {
   return db
-    .prepare(`SELECT email, invited_at AS invitedAt FROM invited_emails ORDER BY invited_at DESC`)
-    .all() as InvitedEmailRow[];
+    .prepare(`SELECT phone, invited_at AS invitedAt FROM invited_phones ORDER BY invited_at DESC`)
+    .all() as InvitedPhoneRow[];
 }
 
-export function removeInvitedEmail(email: string): void {
-  db.prepare(`DELETE FROM invited_emails WHERE email = ?`).run(normalizeEmail(email));
+export function removeInvitedPhone(phone: string): void {
+  db.prepare(`DELETE FROM invited_phones WHERE phone = ?`).run(normalizePhone(phone));
 }
 
 // Full account purge — built for repeatable testing of the WhatsApp registration flow (admin-
@@ -3001,6 +3061,7 @@ export function deleteUserCompletely(ownerId: number): { deletedDocumentPaths: s
     db.prepare(`DELETE FROM admin_todos WHERE created_by = ?`).run(ownerId);
     db.prepare(`DELETE FROM poster_notes WHERE author_id = ?`).run(ownerId);
     db.prepare(`DELETE FROM user_phone_numbers WHERE user_id = ?`).run(ownerId);
+    db.prepare(`DELETE FROM user_identities WHERE user_id = ?`).run(ownerId);
     db.prepare(`DELETE FROM sessions WHERE user_id = ?`).run(ownerId);
     db.prepare(`DELETE FROM users WHERE id = ?`).run(ownerId);
   });

@@ -1945,8 +1945,9 @@ export async function runAssistantChat(
 // Narrow, tool-free assistant call used by the WhatsApp registration state machine
 // (whatsappRegistration.ts) when a reply doesn't match what a rigid step expects (not a valid
 // email, not "resend"). It only converses — it has no tools and no authority over whether an
-// email is ultimately accepted; that stays a hardcoded regex + isEmailInvited check in the
-// caller, same "the model interprets, code decides" split the rest of the app uses.
+// email is ultimately accepted; that stays a hardcoded regex in the caller (invite gating itself
+// happens earlier, by phone number — see isPhoneInvited), same "the model interprets, code
+// decides" split the rest of the app uses.
 const REGISTRATION_ASSIST_SYSTEM_PROMPTS: Record<"email" | "link" | "provider", string> = {
   email:
     "You are Marlowe, helping someone finish signing up for a personal WhatsApp assistant. " +
