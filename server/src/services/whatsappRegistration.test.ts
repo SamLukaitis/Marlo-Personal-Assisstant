@@ -8,8 +8,13 @@ vi.mock("../providers/whatsapp.js", () => ({
 
 const { sendWhatsAppMessage, sendWhatsAppReplyButtons, sendWhatsAppCtaUrl } = await import("../providers/whatsapp.js");
 const { handlePendingRegistration } = await import("./whatsappRegistration.js");
-const { addInvitedEmail, upsertPendingRegistration, getPendingRegistration, findOrCreateUserByEmail, addPhoneNumberForUser } =
-  await import("../db/store.js");
+const {
+  upsertPendingRegistration,
+  getPendingRegistration,
+  findOrCreateUserByEmail,
+  addPhoneNumberForUser,
+  addInvitedPhone,
+} = await import("../db/store.js");
 
 const PHONE = "447000003001";
 
@@ -62,11 +67,46 @@ function freshPhone(): string {
   return `44700000${String(counter).padStart(4, "0")}`;
 }
 
+// Invite-only access is gated by phone number: a brand-new number only starts the actual
+// registration chain (and gets a pending_whatsapp_registrations row) if it's on the
+// invited-numbers list — see db/store.ts's isPhoneInvited/addInvitedPhone.
+describe("handlePendingRegistration — phone invite gate (first contact)", () => {
+  it("turns away a brand-new, uninvited number without creating a pending registration row", async () => {
+    const phone = freshPhone();
+
+    await handlePendingRegistration({ kind: "text", from: phone, text: "hi", messageId: "m1" });
+
+    expect(sendWhatsAppMessage).toHaveBeenCalledWith(phone, expect.stringContaining("isn't invited yet"));
+    expect(sendWhatsAppMessage).not.toHaveBeenCalledWith(phone, expect.stringContaining("Welcome to the Marlowe"));
+    expect(getPendingRegistration(phone)).toBeNull();
+  });
+
+  it("starts the real registration chain for an invited number", async () => {
+    const phone = freshPhone();
+    addInvitedPhone(phone);
+
+    await handlePendingRegistration({ kind: "text", from: phone, text: "hi", messageId: "m1" });
+
+    expect(sendWhatsAppMessage).toHaveBeenCalledWith(phone, expect.stringContaining("Welcome to the Marlowe"));
+    expect(getPendingRegistration(phone)?.step).toBe("awaiting_name");
+  });
+
+  it("lets an uninvited number in once it's actually invited, after an earlier rejected attempt", async () => {
+    const phone = freshPhone();
+    await handlePendingRegistration({ kind: "text", from: phone, text: "hi", messageId: "m1" });
+    expect(getPendingRegistration(phone)).toBeNull(); // still turned away
+
+    addInvitedPhone(phone);
+    await handlePendingRegistration({ kind: "text", from: phone, text: "hi", messageId: "m2" });
+
+    expect(getPendingRegistration(phone)?.step).toBe("awaiting_name");
+  });
+});
+
 describe("handlePendingRegistration — awaiting_email provider auto-detect", () => {
   it("skips the provider question and goes straight to the link for a gmail.com address", async () => {
     const phone = freshPhone();
     const email = `margaret+${phone}@gmail.com`;
-    addInvitedEmail(email);
     upsertPendingRegistration(phone, { step: "awaiting_email", name: "Margaret" });
 
     await handlePendingRegistration({ kind: "text", from: phone, text: email, messageId: "m1" });
@@ -85,7 +125,6 @@ describe("handlePendingRegistration — awaiting_email provider auto-detect", ()
   it("skips the provider question and goes straight to the link for an outlook.com address", async () => {
     const phone = freshPhone();
     const email = `margaret+${phone}@outlook.com`;
-    addInvitedEmail(email);
     upsertPendingRegistration(phone, { step: "awaiting_email", name: "Margaret" });
 
     await handlePendingRegistration({ kind: "text", from: phone, text: email, messageId: "m1" });
@@ -102,7 +141,6 @@ describe("handlePendingRegistration — awaiting_email provider auto-detect", ()
   it("still asks the explicit provider question for an ambiguous custom-domain address", async () => {
     const phone = freshPhone();
     const email = `margaret+${phone}@somecompany.com`;
-    addInvitedEmail(email);
     upsertPendingRegistration(phone, { step: "awaiting_email", name: "Margaret" });
 
     await handlePendingRegistration({ kind: "text", from: phone, text: email, messageId: "m1" });
@@ -120,7 +158,6 @@ describe("handlePendingRegistration — awaiting_email reconnecting an existing 
   it("blocks when the existing account still has a phone bound (unchanged behavior)", async () => {
     const phone = freshPhone();
     const email = `stillbound-${phone}@gmail.com`;
-    addInvitedEmail(email);
     const existing = findOrCreateUserByEmail(email);
     addPhoneNumberForUser(existing.id, "447900009999"); // some other number, still connected
 
@@ -137,7 +174,6 @@ describe("handlePendingRegistration — awaiting_email reconnecting an existing 
   it("lets it through when the existing account has zero phones bound (e.g. after replay-onboarding)", async () => {
     const phone = freshPhone();
     const email = `replay-${phone}@gmail.com`;
-    addInvitedEmail(email);
     findOrCreateUserByEmail(email); // account exists but no phone bound — matches resetOnboardingConnectionState's result
 
     upsertPendingRegistration(phone, { step: "awaiting_email", name: "Margaret" });

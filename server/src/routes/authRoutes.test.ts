@@ -16,13 +16,7 @@ vi.mock("../providers/google.js", () => ({
 
 const { authRoutes } = await import("./authRoutes.js");
 const { exchangeGoogleCode, handleGoogleCallback } = await import("../providers/google.js");
-const {
-  findOrCreateUserByEmail,
-  addInvitedEmail,
-  listAccounts,
-  upsertAccount,
-  createSession,
-} = await import("../db/store.js");
+const { findOrCreateUserByEmail, listAccounts, upsertAccount, createSession } = await import("../db/store.js");
 
 function buildApp() {
   const app = express();
@@ -51,18 +45,44 @@ beforeEach(() => {
 });
 
 describe("GET /auth/google/callback — login intent", () => {
-  it("a brand-new user's first sign-in auto-connects Google AND still lands on /onboarding", async () => {
+  // Registration only happens via WhatsApp now (gated by phone invite there, see
+  // whatsappRegistration.test.ts) — this plain web sign-in must turn away an email with no
+  // existing account rather than creating one, regardless of anything else about the request.
+  it("blocks a brand-new email with no existing account", async () => {
     const app = buildApp();
-    const email = uniqueEmail("first-login");
-    addInvitedEmail(email);
+    const email = uniqueEmail("never-registered");
 
-    // Step 1: hit login-signin to get a real nonce cookie + a real, parseable state.
+    const start = await request(app).get("/auth/google/login-signin");
+    const nonceCookie = parseSetCookie(start, "oauth_nonce");
+    const state = new URL(start.headers.location).searchParams.get("state")!;
+
+    vi.mocked(exchangeGoogleCode).mockResolvedValue({
+      email,
+      accessToken: "at",
+      refreshToken: "rt",
+      expiryDate: Date.now() + 3600_000,
+    });
+
+    const callback = await request(app)
+      .get(`/auth/google/callback?code=fakecode&state=${encodeURIComponent(state)}`)
+      .set("Cookie", nonceCookie!);
+
+    expect(callback.headers.location).toBe("http://localhost:5173/?not_invited=1");
+    expect(listAccounts(findOrCreateUserByEmail(email).id)).toHaveLength(0);
+  });
+
+  it("a user who already has an account (e.g. from WhatsApp registration) but never signed into the web before auto-connects Google AND still lands on /onboarding", async () => {
+    const app = buildApp();
+    const email = uniqueEmail("first-web-login");
+    // Simulates having already gone through WhatsApp registration — a users row exists, but no
+    // Google/Microsoft account has ever been connected via this web sign-in path yet.
+    findOrCreateUserByEmail(email);
+
     const start = await request(app).get("/auth/google/login-signin");
     const nonceCookie = parseSetCookie(start, "oauth_nonce");
     const state = new URL(start.headers.location).searchParams.get("state")!;
     expect(nonceCookie).toBeDefined();
 
-    // Step 2: the exchange Google would perform — this user has never signed in before.
     vi.mocked(exchangeGoogleCode).mockResolvedValue({
       email,
       accessToken: "at",
@@ -88,7 +108,6 @@ describe("GET /auth/google/callback — login intent", () => {
   it("a returning user who already has a connected account skips onboarding", async () => {
     const app = buildApp();
     const email = uniqueEmail("returning-login");
-    addInvitedEmail(email);
     const user = findOrCreateUserByEmail(email);
     upsertAccount(user.id, {
       provider: "google",

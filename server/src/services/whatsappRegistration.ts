@@ -22,7 +22,7 @@ import {
   setPendingRegistrationToken,
   completePendingRegistration,
   deletePendingRegistration,
-  isEmailInvited,
+  isPhoneInvited,
   getUserByEmail,
   listPhoneNumbersForUser,
   setSetting,
@@ -201,23 +201,15 @@ async function handleAwaitingEmail(row: PendingRegistrationRow, text: string): P
     // Not a help trigger either (already intercepted earlier) — this is genuinely confused or
     // open-ended free text ("I have two, which one?"), so hand it to the assistant for a real
     // reply instead of repeating the same canned rejection. The assistant only converses here;
-    // it has no say in whether an email is ultimately accepted (see the isEmailInvited check
-    // below, unchanged and still 100% code).
+    // it has no say in whether an email is ultimately accepted.
     const helpReply = await getRegistrationAssistReply(text, "email");
     await reply(row.phone, helpReply);
     return;
   }
 
-  // UX-only fast reject — comment deliberately loud: the AUTHORITATIVE check is the OAuth
-  // callback's isEmailInvited(auth.email) against the real provider-returned email, exactly
-  // matching how the "login" intent already works. Never trust this typed value for the actual
-  // security decision, only for giving a faster, friendlier no here.
-  if (!isEmailInvited(email)) {
-    upsertPendingRegistration(row.phone, { typedEmail: email });
-    await reply(row.phone, "That email isn't on our early-access list yet — try a different one, or check back later.");
-    return;
-  }
-
+  // No invite check here anymore — access is gated by phone number at first contact (see
+  // handlePendingRegistration below), so by the time someone reaches this step their number has
+  // already been authorized and any email they connect is fine.
   const existingUser = getUserByEmail(email);
   if (existingUser && listPhoneNumbersForUser(existingUser.id).length > 0) {
     await reply(
@@ -228,9 +220,7 @@ async function handleAwaitingEmail(row: PendingRegistrationRow, text: string): P
   }
   // existingUser with zero phones bound means the account was deliberately disconnected via
   // Settings > "replay onboarding" (resetOnboardingConnectionState) to re-test this exact flow
-  // without losing data — fall through and let it reconnect. Still safe against a stranger typing
-  // someone else's email: OAuth re-verifies the real address (isEmailInvited(auth.email) in
-  // authRoutes.ts) before anything is bound, same as the brand-new-account path below.
+  // without losing data — fall through and let it reconnect.
 
   const updated = upsertPendingRegistration(row.phone, { typedEmail: email });
 
@@ -333,6 +323,19 @@ export async function handlePendingRegistration(message: IncomingWhatsAppMessage
   }
 
   if (!row) {
+    // The invite gate: a brand-new number only gets past this point if it's on the
+    // invited-numbers list (see db/store.ts's isPhoneInvited/addInvitedPhone) — no pending
+    // registration row is created for an uninvited number, so it can start over cleanly the
+    // moment it's actually invited rather than being stuck mid-flow. This is the fast, UX-facing
+    // check; authRoutes.ts's OAuth callback re-checks the same thing authoritatively right before
+    // an account is actually created, in case the invite was revoked mid-conversation.
+    if (!isPhoneInvited(phone)) {
+      await reply(
+        phone,
+        "This number isn't invited yet — ask whoever's running the beta to add it, then message again."
+      ).catch(() => {});
+      return;
+    }
     row = upsertPendingRegistration(phone, { step: "awaiting_name" });
     await reply(phone, MARLOWE_FIRST_CONTACT_TEXT);
     return;

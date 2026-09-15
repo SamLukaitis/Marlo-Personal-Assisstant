@@ -536,20 +536,22 @@ export const fetchCheckins = () => getJson<TravelCheckin[]>("/api/checkins");
 export const fetchTravelDays = (area = "schengen", days = 180) =>
   getJson<TravelDaysResult>(`/api/travel-days?area=${encodeURIComponent(area)}&days=${days}`);
 
-export interface InvitedEmail {
-  email: string;
+// Invite-only access is gated by phone number, not email — send a tester the WhatsApp number to
+// message and add their number here; no need to collect their email in advance.
+export interface InvitedPhone {
+  phone: string;
   invitedAt: number;
 }
 
-export const fetchInvites = () => getJson<InvitedEmail[]>("/api/admin/invites");
+export const fetchInvites = () => getJson<InvitedPhone[]>("/api/admin/invites");
 
-export async function addInvite(email: string): Promise<InvitedEmail[]> {
+export async function addInvite(phone: string): Promise<InvitedPhone[]> {
   const res = await fetch(
     `${API_BASE}/api/admin/invites`,
     withCredentials({
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ email }),
+      body: JSON.stringify({ phone }),
     })
   );
   if (!res.ok) {
@@ -559,9 +561,9 @@ export async function addInvite(email: string): Promise<InvitedEmail[]> {
   return res.json();
 }
 
-export async function removeInvite(email: string): Promise<InvitedEmail[]> {
+export async function removeInvite(phone: string): Promise<InvitedPhone[]> {
   const res = await fetch(
-    `${API_BASE}/api/admin/invites/${encodeURIComponent(email)}`,
+    `${API_BASE}/api/admin/invites/${encodeURIComponent(phone)}`,
     withCredentials({ method: "DELETE" })
   );
   if (!res.ok) {

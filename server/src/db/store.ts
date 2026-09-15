@@ -93,6 +93,10 @@ db.exec(`
     email TEXT PRIMARY KEY,
     invited_at INTEGER NOT NULL
   );
+  CREATE TABLE IF NOT EXISTS invited_phones (
+    phone TEXT PRIMARY KEY,
+    invited_at INTEGER NOT NULL
+  );
   CREATE TABLE IF NOT EXISTS sessions (
     id TEXT PRIMARY KEY,
     user_id INTEGER NOT NULL REFERENCES users(id),
@@ -2232,12 +2236,9 @@ function normalizeEmail(email: string): string {
   return email.trim().toLowerCase();
 }
 
-export function isEmailInvited(email: string): boolean {
-  return !!db.prepare(`SELECT 1 FROM invited_emails WHERE email = ?`).get(normalizeEmail(email));
-}
-
-// Only call this once isEmailInvited(email) has already been checked true — this does not
-// itself gate access, it just finds-or-creates the row for an already-authorized email.
+// Only call this once the caller has already established the phone/account is authorized (see
+// isPhoneInvited below, or an already-existing account) — this does not itself gate access, it
+// just finds-or-creates the row for an already-authorized email.
 export function findOrCreateUserByEmail(email: string): UserRow {
   const normalized = normalizeEmail(email);
   let row = db.prepare(`SELECT id, email, created_at AS createdAt FROM users WHERE email = ?`).get(normalized) as
@@ -2271,13 +2272,9 @@ export function getUser(id: number): UserRow | null {
   return row ?? null;
 }
 
-// Used by server/src/scripts/invite.ts — the app owner's manual "grant this person a hub" tool.
-export function addInvitedEmail(email: string): void {
-  db.prepare(`INSERT OR IGNORE INTO invited_emails (email, invited_at) VALUES (?, ?)`).run(
-    normalizeEmail(email),
-    Date.now()
-  );
-}
+// Invite-gating moved from email to phone (see isPhoneInvited/addInvitedPhone below) — this
+// table and the historical migration bootstrap row that seeds APP_OWNER_EMAIL into it are left
+// in place (harmless, inert) rather than dropped, but nothing reads or writes it going forward.
 
 // Per-tenant background jobs (scheduler.ts, alerts.ts) loop over every user rather than
 // assuming a single global run.
@@ -2727,19 +2724,37 @@ export function deletePosterNote(id: number): void {
   db.prepare(`DELETE FROM poster_notes WHERE id = ?`).run(id);
 }
 
-export interface InvitedEmailRow {
-  email: string;
+// Invite-only access, gated by phone number rather than email — a tester just needs the number
+// to message, no need to collect their email address in advance. isPhoneInvited is checked at
+// the very first inbound WhatsApp message from an unregistered number
+// (whatsappRegistration.ts) and again, authoritatively, at the OAuth callback that completes
+// registration (authRoutes.ts) — same fast-UX-check-then-authoritative-recheck shape the email
+// version used.
+export function isPhoneInvited(phone: string): boolean {
+  return !!db.prepare(`SELECT 1 FROM invited_phones WHERE phone = ?`).get(normalizePhone(phone));
+}
+
+// Used by server/src/scripts/invite.ts — the app owner's manual "grant this person a hub" tool.
+export function addInvitedPhone(phone: string): void {
+  db.prepare(`INSERT OR IGNORE INTO invited_phones (phone, invited_at) VALUES (?, ?)`).run(
+    normalizePhone(phone),
+    Date.now()
+  );
+}
+
+export interface InvitedPhoneRow {
+  phone: string;
   invitedAt: number;
 }
 
-export function listInvitedEmails(): InvitedEmailRow[] {
+export function listInvitedPhones(): InvitedPhoneRow[] {
   return db
-    .prepare(`SELECT email, invited_at AS invitedAt FROM invited_emails ORDER BY invited_at DESC`)
-    .all() as InvitedEmailRow[];
+    .prepare(`SELECT phone, invited_at AS invitedAt FROM invited_phones ORDER BY invited_at DESC`)
+    .all() as InvitedPhoneRow[];
 }
 
-export function removeInvitedEmail(email: string): void {
-  db.prepare(`DELETE FROM invited_emails WHERE email = ?`).run(normalizeEmail(email));
+export function removeInvitedPhone(phone: string): void {
+  db.prepare(`DELETE FROM invited_phones WHERE phone = ?`).run(normalizePhone(phone));
 }
 
 // Full account purge — built for repeatable testing of the WhatsApp registration flow (admin-

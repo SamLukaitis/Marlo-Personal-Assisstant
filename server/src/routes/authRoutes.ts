@@ -13,8 +13,9 @@ import {
   isMicrosoftConfigured,
 } from "../providers/microsoft.js";
 import {
-  isEmailInvited,
+  isPhoneInvited,
   findOrCreateUserByEmail,
+  getUserByEmail,
   createSession,
   deleteSession,
   listAccounts,
@@ -235,11 +236,14 @@ authRoutes.get("/auth/google/callback", async (req, res) => {
         return;
       }
       const auth = await exchangeGoogleCode(code);
-      if (!isEmailInvited(auth.email)) {
+      // Authoritative re-check of the same gate whatsappRegistration.ts's first-contact check
+      // already passed — re-checked here in case the invite was revoked mid-conversation, same
+      // defense-in-depth shape the email version used.
+      if (!isPhoneInvited(reg.phone)) {
         res.redirect(`${CLIENT_URL}/connected?error=not_invited`);
         sendWhatsAppMessage(
           reg.phone,
-          "That email isn't on the early-access list yet — try a different one, or check back once you've been invited."
+          "This number isn't invited yet — ask whoever's running the beta to add it, then message again."
         ).catch(() => {});
         return;
       }
@@ -273,7 +277,12 @@ authRoutes.get("/auth/google/callback", async (req, res) => {
     }
 
     const auth = await exchangeGoogleCode(code);
-    if (!isEmailInvited(auth.email)) {
+    // Registration only happens via WhatsApp now (gated by phone invite there) — a brand-new
+    // email hitting this plain web sign-in with no account yet is turned away here, same as
+    // before, just no longer checked against an email invite list. A RETURNING user (already has
+    // an account, from having gone through WhatsApp registration) is never blocked — this is
+    // their normal sign-in, not a new signup.
+    if (!getUserByEmail(auth.email)) {
       res.redirect(`${CLIENT_URL}/?not_invited=1`);
       return;
     }
@@ -339,11 +348,12 @@ authRoutes.get("/auth/microsoft/callback", async (req, res) => {
         return;
       }
       const auth = await exchangeMicrosoftCode(code);
-      if (!isEmailInvited(auth.email)) {
+      // Authoritative re-check — see the matching comment on the Google callback above.
+      if (!isPhoneInvited(reg.phone)) {
         res.redirect(`${CLIENT_URL}/connected?error=not_invited`);
         sendWhatsAppMessage(
           reg.phone,
-          "That email isn't on the early-access list yet — try a different one, or check back once you've been invited."
+          "This number isn't invited yet — ask whoever's running the beta to add it, then message again."
         ).catch(() => {});
         return;
       }
@@ -373,7 +383,8 @@ authRoutes.get("/auth/microsoft/callback", async (req, res) => {
     }
 
     const auth = await exchangeMicrosoftCode(code);
-    if (!isEmailInvited(auth.email)) {
+    // See the matching comment on the Google callback above — blocks only a brand-new signup.
+    if (!getUserByEmail(auth.email)) {
       res.redirect(`${CLIENT_URL}/?not_invited=1`);
       return;
     }

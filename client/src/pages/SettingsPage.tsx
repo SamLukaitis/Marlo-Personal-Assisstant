@@ -36,7 +36,7 @@ import {
   type WhatsAppStatus,
   type AlertSettings,
   type ImportantEmailAlertSettings,
-  type InvitedEmail,
+  type InvitedPhone,
   type AdminTimelineEntry,
 } from "../api/client";
 import { IconTrash, IconPlus, IconRefresh } from "../components/icons";
@@ -95,7 +95,7 @@ export function SettingsPage() {
     enabled: true,
   });
   const [importantEmailSaved, setImportantEmailSaved] = useState(false);
-  const [invites, setInvites] = useState<InvitedEmail[]>([]);
+  const [invites, setInvites] = useState<InvitedPhone[]>([]);
   const [newInvite, setNewInvite] = useState("");
   const [inviteError, setInviteError] = useState<string | null>(null);
   const [invitesLoaded, setInvitesLoaded] = useState(false);
@@ -215,20 +215,20 @@ export function SettingsPage() {
 
   async function handleAddInvite(e: React.FormEvent) {
     e.preventDefault();
-    const email = newInvite.trim();
-    if (!email) return;
+    const phone = newInvite.trim();
+    if (!phone) return;
     setInviteError(null);
     try {
-      setInvites(await addInvite(email));
+      setInvites(await addInvite(phone));
       setNewInvite("");
     } catch (err) {
       setInviteError((err as Error).message);
     }
   }
 
-  async function handleRemoveInvite(email: string) {
+  async function handleRemoveInvite(phone: string) {
     try {
-      setInvites(await removeInvite(email));
+      setInvites(await removeInvite(phone));
     } catch (err) {
       setInviteError((err as Error).message);
     }
@@ -784,16 +784,16 @@ export function SettingsPage() {
               <>
                 <h2>Invited testers</h2>
                 <p className="settings-section-intro">
-                  Only people on this list can sign in. Add an email and they can sign in with
-                  Google right away — no separate setup needed on their end.
+                  Only numbers on this list can message Marlowe and sign up. Add a number, then
+                  send that person the WhatsApp number to message — no need to know their email in
+                  advance.
                 </p>
                 <div className="card card-padded" style={{ marginBottom: 20 }}>
                   <form className="row" onSubmit={handleAddInvite}>
                     <input
-                      type="email"
                       value={newInvite}
                       onChange={(e) => setNewInvite(e.target.value)}
-                      placeholder="someone@example.com"
+                      placeholder="447911123456"
                     />
                     <button className="btn-primary" type="submit">
                       <IconPlus />
@@ -815,9 +815,9 @@ export function SettingsPage() {
                     </p>
                   ) : (
                     invites.map((inv) => (
-                      <div key={inv.email} className="data-row row" style={{ justifyContent: "space-between" }}>
+                      <div key={inv.phone} className="data-row row" style={{ justifyContent: "space-between" }}>
                         <div>
-                          <span style={{ fontSize: 13.5 }}>{inv.email}</span>{" "}
+                          <span style={{ fontSize: 13.5 }}>{inv.phone}</span>{" "}
                           <span className="muted" style={{ fontSize: 12 }}>
                             invited {new Date(inv.invitedAt).toLocaleDateString(undefined, {
                               day: "numeric",
@@ -826,7 +826,7 @@ export function SettingsPage() {
                             })}
                           </span>
                         </div>
-                        <button className="btn-danger" onClick={() => handleRemoveInvite(inv.email)}>
+                        <button className="btn-danger" onClick={() => handleRemoveInvite(inv.phone)}>
                           <IconTrash />
                           Remove
                         </button>

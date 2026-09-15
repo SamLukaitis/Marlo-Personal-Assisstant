@@ -86,3 +86,42 @@ describe("GET /api/admin/messages", () => {
     ]);
   });
 });
+
+// Invite-only access is gated by phone number, not email — see db/store.ts's
+// isPhoneInvited/addInvitedPhone. These are the admin CRUD endpoints behind Settings' "Invited
+// testers" section.
+describe("/api/admin/invites", () => {
+  it("rejects a non-owner with 403 on every method", async () => {
+    const stranger = findOrCreateUserByEmail(uniqueEmail("not-the-owner"));
+    const app = buildTestApp(stranger.id);
+    const phone = uniquePhone();
+
+    expect((await request(app).get("/api/admin/invites")).status).toBe(403);
+    expect((await request(app).post("/api/admin/invites").send({ phone })).status).toBe(403);
+    expect((await request(app).delete(`/api/admin/invites/${phone}`)).status).toBe(403);
+  });
+
+  it("adds, lists, and removes an invited phone number", async () => {
+    const app = buildTestApp(getAppOwnerUserId());
+    const phone = uniquePhone();
+
+    const afterAdd = await request(app).post("/api/admin/invites").send({ phone });
+    expect(afterAdd.status).toBe(200);
+    expect(afterAdd.body.map((r: { phone: string }) => r.phone)).toContain(phone);
+
+    const listed = await request(app).get("/api/admin/invites");
+    expect(listed.body.map((r: { phone: string }) => r.phone)).toContain(phone);
+
+    const afterRemove = await request(app).delete(`/api/admin/invites/${phone}`);
+    expect(afterRemove.status).toBe(200);
+    expect(afterRemove.body.map((r: { phone: string }) => r.phone)).not.toContain(phone);
+  });
+
+  it("rejects an empty/invalid phone with 400", async () => {
+    const app = buildTestApp(getAppOwnerUserId());
+
+    const res = await request(app).post("/api/admin/invites").send({ phone: "" });
+
+    expect(res.status).toBe(400);
+  });
+});
