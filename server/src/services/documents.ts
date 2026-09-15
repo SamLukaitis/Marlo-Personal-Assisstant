@@ -31,7 +31,7 @@ import {
   type BookingData,
 } from "./entityValidation.js";
 import { fetchPageText, type FetchFailureReason } from "./safeLinkFetcher.js";
-import { checkDocumentAgainstRecentEmails, type MatchKeys } from "./reconciliation.js";
+import type { MatchKeys } from "./reconciliation.js";
 import { forwardReceiptToXero } from "./xeroForwarding.js";
 
 // Pure on purpose — the one bit of category logic worth its own unit test is "what happens when
@@ -789,12 +789,10 @@ async function finalizeIngestedFile(
     );
   }
 
-  if (matchKeys) {
-    saveMatchKeys(ownerId, doc.id, matchKeys);
-    void checkDocumentAgainstRecentEmails(ownerId, doc.id, doc.title ?? "a saved document", matchKeys).catch(
-      (err) => console.error("documents: reconciliation check failed", err)
-    );
-  }
+  // Indexed only — genuinely new mail about this is matched on the scheduler tick
+  // (reconciliation.ts). Don't scan existing mail here: see that file's header for the alert spam
+  // that caused.
+  if (matchKeys) saveMatchKeys(ownerId, doc.id, matchKeys);
 
   return doc;
 }
@@ -961,12 +959,7 @@ export async function ingestEmailBodyReceipt(params: {
     );
   }
 
-  if (matchKeys) {
-    saveMatchKeys(params.ownerId, doc.id, matchKeys);
-    void checkDocumentAgainstRecentEmails(params.ownerId, doc.id, doc.title ?? "a saved document", matchKeys).catch(
-      (err) => console.error("documents: reconciliation check failed", err)
-    );
-  }
+  if (matchKeys) saveMatchKeys(params.ownerId, doc.id, matchKeys); // indexed only — see finalizeIngestedFile
 
   return { ok: true, doc };
 }
@@ -1045,14 +1038,7 @@ export async function ingestWhatsAppLink(params: {
   }
   storeDerivedEntities(params.ownerId, doc, derivedEntities);
 
-  if (matchKeys) {
-    saveMatchKeys(params.ownerId, doc.id, matchKeys);
-    // Fire-and-forget: this must never delay the "document saved" confirmation the user is
-    // waiting on. Any match notification arrives as a separate follow-up message.
-    void checkDocumentAgainstRecentEmails(params.ownerId, doc.id, doc.title ?? "a saved document", matchKeys).catch(
-      (err) => console.error("documents: reconciliation check failed", err)
-    );
-  }
+  if (matchKeys) saveMatchKeys(params.ownerId, doc.id, matchKeys); // indexed only — see finalizeIngestedFile
 
   return { ok: true, doc };
 }

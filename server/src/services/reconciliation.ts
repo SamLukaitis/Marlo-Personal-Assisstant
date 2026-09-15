@@ -1,8 +1,15 @@
 // Cross-referencing between saved documents and email — see
 // docs/superpowers/specs/2026-08-24-document-email-cross-referencing-design.md for the full
 // design and why this stays entirely deterministic in v1 (no LLM call on the email side at all).
+//
+// Only genuinely new mail is checked (checkNewEmailsAgainstRecentDocuments, on the scheduler tick).
+// There used to be a second check that ran every time a document was saved and scanned the last 150
+// emails already in the inbox — it sent one identical-looking "an email about your <document> just
+// came in" alert per matching email, and all of them again for every new document about the same
+// booking (alert spam, reported 2026-09-15). The mail it found was almost always mail the user
+// already had, often the very email the document came from, so it was removed rather than tuned.
 
-import { hubListMessages, hubListNewMessages, holdNewMessageCheckpoint } from "./hub.js";
+import { hubListNewMessages, holdNewMessageCheckpoint } from "./hub.js";
 import { isWhatsAppConfigured } from "../providers/whatsapp.js";
 import { sendProactiveMessage } from "./outbound.js";
 import { hasAlerted, markAlerted, listPhoneNumbersForUser, listRecentMatchKeys, getSetting } from "../db/store.js";
@@ -24,13 +31,6 @@ export interface MatchKeys {
 // accepting some missed short-identifier matches in exchange for far fewer false positives.
 const MIN_IDENTIFIER_LENGTH = 4;
 
-// Raised from 50 → 150 (2026-08-26): 50 was too shallow to catch older confirmation emails (e.g.
-// a hostel booking from weeks before a trip actually starts) — see
-// docs/superpowers/specs/2026-08-26-email-search-depth-and-attachment-extraction-design.md. This
-// runs unattended on scheduler.ts's 5-minute tick, so the number is picked to bound the added
-// Gmail/Graph API load per tick, not just to match search_messages' one-off cost.
-export const RECONCILIATION_SCAN_LIMIT = 150;
-
 // v1 ships strong-tier matching only (see the design doc) — this only ever compares a document's
 // structured keys against a raw text blob (an email's subject + snippet), never two structured
 // MatchKeys objects against each other, since email never gets its own LLM extraction call in
@@ -47,81 +47,47 @@ export function matchTier(keys: MatchKeys, text: string): "strong" | null {
   return null;
 }
 
-// No account email — the doc title and identifier are bolded instead so the concrete facts stand
-// out, and a name-first greeting when known, matching the tone of the other two alert types
-// (importantEmailAlerts.ts, alerts.ts).
-export function buildMatchNotification(docTitle: string, keys: MatchKeys, userName: string | null): string {
+export interface EmailDocumentMatch {
+  subject: string;
+  docTitle: string;
+  keys: MatchKeys;
+}
+
+// Past this many, the rest of a burst is summarized as a count rather than listed.
+const MAX_LISTED_MATCHES = 5;
+
+function identifierPart(keys: MatchKeys): string {
   const identifier = keys.referenceCode ?? keys.flightNumber ?? "";
-  const idPart = identifier ? ` — reference *${identifier}*` : "";
-  const datePart = keys.eventDate ? ` (${keys.eventDate})` : "";
+  return identifier ? ` — reference *${identifier}*` : "";
+}
+
+// One message per check, however many emails matched. Every email is named by its subject so the
+// alert says which email it means (previously the text came only from the document, so several
+// matching emails produced identical messages). No account email — the doc title and identifier
+// are bolded so the concrete facts stand out, with a name-first greeting when known, matching the
+// tone of the other alert types (importantEmailAlerts.ts, alerts.ts).
+export function buildMatchNotification(matches: EmailDocumentMatch[], userName: string | null): string {
   const greeting = userName ? `${userName}, ` : "";
-  return `📎 ${greeting}an email about your *${docTitle}*${datePart} just came in${idPart}. Worth a look?`;
-}
 
-const MAX_MATCH_NOTIFICATIONS_PER_RUN = 3;
-
-// Returns whether the notification was actually delivered to every registered number — callers
-// must only mark a match as alerted when this is true, since a match that failed to deliver
-// needs to stay eligible to be found again rather than being silently and permanently discarded.
-async function notifyMatch(ownerId: number, text: string): Promise<boolean> {
-  if (!isWhatsAppConfigured()) return false;
-  const numbers = listPhoneNumbersForUser(ownerId).map((r) => r.phone);
-  if (numbers.length === 0) return false;
-
-  let allSucceeded = true;
-  for (const number of numbers) {
-    try {
-      await sendProactiveMessage(number, text, "alert");
-    } catch (err) {
-      console.error("reconciliation: failed to send match notification", err);
-      allSucceeded = false;
-    }
-  }
-  return allSucceeded;
-}
-
-// Runs synchronously right after a document saves (see documents.ts) — checks the new
-// document's own identifiers against a bounded window of recent mail. No LLM call: a reference
-// code or flight number is specific enough that finding it verbatim in a subject/snippet is
-// already a strong match.
-export async function checkDocumentAgainstRecentEmails(
-  ownerId: number,
-  documentId: number,
-  docTitle: string,
-  keys: MatchKeys
-): Promise<void> {
-  if (!keys.referenceCode && !keys.flightNumber) return; // nothing strong-tier-checkable in v1
-
-  let messages: UnifiedMessage[];
-  try {
-    messages = await hubListMessages(ownerId, { limit: RECONCILIATION_SCAN_LIMIT });
-  } catch (err) {
-    console.error(`reconciliation: failed to list messages for owner ${ownerId}`, err);
-    return;
+  if (matches.length === 1) {
+    const [{ subject, docTitle, keys }] = matches;
+    const datePart = keys.eventDate ? ` (${keys.eventDate})` : "";
+    return `📎 ${greeting}an email about your *${docTitle}*${datePart} came in: "${subject}"${identifierPart(keys)}. Worth a look?`;
   }
 
-  const userName = getSetting(ownerId, "user_name");
-  let sent = 0;
-  for (const m of messages) {
-    if (sent >= MAX_MATCH_NOTIFICATIONS_PER_RUN) break;
-
-    const text = `${m.subject} ${m.snippet}`;
-    if (matchTier(keys, text) !== "strong") continue;
-
-    const matchKey = `recon-match:${documentId}:${m.accountId}:${m.id}`;
-    if (hasAlerted(ownerId, matchKey)) continue;
-
-    const delivered = await notifyMatch(ownerId, buildMatchNotification(docTitle, keys, userName));
-    if (!delivered) continue; // leave this match retriable — don't mark or count it
-
-    markAlerted(ownerId, matchKey);
-    sent += 1;
-  }
+  const lines = matches
+    .slice(0, MAX_LISTED_MATCHES)
+    .map(({ subject, docTitle, keys }) => `• "${subject}" — your *${docTitle}*${identifierPart(keys)}`);
+  const rest = matches.length - MAX_LISTED_MATCHES;
+  const more = rest > 0 ? `\n…and ${rest} more.` : "";
+  return `📎 ${greeting}${matches.length} emails came in about things you've saved:\n${lines.join("\n")}${more}`;
 }
 
 const RECENT_DOCUMENT_WINDOW_MS = 90 * 24 * 60 * 60 * 1000;
-const MAX_MATCH_NOTIFICATIONS_PER_TICK = 5;
 
+// Marked once an email has been fully handled — matched and alerted (or recorded during
+// onboarding), or examined and found to match nothing. This is what makes each email alert at most
+// once, however many saved documents match it.
 function scanKey(m: UnifiedMessage): string {
   return `recon-scan:${m.accountId}:${m.id}`;
 }
@@ -139,11 +105,8 @@ export async function checkNewEmailsAgainstRecentDocuments(ownerId: number): Pro
 
   let messages: UnifiedMessage[];
   try {
-    // Unlike checkDocumentAgainstRecentEmails above (which needs the CURRENT recent-mail window,
-    // since it's checking one just-saved document against mail that may have arrived any time in
-    // that window), this runs on the scheduler tick and already only acts on messages it hasn't
-    // scanned before (the unscanned filter below) — genuinely "what's new since last check", so
-    // it shares the same incremental fetch as alerts.ts/importantEmailAlerts.ts.
+    // Shares the same incremental "what's new since last check" fetch as alerts.ts and
+    // importantEmailAlerts.ts (hub.ts's hubListNewMessages).
     messages = await hubListNewMessages(ownerId);
   } catch (err) {
     console.error(`reconciliation: failed to list messages for owner ${ownerId}`, err);
@@ -153,70 +116,71 @@ export async function checkNewEmailsAgainstRecentDocuments(ownerId: number): Pro
   const unscanned = messages.filter((m) => !hasAlerted(ownerId, scanKey(m)));
   if (unscanned.length === 0) return;
 
-  // See alerts.ts/importantEmailAlerts.ts's identical check for the full rationale: while
-  // postConnectSetup.ts's onboarding chain is still in progress, don't interleave individual
-  // proactive alerts into that conversation. Matches are still recorded (both keys marked) so
-  // they're never re-alerted later — only the push is deferred and counted.
-  const isOnboarding = isOnboardingSuppressionActive(ownerId);
+  // Undeliverable for reasons that won't fix themselves on the next tick — leave everything
+  // unscanned, but don't hold the Gmail checkpoint (that would re-fetch the same growing window of
+  // mail every tick). Same posture as importantEmailAlerts.ts.
+  if (!isWhatsAppConfigured()) return;
+  const numbers = listPhoneNumbersForUser(ownerId).map((r) => r.phone);
+  if (numbers.length === 0) return;
 
-  const userName = getSetting(ownerId, "user_name");
-  let sent = 0;
+  const matched: { message: UnifiedMessage; match: EmailDocumentMatch }[] = [];
   for (const m of unscanned) {
-    // Once the per-tick cap is hit, stop entirely rather than continuing — the remaining
-    // messages haven't been examined at all, so they must stay unscanned to get a fair chance
-    // on the next tick instead of being silently marked-and-dropped. Holding the Gmail checkpoint
-    // is what makes that next tick actually list them again.
-    if (sent >= MAX_MATCH_NOTIFICATIONS_PER_TICK) {
-      holdNewMessageCheckpoint(ownerId);
-      break;
-    }
-
     const text = `${m.subject} ${m.snippet}`;
-    // Tracks whether any candidate document matched this email but failed to deliver — if so,
-    // this email must stay unscanned so it's re-examined (and retried) on the next tick, even
-    // though other candidates for the same email may have matched and delivered fine.
-    let hadUndeliveredMatch = false;
-
-    for (const row of recentKeys) {
-      const keys: MatchKeys = {
-        referenceCode: row.referenceCode ?? undefined,
-        flightNumber: row.flightNumber ?? undefined,
-        vendor: row.vendor ?? undefined,
-        eventDate: row.eventDate ?? undefined,
-      };
-      if (matchTier(keys, text) !== "strong") continue;
-
-      const matchKey = `recon-match:${row.documentId}:${m.accountId}:${m.id}`;
-      if (hasAlerted(ownerId, matchKey)) continue;
-
-      let delivered: boolean;
-      if (isOnboarding) {
-        incrementSuppressedOnboardingAlerts(ownerId);
-        delivered = true; // recorded, not pushed — see the isOnboarding comment above
-      } else {
-        delivered = await notifyMatch(
-          ownerId,
-          buildMatchNotification(row.docTitle ?? "a saved document", keys, userName)
-        );
-      }
-      if (!delivered) {
-        hadUndeliveredMatch = true;
-        continue; // leave this match retriable — don't mark or count it, but still check other candidates
-      }
-
-      markAlerted(ownerId, matchKey);
-      sent += 1;
-      break; // one matching document is enough for this email
-    }
-
-    // Mark scanned only once this email has been fully examined AND every match found for it
-    // (if any) was successfully delivered. A match that failed to deliver must keep the email
-    // eligible for re-examination on a later tick — otherwise the scan-key filter above would
-    // make that match permanently unreachable, defeating the retriable-match guarantee entirely.
-    if (!hadUndeliveredMatch) {
+    // Most recently indexed document first (listRecentMatchKeys orders by created_at DESC) — one
+    // document is enough to name the email; the email itself is only ever alerted once.
+    const row = recentKeys.find((r) =>
+      matchTier(
+        { referenceCode: r.referenceCode ?? undefined, flightNumber: r.flightNumber ?? undefined },
+        text
+      ) === "strong"
+    );
+    if (!row) {
       markAlerted(ownerId, scanKey(m));
-    } else {
-      holdNewMessageCheckpoint(ownerId);
+      continue;
     }
+    matched.push({
+      message: m,
+      match: {
+        subject: m.subject,
+        docTitle: row.docTitle ?? "a saved document",
+        keys: {
+          referenceCode: row.referenceCode ?? undefined,
+          flightNumber: row.flightNumber ?? undefined,
+          eventDate: row.eventDate ?? undefined,
+        },
+      },
+    });
+  }
+  if (matched.length === 0) return;
+
+  // While postConnectSetup.ts's onboarding chain is still in progress, don't interleave proactive
+  // alerts into that conversation — record the matches so they're never alerted later, and count
+  // them for onboardingAlertSuppression.ts's one-time summary instead.
+  if (isOnboardingSuppressionActive(ownerId)) {
+    incrementSuppressedOnboardingAlerts(ownerId, matched.length);
+    for (const { message } of matched) markAlerted(ownerId, scanKey(message));
+    return;
+  }
+
+  const text = buildMatchNotification(
+    matched.map((x) => x.match),
+    getSetting(ownerId, "user_name")
+  );
+  let allDelivered = true;
+  for (const number of numbers) {
+    try {
+      await sendProactiveMessage(number, text, "alert");
+    } catch (err) {
+      console.error("reconciliation: failed to send match notification", err);
+      allDelivered = false;
+    }
+  }
+
+  if (allDelivered) {
+    for (const { message } of matched) markAlerted(ownerId, scanKey(message));
+  } else {
+    // Leave the matches unscanned so the next tick retries them — and hold the Gmail checkpoint,
+    // or that tick's incremental fetch would never list them again.
+    holdNewMessageCheckpoint(ownerId);
   }
 }
