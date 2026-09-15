@@ -1,10 +1,5 @@
 import { google, gmail_v1 } from "googleapis";
-import {
-  upsertAccount,
-  updateAccountTokens,
-  setAccountHistoryId,
-  type AccountRow,
-} from "../db/store.js";
+import { upsertAccount, updateAccountTokens, type AccountRow } from "../db/store.js";
 import { mapWithConcurrency } from "../services/concurrency.js";
 import type {
   UnifiedMessage,
@@ -214,11 +209,18 @@ function isNotFoundError(err: unknown): boolean {
   return status === 404 || (err as { code?: unknown })?.code === 404;
 }
 
+export interface NewMessagesResult {
+  messages: UnifiedMessage[];
+  // The checkpoint to resume from next time, or null if Gmail didn't report one. Deliberately NOT
+  // saved here — see googleListNewMessages's comment.
+  historyId: string | null;
+}
+
 async function baselineAndList(
   account: AccountRow,
   gmail: gmail_v1.Gmail,
   limit: number
-): Promise<UnifiedMessage[]> {
+): Promise<NewMessagesResult> {
   // Captured BEFORE the list call, not after — if a message arrives in the gap between this and
   // the list below, the next incremental sync (starting from this id) will pick it up too. That
   // means occasionally re-seeing something the baseline list already returned (harmless — every
@@ -226,10 +228,7 @@ async function baselineAndList(
   // the unsafe direction (a silent gap) is what capturing it after the list would risk.
   const profile = await gmail.users.getProfile({ userId: "me" });
   const messages = await googleListMessages(account, { limit });
-  if (profile.data.historyId) {
-    setAccountHistoryId(account.ownerId, account.id, profile.data.historyId);
-  }
-  return messages;
+  return { messages, historyId: profile.data.historyId ?? null };
 }
 
 // Incremental alternative to googleListMessages for "what's new since last time" background
@@ -240,10 +239,14 @@ async function baselineAndList(
 // inbox's top 50-150 messages in full, every tick, forever, is the same waste at a smaller
 // scale. Falls back to a full list (and rebaselines) when there's no checkpoint yet (first-ever
 // run) or Gmail reports the stored one has expired (history is only retained ~1 week).
+//
+// Returns the new checkpoint rather than saving it: saving it here (before the messages.get
+// fan-out below) meant a failed fetch — e.g. the quota error above — permanently skipped every
+// message it had just discovered. hub.ts saves it only once the caller has actually handled them.
 export async function googleListNewMessages(
   account: AccountRow,
   opts: { limit?: number } = {}
-): Promise<UnifiedMessage[]> {
+): Promise<NewMessagesResult> {
   const gmail = google.gmail({ version: "v1", auth: authFor(account) });
   if (!account.historyId) {
     return baselineAndList(account, gmail, opts.limit ?? 20);
@@ -276,10 +279,9 @@ export async function googleListNewMessages(
     throw err;
   }
 
-  setAccountHistoryId(account.ownerId, account.id, latestHistoryId);
-  if (addedIds.size === 0) return [];
+  if (addedIds.size === 0) return { messages: [], historyId: latestHistoryId };
 
-  return mapWithConcurrency([...addedIds], GMAIL_GET_CONCURRENCY, async (id) => {
+  const messages = await mapWithConcurrency([...addedIds], GMAIL_GET_CONCURRENCY, async (id) => {
     const full = await gmail.users.messages.get({
       userId: "me",
       id,
@@ -288,6 +290,7 @@ export async function googleListNewMessages(
     });
     return toUnified(account, full.data);
   });
+  return { messages, historyId: latestHistoryId };
 }
 
 export async function googleGetMessage(

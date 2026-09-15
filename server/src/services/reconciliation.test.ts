@@ -13,9 +13,11 @@ vi.mock("../providers/whatsapp.js", async (importOriginal) => {
 
 const mockHubListMessages = vi.fn();
 const mockHubListNewMessages = vi.fn();
+const mockHoldCheckpoint = vi.fn();
 vi.mock("./hub.js", () => ({
   hubListMessages: (...args: unknown[]) => mockHubListMessages(...args),
   hubListNewMessages: (...args: unknown[]) => mockHubListNewMessages(...args),
+  holdNewMessageCheckpoint: (...args: unknown[]) => mockHoldCheckpoint(...args),
 }));
 
 const { sendWhatsAppMessage, sendWhatsAppTemplate, isWhatsAppConfigured } = await import("../providers/whatsapp.js");
@@ -68,6 +70,7 @@ beforeEach(() => {
   vi.mocked(isWhatsAppConfigured).mockReset().mockReturnValue(true);
   mockHubListMessages.mockReset();
   mockHubListNewMessages.mockReset();
+  mockHoldCheckpoint.mockReset();
 });
 
 describe("checkDocumentAgainstRecentEmails", () => {
@@ -324,6 +327,8 @@ describe("checkNewEmailsAgainstRecentDocuments", () => {
     await checkNewEmailsAgainstRecentDocuments(user.id);
 
     expect(sendWhatsAppMessage).toHaveBeenCalledTimes(1);
+    // On Gmail the later tick only re-lists this email if the history checkpoint was held.
+    expect(mockHoldCheckpoint).toHaveBeenCalledWith(user.id);
     const matchKey = `recon-match:${doc.id}:1:m13`;
     expect(hasAlerted(user.id, matchKey)).toBe(false);
     // This is the crux of the fix: if the scan key got marked here, the email would be filtered
@@ -376,6 +381,7 @@ describe("checkNewEmailsAgainstRecentDocuments", () => {
     // The sixth message was never reached by the loop (it `break`s once the cap is hit), so it
     // must stay unscanned to get a fair chance on the next tick — not marked-and-dropped.
     expect(hasAlerted(user.id, "recon-scan:1:cap-5")).toBe(false);
+    expect(mockHoldCheckpoint).toHaveBeenCalledWith(user.id);
   });
 
   // Same onboarding-window suppression as alerts.ts/importantEmailAlerts.ts (see those files'
@@ -407,6 +413,7 @@ describe("checkNewEmailsAgainstRecentDocuments", () => {
     expect(hasAlerted(user.id, `recon-match:${doc.id}:1:onb-1`)).toBe(true);
     expect(hasAlerted(user.id, "recon-scan:1:onb-1")).toBe(true);
     expect(takeSuppressedOnboardingAlertCount(user.id)).toBe(1);
+    expect(mockHoldCheckpoint).not.toHaveBeenCalled();
   });
 });
 

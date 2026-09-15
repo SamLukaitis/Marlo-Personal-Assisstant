@@ -3,6 +3,7 @@ import {
   getAccount,
   markAccountAuthBroken,
   markAccountAuthHealthy,
+  setAccountHistoryId,
   upsertReadEmail,
   type AccountRow,
 } from "../db/store.js";
@@ -110,14 +111,69 @@ function requirePermission(account: AccountRow, action: "read" | "send" | "delet
 // Explicitly opt-in via withMessageCache so interactive callers — the assistant's tools, the
 // Assistant page — always see a freshly-fetched inbox; the cache only exists for the duration of
 // one withMessageCache(...) call.
-let messageCache: Map<string, Promise<UnifiedMessage[]>> | null = null;
+//
+// The same scope also defers saving Gmail history checkpoints (see hubListNewMessages) until every
+// scanner in the tick has run, so a scanner that deliberately leaves mail unhandled for a retry can
+// hold the checkpoint with holdNewMessageCheckpoint — otherwise the next tick's incremental fetch
+// would start past that mail and it would never be seen again.
+interface TickScope {
+  cache: Map<string, Promise<UnifiedMessage[]>>;
+  pendingCheckpoints: { ownerId: number; accountId: number; historyId: string }[];
+  heldOwners: Set<number>;
+}
+
+let tickScope: TickScope | null = null;
+
+// A failure that never clears (a number WhatsApp permanently rejects, say) would otherwise pin the
+// checkpoint forever, and every tick would re-fetch an ever-growing window of mail — the exact
+// quota problem the incremental fetch exists to avoid. Past this, the checkpoint moves on anyway.
+const MAX_CHECKPOINT_HOLD_MS = 60 * 60 * 1000;
+const holdStartedAt = new Map<number, number>();
 
 export function withMessageCache<T>(fn: () => Promise<T>): Promise<T> {
-  const isOutermost = messageCache === null;
-  if (isOutermost) messageCache = new Map();
-  return fn().finally(() => {
-    if (isOutermost) messageCache = null;
-  });
+  const isOutermost = tickScope === null;
+  if (isOutermost) tickScope = { cache: new Map(), pendingCheckpoints: [], heldOwners: new Set() };
+  const scope = tickScope!;
+  return fn().then(
+    (result) => {
+      if (isOutermost) {
+        tickScope = null;
+        commitCheckpoints(scope);
+      }
+      return result;
+    },
+    (err) => {
+      // Something threw past the scanners' own error handling — don't assume the mail was handled.
+      if (isOutermost) tickScope = null;
+      throw err;
+    }
+  );
+}
+
+// Called by a scanner that left new mail unhandled on purpose so it can retry next tick (failed
+// classification, failed delivery). Only meaningful inside withMessageCache — outside a scope the
+// checkpoint has already been saved by the time any caller could ask.
+export function holdNewMessageCheckpoint(ownerId: number): void {
+  tickScope?.heldOwners.add(ownerId);
+}
+
+function commitCheckpoints(scope: TickScope): void {
+  const now = Date.now();
+  const skipOwners = new Set<number>();
+  for (const ownerId of scope.heldOwners) {
+    const startedAt = holdStartedAt.get(ownerId) ?? now;
+    holdStartedAt.set(ownerId, startedAt);
+    if (now - startedAt < MAX_CHECKPOINT_HOLD_MS) {
+      skipOwners.add(ownerId);
+    } else {
+      console.warn(`hub: releasing a Gmail checkpoint held over an hour for owner ${ownerId}`);
+    }
+  }
+  for (const { ownerId, accountId, historyId } of scope.pendingCheckpoints) {
+    if (skipOwners.has(ownerId)) continue;
+    setAccountHistoryId(ownerId, accountId, historyId);
+    holdStartedAt.delete(ownerId);
+  }
 }
 
 // Every message this returns already crossed the wire (Gmail/Outlook's list call includes
@@ -162,13 +218,13 @@ export async function hubListMessages(
 
   // Aggregate "all accounts" call (briefing, alerts, "what's unread") — silently exclude
   // read-restricted accounts rather than erroring, same posture as auth-broken accounts below.
-  if (messageCache) {
+  if (tickScope) {
     const key = `${ownerId}:${opts.query ?? ""}:${opts.limit ?? 20}`;
-    const cached = messageCache.get(key);
+    const cached = tickScope.cache.get(key);
     if (cached) return cached;
     const accounts = listAccounts(ownerId).filter((a) => a.canRead);
     const promise = fetchMessages(accounts, opts);
-    messageCache.set(key, promise);
+    tickScope.cache.set(key, promise);
     return promise;
   }
 
@@ -185,11 +241,20 @@ const HISTORY_BASELINE_LIMIT = 150;
 
 async function fetchNewMessages(accounts: AccountRow[]): Promise<UnifiedMessage[]> {
   const results = await Promise.allSettled(
-    accounts.map((a) =>
-      a.provider === "google"
-        ? g.googleListNewMessages(a, { limit: HISTORY_BASELINE_LIMIT })
-        : ms.microsoftListMessages(a, { limit: HISTORY_BASELINE_LIMIT })
-    )
+    accounts.map(async (a) => {
+      if (a.provider !== "google") return ms.microsoftListMessages(a, { limit: HISTORY_BASELINE_LIMIT });
+      // Only reached once the provider has actually fetched every message it found — a failed
+      // fetch rejects before this, leaving the old checkpoint in place for the next tick.
+      const { messages, historyId } = await g.googleListNewMessages(a, { limit: HISTORY_BASELINE_LIMIT });
+      if (historyId) {
+        if (tickScope) {
+          tickScope.pendingCheckpoints.push({ ownerId: a.ownerId, accountId: a.id, historyId });
+        } else {
+          setAccountHistoryId(a.ownerId, a.id, historyId);
+        }
+      }
+      return messages;
+    })
   );
   const messages = settleForAccounts(accounts, results).sort((a, b) => (a.receivedAt < b.receivedAt ? 1 : -1));
   cacheMessageMetadata(accounts, messages);
@@ -209,12 +274,12 @@ async function fetchNewMessages(accounts: AccountRow[]): Promise<UnifiedMessage[
 // withMessageCache tick decides it, same as any other cached fetch.
 export async function hubListNewMessages(ownerId: number): Promise<UnifiedMessage[]> {
   const accounts = listAccounts(ownerId).filter((a) => a.canRead);
-  if (messageCache) {
+  if (tickScope) {
     const key = `${ownerId}:new`;
-    const cached = messageCache.get(key);
+    const cached = tickScope.cache.get(key);
     if (cached) return cached;
     const promise = fetchNewMessages(accounts);
-    messageCache.set(key, promise);
+    tickScope.cache.set(key, promise);
     return promise;
   }
   return fetchNewMessages(accounts);

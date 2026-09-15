@@ -2,7 +2,7 @@
 // docs/superpowers/specs/2026-08-24-document-email-cross-referencing-design.md for the full
 // design and why this stays entirely deterministic in v1 (no LLM call on the email side at all).
 
-import { hubListMessages, hubListNewMessages } from "./hub.js";
+import { hubListMessages, hubListNewMessages, holdNewMessageCheckpoint } from "./hub.js";
 import { isWhatsAppConfigured } from "../providers/whatsapp.js";
 import { sendProactiveMessage } from "./outbound.js";
 import { hasAlerted, markAlerted, listPhoneNumbersForUser, listRecentMatchKeys, getSetting } from "../db/store.js";
@@ -164,8 +164,12 @@ export async function checkNewEmailsAgainstRecentDocuments(ownerId: number): Pro
   for (const m of unscanned) {
     // Once the per-tick cap is hit, stop entirely rather than continuing — the remaining
     // messages haven't been examined at all, so they must stay unscanned to get a fair chance
-    // on the next tick instead of being silently marked-and-dropped.
-    if (sent >= MAX_MATCH_NOTIFICATIONS_PER_TICK) break;
+    // on the next tick instead of being silently marked-and-dropped. Holding the Gmail checkpoint
+    // is what makes that next tick actually list them again.
+    if (sent >= MAX_MATCH_NOTIFICATIONS_PER_TICK) {
+      holdNewMessageCheckpoint(ownerId);
+      break;
+    }
 
     const text = `${m.subject} ${m.snippet}`;
     // Tracks whether any candidate document matched this email but failed to deliver — if so,
@@ -211,6 +215,8 @@ export async function checkNewEmailsAgainstRecentDocuments(ownerId: number): Pro
     // make that match permanently unreachable, defeating the retriable-match guarantee entirely.
     if (!hadUndeliveredMatch) {
       markAlerted(ownerId, scanKey(m));
+    } else {
+      holdNewMessageCheckpoint(ownerId);
     }
   }
 }
