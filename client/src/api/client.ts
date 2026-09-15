@@ -99,6 +99,10 @@ export interface LocalFolder {
 export interface Settings {
   assistantName: string;
   persona: string;
+  // IANA zone, e.g. "Europe/London" — used to compute set_reminder's local-time reminders
+  // correctly. Empty string means "no explicit override" (services/userTimezone.ts falls back to
+  // a travel-check-in-derived guess, or asks the user once via WhatsApp, before giving up).
+  timezone?: string;
 }
 
 export type NewsTopic =
@@ -379,7 +383,10 @@ export async function updateAccountPermissions(
   );
 }
 
-export async function saveSettings(settings: Settings): Promise<void> {
+// Partial, not Settings: settingsRoutes.ts's PUT applies each field independently (only touching
+// what's present in the body), so a caller updating just one field (e.g. SettingsPage.tsx's
+// timezone control) doesn't need to fetch and resend the others.
+export async function saveSettings(settings: Partial<Settings>): Promise<void> {
   const res = await fetch(
     `${API_BASE}/api/settings`,
     withCredentials({
@@ -388,7 +395,7 @@ export async function saveSettings(settings: Settings): Promise<void> {
       body: JSON.stringify(settings),
     })
   );
-  if (!res.ok) throw new Error("failed to save settings");
+  if (!res.ok) throw new Error((await res.json().catch(() => null))?.error ?? "failed to save settings");
 }
 
 export const fetchBriefing = () => getJson<Briefing>("/api/briefing");

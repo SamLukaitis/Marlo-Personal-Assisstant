@@ -35,61 +35,57 @@ vi.mock("./alerts.js", () => ({
   checkForNewImportantMessages: vi.fn(),
 }));
 
+// Resolved from inside a test once it wants tick() to finish its (otherwise indefinitely
+// pending) call to checkNewEmailsAgainstRecentDocuments — this is what lets a test hold one tick
+// "in flight" long enough to prove a second call is skipped rather than run concurrently.
+let releaseReconciliationCheck: () => void = () => {};
 vi.mock("./reconciliation.js", () => ({
-  checkNewEmailsAgainstRecentDocuments: vi.fn(() => Promise.resolve()),
+  checkNewEmailsAgainstRecentDocuments: vi.fn(
+    () =>
+      new Promise<void>((resolve) => {
+        releaseReconciliationCheck = resolve;
+      })
+  ),
 }));
 
 vi.mock("./importantEmailAlerts.js", () => ({
   checkForImportantEmails: vi.fn(),
 }));
 
-// Resolved from inside a test once it wants tick() to finish its (otherwise indefinitely
-// pending) call to checkDueMemoryReminders — this is what lets a test hold one tick "in flight"
-// long enough to prove a second call is skipped rather than run concurrently.
-let releaseMemoryReminderCheck: () => void = () => {};
-vi.mock("./memoryReminders.js", () => ({
-  checkDueMemoryReminders: vi.fn(
-    () =>
-      new Promise<void>((resolve) => {
-        releaseMemoryReminderCheck = resolve;
-      })
-  ),
-}));
-
 const { listAllUserIds } = await import("../db/store.js");
-const { checkDueMemoryReminders } = await import("./memoryReminders.js");
+const { checkNewEmailsAgainstRecentDocuments } = await import("./reconciliation.js");
 const { tickGuarded } = await import("./scheduler.js");
 
 beforeEach(() => {
   vi.mocked(listAllUserIds).mockClear();
-  vi.mocked(checkDueMemoryReminders).mockClear();
+  vi.mocked(checkNewEmailsAgainstRecentDocuments).mockClear();
 });
 
 describe("tickGuarded", () => {
   it("skips a new cycle while the previous one is still in flight", async () => {
     const first = tickGuarded();
-    await vi.waitFor(() => expect(checkDueMemoryReminders).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(checkNewEmailsAgainstRecentDocuments).toHaveBeenCalledTimes(1));
 
     // A second call arriving mid-cycle (e.g. the next setInterval firing before a slow pass
     // over every tenant finishes) must not start a second, overlapping pass.
     await tickGuarded();
     expect(listAllUserIds).toHaveBeenCalledTimes(1);
 
-    releaseMemoryReminderCheck();
+    releaseReconciliationCheck();
     await first;
   });
 
   it("runs a fresh cycle once the previous one has finished", async () => {
     const first = tickGuarded();
-    await vi.waitFor(() => expect(checkDueMemoryReminders).toHaveBeenCalledTimes(1));
-    releaseMemoryReminderCheck();
+    await vi.waitFor(() => expect(checkNewEmailsAgainstRecentDocuments).toHaveBeenCalledTimes(1));
+    releaseReconciliationCheck();
     await first;
 
     const second = tickGuarded();
-    await vi.waitFor(() => expect(checkDueMemoryReminders).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(checkNewEmailsAgainstRecentDocuments).toHaveBeenCalledTimes(2));
     expect(listAllUserIds).toHaveBeenCalledTimes(2);
 
-    releaseMemoryReminderCheck();
+    releaseReconciliationCheck();
     await second;
   });
 });

@@ -23,7 +23,7 @@ function uniqueEmail(prefix: string): string {
   return `${prefix}-${Date.now()}-${counter}@example.com`;
 }
 
-// See memoryReminders.test.ts for why the prefix must be file-unique across the whole test run
+// See reminderScheduler.test.ts for why the prefix must be file-unique across the whole test run
 // (user_phone_numbers.phone is UNIQUE). "44700007" is unclaimed as of this file's creation.
 function registerActivePhone(ownerId: number): string {
   counter += 1;

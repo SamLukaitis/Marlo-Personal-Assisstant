@@ -37,7 +37,6 @@ import {
   listMemoryNotes,
   addMemoryNote,
   markMemorySurfaced,
-  markMemoryGivenUp,
   setPendingSetup,
   listUnmetRequests,
   findEntityByName,
@@ -46,6 +45,7 @@ import {
   appendWhatsAppMessage,
   saveEntity,
   upsertReadEmail,
+  listActiveRemindersForOwner,
 } from "../db/store.js";
 import { IMPORTANT_EMAIL_ENTITY_TYPE } from "../services/importantEmailAlerts.js";
 import { getBriefingSettings, saveBriefingSettings, type BriefingSettings } from "../services/briefing.js";
@@ -463,27 +463,141 @@ describe("buildSystemPrompt web_search guidance", () => {
   });
 });
 
-describe("remember tool — triggerAt", () => {
-  it("stores a parsed triggerAt when the model provides one", async () => {
-    const user = findOrCreateUserByEmail(uniqueEmail("remember-trigger"));
-    const result = await runTool(user.id, "remember", {
-      note: "Visa renewal is due",
-      triggerAt: "2026-09-12T00:00:00Z",
-    });
-    expect(result).toEqual({ ok: true });
-
-    const [saved] = listMemoryNotes(user.id);
-    expect(saved.content).toBe("Visa renewal is due");
-    expect(saved.triggerAt).toBe(new Date("2026-09-12T00:00:00Z").getTime());
-  });
-
-  it("stores no trigger when the model omits triggerAt, same as before", async () => {
+describe("remember tool — no longer schedules anything", () => {
+  it("ignores a triggerAt-shaped field — remember is fact-only now", async () => {
     const user = findOrCreateUserByEmail(uniqueEmail("remember-notrigger"));
-    const result = await runTool(user.id, "remember", { note: "Ordinary preference" });
+    const result = await runTool(user.id, "remember", { note: "Ordinary preference", triggerAt: "2026-09-12T00:00:00Z" });
     expect(result).toEqual({ ok: true });
 
     const [saved] = listMemoryNotes(user.id);
     expect(saved.triggerAt).toBeNull();
+  });
+});
+
+describe("set_reminder tool", () => {
+  it("is always available, same as remember", () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("reminder-available"));
+    const names = buildToolsForOwner(user.id).map((t) => t.name);
+    expect(names).toContain("set_reminder");
+  });
+
+  it("schedules a one-shot reminder from relative_minutes with no timezone needed", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("reminder-once-relative"));
+    const before = Date.now();
+    const result = (await runTool(user.id, "set_reminder", {
+      message: "Check the oven",
+      mode: "once",
+      relative_minutes: 20,
+    })) as { ok: true; reminder_id: number; next_fire_at: number };
+
+    expect(result.ok).toBe(true);
+    expect(result.next_fire_at).toBeGreaterThanOrEqual(before + 20 * 60_000);
+    const [reminder] = listActiveRemindersForOwner(user.id);
+    expect(reminder.message).toBe("Check the oven");
+    expect(reminder.mode).toBe("once");
+  });
+
+  it("refuses a local_time reminder until the user's timezone is known", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("reminder-no-tz"));
+    const result = (await runTool(user.id, "set_reminder", {
+      message: "Call the bank",
+      mode: "once",
+      local_time: "15:00",
+    })) as { error: string };
+
+    expect(result.error).toMatch(/timezone/i);
+    expect(listActiveRemindersForOwner(user.id)).toHaveLength(0);
+  });
+
+  it("schedules a local_time reminder once set_user_timezone has been called", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("reminder-with-tz"));
+    await runTool(user.id, "set_user_timezone", { timezone: "Europe/London" });
+    const result = (await runTool(user.id, "set_reminder", {
+      message: "Call the bank",
+      mode: "once",
+      local_time: "15:00",
+    })) as { ok: true };
+
+    expect(result.ok).toBe(true);
+    expect(listActiveRemindersForOwner(user.id)).toHaveLength(1);
+  });
+
+  it("schedules an interval reminder with a window", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("reminder-interval"));
+    await runTool(user.id, "set_user_timezone", { timezone: "Europe/London" });
+    const result = (await runTool(user.id, "set_reminder", {
+      message: "Stretch",
+      mode: "interval",
+      local_time: "10:00",
+      window_end_local_time: "10:30",
+      interval_minutes: 5,
+    })) as { ok: true };
+
+    expect(result.ok).toBe(true);
+    const [reminder] = listActiveRemindersForOwner(user.id);
+    expect(reminder.mode).toBe("interval");
+  });
+
+  it("schedules an until_reply reminder with no timezone needed", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("reminder-until-reply"));
+    const result = (await runTool(user.id, "set_reminder", {
+      message: "Take your medicine",
+      mode: "until_reply",
+      interval_minutes: 1,
+    })) as { ok: true };
+
+    expect(result.ok).toBe(true);
+    const [reminder] = listActiveRemindersForOwner(user.id);
+    expect(reminder.mode).toBe("until_reply");
+  });
+
+  it("surfaces a ReminderTimeError as a tool error instead of throwing", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("reminder-bad-time"));
+    const result = (await runTool(user.id, "set_reminder", {
+      message: "Bad",
+      mode: "once",
+      relative_minutes: -5,
+    })) as { error: string };
+
+    expect(result.error).toMatch(/positive/i);
+  });
+});
+
+describe("set_user_timezone tool", () => {
+  it("stores a valid IANA zone", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("tz-tool-valid"));
+    const result = await runTool(user.id, "set_user_timezone", { timezone: "America/New_York" });
+    expect(result).toEqual({ ok: true });
+  });
+
+  it("rejects an invalid zone", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("tz-tool-invalid"));
+    const result = (await runTool(user.id, "set_user_timezone", { timezone: "Nowhere/Fake" })) as { error: string };
+    expect(result.error).toMatch(/timezone/i);
+  });
+});
+
+describe("list_active_reminders / cancel_reminder tools", () => {
+  it("lists a scheduled reminder and lets it be cancelled", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("reminder-list-cancel"));
+    const { reminder_id } = (await runTool(user.id, "set_reminder", {
+      message: "Ping me",
+      mode: "once",
+      relative_minutes: 5,
+    })) as { reminder_id: number };
+
+    const listed = (await runTool(user.id, "list_active_reminders", {})) as { reminder_id: number }[];
+    expect(listed.map((r) => r.reminder_id)).toContain(reminder_id);
+
+    const cancelled = await runTool(user.id, "cancel_reminder", { reminder_id });
+    expect(cancelled).toEqual({ ok: true });
+    expect(listActiveRemindersForOwner(user.id)).toHaveLength(0);
+  });
+
+  it("reports an error cancelling a reminder that doesn't belong to this owner", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("reminder-cancel-wrong-owner"));
+    const result = (await runTool(user.id, "cancel_reminder", { reminder_id: 999_999 })) as { error: string };
+    expect(result.error).toBeDefined();
   });
 });
 
@@ -932,28 +1046,31 @@ describe("search_memory tool", () => {
 });
 
 describe("check_reminder_status tool", () => {
-  it("is always available, same as remember", async () => {
+  it("is always available, same as remember", () => {
     const user = findOrCreateUserByEmail(uniqueEmail("reminder-status-toollist"));
     const names = buildToolsForOwner(user.id).map((t) => t.name);
     expect(names).toContain("check_reminder_status");
   });
 
-  it("reports a future reminder as scheduled", async () => {
+  it("reports a scheduled reminder as active", async () => {
     const user = findOrCreateUserByEmail(uniqueEmail("reminder-status-scheduled"));
-    const future = new Date(Date.now() + 60 * 60 * 1000).toISOString();
-    await runTool(user.id, "remember", { note: "Text Henry about the meeting", triggerAt: future });
+    await runTool(user.id, "set_reminder", {
+      message: "Text Henry about the meeting",
+      mode: "once",
+      relative_minutes: 60,
+    });
 
     const results = (await runTool(user.id, "check_reminder_status", { query: "Henry" })) as {
-      content: string;
+      message: string;
       status: string;
     }[];
     expect(results).toHaveLength(1);
-    expect(results[0].content).toBe("Text Henry about the meeting");
-    expect(results[0].status).toBe("scheduled");
+    expect(results[0].message).toBe("Text Henry about the meeting");
+    expect(results[0].status).toBe("active");
   });
 
-  it("reports a note with no trigger as not found (it isn't a reminder)", async () => {
-    const user = findOrCreateUserByEmail(uniqueEmail("reminder-status-notrigger"));
+  it("reports no results for a query matching nothing", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("reminder-status-nomatch"));
     await runTool(user.id, "remember", { note: "Henry's allergy is shellfish" });
 
     const results = (await runTool(user.id, "check_reminder_status", { query: "Henry" })) as unknown[];
@@ -962,10 +1079,13 @@ describe("check_reminder_status tool", () => {
 
   it("passes a caller-supplied limit through to the store", async () => {
     const user = findOrCreateUserByEmail(uniqueEmail("reminder-status-limit"));
-    const past = new Date(Date.now() - 60_000).toISOString();
-    await runTool(user.id, "remember", { note: "Trip reminder alpha", triggerAt: past });
-    await runTool(user.id, "remember", { note: "Trip reminder beta", triggerAt: past });
-    await runTool(user.id, "remember", { note: "Trip reminder gamma", triggerAt: past });
+    for (const suffix of ["alpha", "beta", "gamma"]) {
+      await runTool(user.id, "set_reminder", {
+        message: `Trip reminder ${suffix}`,
+        mode: "once",
+        relative_minutes: 10,
+      });
+    }
 
     const results = (await runTool(user.id, "check_reminder_status", {
       query: "trip",
@@ -974,39 +1094,19 @@ describe("check_reminder_status tool", () => {
     expect(results).toHaveLength(2);
   });
 
-  it("reports a delivered reminder as sent", async () => {
-    const user = findOrCreateUserByEmail(uniqueEmail("reminder-status-sent"));
-    const past = new Date(Date.now() - 60_000).toISOString();
-    await runTool(user.id, "remember", { note: "Text Henry at 11am", triggerAt: past });
-    markMemorySurfaced(user.id, listMemoryNotes(user.id)[0].id);
+  it("reports a reminder that already fired as done", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("reminder-status-done"));
+    const { reminder_id } = (await runTool(user.id, "set_reminder", {
+      message: "Text Henry at 11am",
+      mode: "once",
+      relative_minutes: 60,
+    })) as { reminder_id: number };
+    await runTool(user.id, "cancel_reminder", { reminder_id });
 
     const results = (await runTool(user.id, "check_reminder_status", { query: "Henry" })) as {
       status: string;
     }[];
-    expect(results[0].status).toBe("sent");
-  });
-
-  it("reports a given-up reminder as failed", async () => {
-    const user = findOrCreateUserByEmail(uniqueEmail("reminder-status-failed"));
-    const past = new Date(Date.now() - 60_000).toISOString();
-    await runTool(user.id, "remember", { note: "Text Henry at 11am", triggerAt: past });
-    markMemoryGivenUp(user.id, listMemoryNotes(user.id)[0].id);
-
-    const results = (await runTool(user.id, "check_reminder_status", { query: "Henry" })) as {
-      status: string;
-    }[];
-    expect(results[0].status).toBe("failed");
-  });
-
-  it("reports a due-but-not-yet-processed reminder as pending", async () => {
-    const user = findOrCreateUserByEmail(uniqueEmail("reminder-status-pending"));
-    const past = new Date(Date.now() - 60_000).toISOString();
-    await runTool(user.id, "remember", { note: "Text Henry at 11am", triggerAt: past });
-
-    const results = (await runTool(user.id, "check_reminder_status", { query: "Henry" })) as {
-      status: string;
-    }[];
-    expect(results[0].status).toBe("pending");
+    expect(results[0].status).toBe("cancelled");
   });
 });
 

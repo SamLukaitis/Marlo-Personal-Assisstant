@@ -16,7 +16,6 @@ import { sendProactiveMessage } from "./outbound.js";
 import { countTravelDays } from "./travelDays.js";
 import { checkForNewImportantMessages } from "./alerts.js";
 import { checkNewEmailsAgainstRecentDocuments } from "./reconciliation.js";
-import { checkDueMemoryReminders } from "./memoryReminders.js";
 import { checkForImportantEmails } from "./importantEmailAlerts.js";
 import { checkTripPrepNudges } from "./tripPrep.js";
 import { todayKey } from "./dateKey.js";
@@ -93,14 +92,6 @@ async function runAlertsCheckForUser(ownerId: number): Promise<void> {
   }
 }
 
-async function runMemoryReminderCheckForUser(ownerId: number): Promise<void> {
-  try {
-    await checkDueMemoryReminders(ownerId);
-  } catch (err) {
-    console.error(`scheduler: memory reminder check failed for user ${ownerId}`, err);
-  }
-}
-
 async function runReconciliationCheckForUser(ownerId: number): Promise<void> {
   try {
     await checkNewEmailsAgainstRecentDocuments(ownerId);
@@ -152,9 +143,6 @@ async function tick(): Promise<void> {
     await withMessageCache(async () => {
       await runAlertsCheckForUser(ownerId).catch((err) =>
         console.error(`scheduler: alerts check failed for user ${ownerId}`, err)
-      );
-      await runMemoryReminderCheckForUser(ownerId).catch((err) =>
-        console.error(`scheduler: memory reminder check failed for user ${ownerId}`, err)
       );
       await runReconciliationCheckForUser(ownerId).catch((err) =>
         console.error(`scheduler: reconciliation check failed for user ${ownerId}`, err)
