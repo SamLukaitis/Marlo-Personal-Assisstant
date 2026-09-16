@@ -1,6 +1,13 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import express from "express";
 import request from "supertest";
+
+// Stubbed so approving a waitlisted number doesn't try to reach Meta — what matters here is that
+// the route sends it at all, with the right text and template kind.
+vi.mock("../services/outbound.js", () => ({
+  sendProactiveMessage: vi.fn().mockResolvedValue(undefined),
+}));
+
 import {
   findOrCreateUserByEmail,
   getAppOwnerUserId,
@@ -9,7 +16,12 @@ import {
   setPendingSetup,
   clearPendingSetup,
   setUserAdmin,
+  recordWaitlistRequest,
+  listWaitlistRequests,
+  isPhoneInvited,
 } from "../db/store.js";
+
+const { sendProactiveMessage } = await import("../services/outbound.js");
 import type { AuthedRequest } from "../middleware/auth.js";
 
 const { adminRoutes } = await import("./adminRoutes.js");
@@ -146,6 +158,90 @@ describe("/api/admin/invites", () => {
 
     expect(res.status).toBe(400);
     expect(res.body.error).toMatch(/country code/i);
+  });
+});
+
+// The waitlist: uninvited numbers that messaged Marlowe get logged (whatsappRegistration.ts) so
+// admins can see who asked. Approving is just POST /api/admin/invites — it clears the entry and
+// messages the person that they're in.
+describe("/api/admin/waitlist", () => {
+  it("rejects a non-admin with 403 on every method", async () => {
+    const stranger = findOrCreateUserByEmail(uniqueEmail("not-an-admin"));
+    const app = buildTestApp(stranger.id);
+    const phone = uniquePhone();
+
+    expect((await request(app).get("/api/admin/waitlist")).status).toBe(403);
+    expect((await request(app).delete(`/api/admin/waitlist/${phone}`)).status).toBe(403);
+  });
+
+  it("lists a recorded request with its repeat count", async () => {
+    const app = buildTestApp(getAppOwnerUserId());
+    const phone = uniquePhone();
+    recordWaitlistRequest(phone);
+    recordWaitlistRequest(phone);
+
+    const res = await request(app).get("/api/admin/waitlist");
+
+    expect(res.status).toBe(200);
+    const entry = res.body.find((r: { phone: string }) => r.phone === phone);
+    expect(entry.requestCount).toBe(2);
+  });
+
+  it("dismisses a request without inviting the number", async () => {
+    const app = buildTestApp(getAppOwnerUserId());
+    const phone = uniquePhone();
+    recordWaitlistRequest(phone);
+
+    const res = await request(app).delete(`/api/admin/waitlist/${phone}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.map((r: { phone: string }) => r.phone)).not.toContain(phone);
+    expect(isPhoneInvited(phone)).toBe(false);
+  });
+
+  // The promise in MARLOWE_WAITLIST_TEXT is that we message them when they're in — so approving
+  // has to both clear the entry and actually send that message.
+  it("clears the waitlist entry and messages the person when they're invited", async () => {
+    const app = buildTestApp(getAppOwnerUserId());
+    const phone = uniquePhone();
+    recordWaitlistRequest(phone);
+    vi.mocked(sendProactiveMessage).mockClear();
+
+    const res = await request(app).post("/api/admin/invites").send({ phone });
+
+    expect(res.status).toBe(200);
+    expect(isPhoneInvited(phone)).toBe(true);
+    expect(listWaitlistRequests().map((r) => r.phone)).not.toContain(phone);
+    expect(sendProactiveMessage).toHaveBeenCalledWith(
+      phone,
+      expect.stringContaining("You're in"),
+      "alert"
+    );
+  });
+
+  // Inviting someone who never messaged must not cold-message them out of nowhere.
+  it("does not message a number that was invited without ever asking", async () => {
+    const app = buildTestApp(getAppOwnerUserId());
+    const phone = uniquePhone();
+    vi.mocked(sendProactiveMessage).mockClear();
+
+    await request(app).post("/api/admin/invites").send({ phone });
+
+    expect(sendProactiveMessage).not.toHaveBeenCalled();
+  });
+
+  // The invite row is already written by the time we try to notify, so a Meta failure must not
+  // make the invite itself look like it failed.
+  it("still reports the invite as successful when the notification fails to send", async () => {
+    const app = buildTestApp(getAppOwnerUserId());
+    const phone = uniquePhone();
+    recordWaitlistRequest(phone);
+    vi.mocked(sendProactiveMessage).mockRejectedValueOnce(new Error("meta is down"));
+
+    const res = await request(app).post("/api/admin/invites").send({ phone });
+
+    expect(res.status).toBe(200);
+    expect(isPhoneInvited(phone)).toBe(true);
   });
 });
 

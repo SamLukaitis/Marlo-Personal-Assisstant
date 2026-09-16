@@ -24,6 +24,8 @@ import {
   fetchInvites,
   addInvite,
   removeInvite,
+  fetchWaitlist,
+  dismissWaitlistRequest,
   resetTestPhone,
   replayOnboarding,
   fetchAdminMessages,
@@ -39,6 +41,7 @@ import {
   type AlertSettings,
   type ImportantEmailAlertSettings,
   type InvitedPhone,
+  type WaitlistRequest,
   type AdminTimelineEntry,
 } from "../api/client";
 import { IconTrash, IconPlus, IconRefresh } from "../components/icons";
@@ -63,8 +66,9 @@ const SECTIONS = [
   { key: "messaging", label: "Messaging" },
   { key: "tools", label: "Tools" },
   { key: "files", label: "Files" },
-  // Only ever shown/reachable for the app owner — filtered out of the nav and refused a redirect
-  // target for everyone else, see visibleSections/section below.
+  // Only ever shown/reachable for admins (the app owner plus anyone promoted in the Portal) —
+  // filtered out of the nav and refused a redirect target for everyone else, see
+  // visibleSections/section below.
   { key: "admin", label: "Admin" },
 ] as const;
 
@@ -110,6 +114,8 @@ export function SettingsPage() {
   const [newInvite, setNewInvite] = useState("");
   const [inviteError, setInviteError] = useState<string | null>(null);
   const [invitesLoaded, setInvitesLoaded] = useState(false);
+  const [waitlist, setWaitlist] = useState<WaitlistRequest[]>([]);
+  const [waitlistLoaded, setWaitlistLoaded] = useState(false);
   const [resetPhone, setResetPhone] = useState("");
   const [resetting, setResetting] = useState(false);
   const [resetMessage, setResetMessage] = useState<string | null>(null);
@@ -178,6 +184,10 @@ export function SettingsPage() {
       .then(setInvites)
       .catch(() => {})
       .finally(() => setInvitesLoaded(true));
+    fetchWaitlist()
+      .then(setWaitlist)
+      .catch(() => {})
+      .finally(() => setWaitlistLoaded(true));
   }, [user?.isAdmin]);
 
   const connected = searchParams.get("connected");
@@ -245,6 +255,31 @@ export function SettingsPage() {
     try {
       setInvites(await addInvite(phone));
       setNewInvite("");
+      // Approving clears that number's waitlist entry server-side, so the list below has to be
+      // refetched — otherwise a number just invited still shows as waiting.
+      setWaitlist(await fetchWaitlist().catch(() => waitlist));
+    } catch (err) {
+      setInviteError((err as Error).message);
+    }
+  }
+
+  // Approving from the waitlist is the same call as typing the number into the invite box — the
+  // server notices it was waiting, clears the entry, and messages them that they're in.
+  async function handleApproveWaitlist(phone: string) {
+    setInviteError(null);
+    try {
+      setInvites(await addInvite(phone));
+      setWaitlist(await fetchWaitlist().catch(() => waitlist));
+    } catch (err) {
+      setInviteError((err as Error).message);
+    }
+  }
+
+  async function handleDismissWaitlist(phone: string) {
+    if (!window.confirm(`Dismiss the request from ${phone}? They won't be told anything.`)) return;
+    setInviteError(null);
+    try {
+      setWaitlist(await dismissWaitlistRequest(phone));
     } catch (err) {
       setInviteError((err as Error).message);
     }
@@ -839,6 +874,57 @@ export function SettingsPage() {
 
             {section === "admin" && user?.isAdmin && (
               <>
+                <h2>Waitlist</h2>
+                <p className="settings-section-intro">
+                  Numbers that messaged Marlowe without an invite. They've been told they're on
+                  the waitlist and that we'll message them when they're in — approving one here
+                  does exactly that automatically.
+                </p>
+                <div className="card card-padded" style={{ marginBottom: 20 }}>
+                  {!waitlistLoaded ? (
+                    <p className="muted">Loading…</p>
+                  ) : waitlist.length === 0 ? (
+                    <p className="muted">No requests yet.</p>
+                  ) : (
+                    waitlist.map((req) => (
+                      <div
+                        key={req.phone}
+                        className="data-row row"
+                        style={{ justifyContent: "space-between" }}
+                      >
+                        <div>
+                          <span style={{ fontSize: 13.5 }}>{req.phone}</span>{" "}
+                          <span className="muted" style={{ fontSize: 12 }}>
+                            asked{" "}
+                            {new Date(req.firstRequestedAt).toLocaleDateString(undefined, {
+                              day: "numeric",
+                              month: "short",
+                              year: "numeric",
+                            })}
+                            {req.requestCount > 1 && ` · ${req.requestCount} messages`}
+                          </span>
+                        </div>
+                        <div className="row" style={{ gap: 8 }}>
+                          <button
+                            className="btn-primary"
+                            onClick={() => handleApproveWaitlist(req.phone)}
+                          >
+                            <IconPlus />
+                            Approve
+                          </button>
+                          <button
+                            className="btn-danger"
+                            onClick={() => handleDismissWaitlist(req.phone)}
+                          >
+                            <IconTrash />
+                            Dismiss
+                          </button>
+                        </div>
+                      </div>
+                    ))
+                  )}
+                </div>
+
                 <h2>Invited testers</h2>
                 <p className="settings-section-intro">
                   Only numbers on this list can message Marlowe and sign up. Add a number, then

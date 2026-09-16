@@ -14,7 +14,12 @@ import {
   resetOnboardingConnectionState,
   getWhatsAppHistory,
   getOnboardingStepEvents,
+  listWaitlistRequests,
+  isOnWaitlist,
+  removeWaitlistRequest,
 } from "../db/store.js";
+import { sendProactiveMessage } from "../services/outbound.js";
+import { MARLOWE_WAITLIST_APPROVED_TEXT } from "../services/whatsappRegistration.js";
 import type { AuthedRequest } from "../middleware/auth.js";
 
 export const adminRoutes = Router();
@@ -88,7 +93,50 @@ adminRoutes.post("/api/admin/invites", (req, res) => {
     return;
   }
   addInvitedPhone(phone);
+
+  // Makes good on the promise in MARLOWE_WAITLIST_TEXT ("we'll message you here as soon as you
+  // can get started"). Only for numbers that actually asked — inviting someone who never messaged
+  // shouldn't cold-message them out of nowhere. Sent via sendProactiveMessage so it still lands
+  // when their 24h customer-service window has closed, which it usually will have (see
+  // services/outbound.ts). Best-effort and deliberately not awaited into the response: a Meta
+  // hiccup must not make the invite itself look like it failed, since the row is already written.
+  // try/catch as well as .catch(): a synchronous throw here (a misconfigured WhatsApp client,
+  // say) would otherwise 500 a request whose invite row is already committed, telling the admin
+  // the invite failed when it didn't.
+  if (isOnWaitlist(phone)) {
+    removeWaitlistRequest(phone);
+    try {
+      void Promise.resolve(
+        sendProactiveMessage(phone, MARLOWE_WAITLIST_APPROVED_TEXT, "alert")
+      ).catch((err) => console.error("admin: waitlist approval message failed", { phone }, err));
+    } catch (err) {
+      console.error("admin: waitlist approval message failed", { phone }, err);
+    }
+  }
+
   res.json(listInvitedPhones());
+});
+
+// The Waitlist section in Settings — every uninvited number that has messaged Marlowe, newest
+// request first. Read-only here; approving is just POST /api/admin/invites above, which clears
+// the entry and notifies them.
+adminRoutes.get("/api/admin/waitlist", (req, res) => {
+  if (!isAdmin((req as unknown as AuthedRequest).userId)) {
+    res.status(403).json({ error: "not allowed" });
+    return;
+  }
+  res.json(listWaitlistRequests());
+});
+
+// Dismiss without inviting — for spam and wrong numbers. Silent: the number is told nothing, and
+// nothing stops them messaging again (which would simply re-add them to the list).
+adminRoutes.delete("/api/admin/waitlist/:phone", (req, res) => {
+  if (!isAdmin((req as unknown as AuthedRequest).userId)) {
+    res.status(403).json({ error: "not allowed" });
+    return;
+  }
+  removeWaitlistRequest(req.params.phone);
+  res.json(listWaitlistRequests());
 });
 
 adminRoutes.delete("/api/admin/invites/:phone", (req, res) => {

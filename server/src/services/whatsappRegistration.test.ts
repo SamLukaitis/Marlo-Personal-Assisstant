@@ -14,6 +14,7 @@ const {
   findOrCreateUserByEmail,
   addPhoneNumberForUser,
   addInvitedPhone,
+  listWaitlistRequests,
 } = await import("../db/store.js");
 
 const PHONE = "447000003001";
@@ -76,7 +77,7 @@ describe("handlePendingRegistration — phone invite gate (first contact)", () =
 
     await handlePendingRegistration({ kind: "text", from: phone, text: "hi", messageId: "m1" });
 
-    expect(sendWhatsAppMessage).toHaveBeenCalledWith(phone, expect.stringContaining("isn't invited yet"));
+    expect(sendWhatsAppMessage).toHaveBeenCalledWith(phone, expect.stringContaining("on the waitlist"));
     expect(sendWhatsAppMessage).not.toHaveBeenCalledWith(phone, expect.stringContaining("Welcome to the Marlowe"));
     expect(getPendingRegistration(phone)).toBeNull();
   });
@@ -100,6 +101,76 @@ describe("handlePendingRegistration — phone invite gate (first contact)", () =
     await handlePendingRegistration({ kind: "text", from: phone, text: "hi", messageId: "m2" });
 
     expect(getPendingRegistration(phone)?.step).toBe("awaiting_name");
+  });
+});
+
+// An uninvited number isn't just turned away — it's logged so admins can see who asked
+// (Settings → Waitlist). Being on the waitlist grants nothing; invited_phones is still the gate.
+describe("handlePendingRegistration — waitlist", () => {
+  it("records the request and sends the full explanation on first contact", async () => {
+    const phone = freshPhone();
+
+    await handlePendingRegistration({ kind: "text", from: phone, text: "hi", messageId: "m1" });
+
+    expect(sendWhatsAppMessage).toHaveBeenCalledWith(
+      phone,
+      expect.stringContaining("Thank you for your interest")
+    );
+    const entry = listWaitlistRequests().find((r) => r.phone === phone);
+    expect(entry).toBeDefined();
+    expect(entry?.requestCount).toBe(1);
+  });
+
+  it("sends the short nudge instead of the full message on later attempts", async () => {
+    const phone = freshPhone();
+    await handlePendingRegistration({ kind: "text", from: phone, text: "hi", messageId: "m1" });
+    vi.mocked(sendWhatsAppMessage).mockClear();
+
+    await handlePendingRegistration({ kind: "text", from: phone, text: "hello?", messageId: "m2" });
+
+    expect(sendWhatsAppMessage).toHaveBeenCalledWith(
+      phone,
+      expect.stringContaining("still on the waitlist")
+    );
+    expect(sendWhatsAppMessage).not.toHaveBeenCalledWith(
+      phone,
+      expect.stringContaining("Thank you for your interest")
+    );
+  });
+
+  it("counts repeat attempts on one entry rather than adding duplicates", async () => {
+    const phone = freshPhone();
+
+    for (const id of ["m1", "m2", "m3"]) {
+      await handlePendingRegistration({ kind: "text", from: phone, text: "hi", messageId: id });
+    }
+
+    const entries = listWaitlistRequests().filter((r) => r.phone === phone);
+    expect(entries).toHaveLength(1);
+    expect(entries[0].requestCount).toBe(3);
+    expect(entries[0].lastRequestedAt).toBeGreaterThanOrEqual(entries[0].firstRequestedAt);
+  });
+
+  // The waitlist is a record of who asked, not a permission — an invited number must never be
+  // diverted into it, and an uninvited one must never get past the gate by being on it.
+  it("never records an invited number", async () => {
+    const phone = freshPhone();
+    addInvitedPhone(phone);
+
+    await handlePendingRegistration({ kind: "text", from: phone, text: "hi", messageId: "m1" });
+
+    expect(listWaitlistRequests().find((r) => r.phone === phone)).toBeUndefined();
+    expect(getPendingRegistration(phone)?.step).toBe("awaiting_name");
+  });
+
+  it("does not let a waitlisted number register until it is actually invited", async () => {
+    const phone = freshPhone();
+    await handlePendingRegistration({ kind: "text", from: phone, text: "hi", messageId: "m1" });
+    expect(listWaitlistRequests().find((r) => r.phone === phone)).toBeDefined();
+
+    await handlePendingRegistration({ kind: "text", from: phone, text: "Sam", messageId: "m2" });
+
+    expect(getPendingRegistration(phone)).toBeNull();
   });
 });
 

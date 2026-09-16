@@ -23,6 +23,7 @@ import {
   completePendingRegistration,
   deletePendingRegistration,
   isPhoneInvited,
+  recordWaitlistRequest,
   getUserByEmail,
   listPhoneNumbersForUser,
   setSetting,
@@ -54,6 +55,27 @@ export const MARLOWE_FIRST_CONTACT_TEXT =
   "• Save photos of tickets/receipts/documents\n" +
   "• Text \"help\" anytime for this list again\n\n" +
   "What should I call you?";
+
+// What an uninvited number gets on its first message. Deliberately warm and final-sounding: the
+// person on the other end did nothing wrong, and there's no action they can take to speed it up.
+// The "we'll let you know" promise is kept by adminRoutes.ts, which messages them when an admin
+// approves the number from the Waitlist section.
+export const MARLOWE_WAITLIST_TEXT =
+  "👋 Thank you for your interest in *Marlowe*!\n\n" +
+  "We're still in beta testing, so access is invite-only for now. Your request has been sent " +
+  "to the developers and you're on the waitlist — we'll message you here as soon as you can " +
+  "get started.";
+
+// Every message after the first from the same uninvited number. Short on purpose: they've
+// already had the full explanation, and re-sending it reads as a broken bot.
+export const MARLOWE_WAITLIST_REMINDER_TEXT =
+  "You're still on the waitlist — we'll message you the moment you're in. Thanks for your patience!";
+
+// What a waitlisted number is sent when an admin approves them (adminRoutes.ts). Kept to one
+// short line because it may go out as a template parameter if their 24h window has closed — see
+// services/outbound.ts.
+export const MARLOWE_WAITLIST_APPROVED_TEXT =
+  "You're in! Message me whenever you're ready and I'll get you set up.";
 
 // The "help"/"menu" reply for an already-registered user (chatDispatch.ts's handleText) — same
 // capabilities rundown, but asks what they need instead of re-asking their name, since they're
@@ -330,9 +352,15 @@ export async function handlePendingRegistration(message: IncomingWhatsAppMessage
     // check; authRoutes.ts's OAuth callback re-checks the same thing authoritatively right before
     // an account is actually created, in case the invite was revoked mid-conversation.
     if (!isPhoneInvited(phone)) {
+      // Log the request so admins can see who asked (Settings → Waitlist) rather than the
+      // attempt vanishing. Recording grants nothing — invited_phones is still the only gate.
+      // First contact gets the full explanation; anything after that gets the short nudge, so
+      // someone who keeps messaging isn't re-sent the same paragraph every time but also never
+      // hits silence and assumes Marlowe is broken.
+      const { isNewRequest } = recordWaitlistRequest(phone);
       await reply(
         phone,
-        "This number isn't invited yet — ask whoever's running the beta to add it, then message again."
+        isNewRequest ? MARLOWE_WAITLIST_TEXT : MARLOWE_WAITLIST_REMINDER_TEXT
       ).catch(() => {});
       return;
     }

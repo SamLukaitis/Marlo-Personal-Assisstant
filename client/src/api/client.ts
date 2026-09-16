@@ -581,6 +581,30 @@ export async function removeInvite(phone: string): Promise<InvitedPhone[]> {
   return res.json();
 }
 
+// Uninvited numbers that have messaged Marlowe. Approving one is just addInvite() above — the
+// server clears the waitlist entry and messages them — so there's no separate approve call here.
+export interface WaitlistRequest {
+  phone: string;
+  firstRequestedAt: number;
+  lastRequestedAt: number;
+  requestCount: number;
+}
+
+export const fetchWaitlist = () => getJson<WaitlistRequest[]>("/api/admin/waitlist");
+
+// Dismiss without inviting — for spam and wrong numbers. The number is told nothing.
+export async function dismissWaitlistRequest(phone: string): Promise<WaitlistRequest[]> {
+  const res = await fetch(
+    `${API_BASE}/api/admin/waitlist/${encodeURIComponent(phone)}`,
+    withCredentials({ method: "DELETE" })
+  );
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.error ?? "failed to dismiss request");
+  }
+  return res.json();
+}
+
 // Wipes any in-progress WhatsApp registration for this number, and if it's already bound to a
 // full account, wipes that account entirely — so the same phone/email can go through the
 // WhatsApp-native signup flow again from scratch. Irreversible; the caller should confirm first.

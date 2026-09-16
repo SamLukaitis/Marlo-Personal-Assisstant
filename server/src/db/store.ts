@@ -97,6 +97,16 @@ db.exec(`
     phone TEXT PRIMARY KEY,
     invited_at INTEGER NOT NULL
   );
+  -- Numbers that messaged Marlowe without an invite. Not a gate of any kind (invited_phones is
+  -- the only thing that grants access) — purely the "who's asking?" list behind Settings'
+  -- Waitlist section. request_count/last_requested_at exist so a number that keeps trying reads
+  -- differently from one that tried once and gave up.
+  CREATE TABLE IF NOT EXISTS waitlist_requests (
+    phone TEXT PRIMARY KEY,
+    first_requested_at INTEGER NOT NULL,
+    last_requested_at INTEGER NOT NULL,
+    request_count INTEGER NOT NULL DEFAULT 1
+  );
   CREATE TABLE IF NOT EXISTS sessions (
     id TEXT PRIMARY KEY,
     user_id INTEGER NOT NULL REFERENCES users(id),
@@ -3030,6 +3040,60 @@ export function listInvitedPhones(): InvitedPhoneRow[] {
 
 export function removeInvitedPhone(phone: string): void {
   db.prepare(`DELETE FROM invited_phones WHERE phone = ?`).run(normalizePhone(phone));
+}
+
+// The waitlist: an uninvited number that messages Marlowe gets logged here so admins can see who
+// asked, instead of the request evaporating into the server log. Recording is deliberately
+// separate from the invite gate — being on this list grants nothing.
+export interface WaitlistRequestRow {
+  phone: string;
+  firstRequestedAt: number;
+  lastRequestedAt: number;
+  requestCount: number;
+}
+
+// Returns whether this was the number's first ever request, which is what decides between the
+// full waitlist explanation and the shorter "still on the list" nudge (whatsappRegistration.ts).
+// One statement rather than a SELECT-then-branch so concurrent inbound messages from the same
+// number can't both read "new" and both send the long message.
+export function recordWaitlistRequest(phone: string): { isNewRequest: boolean } {
+  const normalized = normalizePhone(phone);
+  const now = Date.now();
+  db.prepare(
+    `INSERT INTO waitlist_requests (phone, first_requested_at, last_requested_at, request_count)
+     VALUES (?, ?, ?, 1)
+     ON CONFLICT(phone) DO UPDATE SET
+       last_requested_at = excluded.last_requested_at,
+       request_count = request_count + 1`
+  ).run(normalized, now, now);
+  const row = db
+    .prepare(`SELECT request_count AS requestCount FROM waitlist_requests WHERE phone = ?`)
+    .get(normalized) as { requestCount: number } | undefined;
+  return { isNewRequest: row?.requestCount === 1 };
+}
+
+export function listWaitlistRequests(): WaitlistRequestRow[] {
+  return db
+    .prepare(
+      `SELECT phone,
+              first_requested_at AS firstRequestedAt,
+              last_requested_at AS lastRequestedAt,
+              request_count AS requestCount
+         FROM waitlist_requests
+        ORDER BY first_requested_at DESC`
+    )
+    .all() as WaitlistRequestRow[];
+}
+
+export function isOnWaitlist(phone: string): boolean {
+  return !!db.prepare(`SELECT 1 FROM waitlist_requests WHERE phone = ?`).get(normalizePhone(phone));
+}
+
+// Called both when an admin dismisses a request outright and when one is approved — once a
+// number is on invited_phones the waitlist entry has served its purpose, and leaving it would
+// show an already-invited number as still waiting.
+export function removeWaitlistRequest(phone: string): void {
+  db.prepare(`DELETE FROM waitlist_requests WHERE phone = ?`).run(normalizePhone(phone));
 }
 
 // Full account purge — built for repeatable testing of the WhatsApp registration flow (admin-
