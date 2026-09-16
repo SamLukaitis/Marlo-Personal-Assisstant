@@ -41,20 +41,13 @@ const IDLE_RESET_MS = 24 * 60 * 60 * 1000; // a week-old half-finished conversat
 const RESEND_COOLDOWN_MS = 60 * 1000; // advisory UX throttle, not the security boundary
 const lastTokenIssuedAt = new Map<string, number>();
 
-// Short, plain-language rundown aimed at someone who isn't very tech-savvy. Used as the very
-// first message a brand-new number ever sees, and as the answer to "help"/"menu" while
-// registration is still in progress — both cases end with the name question because that's the
-// actual next step for someone who isn't registered yet. See MARLOWE_HELP_TEXT below for the
+// Used as the very first message a brand-new number ever sees, and as the answer to "help"/"menu"
+// while registration is still in progress — both cases end with the name question because that's
+// the actual next step for someone who isn't registered yet. See MARLOWE_HELP_TEXT below for the
 // separate post-registration version (chatDispatch.ts) — the two used to be one shared constant,
 // which meant an already-registered user asking "help" got asked their name again.
 export const MARLOWE_FIRST_CONTACT_TEXT =
-  "👋 *Welcome to the Marlowe testing beta!* I'm Marlowe, your personal assistant. Here's what I do:\n\n" +
-  "• Read your email & calendar, help you reply and schedule\n" +
-  "• Send a morning update each day\n" +
-  "• Answer questions like \"what's on today?\"\n" +
-  "• Save photos of tickets/receipts/documents\n" +
-  "• Text \"help\" anytime for this list again\n\n" +
-  "What should I call you?";
+  "Hi, I'm Marlowe, your personal assistant. What would you like me to call you?";
 
 // What an uninvited number gets on its first message. Deliberately warm and final-sounding: the
 // person on the other end did nothing wrong, and there's no action they can take to speed it up.
@@ -94,6 +87,8 @@ export function isHelpTrigger(text: string): boolean {
   return HELP_TRIGGERS.has(text.trim().toLowerCase());
 }
 
+const EMAIL_CONFIRM_BUTTON_IDS = { yes: "email_confirm_yes", no: "email_confirm_no" };
+
 const PROVIDER_BUTTON_IDS: Record<RegistrationProvider, string> = {
   google: "register_google",
   microsoft: "register_microsoft",
@@ -128,6 +123,8 @@ function currentStepPrompt(row: PendingRegistrationRow): string {
   switch (row.step) {
     case "awaiting_name":
       return "What should I call you?";
+    case "awaiting_email_confirm":
+      return "Want to connect your email? Tap Yes or No above, or just send me your email address.";
     case "awaiting_email":
       return "What's your email address?";
     case "awaiting_provider":
@@ -203,18 +200,81 @@ export async function sendFirstValueAndBriefingPrompt(ownerId: number, phone: st
   await startPostConnectSetup(ownerId, phone);
 }
 
+async function askEmailConfirm(row: PendingRegistrationRow): Promise<void> {
+  await sendWhatsAppReplyButtons(
+    row.phone,
+    "Connecting your email will allow me to help draft responses, add events to your calendar, and flag important emails. Would you like to start here?",
+    [
+      { id: EMAIL_CONFIRM_BUTTON_IDS.yes, title: "Yes" },
+      { id: EMAIL_CONFIRM_BUTTON_IDS.no, title: "No" },
+    ]
+  );
+  upsertPendingRegistration(row.phone, { step: "awaiting_email_confirm" });
+}
+
 async function handleAwaitingName(row: PendingRegistrationRow, text: string): Promise<void> {
   const typed = text.trim().slice(0, 60);
   // A sentence-shaped reply isn't a real name (see plausibleName.ts) — greet generically and
   // store nothing, rather than embedding it verbatim here and later as the permanent display
   // name via sendFirstValueAndBriefingPrompt above.
   const name = isPlausibleName(typed) ? typed : null;
-  upsertPendingRegistration(row.phone, { step: "awaiting_email", name: name ?? "" });
-  const greeting = name ? `Nice to meet you, ${name}!` : "Nice to meet you!";
+  const updated = upsertPendingRegistration(row.phone, { step: "awaiting_email_confirm", name: name ?? "" });
+  const greeting = name ? `Hi ${name}.` : "Hi there.";
+  // Sent as separate WhatsApp messages (not joined with \n\n) to match a real conversational
+  // back-and-forth rather than one long wall of text.
+  await reply(row.phone, `${greeting} I hope to be helpful with anything you could need, so please, ask me anything`);
   await reply(
     row.phone,
-    `${greeting} Let's connect your email so I can help with your inbox, calendar, and more — what's your email address?`
+    "My developers are always adding features, so if you give me a request I cannot meet, I'll send this over to them to build ASAP."
   );
+  await reply(
+    row.phone,
+    "For the moment, people have asked me to help plan their calendar and travel plans, organise their inboxes, and remind them of important information and events."
+  );
+  await askEmailConfirm(updated);
+}
+
+// buttonId comes from an IncomingInteractiveMessage tap on the buttons askEmailConfirm sent.
+async function handleEmailConfirmTap(row: PendingRegistrationRow, buttonId: string): Promise<void> {
+  if (buttonId === EMAIL_CONFIRM_BUTTON_IDS.yes) {
+    upsertPendingRegistration(row.phone, { step: "awaiting_email" });
+    await reply(row.phone, "Great, what email would you like to connect");
+    return;
+  }
+  if (buttonId === EMAIL_CONFIRM_BUTTON_IDS.no) {
+    // Not a real skip — there's no way to create an account without a connected mailbox (see
+    // feature-to-do/email-less-accounts.md), so the step deliberately stays at
+    // awaiting_email_confirm rather than advancing or completing. Whatever they send next just
+    // continues from here instead of restarting the whole conversation.
+    await reply(
+      row.phone,
+      "No worries, let me know later if you'd like to connect an inbox. Let me know how I can help!"
+    );
+    return;
+  }
+  // Stray/unexpected button id — re-show the choice rather than silently drop it.
+  await askEmailConfirm(row);
+}
+
+// Fallback for someone who types instead of tapping a button. Also lets someone skip the
+// confirmation entirely by just sending their email address straight away.
+async function handleAwaitingEmailConfirmText(row: PendingRegistrationRow, text: string): Promise<void> {
+  const trimmed = text.trim();
+  if (/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmed)) {
+    const updated = upsertPendingRegistration(row.phone, { step: "awaiting_email" });
+    await handleAwaitingEmail(updated, trimmed);
+    return;
+  }
+  if (/^y(es)?$/i.test(trimmed)) {
+    await handleEmailConfirmTap(row, EMAIL_CONFIRM_BUTTON_IDS.yes);
+    return;
+  }
+  if (/^no?( thanks)?$/i.test(trimmed)) {
+    await handleEmailConfirmTap(row, EMAIL_CONFIRM_BUTTON_IDS.no);
+    return;
+  }
+  const helpReply = await getRegistrationAssistReply(text, "email");
+  await reply(row.phone, helpReply);
 }
 
 async function handleAwaitingEmail(row: PendingRegistrationRow, text: string): Promise<void> {
@@ -327,6 +387,10 @@ export async function handlePendingRegistration(message: IncomingWhatsAppMessage
       await handleAwaitingProviderTap(row, message.buttonId);
       return;
     }
+    if (row && row.step === "awaiting_email_confirm") {
+      await handleEmailConfirmTap(row, message.buttonId);
+      return;
+    }
     await redirectToSetup(phone);
     return;
   }
@@ -378,6 +442,9 @@ export async function handlePendingRegistration(message: IncomingWhatsAppMessage
   switch (row.step) {
     case "awaiting_name":
       await handleAwaitingName(row, message.text);
+      return;
+    case "awaiting_email_confirm":
+      await handleAwaitingEmailConfirmText(row, message.text);
       return;
     case "awaiting_email":
       await handleAwaitingEmail(row, message.text);

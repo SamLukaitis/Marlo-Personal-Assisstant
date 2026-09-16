@@ -3277,6 +3277,7 @@ export function deleteSession(raw: string): void {
 
 export type PendingRegistrationStep =
   | "awaiting_name"
+  | "awaiting_email_confirm"
   | "awaiting_email"
   | "awaiting_provider"
   | "awaiting_link_tap"
