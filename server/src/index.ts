@@ -107,7 +107,7 @@ app.use(toolsRoutes);
 app.use(newsRoutes);
 app.use(adminRoutes);
 // The Portal has ~15 endpoints that all share the same "must be admin" predicate, unlike
-// adminRoutes.ts's 4 owner-only routes (kept as inline isAppOwner checks there) — a shared
+// adminRoutes.ts's routes (kept as inline isAdmin checks there) — a shared
 // middleware makes more sense at this size. Mounted after the blanket requireAuth above, so
 // req.userId is already set.
 app.use("/api/portal", requireAdmin, portalRoutes);
