@@ -78,7 +78,7 @@ describe("handlePendingRegistration — phone invite gate (first contact)", () =
     await handlePendingRegistration({ kind: "text", from: phone, text: "hi", messageId: "m1" });
 
     expect(sendWhatsAppMessage).toHaveBeenCalledWith(phone, expect.stringContaining("on the waitlist"));
-    expect(sendWhatsAppMessage).not.toHaveBeenCalledWith(phone, expect.stringContaining("Welcome to the Marlowe"));
+    expect(sendWhatsAppMessage).not.toHaveBeenCalledWith(phone, expect.stringContaining("I'm Marlowe"));
     expect(getPendingRegistration(phone)).toBeNull();
   });
 
@@ -88,7 +88,7 @@ describe("handlePendingRegistration — phone invite gate (first contact)", () =
 
     await handlePendingRegistration({ kind: "text", from: phone, text: "hi", messageId: "m1" });
 
-    expect(sendWhatsAppMessage).toHaveBeenCalledWith(phone, expect.stringContaining("Welcome to the Marlowe"));
+    expect(sendWhatsAppMessage).toHaveBeenCalledWith(phone, expect.stringContaining("I'm Marlowe"));
     expect(getPendingRegistration(phone)?.step).toBe("awaiting_name");
   });
 
