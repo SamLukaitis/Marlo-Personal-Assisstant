@@ -34,6 +34,31 @@ adminRoutes.get("/api/admin/invites", (req, res) => {
   res.json(listInvitedPhones());
 });
 
+// Reports what Express actually made of the proxy headers on this very request, so the number of
+// proxy hops to trust (config.ts's configureTrustProxy / TRUST_PROXY_HOPS) can be read off a real
+// deployment instead of assumed. `rateLimitKey` is the address per-visitor limits key on
+// (helpChatRoutes.ts): if it isn't your own public IP, count from the right of `chain` to find the
+// entry that is — that position is the hop count to set. Owner-only: the forwarded chain is
+// infrastructure detail, not something to expose publicly.
+adminRoutes.get("/api/admin/ip-check", (req, res) => {
+  if (!isAppOwner((req as unknown as AuthedRequest).userId)) {
+    res.status(403).json({ error: "not allowed" });
+    return;
+  }
+  const forwardedFor = req.headers["x-forwarded-for"];
+  const chain = (Array.isArray(forwardedFor) ? forwardedFor.join(",") : forwardedFor ?? "")
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+  res.json({
+    rateLimitKey: req.ip,
+    chain,
+    forwardedFor: Array.isArray(forwardedFor) ? forwardedFor.join(", ") : forwardedFor ?? null,
+    socketAddress: req.socket.remoteAddress ?? null,
+    trustedHops: Number(req.app.get("trust proxy")) || 0,
+  });
+});
+
 adminRoutes.post("/api/admin/invites", (req, res) => {
   if (!isAppOwner((req as unknown as AuthedRequest).userId)) {
     res.status(403).json({ error: "not allowed" });

@@ -12,6 +12,7 @@ import {
 import type { AuthedRequest } from "../middleware/auth.js";
 
 const { adminRoutes } = await import("./adminRoutes.js");
+const { configureTrustProxy } = await import("../config.js");
 
 let counter = 0;
 function uniqueEmail(prefix: string): string {
@@ -123,5 +124,52 @@ describe("/api/admin/invites", () => {
     const res = await request(app).post("/api/admin/invites").send({ phone: "" });
 
     expect(res.status).toBe(400);
+  });
+});
+
+// How many proxy hops to trust is a deployment fact we can't know from here (see
+// config.ts's configureTrustProxy) — this endpoint reports what Express actually saw so it can be
+// read off a real request instead of guessed.
+describe("GET /api/admin/ip-check", () => {
+  function buildProxiedTestApp(userId: number) {
+    const app = express();
+    configureTrustProxy(app, { NODE_ENV: "production" });
+    app.use(express.json());
+    app.use((req, _res, next) => {
+      (req as unknown as AuthedRequest).userId = userId;
+      next();
+    });
+    app.use(adminRoutes);
+    return app;
+  }
+
+  it("rejects a non-owner with 403", async () => {
+    const stranger = findOrCreateUserByEmail(uniqueEmail("ip-check-stranger"));
+
+    const res = await request(buildTestApp(stranger.id)).get("/api/admin/ip-check");
+
+    expect(res.status).toBe(403);
+  });
+
+  it("reports the forwarded chain, the address the rate limiters use, and the trusted hop count", async () => {
+    const app = buildProxiedTestApp(getAppOwnerUserId());
+
+    const res = await request(app)
+      .get("/api/admin/ip-check")
+      .set("X-Forwarded-For", "203.0.113.7, 10.0.0.1");
+
+    expect(res.status).toBe(200);
+    expect(res.body.forwardedFor).toBe("203.0.113.7, 10.0.0.1");
+    expect(res.body.chain).toEqual(["203.0.113.7", "10.0.0.1"]);
+    // Rightmost entry: the one the hop closest to us added — what a per-visitor limit keys on.
+    expect(res.body.rateLimitKey).toBe("10.0.0.1");
+    expect(res.body.trustedHops).toBe(1);
+  });
+
+  it("reports no trusted hops when the app is not behind a proxy", async () => {
+    const res = await request(buildTestApp(getAppOwnerUserId())).get("/api/admin/ip-check");
+
+    expect(res.status).toBe(200);
+    expect(res.body.trustedHops).toBe(0);
   });
 });
