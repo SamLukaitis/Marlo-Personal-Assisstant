@@ -45,7 +45,7 @@ import { fetchWeather } from "../providers/weather.js";
 import { fetchQuotes, DEFAULT_SYMBOLS } from "../providers/markets.js";
 import { countTravelDays } from "../services/travelDays.js";
 import { resolveReminderTime, ReminderTimeError, type ReminderTimeInput } from "../services/reminderTime.js";
-import { getUserTimezone, setUserTimezone } from "../services/userTimezone.js";
+import { getUserTimezone } from "../services/userTimezone.js";
 import { DateTime } from "luxon";
 import { findFreeSlots } from "../services/freeSlots.js";
 import { buildSpendingDigest } from "../services/spendingDigest.js";
@@ -468,8 +468,8 @@ const ALWAYS_ON_TOOLS: Anthropic.ToolUnion[] = [
       "what time or date it is, or whenever you need 'now' to answer a time-relative question " +
       "(e.g. 'how long until my flight', 'is the bank still open') — never guess or state a time " +
       "from your own reasoning, you have no built-in clock. If the user's timezone isn't known yet, " +
-      "this tells you so directly instead of a time — ask what timezone/city they're in and call " +
-      "set_user_timezone, then retry.",
+      "this tells you so directly instead of a time — ask them to share their location via " +
+      "WhatsApp's location-share feature (attachment/+ icon → Location), then retry.",
     input_schema: { type: "object", properties: {} },
   },
   {
@@ -497,8 +497,11 @@ const ALWAYS_ON_TOOLS: Anthropic.ToolUnion[] = [
       "or a timezone conversion yourself — you are unreliable at that arithmetic. Only ever pass " +
       "through the raw numbers/clock-times the user actually said (e.g. 'in 20 minutes' → " +
       "relativeMinutes: 20; 'at 3pm' → localTime: '15:00'); this tool does every calculation in " +
-      "real code. If this call fails because the user's timezone isn't known yet, ask them what " +
-      "timezone (or city) they're in, call set_user_timezone with their answer, then retry this " +
+      "real code. If this call fails because the user's timezone isn't known yet, tell them you " +
+      "need their location to get reminder times right, and ask them to share it via WhatsApp's " +
+      "own location-share feature (attachment/+ icon → Location) — that sets it automatically and " +
+      "exactly. There is no tool to set a timezone from a typed answer (a city name is not precise " +
+      "enough to get right, and this must be exact) — once they share their location, retry this " +
       "call with the same input.",
     input_schema: {
       type: "object",
@@ -543,22 +546,6 @@ const ALWAYS_ON_TOOLS: Anthropic.ToolUnion[] = [
         },
       },
       required: ["message", "mode"],
-    },
-  },
-  {
-    name: "set_user_timezone",
-    description:
-      "Store the user's IANA timezone (e.g. 'Europe/London', 'America/New_York') so time-of-day " +
-      "reminders (set_reminder) can be computed correctly. Call this after asking the user what " +
-      "timezone or city they're in — resolve whatever they say to the correct IANA zone name " +
-      "yourself (that's a factual lookup, not arithmetic, so you're reliable at it), and pass that. " +
-      "Only needs asking once; it's remembered after this.",
-    input_schema: {
-      type: "object",
-      properties: {
-        timezone: { type: "string", description: "IANA timezone name, e.g. 'Europe/London'" },
-      },
-      required: ["timezone"],
     },
   },
   {
@@ -1194,8 +1181,8 @@ export async function runTool(
       if (!timezone) {
         return {
           error:
-            "I don't know the user's timezone yet. Ask what timezone or city they're in, call " +
-            "set_user_timezone with the answer, then retry get_current_time.",
+            "I don't know the user's timezone yet. Ask them to share their location via WhatsApp's " +
+            "location-share feature (attachment/+ icon → Location), then retry get_current_time.",
         };
       }
       const now = DateTime.now().setZone(timezone);
@@ -1248,8 +1235,9 @@ export async function runTool(
       if (needsTimezone && !timezone) {
         return {
           error:
-            "I don't know the user's timezone yet. Ask what timezone or city they're in, call " +
-            "set_user_timezone with the answer, then retry this exact set_reminder call.",
+            "I don't know the user's timezone yet. Ask them to share their location via WhatsApp's " +
+            "location-share feature (attachment/+ icon → Location), then retry this exact " +
+            "set_reminder call.",
         };
       }
 
@@ -1267,14 +1255,6 @@ export async function runTool(
         if (err instanceof ReminderTimeError) return { error: err.message };
         throw err;
       }
-    }
-    case "set_user_timezone": {
-      const timezone = input.timezone as string;
-      const ok = setUserTimezone(ownerId, timezone);
-      if (!ok) {
-        return { error: `"${timezone}" isn't a recognized IANA timezone — use a canonical name like "Europe/London"` };
-      }
-      return { ok: true };
     }
     case "list_active_reminders":
       return listActiveRemindersForOwner(ownerId).map((reminder) => ({

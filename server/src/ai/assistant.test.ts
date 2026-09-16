@@ -51,6 +51,7 @@ import { IMPORTANT_EMAIL_ENTITY_TYPE } from "../services/importantEmailAlerts.js
 import { getBriefingSettings, saveBriefingSettings, type BriefingSettings } from "../services/briefing.js";
 import { getXeroForwardingEmail } from "../services/xero.js";
 import { setPendingInvoiceForward, getPendingInvoiceForward } from "../services/xeroInvoiceConfirmation.js";
+import { setUserTimezone } from "../services/userTimezone.js";
 
 let counter = 0;
 function uniqueEmail(prefix: string): string {
@@ -509,9 +510,9 @@ describe("set_reminder tool", () => {
     expect(listActiveRemindersForOwner(user.id)).toHaveLength(0);
   });
 
-  it("schedules a local_time reminder once set_user_timezone has been called", async () => {
+  it("schedules a local_time reminder once a timezone is on file", async () => {
     const user = findOrCreateUserByEmail(uniqueEmail("reminder-with-tz"));
-    await runTool(user.id, "set_user_timezone", { timezone: "Europe/London" });
+    setUserTimezone(user.id, "Europe/London");
     const result = (await runTool(user.id, "set_reminder", {
       message: "Call the bank",
       mode: "once",
@@ -524,7 +525,7 @@ describe("set_reminder tool", () => {
 
   it("schedules an interval reminder with a window", async () => {
     const user = findOrCreateUserByEmail(uniqueEmail("reminder-interval"));
-    await runTool(user.id, "set_user_timezone", { timezone: "Europe/London" });
+    setUserTimezone(user.id, "Europe/London");
     const result = (await runTool(user.id, "set_reminder", {
       message: "Stretch",
       mode: "interval",
@@ -563,20 +564,6 @@ describe("set_reminder tool", () => {
   });
 });
 
-describe("set_user_timezone tool", () => {
-  it("stores a valid IANA zone", async () => {
-    const user = findOrCreateUserByEmail(uniqueEmail("tz-tool-valid"));
-    const result = await runTool(user.id, "set_user_timezone", { timezone: "America/New_York" });
-    expect(result).toEqual({ ok: true });
-  });
-
-  it("rejects an invalid zone", async () => {
-    const user = findOrCreateUserByEmail(uniqueEmail("tz-tool-invalid"));
-    const result = (await runTool(user.id, "set_user_timezone", { timezone: "Nowhere/Fake" })) as { error: string };
-    expect(result.error).toMatch(/timezone/i);
-  });
-});
-
 describe("get_current_time tool", () => {
   it("is always available, same as remember", () => {
     const user = findOrCreateUserByEmail(uniqueEmail("time-available"));
@@ -592,7 +579,7 @@ describe("get_current_time tool", () => {
 
   it("reports the current time in the user's set timezone once known", async () => {
     const user = findOrCreateUserByEmail(uniqueEmail("time-with-tz"));
-    await runTool(user.id, "set_user_timezone", { timezone: "Europe/London" });
+    setUserTimezone(user.id, "Europe/London");
 
     const result = (await runTool(user.id, "get_current_time", {})) as {
       timezone: string;

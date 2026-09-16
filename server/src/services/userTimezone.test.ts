@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { findOrCreateUserByEmail, setToolEnabled, saveCheckin, setSetting } from "../db/store.js";
-import { getUserTimezone, setUserTimezone, isValidIanaTimezone } from "./userTimezone.js";
+import { getUserTimezone, setUserTimezone, setUserTimezoneFromLocation, isValidIanaTimezone } from "./userTimezone.js";
 
 let counter = 0;
 function uniqueEmail(prefix: string): string {
@@ -87,6 +87,37 @@ describe("setUserTimezone", () => {
   it("rejects an invalid zone without storing anything", () => {
     const user = findOrCreateUserByEmail(uniqueEmail("tz-set-invalid"));
     expect(setUserTimezone(user.id, "Nowhere/Fake")).toBe(false);
+    expect(getUserTimezone(user.id)).toBeNull();
+  });
+});
+
+describe("setUserTimezoneFromLocation", () => {
+  it("resolves and stores the zone for a real coordinate, with no travel tool or check-in needed", () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("tz-location"));
+    const resolved = setUserTimezoneFromLocation(user.id, 51.5074, -0.1278); // central London
+    expect(resolved).toBe("Europe/London");
+    expect(getUserTimezone(user.id)).toBe("Europe/London");
+  });
+
+  it("overwrites a previously set zone — the most recent shared location wins", () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("tz-location-overwrite"));
+    setUserTimezone(user.id, "Asia/Tokyo");
+    setUserTimezoneFromLocation(user.id, 40.7128, -74.006); // New York
+    expect(getUserTimezone(user.id)).toBe("America/New_York");
+  });
+
+  it("resolves open ocean to its nautical zone rather than failing", () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("tz-location-ocean"));
+    // South Atlantic, no land — geo-tz still covers this via a nautical Etc/GMT zone.
+    const resolved = setUserTimezoneFromLocation(user.id, -40, -20);
+    expect(resolved).toBe("Etc/GMT+1");
+    expect(getUserTimezone(user.id)).toBe("Etc/GMT+1");
+  });
+
+  it("returns null and stores nothing for a malformed coordinate rather than throwing", () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("tz-location-invalid"));
+    const resolved = setUserTimezoneFromLocation(user.id, Number.NaN, Number.NaN);
+    expect(resolved).toBeNull();
     expect(getUserTimezone(user.id)).toBeNull();
   });
 });

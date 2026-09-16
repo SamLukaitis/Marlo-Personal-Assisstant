@@ -70,6 +70,12 @@ const SECTIONS = [
 
 type SectionKey = (typeof SECTIONS)[number]["key"];
 
+// A real, exhaustive list of IANA zone names the browser itself knows about — the human picks
+// directly from this, so there's no free text and nothing to mis-resolve. Computed once at
+// module load, not per-render: it's a pure function of the runtime, never changes while the page
+// is open.
+const IANA_TIMEZONES = Intl.supportedValuesOf("timeZone");
+
 function isSectionKey(value: string | null): value is SectionKey {
   return !!value && SECTIONS.some((s) => s.key === value);
 }
@@ -509,16 +515,20 @@ export function SettingsPage() {
                 <h2>Timezone</h2>
                 <p className="settings-section-intro">
                   Used to work out what time "3pm" or "in 20 minutes" actually means when you ask
-                  for a reminder. Leave blank to let it work this out from your shared travel
-                  location, or from asking you directly the first time it needs to know.
+                  for a reminder. Leave unset to let it work this out the moment you share your
+                  location with it on WhatsApp — picking one here does the same thing, just now
+                  rather than then.
                 </p>
                 <div className="card card-padded" style={{ marginBottom: 20 }}>
                   <div className="row">
-                    <input
-                      value={timezone}
-                      onChange={(e) => setTimezone(e.target.value)}
-                      placeholder="e.g. Europe/London"
-                    />
+                    <select value={timezone} onChange={(e) => setTimezone(e.target.value)}>
+                      <option value="">Not set</option>
+                      {IANA_TIMEZONES.map((tz) => (
+                        <option key={tz} value={tz}>
+                          {tz}
+                        </option>
+                      ))}
+                    </select>
                     <button className="btn-primary" onClick={handleSaveTimezone}>
                       Save
                     </button>
