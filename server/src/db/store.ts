@@ -173,6 +173,26 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_links_from ON links(owner_id, from_type, from_id);
   CREATE INDEX IF NOT EXISTS idx_links_to   ON links(owner_id, to_type, to_id);
 
+  -- Timed WhatsApp reminders: a one-shot nudge, a fixed-interval burst within a time window, or a
+  -- repeat-until-the-user-replies nudge. Deliberately its own table rather than more nullable
+  -- columns on memory_notes (which is a facts table) — recurrence needs real state (next_fire_at,
+  -- interval_ms, window_end_at) that a single trigger_at can't hold. See
+  -- feature-to-do/entities-and-links-guide.md's own "generalise, don't bolt on" spirit; delivered
+  -- by services/reminderScheduler.ts on a tight, deterministic timer — see that file for why.
+  CREATE TABLE IF NOT EXISTS reminders (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    owner_id      INTEGER NOT NULL REFERENCES users(id),
+    message       TEXT NOT NULL,
+    mode          TEXT NOT NULL,                    -- 'once' | 'interval' | 'until_reply'
+    next_fire_at  INTEGER NOT NULL,
+    interval_ms   INTEGER,                           -- 'interval' and 'until_reply' only
+    window_end_at INTEGER,                           -- 'interval' only
+    status        TEXT NOT NULL DEFAULT 'active',    -- active | done | cancelled | gave_up
+    created_at    INTEGER NOT NULL,
+    last_sent_at  INTEGER
+  );
+  CREATE INDEX IF NOT EXISTS idx_reminders_owner_status_next ON reminders(owner_id, status, next_fire_at);
+
   -- Admin portal (feature-to-do doc: admin portal) — global/shared across every admin, not
   -- scoped to a tenant, except unmet_requests/api_usage which record which owner's conversation
   -- they came from (admin routes still read across every owner).
@@ -768,6 +788,39 @@ if (!memoryNoteColumns.includes("gave_up_at")) {
   db.exec(`ALTER TABLE memory_notes ADD COLUMN gave_up_at INTEGER`);
 }
 db.exec(`CREATE INDEX IF NOT EXISTS idx_memory_notes_trigger ON memory_notes (owner_id, trigger_at)`);
+
+// One-time migration: memory_notes.trigger_at used to be the only way to schedule a reminder.
+// Reminders now live in their own `reminders` table (recurrence needs real state a single
+// trigger_at can't hold — see that table's comment), delivered by a dedicated fast scheduler
+// instead of the old 5-minute-tick memoryReminders.ts. memory_notes itself is left untouched
+// (rows and all) as a rollback point, same as travel_checkins after its own migration above —
+// only still-pending one-shot reminders (never surfaced, never given up on) are copied forward.
+// Guarded the same way as the travel_checkins migration: once any reminders row exists, this is
+// skipped on every later boot rather than re-diffing.
+const hasMigratedReminders = !!db.prepare(`SELECT 1 FROM reminders LIMIT 1`).get();
+if (!hasMigratedReminders) {
+  const pendingReminders = db
+    .prepare(
+      `SELECT owner_id AS ownerId, content, trigger_at AS triggerAt, created_at AS createdAt
+       FROM memory_notes
+       WHERE trigger_at IS NOT NULL AND last_surfaced_at IS NULL AND gave_up_at IS NULL`
+    )
+    .all() as { ownerId: number; content: string; triggerAt: number; createdAt: number }[];
+
+  if (pendingReminders.length > 0) {
+    const migrateReminders = db.transaction(() => {
+      const insertReminder = db.prepare(
+        `INSERT INTO reminders (owner_id, message, mode, next_fire_at, status, created_at)
+         VALUES (?, ?, 'once', ?, 'active', ?)`
+      );
+      for (const row of pendingReminders) {
+        insertReminder.run(row.ownerId, row.content, row.triggerAt, row.createdAt);
+      }
+    });
+    migrateReminders();
+    console.log(`store: migrated ${pendingReminders.length} pending memory-note reminder(s) into reminders`);
+  }
+}
 
 // Full-text index over memory notes, backing searchMemoryNotes() below. The system prompt only
 // ever injects the most recent N notes (listRecentMemoryNotes) — this is how the assistant reaches
@@ -1366,6 +1419,148 @@ export function listMemoryRemindersToGiveUpOn(ownerId: number, nowMs: number): M
 
 export function markMemoryGivenUp(ownerId: number, id: number): void {
   db.prepare(`UPDATE memory_notes SET gave_up_at = ? WHERE id = ? AND owner_id = ?`).run(Date.now(), id, ownerId);
+}
+
+// --- Reminders (see the `reminders` table comment above for why this is its own table) ---
+
+export type ReminderMode = "once" | "interval" | "until_reply";
+export type ReminderStatus = "active" | "done" | "cancelled" | "gave_up";
+
+export interface ReminderRow {
+  id: number;
+  message: string;
+  mode: ReminderMode;
+  nextFireAt: number;
+  intervalMs: number | null;
+  windowEndAt: number | null;
+  status: ReminderStatus;
+  createdAt: number;
+  lastSentAt: number | null;
+}
+
+const REMINDER_COLUMNS = `id, message, mode, next_fire_at AS nextFireAt, interval_ms AS intervalMs,
+  window_end_at AS windowEndAt, status, created_at AS createdAt, last_sent_at AS lastSentAt`;
+
+export interface CreateReminderInput {
+  message: string;
+  mode: ReminderMode;
+  nextFireAt: number;
+  intervalMs?: number | null;
+  windowEndAt?: number | null;
+}
+
+export function createReminder(ownerId: number, input: CreateReminderInput): ReminderRow {
+  const info = db
+    .prepare(
+      `INSERT INTO reminders (owner_id, message, mode, next_fire_at, interval_ms, window_end_at, status, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, 'active', ?)`
+    )
+    .run(
+      ownerId,
+      input.message,
+      input.mode,
+      input.nextFireAt,
+      input.intervalMs ?? null,
+      input.windowEndAt ?? null,
+      Date.now()
+    );
+  return db
+    .prepare(`SELECT ${REMINDER_COLUMNS} FROM reminders WHERE id = ?`)
+    .get(info.lastInsertRowid) as ReminderRow;
+}
+
+// Indexed via idx_reminders_owner_status_next (same shape as the old listDueMemoryReminders) —
+// cost stays proportional to how many reminders are actually due for this owner right now.
+export function listDueRemindersForOwner(ownerId: number, nowMs: number): ReminderRow[] {
+  return db
+    .prepare(
+      `SELECT ${REMINDER_COLUMNS} FROM reminders
+       WHERE owner_id = ? AND status = 'active' AND next_fire_at <= ?
+       ORDER BY next_fire_at ASC`
+    )
+    .all(ownerId, nowMs) as ReminderRow[];
+}
+
+export function listActiveRemindersForOwner(ownerId: number): ReminderRow[] {
+  return db
+    .prepare(
+      `SELECT ${REMINDER_COLUMNS} FROM reminders WHERE owner_id = ? AND status = 'active' ORDER BY next_fire_at ASC`
+    )
+    .all(ownerId) as ReminderRow[];
+}
+
+// Called by reminderScheduler.ts right after a successful send: 'once' reminders are done after
+// firing exactly once; 'interval' reminders advance to the next slot and finish once that would
+// fall past window_end_at; 'until_reply' reminders just keep advancing — they only stop via
+// cancelUntilReplyRemindersForOwner (any inbound message) or markReminderGivenUp (safety cap).
+export function advanceReminderAfterSend(id: number): void {
+  const row = db
+    .prepare(
+      `SELECT mode, next_fire_at AS nextFireAt, interval_ms AS intervalMs, window_end_at AS windowEndAt
+       FROM reminders WHERE id = ?`
+    )
+    .get(id) as
+    | { mode: ReminderMode; nextFireAt: number; intervalMs: number | null; windowEndAt: number | null }
+    | undefined;
+  if (!row) return;
+
+  const now = Date.now();
+  if (row.mode === "once" || row.intervalMs == null) {
+    db.prepare(`UPDATE reminders SET status = 'done', last_sent_at = ? WHERE id = ?`).run(now, id);
+    return;
+  }
+  const next = row.nextFireAt + row.intervalMs;
+  if (row.mode === "interval" && row.windowEndAt != null && next > row.windowEndAt) {
+    db.prepare(`UPDATE reminders SET status = 'done', last_sent_at = ? WHERE id = ?`).run(now, id);
+    return;
+  }
+  db.prepare(`UPDATE reminders SET next_fire_at = ?, last_sent_at = ? WHERE id = ?`).run(next, now, id);
+}
+
+// The stop-on-reply hook (routes/whatsappRoutes.ts's handleIncoming) — any inbound WhatsApp
+// message cancels every one of this owner's currently-active 'until_reply' reminders. 'once' and
+// 'interval' reminders are untouched: they stop on their own schedule, never on a reply.
+export function cancelUntilReplyRemindersForOwner(ownerId: number): void {
+  db.prepare(
+    `UPDATE reminders SET status = 'cancelled' WHERE owner_id = ? AND status = 'active' AND mode = 'until_reply'`
+  ).run(ownerId);
+}
+
+export function cancelReminder(ownerId: number, id: number): boolean {
+  const info = db
+    .prepare(`UPDATE reminders SET status = 'cancelled' WHERE id = ? AND owner_id = ? AND status = 'active'`)
+    .run(id, ownerId);
+  return info.changes > 0;
+}
+
+// Safety cap for 'until_reply' reminders so a forgotten "text me every minute until I reply"
+// doesn't run forever if the user never replies (asleep, phone off, ...) — same 24h-give-up
+// philosophy the old memoryReminders.ts used. Checked by reminderScheduler.ts.
+export function listRemindersToGiveUpOnForOwner(ownerId: number, cutoffMs: number): ReminderRow[] {
+  return db
+    .prepare(
+      `SELECT ${REMINDER_COLUMNS} FROM reminders
+       WHERE owner_id = ? AND status = 'active' AND mode = 'until_reply' AND created_at <= ?
+       ORDER BY created_at ASC`
+    )
+    .all(ownerId, cutoffMs) as ReminderRow[];
+}
+
+export function markReminderGivenUp(id: number): void {
+  db.prepare(`UPDATE reminders SET status = 'gave_up' WHERE id = ?`).run(id);
+}
+
+// Backs check_reminder_status — a simple LIKE scan rather than FTS infrastructure, since a single
+// user's reminder volume never gets large enough for that to matter.
+export function searchReminders(ownerId: number, query: string, limit = 10): ReminderRow[] {
+  const escaped = query.replace(/[\\%_]/g, (c) => `\\${c}`);
+  return db
+    .prepare(
+      `SELECT ${REMINDER_COLUMNS} FROM reminders
+       WHERE owner_id = ? AND message LIKE ? ESCAPE '\\'
+       ORDER BY created_at DESC LIMIT ?`
+    )
+    .all(ownerId, `%${escaped}%`, limit) as ReminderRow[];
 }
 
 export interface WhatsAppMessageRow {

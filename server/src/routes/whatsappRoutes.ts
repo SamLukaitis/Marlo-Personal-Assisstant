@@ -14,6 +14,7 @@ import {
   recordInboundMessage,
   appendWhatsAppMessage,
   markWamidSeenIfNew,
+  cancelUntilReplyRemindersForOwner,
 } from "../db/store.js";
 import { ingestWhatsAppMedia } from "../services/documents.js";
 import { handlePendingRegistration } from "../services/whatsappRegistration.js";
@@ -126,6 +127,12 @@ export async function handleIncoming(message: IncomingWhatsAppMessage): Promise<
   // Marks the customer-service window open again as of now — see outbound.ts, which reads this
   // to decide whether a later proactive push can go out as free-form text or needs a template.
   recordInboundMessage(message.from);
+
+  // Any inbound message counts as "the user replied" — stops every currently-active
+  // until_reply reminder (set_reminder's mode: 'until_reply') for this owner. Deliberately not
+  // scoped to a specific reminder or keyword: simple and fully hardcoded, no AI judgment about
+  // whether a given message "counts" as acknowledging the reminder.
+  cancelUntilReplyRemindersForOwner(ownerId);
 
   // Fire-and-forget, same as the typing indicator above — folds any backlog that's fallen out of
   // the raw history window into the rolling summary (services/conversationSummary.ts). Cheap to

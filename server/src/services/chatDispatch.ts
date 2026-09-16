@@ -11,6 +11,7 @@ import { isVersionTrigger, buildVersionText } from "./version.js";
 import { sendWhatsAppMessage } from "../providers/whatsapp.js";
 import { resolveQuotedMessageContext } from "./quotedMessage.js";
 import { queueForAssistant, looksComplete } from "./messageBatching.js";
+import { setUserTimezoneFromLocation } from "./userTimezone.js";
 
 // Friendly, non-leaky wording per failure reason — never expose the raw fetch/DNS error detail
 // to the end user, just enough for them to know what to do next.
@@ -77,6 +78,13 @@ export async function handleLocation(
   name?: string,
   address?: string
 ): Promise<void> {
+  // Deterministic, no model involved: a shared GPS pin resolves to an exact IANA timezone via
+  // geo-tz (services/userTimezone.ts) and is stored immediately — the only way a timezone gets
+  // set from WhatsApp now, after the model-resolves-a-place-name path caused a real off-by-an-
+  // hour reminder bug (see that file's comment). Unconditional on the "travel" tool: this is
+  // reminder-accuracy plumbing, not a travel feature, so it runs regardless of that toggle.
+  setUserTimezoneFromLocation(ownerId, latitude, longitude);
+
   const label = name ? `${name}${address ? `, ${address}` : ""}` : undefined;
   const locationText = `[User shared their location: ${latitude}, ${longitude}${label ? ` (${label})` : ""}]`;
   const rowId = appendWhatsAppMessage(ownerId, from, "user", locationText);

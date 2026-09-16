@@ -5,7 +5,10 @@ import {
   listRecentMemoryNotes,
   addMemoryNote,
   searchMemoryNotes,
-  searchReminderNotes,
+  createReminder,
+  listActiveRemindersForOwner,
+  cancelReminder,
+  searchReminders,
   searchWhatsAppHistory,
   searchDocuments,
   listDocuments,
@@ -41,6 +44,9 @@ import { fetchHeadlines, NEWS_TOPICS, type NewsTopic } from "../providers/news.j
 import { fetchWeather } from "../providers/weather.js";
 import { fetchQuotes, DEFAULT_SYMBOLS } from "../providers/markets.js";
 import { countTravelDays } from "../services/travelDays.js";
+import { resolveReminderTime, ReminderTimeError, type ReminderTimeInput } from "../services/reminderTime.js";
+import { getUserTimezone } from "../services/userTimezone.js";
+import { DateTime } from "luxon";
 import { findFreeSlots } from "../services/freeSlots.js";
 import { buildSpendingDigest } from "../services/spendingDigest.js";
 import { getBriefingSettings, saveBriefingSettings } from "../services/briefing.js";
@@ -456,38 +462,118 @@ const ALWAYS_ON_TOOLS: Anthropic.ToolUnion[] = [
     },
   },
   {
+    name: "get_current_time",
+    description:
+      "Get the current date and time in the user's own timezone. Call this whenever the user asks " +
+      "what time or date it is, or whenever you need 'now' to answer a time-relative question " +
+      "(e.g. 'how long until my flight', 'is the bank still open') — never guess or state a time " +
+      "from your own reasoning, you have no built-in clock. If the user's timezone isn't known yet, " +
+      "this tells you so directly instead of a time — ask them to share their location via " +
+      "WhatsApp's location-share feature (attachment/+ icon → Location), then retry.",
+    input_schema: { type: "object", properties: {} },
+  },
+  {
     name: "check_reminder_status",
     description:
-      "Check whether a reminder you set (a remember call with triggerAt) actually went out, is " +
-      "still scheduled, or failed to send. Call this when the user asks whether a reminder " +
-      "arrived/fired/went out — never guess or claim you can't check. Matches by keyword against " +
-      "the reminder's content, same as search_memory but restricted to notes that have a triggerAt.",
+      "Check whether a reminder you set with set_reminder actually went out, is still scheduled, " +
+      "or failed to send. Call this when the user asks whether a reminder arrived/fired/went out " +
+      "— never guess or claim you can't check. Matches by keyword against the reminder's message.",
     input_schema: {
       type: "object",
       properties: {
-        query: { type: "string", description: "Keyword(s) from the reminder's content to search for" },
+        query: { type: "string", description: "Keyword(s) from the reminder's message to search for" },
         limit: { type: "number", description: "Max reminders to return, default 10" },
       },
       required: ["query"],
     },
   },
   {
+    name: "set_reminder",
+    description:
+      "Schedule a WhatsApp reminder. Covers three shapes: a one-shot nudge ('remind me in 20 " +
+      "minutes' / 'remind me at 3pm to call the bank'), a fixed burst inside a time window " +
+      "('text me every 5 minutes between 10 and 10:30 to stretch'), and a repeat-until-acknowledged " +
+      "nudge ('text me every minute until I reply'). IMPORTANT: never compute a date, a time-until, " +
+      "or a timezone conversion yourself — you are unreliable at that arithmetic. Only ever pass " +
+      "through the raw numbers/clock-times the user actually said (e.g. 'in 20 minutes' → " +
+      "relativeMinutes: 20; 'at 3pm' → localTime: '15:00'); this tool does every calculation in " +
+      "real code. If this call fails because the user's timezone isn't known yet, tell them you " +
+      "need their location to get reminder times right, and ask them to share it via WhatsApp's " +
+      "own location-share feature (attachment/+ icon → Location) — that sets it automatically and " +
+      "exactly. There is no tool to set a timezone from a typed answer (a city name is not precise " +
+      "enough to get right, and this must be exact) — once they share their location, retry this " +
+      "call with the same input.",
+    input_schema: {
+      type: "object",
+      properties: {
+        message: { type: "string", description: "What to say back to the user when this fires" },
+        mode: {
+          type: "string",
+          enum: ["once", "interval", "until_reply"],
+          description:
+            "'once': fires a single time. 'interval': fires repeatedly on a fixed cadence within a " +
+            "time window, then stops on its own. 'until_reply': fires repeatedly on a fixed cadence " +
+            "starting now, and only stops the instant the user sends any WhatsApp message (or after " +
+            "24h with no reply, whichever comes first) — there is no need to track or match a " +
+            "specific reply yourself.",
+        },
+        relative_minutes: {
+          type: "number",
+          description: "mode 'once' only: fire this many minutes from now, e.g. 20 for 'in 20 minutes'.",
+        },
+        local_time: {
+          type: "string",
+          description:
+            "24-hour 'HH:mm' in the user's local time. Required for mode 'interval' (the window " +
+            "start); for mode 'once', use this OR relative_minutes, never both. E.g. 'at 3pm' → '15:00'.",
+        },
+        local_date: {
+          type: "string",
+          description:
+            "Optional 'YYYY-MM-DD' to pair with local_time for a specific future date (e.g. 'next " +
+            "Tuesday at 9am' once you've worked out the calendar date). Omit for 'today, or tomorrow " +
+            "if that time has already passed' — the normal case for 'remind me at 3pm'.",
+        },
+        window_end_local_time: {
+          type: "string",
+          description: "mode 'interval' only: 24-hour 'HH:mm' the window ends at, e.g. '10:30'.",
+        },
+        interval_minutes: {
+          type: "number",
+          description:
+            "Required for mode 'interval' and 'until_reply': how many minutes between each send, " +
+            "e.g. 5 for 'every 5 minutes' or 1 for 'every minute'.",
+        },
+      },
+      required: ["message", "mode"],
+    },
+  },
+  {
+    name: "list_active_reminders",
+    description: "List every reminder currently scheduled (not yet fired/cancelled/given up) for the user.",
+    input_schema: { type: "object", properties: {} },
+  },
+  {
+    name: "cancel_reminder",
+    description:
+      "Cancel a currently-scheduled reminder. Get the reminder_id from list_active_reminders or " +
+      "check_reminder_status first.",
+    input_schema: {
+      type: "object",
+      properties: {
+        reminder_id: { type: "number", description: "id of the reminder to cancel" },
+      },
+      required: ["reminder_id"],
+    },
+  },
+  {
     name: "remember",
     description:
-      "Save a fact or preference about the user for future conversations — e.g. which account belongs to which business, a standing instruction, or context they've shared. Call this whenever the user tells you something worth recalling later, without waiting to be asked. Keep it to one clear sentence.",
+      "Save a fact or preference about the user for future conversations — e.g. which account belongs to which business, a standing instruction, or context they've shared. Call this whenever the user tells you something worth recalling later, without waiting to be asked. Keep it to one clear sentence. For anything with a time component (a deadline, a future plan they want to be nudged about), use set_reminder instead — this tool has no way to schedule a WhatsApp push.",
     input_schema: {
       type: "object",
       properties: {
         note: { type: "string", description: "One clear sentence to remember" },
-        triggerAt: {
-          type: "string",
-          description:
-            "Optional ISO 8601 date/datetime. Set this only if what the user shared has a natural " +
-            "future trigger point — a deadline, a recurring commitment, a stated future plan. Leave " +
-            "unset for ordinary facts or preferences with no time dimension. Setting this will send " +
-            "the user a WhatsApp message at that time, so only set it when they'd genuinely want to " +
-            "be reminded — and mention to them that you've set a reminder.",
-        },
         entity_name: {
           type: "string",
           description:
@@ -1058,7 +1144,7 @@ export async function runTool(
       return { ok: true };
     case "remember": {
       const note = input.note as string;
-      addMemoryNote(ownerId, note, input.triggerAt as string | undefined);
+      addMemoryNote(ownerId, note);
 
       const entityName = (input.entity_name as string | undefined)?.trim();
       const entityType = (input.entity_type as string | undefined)?.trim();
@@ -1090,26 +1176,98 @@ export async function runTool(
         input.query as string,
         (input.limit as number | undefined) ?? SEARCH_MEMORY_DEFAULT_LIMIT
       );
+    case "get_current_time": {
+      const timezone = getUserTimezone(ownerId);
+      if (!timezone) {
+        return {
+          error:
+            "I don't know the user's timezone yet. Ask them to share their location via WhatsApp's " +
+            "location-share feature (attachment/+ icon → Location), then retry get_current_time.",
+        };
+      }
+      const now = DateTime.now().setZone(timezone);
+      return {
+        timezone,
+        current_time: now.toFormat("cccc, LLLL d, yyyy, h:mm a"),
+      };
+    }
     case "check_reminder_status":
-      return searchReminderNotes(
+      return searchReminders(
         ownerId,
         input.query as string,
         (input.limit as number | undefined) ?? SEARCH_MEMORY_DEFAULT_LIMIT
-      ).map((note) => ({
-        content: note.content,
-        triggerAt: note.triggerAt,
-        // Mirrors listDueMemoryReminders/listMemoryRemindersToGiveUpOn's own precedence
-        // (surfaced > given-up > scheduled > pending) without needing their give-up window
-        // constant — a note can't be both, so order here only matters for reading it clearly.
-        status:
-          note.lastSurfacedAt != null
-            ? "sent"
-            : note.gaveUpAt != null
-              ? "failed"
-              : note.triggerAt != null && note.triggerAt > Date.now()
-                ? "scheduled"
-                : "pending",
+      ).map((reminder) => ({
+        reminder_id: reminder.id,
+        message: reminder.message,
+        next_fire_at: reminder.nextFireAt,
+        status: reminder.status,
       }));
+    case "set_reminder": {
+      const mode = input.mode as "once" | "interval" | "until_reply";
+      const message = input.message as string;
+
+      let timeInput: ReminderTimeInput;
+      if (mode === "once") {
+        timeInput = {
+          mode: "once",
+          relativeMinutes: input.relative_minutes as number | undefined,
+          localTime: input.local_time as string | undefined,
+          localDate: input.local_date as string | undefined,
+        };
+      } else if (mode === "interval") {
+        timeInput = {
+          mode: "interval",
+          localTime: input.local_time as string,
+          localDate: input.local_date as string | undefined,
+          windowEndLocalTime: input.window_end_local_time as string,
+          intervalMinutes: input.interval_minutes as number,
+        };
+      } else if (mode === "until_reply") {
+        timeInput = { mode: "until_reply", intervalMinutes: input.interval_minutes as number };
+      } else {
+        return { error: `unknown mode "${mode}" — must be once, interval, or until_reply` };
+      }
+
+      // until_reply is purely relative-to-now — no clock time involved, so no timezone needed.
+      // once/interval need a real local-time-to-instant conversion, which needs a known zone.
+      const needsTimezone = timeInput.mode !== "until_reply" && timeInput.localTime != null;
+      const timezone = needsTimezone ? getUserTimezone(ownerId) : null;
+      if (needsTimezone && !timezone) {
+        return {
+          error:
+            "I don't know the user's timezone yet. Ask them to share their location via WhatsApp's " +
+            "location-share feature (attachment/+ icon → Location), then retry this exact " +
+            "set_reminder call.",
+        };
+      }
+
+      try {
+        const resolved = resolveReminderTime(timeInput, timezone ?? "UTC", Date.now());
+        const reminder = createReminder(ownerId, {
+          message,
+          mode,
+          nextFireAt: resolved.nextFireAt,
+          intervalMs: resolved.intervalMs,
+          windowEndAt: resolved.windowEndAt,
+        });
+        return { ok: true, reminder_id: reminder.id, next_fire_at: reminder.nextFireAt };
+      } catch (err) {
+        if (err instanceof ReminderTimeError) return { error: err.message };
+        throw err;
+      }
+    }
+    case "list_active_reminders":
+      return listActiveRemindersForOwner(ownerId).map((reminder) => ({
+        reminder_id: reminder.id,
+        message: reminder.message,
+        mode: reminder.mode,
+        next_fire_at: reminder.nextFireAt,
+      }));
+    case "cancel_reminder": {
+      const cancelled = cancelReminder(ownerId, input.reminder_id as number);
+      if (!cancelled) return { error: "No active reminder with that id — check list_active_reminders." };
+      return { ok: true };
+    }
     case "recall_entity": {
       const entityName = input.entity_name as string;
       const entityType = input.entity_type as string | undefined;
@@ -1473,7 +1631,9 @@ function buildRules(enabled: Set<ToolKey>): string {
     "- Use the remember tool proactively whenever the user shares something worth recalling later (preferences, which account is which, standing instructions) — don't wait to be asked.",
     "- When a remember note is about a specific, nameable, recurring subject (a person, place, project, etc) the user might ask about again by name, pass entity_name + entity_type on that same remember call so it files onto a lookup-able entity instead of only a flat note — don't do this for one-off preferences with no clear subject. Use recall_entity (not search_memory) when the user later asks about that subject by name — it returns the entity's notes plus everything linked to it in one call.",
     "- Use flag_unmet_request whenever you have to tell the user you can't do something — call it in the same turn as your reply, don't wait to be asked.",
-    "- Use check_reminder_status when the user asks whether a reminder you set actually went out (e.g. \"did that reminder send?\", \"did Henry get texted?\") — never guess from your own context or say you have no way to check.",
+    "- Use set_reminder for anything the user wants to be nudged about at a specific time or on a recurring cadence — a one-shot ('remind me in 20 minutes'), a fixed burst in a window ('every 5 minutes between 10 and 10:30'), or repeat-until-they-reply. Never compute the date/time/timezone math yourself — pass through the raw numbers/clock-times the user said and let the tool do the arithmetic (see its description). remember's triggerAt no longer exists — set_reminder is the only way to schedule a WhatsApp push.",
+    "- Use get_current_time whenever the user asks what time or date it is, or you need 'now' for a time-relative answer — you have no built-in clock, so never state a time/date from your own reasoning. It also doubles as how the user can check you have their timezone right.",
+    "- Use check_reminder_status or list_active_reminders when the user asks whether a reminder you set actually went out, or what's still scheduled (e.g. \"did that reminder send?\", \"did Henry get texted?\", \"what reminders do I have?\") — never guess from your own context or say you have no way to check.",
     '- Use search_documents/list_recent_documents when the user asks about something they photographed or sent via WhatsApp (boarding passes, licenses, tickets, receipts) — e.g. "when did I fly to X" or "what\'s the code on my license".',
     "- If the user wants the actual photo/file back rather than just its details (e.g. \"send me that photo again\", \"can I get the original image\"), find the right document with search_documents/list_recent_documents first, then call send_document with its id.",
     "- Use search_conversation_history when the user references something they told you earlier (a name, a decision, a date, a specific fact) that isn't in your current context — the visible recent messages or the conversation summary above — instead of saying you don't have it or guessing. WhatsApp-only, same as send_document. Every term must appear in the same message to match, so a full sentence often returns nothing even when the fact is there — if a call comes back empty, retry with different single keywords pulled from the user's question (a name, a place, a specific number) before telling them you don't have it.",
@@ -1562,8 +1722,18 @@ export function buildSystemPrompt(ownerId: number, conversationSummary?: string)
         "automatically right after your reply, so don't try to ask it yourself."
       : "";
 
+  // The model's only anchor for "today"/"what weekday is it" — e.g. resolving "next Tuesday" to
+  // a calendar date for set_reminder's local_date. Stated in the user's own resolved timezone
+  // (not the server's, which runs in whatever zone it's deployed to — UTC on Railway) so this
+  // can't be a day off from the user's actual local date. Falls back to UTC, flagged as such,
+  // only when no timezone is known yet for this user.
+  const timezone = getUserTimezone(ownerId);
+  const todayLine = timezone
+    ? `Today's date is ${DateTime.now().setZone(timezone).toFormat("cccc, LLLL d, yyyy")} (${timezone} time).`
+    : `Today's date is ${DateTime.now().setZone("utc").toFormat("cccc, LLLL d, yyyy")} UTC — the user's own timezone isn't known yet, so this may not match their local calendar day. Use set_reminder as normal (it asks for the timezone itself if it needs one); for anything else date-sensitive, prefer asking the user to confirm rather than assuming this date is their local one.`;
+
   return [
-    `You are ${name}, a personal assistant that manages the user's connected accounts. Today's date is ${new Date().toDateString()}.`,
+    `You are ${name}, a personal assistant that manages the user's connected accounts. ${todayLine}`,
     persona ? `The user described how they want you to behave:\n${persona}` : "",
     `Connected accounts:\n${accountList}`,
     `Local computer folders searchable by file name:\n${folderList}`,

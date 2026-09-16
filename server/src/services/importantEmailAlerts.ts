@@ -121,7 +121,7 @@ export function formatImportantEmailAlert(
 }
 
 // Returns whether every registered number actually got the message — callers must only mark a
-// message alerted when this is true. Same precedent as memoryReminders.ts: a notification that
+// message alerted when this is true. Same precedent as reminderScheduler.ts: a notification that
 // fails to deliver must stay retriable, unlike alerts.ts's fire-and-forget notify() (acceptable
 // there only because "another email will come"; not acceptable for a flight-cancellation alert).
 // A retry skips numbers that already got this `itemKey` (see proactiveDelivery.ts).

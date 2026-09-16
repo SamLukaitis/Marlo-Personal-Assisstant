@@ -51,7 +51,7 @@ function uniqueEmail(prefix: string): string {
 // All test files share one SQLite database for the whole `vitest run` (see test/setup.ts), and
 // user_phone_numbers.phone is UNIQUE. Existing files already claim 44700000-44700004 (see
 // pendingRegistration.test.ts, whatsappRegistration.test.ts, reconciliation.test.ts,
-// xeroForwarding.test.ts, memoryReminders.test.ts) — this file uses 44700005.
+// xeroForwarding.test.ts, reminderScheduler.test.ts) — this file uses 44700005.
 function freshPhone(): string {
   counter += 1;
   return `44700005${String(counter).padStart(4, "0")}`;

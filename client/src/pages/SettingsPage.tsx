@@ -27,6 +27,8 @@ import {
   resetTestPhone,
   replayOnboarding,
   fetchAdminMessages,
+  fetchSettings,
+  saveSettings,
   DEFAULT_BRIEFING_SETTINGS,
   type ProviderInfo,
   type Account,
@@ -68,6 +70,12 @@ const SECTIONS = [
 
 type SectionKey = (typeof SECTIONS)[number]["key"];
 
+// A real, exhaustive list of IANA zone names the browser itself knows about — the human picks
+// directly from this, so there's no free text and nothing to mis-resolve. Computed once at
+// module load, not per-render: it's a pure function of the runtime, never changes while the page
+// is open.
+const IANA_TIMEZONES = Intl.supportedValuesOf("timeZone");
+
 function isSectionKey(value: string | null): value is SectionKey {
   return !!value && SECTIONS.some((s) => s.key === value);
 }
@@ -82,6 +90,9 @@ export function SettingsPage() {
   const [briefingSaved, setBriefingSaved] = useState(false);
   const [memoryNotes, setMemoryNotes] = useState<MemoryNote[]>([]);
   const [newNote, setNewNote] = useState("");
+  const [timezone, setTimezone] = useState("");
+  const [timezoneSaved, setTimezoneSaved] = useState(false);
+  const [timezoneError, setTimezoneError] = useState<string | null>(null);
   const [whatsAppStatus, setWhatsAppStatus] = useState<WhatsAppStatus>({
     configured: false,
     signatureConfigured: false,
@@ -131,7 +142,7 @@ export function SettingsPage() {
   }
 
   async function load() {
-    const [p, a, f, b, m, ws, nums, al, iel] = await Promise.all([
+    const [p, a, f, b, m, ws, nums, al, iel, s] = await Promise.all([
       fetchProviders(),
       fetchAccounts(),
       fetchLocalFolders(),
@@ -141,6 +152,7 @@ export function SettingsPage() {
       fetchWhatsAppAllowedNumbers(),
       fetchAlertSettings(),
       fetchImportantEmailAlertSettings(),
+      fetchSettings(),
     ]);
     setProviders(p);
     setAccounts(a);
@@ -151,6 +163,7 @@ export function SettingsPage() {
     setAllowedNumbers(nums);
     setAlertSettings(al);
     setImportantEmailSettings(iel);
+    setTimezone(s.timezone ?? "");
   }
 
   useEffect(() => {
@@ -195,6 +208,17 @@ export function SettingsPage() {
     await saveBriefingSettings(briefing);
     setBriefingSaved(true);
     setTimeout(() => setBriefingSaved(false), 2500);
+  }
+
+  async function handleSaveTimezone() {
+    setTimezoneError(null);
+    try {
+      await saveSettings({ timezone: timezone.trim() });
+      setTimezoneSaved(true);
+      setTimeout(() => setTimezoneSaved(false), 2500);
+    } catch (err) {
+      setTimezoneError((err as Error).message);
+    }
   }
 
   async function handleToggleAlerts(enabled: boolean) {
@@ -486,6 +510,39 @@ export function SettingsPage() {
                   <Link to="/assistant">
                     <button className="btn-secondary">Go to the Assistant</button>
                   </Link>
+                </div>
+
+                <h2>Timezone</h2>
+                <p className="settings-section-intro">
+                  Used to work out what time "3pm" or "in 20 minutes" actually means when you ask
+                  for a reminder. Leave unset to let it work this out the moment you share your
+                  location with it on WhatsApp — picking one here does the same thing, just now
+                  rather than then.
+                </p>
+                <div className="card card-padded" style={{ marginBottom: 20 }}>
+                  <div className="row">
+                    <select value={timezone} onChange={(e) => setTimezone(e.target.value)}>
+                      <option value="">Not set</option>
+                      {IANA_TIMEZONES.map((tz) => (
+                        <option key={tz} value={tz}>
+                          {tz}
+                        </option>
+                      ))}
+                    </select>
+                    <button className="btn-primary" onClick={handleSaveTimezone}>
+                      Save
+                    </button>
+                  </div>
+                  {timezoneSaved && (
+                    <p className="muted" style={{ marginTop: 8 }}>
+                      Saved.
+                    </p>
+                  )}
+                  {timezoneError && (
+                    <p className="error" style={{ marginTop: 8 }}>
+                      {timezoneError}
+                    </p>
+                  )}
                 </div>
 
                 <h2>What it remembers</h2>

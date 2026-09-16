@@ -27,6 +27,7 @@ import { portalRoutes } from "./routes/portalRoutes.js";
 import { helpChatRoutes } from "./routes/helpChatRoutes.js";
 import { requireAuth, requireAdmin } from "./middleware/auth.js";
 import { startScheduler } from "./services/scheduler.js";
+import { startReminderScheduler } from "./services/reminderScheduler.js";
 import { installLogCapture } from "./services/logCapture.js";
 import { configureTrustProxy } from "./config.js";
 
@@ -237,6 +238,9 @@ const server = app.listen(PORT, () => {
 
 // Only useful while the server keeps running — see README known limitations.
 startScheduler();
+// Separate, much tighter interval than startScheduler's 5-minute tick — see
+// reminderScheduler.ts for why reminders need their own accurate clock.
+startReminderScheduler();
 
 // Railway sends SIGTERM to the old instance the moment a new deploy's replacement is ready and
 // serving, then SIGKILLs after a grace period. Node's default disposition for SIGTERM with no

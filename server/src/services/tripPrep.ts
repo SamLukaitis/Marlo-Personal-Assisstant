@@ -2,7 +2,7 @@
 // before departure (when online check-in typically opens) and a hotel nudge the morning of
 // check-in day. Separate from the daily morning briefing (briefing.ts), which only mentions
 // upcoming travel in passing once a day — this fires once, precisely, per booking. Same shape
-// as memoryReminders.ts: read what's due, send, stamp so it never fires twice.
+// as reminderScheduler.ts: read what's due, send, stamp so it never fires twice.
 //
 // BookingData only stores a calendar date (no time-of-day), so "24h before departure" is
 // approximated as "the day before" — timing-only v1, no visa/customs/arrival-requirement logic.
@@ -55,7 +55,7 @@ export async function checkTripPrepNudges(ownerId: number): Promise<void> {
     const text = tripPrepMessage(booking.data);
     const itemKey = `trip-prep:${booking.id}:${booking.data.kind}:${booking.data.startDate}`;
     const allSucceeded = await sendToAllNumbers(ownerId, itemKey, numbers, text, "alert", "tripPrep");
-    // Only stamp once every number actually got it — same reasoning as memoryReminders.ts: a
+    // Only stamp once every number actually got it — same reasoning as reminderScheduler.ts: a
     // partial/total failure leaves this booking due again next tick (for the numbers that missed
     // it) rather than silently lost.
     if (allSucceeded) {
