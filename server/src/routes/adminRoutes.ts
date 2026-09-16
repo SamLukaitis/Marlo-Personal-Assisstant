@@ -1,7 +1,7 @@
 import { Router } from "express";
 import fs from "node:fs";
 import {
-  isAppOwner,
+  isAdmin,
   listInvitedPhones,
   addInvitedPhone,
   removeInvitedPhone,
@@ -19,15 +19,20 @@ import type { AuthedRequest } from "../middleware/auth.js";
 
 export const adminRoutes = Router();
 
-// Defense in depth: the client hides the Admin settings section for non-owners, but every route
-// here re-checks isAppOwner itself — the same pattern assistant.ts uses for tool gating. A
-// crafted request from a signed-in non-owner must still get a 403, not just a hidden button.
+// Defense in depth: the client hides the Admin settings section for non-admins, but every route
+// here re-checks isAdmin itself — the same pattern assistant.ts uses for tool gating. A
+// crafted request from a signed-in non-admin must still get a 403, not just a hidden button.
+//
+// Gated on isAdmin, not isAppOwner: anyone promoted via the Portal's Admins tab runs the beta
+// alongside the owner, so they need the same invite/reset/replay/viewer tools. isAppOwner stays
+// what it always was — the single APP_OWNER_EMAIL account that /api/checkin's phone automation
+// resolves to — it just no longer gates this router.
 //
 // Invite-only access is gated by phone number, not email — send a tester the WhatsApp number to
 // message and add their number here; no need to collect their email in advance (see
 // isPhoneInvited/addInvitedPhone in db/store.ts).
 adminRoutes.get("/api/admin/invites", (req, res) => {
-  if (!isAppOwner((req as unknown as AuthedRequest).userId)) {
+  if (!isAdmin((req as unknown as AuthedRequest).userId)) {
     res.status(403).json({ error: "not allowed" });
     return;
   }
@@ -38,10 +43,10 @@ adminRoutes.get("/api/admin/invites", (req, res) => {
 // proxy hops to trust (config.ts's configureTrustProxy / TRUST_PROXY_HOPS) can be read off a real
 // deployment instead of assumed. `rateLimitKey` is the address per-visitor limits key on
 // (helpChatRoutes.ts): if it isn't your own public IP, count from the right of `chain` to find the
-// entry that is — that position is the hop count to set. Owner-only: the forwarded chain is
+// entry that is — that position is the hop count to set. Admin-only: the forwarded chain is
 // infrastructure detail, not something to expose publicly.
 adminRoutes.get("/api/admin/ip-check", (req, res) => {
-  if (!isAppOwner((req as unknown as AuthedRequest).userId)) {
+  if (!isAdmin((req as unknown as AuthedRequest).userId)) {
     res.status(403).json({ error: "not allowed" });
     return;
   }
@@ -60,12 +65,25 @@ adminRoutes.get("/api/admin/ip-check", (req, res) => {
 });
 
 adminRoutes.post("/api/admin/invites", (req, res) => {
-  if (!isAppOwner((req as unknown as AuthedRequest).userId)) {
+  if (!isAdmin((req as unknown as AuthedRequest).userId)) {
     res.status(403).json({ error: "not allowed" });
     return;
   }
   const phone = typeof req.body?.phone === "string" ? normalizePhone(req.body.phone) : "";
-  if (!phone) {
+  // normalizePhone only strips non-digits, so "abc1" would survive as "1" — hence the length
+  // check. The leading-zero check is the one that actually bites in practice: WhatsApp delivers
+  // `from` in E.164 (country code, no +, never a leading 0), so a number invited in national
+  // format ("07911123456") silently never matches the number that arrives ("447911123456") and
+  // the tester just gets told they aren't invited. Reject it here rather than store a row that
+  // can never match.
+  if (phone.startsWith("0")) {
+    res.status(400).json({
+      error:
+        "Use the full international number with its country code and no leading 0 — e.g. 447911123456, not 07911123456.",
+    });
+    return;
+  }
+  if (phone.length < 8 || phone.length > 15) {
     res.status(400).json({ error: "that doesn't look like a valid phone number" });
     return;
   }
@@ -74,7 +92,7 @@ adminRoutes.post("/api/admin/invites", (req, res) => {
 });
 
 adminRoutes.delete("/api/admin/invites/:phone", (req, res) => {
-  if (!isAppOwner((req as unknown as AuthedRequest).userId)) {
+  if (!isAdmin((req as unknown as AuthedRequest).userId)) {
     res.status(403).json({ error: "not allowed" });
     return;
   }
@@ -86,9 +104,11 @@ adminRoutes.delete("/api/admin/invites/:phone", (req, res) => {
 // needing a fresh one each time — wipes any in-progress registration for that number, and if it's
 // already bound to a full account, wipes that account entirely (every table, plus the uploaded
 // files themselves) so the same number/email can go through signup again from a clean slate.
-// Irreversible, so this stays owner-only and the client puts a confirm() in front of it.
+// Irreversible, so the client puts a confirm() in front of it — and like the rest of this router
+// it's admin-only, the same trust level the Portal already grants (admins can promote/demote
+// each other there).
 adminRoutes.post("/api/admin/reset-test-phone", (req, res) => {
-  if (!isAppOwner((req as unknown as AuthedRequest).userId)) {
+  if (!isAdmin((req as unknown as AuthedRequest).userId)) {
     res.status(403).json({ error: "not allowed" });
     return;
   }
@@ -140,7 +160,7 @@ adminRoutes.post("/api/admin/reset-test-phone", (req, res) => {
 // resetOnboardingConnectionState's own comment for exactly what is and isn't cleared.
 adminRoutes.post("/api/admin/replay-onboarding", (req, res) => {
   const userId = (req as unknown as AuthedRequest).userId;
-  if (!isAppOwner(userId)) {
+  if (!isAdmin(userId)) {
     res.status(403).json({ error: "not allowed" });
     return;
   }
@@ -158,7 +178,7 @@ adminRoutes.post("/api/admin/replay-onboarding", (req, res) => {
 // ask_briefing" marker sits right where it actually happened relative to the messages around it.
 // 200 messages is generous for a test conversation without being an unbounded query.
 adminRoutes.get("/api/admin/messages", (req, res) => {
-  if (!isAppOwner((req as unknown as AuthedRequest).userId)) {
+  if (!isAdmin((req as unknown as AuthedRequest).userId)) {
     res.status(403).json({ error: "not allowed" });
     return;
   }

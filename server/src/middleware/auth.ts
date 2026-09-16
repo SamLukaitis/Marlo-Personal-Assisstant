@@ -26,8 +26,8 @@ export function requireAuth(req: Request, res: Response, next: NextFunction): vo
 }
 
 // Mounted ahead of portalRoutes.ts (see index.ts) — the portal has ~15 endpoints that all share
-// this one predicate, unlike adminRoutes.ts's 4 owner-only routes, which check isAppOwner inline
-// per-route instead. Must run after requireAuth, since it relies on req.userId already being set.
+// this one predicate, unlike adminRoutes.ts's routes, which check isAdmin inline per-route
+// instead — the same predicate, spelled out per route there for defense in depth. Must run after requireAuth, since it relies on req.userId already being set.
 export function requireAdmin(req: Request, res: Response, next: NextFunction): void {
   const userId = (req as unknown as AuthedRequest).userId;
   if (!isAdmin(userId)) {

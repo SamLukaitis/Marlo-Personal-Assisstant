@@ -124,13 +124,13 @@ export function SettingsPage() {
   const { user } = useAuth();
   const [searchParams, setSearchParams] = useSearchParams();
 
-  const visibleSections = SECTIONS.filter((s) => s.key !== "admin" || user?.isAppOwner);
+  const visibleSections = SECTIONS.filter((s) => s.key !== "admin" || user?.isAdmin);
 
   const sectionParam = searchParams.get("section");
   // A non-admin can't land on "admin" even by pasting the URL — falls back the same as an
   // unrecognized section would.
   const section: SectionKey =
-    isSectionKey(sectionParam) && (sectionParam !== "admin" || user?.isAppOwner)
+    isSectionKey(sectionParam) && (sectionParam !== "admin" || user?.isAdmin)
       ? sectionParam
       : "accounts";
 
@@ -173,12 +173,12 @@ export function SettingsPage() {
   // Separate from load(): fetching this for every user would just draw a guaranteed 403 from
   // adminRoutes.ts for the vast majority of them, for a section they'll never see.
   useEffect(() => {
-    if (!user?.isAppOwner) return;
+    if (!user?.isAdmin) return;
     fetchInvites()
       .then(setInvites)
       .catch(() => {})
       .finally(() => setInvitesLoaded(true));
-  }, [user?.isAppOwner]);
+  }, [user?.isAdmin]);
 
   const connected = searchParams.get("connected");
   const errorKey = searchParams.get("error");
@@ -837,13 +837,14 @@ export function SettingsPage() {
               </>
             )}
 
-            {section === "admin" && user?.isAppOwner && (
+            {section === "admin" && user?.isAdmin && (
               <>
                 <h2>Invited testers</h2>
                 <p className="settings-section-intro">
                   Only numbers on this list can message Marlowe and sign up. Add a number, then
                   send that person the WhatsApp number to message — no need to know their email in
-                  advance.
+                  advance. Use the full international number with its country code and no leading
+                  0 (e.g. 447911123456), since that's the form WhatsApp delivers.
                 </p>
                 <div className="card card-padded" style={{ marginBottom: 20 }}>
                   <form className="row" onSubmit={handleAddInvite}>

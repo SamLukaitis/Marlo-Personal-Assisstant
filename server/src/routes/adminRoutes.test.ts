@@ -8,6 +8,7 @@ import {
   appendWhatsAppMessage,
   setPendingSetup,
   clearPendingSetup,
+  setUserAdmin,
 } from "../db/store.js";
 import type { AuthedRequest } from "../middleware/auth.js";
 
@@ -36,8 +37,8 @@ function buildTestApp(userId: number) {
 }
 
 describe("GET /api/admin/messages", () => {
-  it("rejects a non-owner with 403", async () => {
-    const stranger = findOrCreateUserByEmail(uniqueEmail("not-the-owner"));
+  it("rejects a non-admin with 403", async () => {
+    const stranger = findOrCreateUserByEmail(uniqueEmail("not-an-admin"));
     const app = buildTestApp(stranger.id);
 
     const res = await request(app).get("/api/admin/messages").query({ phone: "447900000000" });
@@ -92,8 +93,8 @@ describe("GET /api/admin/messages", () => {
 // isPhoneInvited/addInvitedPhone. These are the admin CRUD endpoints behind Settings' "Invited
 // testers" section.
 describe("/api/admin/invites", () => {
-  it("rejects a non-owner with 403 on every method", async () => {
-    const stranger = findOrCreateUserByEmail(uniqueEmail("not-the-owner"));
+  it("rejects a non-admin with 403 on every method", async () => {
+    const stranger = findOrCreateUserByEmail(uniqueEmail("not-an-admin"));
     const app = buildTestApp(stranger.id);
     const phone = uniquePhone();
 
@@ -125,6 +126,89 @@ describe("/api/admin/invites", () => {
 
     expect(res.status).toBe(400);
   });
+
+  // normalizePhone strips non-digits, so without a length check "abc1" would be stored as the
+  // invite "1" — a row that can never match a real inbound number.
+  it("rejects a phone that normalizes to too few digits", async () => {
+    const app = buildTestApp(getAppOwnerUserId());
+
+    const res = await request(app).post("/api/admin/invites").send({ phone: "abc1" });
+
+    expect(res.status).toBe(400);
+  });
+
+  // WhatsApp delivers `from` in E.164 with no leading 0, so a national-format invite would
+  // silently never match and the tester would just be told they aren't invited.
+  it("rejects a national-format number with a leading 0", async () => {
+    const app = buildTestApp(getAppOwnerUserId());
+
+    const res = await request(app).post("/api/admin/invites").send({ phone: "07911123456" });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/country code/i);
+  });
+});
+
+// The Admin settings section is gated on isAdmin, not isAppOwner — a cofounder promoted via the
+// Portal's Admins tab runs the beta too and needs the same invite/reset/replay/viewer tools.
+describe("admin routes for a promoted (non-owner) admin", () => {
+  function buildPromotedAdminApp() {
+    const admin = findOrCreateUserByEmail(uniqueEmail("promoted-admin"));
+    setUserAdmin(admin.id, true);
+    return { app: buildTestApp(admin.id), admin };
+  }
+
+  it("allows the full invite CRUD cycle", async () => {
+    const { app } = buildPromotedAdminApp();
+    const phone = uniquePhone();
+
+    expect((await request(app).get("/api/admin/invites")).status).toBe(200);
+
+    const afterAdd = await request(app).post("/api/admin/invites").send({ phone });
+    expect(afterAdd.status).toBe(200);
+    expect(afterAdd.body.map((r: { phone: string }) => r.phone)).toContain(phone);
+
+    const afterRemove = await request(app).delete(`/api/admin/invites/${phone}`);
+    expect(afterRemove.status).toBe(200);
+    expect(afterRemove.body.map((r: { phone: string }) => r.phone)).not.toContain(phone);
+  });
+
+  it("allows replay-onboarding on their own account", async () => {
+    const { app } = buildPromotedAdminApp();
+
+    const res = await request(app).post("/api/admin/replay-onboarding");
+
+    expect(res.status).toBe(200);
+    expect(res.body.ok).toBe(true);
+  });
+
+  it("allows the conversation viewer and ip-check", async () => {
+    const { app } = buildPromotedAdminApp();
+
+    // 404, not 403: past the gate, just no account bound to that number.
+    expect((await request(app).get("/api/admin/messages").query({ phone: uniquePhone() })).status).toBe(404);
+    expect((await request(app).get("/api/admin/ip-check")).status).toBe(200);
+  });
+
+  it("allows reset-test-phone", async () => {
+    const { app } = buildPromotedAdminApp();
+
+    const res = await request(app).post("/api/admin/reset-test-phone").send({ phone: uniquePhone() });
+
+    expect(res.status).toBe(200);
+    expect(res.body.hadAccount).toBe(false);
+  });
+
+  // Losing the promotion closes the door again on the next request — the check is per-request,
+  // not baked into the session.
+  it("stops allowing access once the promotion is revoked", async () => {
+    const { app, admin } = buildPromotedAdminApp();
+    expect((await request(app).get("/api/admin/invites")).status).toBe(200);
+
+    setUserAdmin(admin.id, false);
+
+    expect((await request(app).get("/api/admin/invites")).status).toBe(403);
+  });
 });
 
 // How many proxy hops to trust is a deployment fact we can't know from here (see
@@ -143,7 +227,7 @@ describe("GET /api/admin/ip-check", () => {
     return app;
   }
 
-  it("rejects a non-owner with 403", async () => {
+  it("rejects a non-admin with 403", async () => {
     const stranger = findOrCreateUserByEmail(uniqueEmail("ip-check-stranger"));
 
     const res = await request(buildTestApp(stranger.id)).get("/api/admin/ip-check");
