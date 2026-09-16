@@ -230,10 +230,18 @@ export async function handleNameReply(
   return true;
 }
 
+// Owners whose first-task request has been handed to the assistant but not answered yet. Their
+// follow-up texts in the meantime go to the assistant like any other message (folded into the same
+// reply when they arrive in time) instead of counting as another first-task reply. In memory only:
+// after a restart the step is simply still pending and the next text re-enters it.
+const awaitingFirstTaskAnswer = new Set<number>();
+
 // Shared by the free-text step below: if it's a skip, acknowledge and hand off to `next`
 // (which sends the following scripted question); otherwise forward the message to ordinary chat
-// handling (a real answer, from the real assistant) and only then call `next` — so the next
-// scripted question is never stacked behind one the user hasn't answered yet.
+// handling (a real answer, from the real assistant) and call `next` only once that answer has been
+// sent. handleText only queues the message behind a debounce, so calling `next` straight after it
+// used to send the next question first — and moved the pending step on before the assistant ran,
+// so it never saw its ask_first_task onboarding note.
 async function advancePastFreeTextStep(
   ownerId: number,
   message: IncomingWhatsAppMessage & { kind: "text" },
@@ -243,10 +251,21 @@ async function advancePastFreeTextStep(
   const phone = message.from;
   if (isSkip(message.text)) {
     await reply(phone, skipReply);
-  } else {
-    await handleText(ownerId, phone, message.text, message.messageId);
+    await next(ownerId, phone);
+    return;
   }
-  await next(ownerId, phone);
+  awaitingFirstTaskAnswer.add(ownerId);
+  const advance = async () => {
+    awaitingFirstTaskAnswer.delete(ownerId);
+    await next(ownerId, phone);
+  };
+  try {
+    await handleText(ownerId, phone, message.text, message.messageId, undefined, undefined, advance);
+  } catch (err) {
+    // Nothing was queued, so `advance` will never be called for us — don't strand the chain.
+    console.error(`postConnectSetup: forwarding first-task request failed for owner ${ownerId}`, err);
+    await advance();
+  }
 }
 
 // The ask_first_task step — see module comment. Only applies while that step is pending and the
@@ -258,6 +277,7 @@ export async function handleFirstTaskReply(
 ): Promise<boolean> {
   if (message.kind !== "text") return false;
   if (getPendingSetup(ownerId) !== "ask_first_task") return false;
+  if (awaitingFirstTaskAnswer.has(ownerId)) return false;
   await advancePastFreeTextStep(
     ownerId,
     message,

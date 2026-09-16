@@ -13,7 +13,8 @@ import { fetchHeadlines, type NewsTopic } from "../providers/news.js";
 import { fetchWeather, type WeatherReport } from "../providers/weather.js";
 import { fetchQuotes, DEFAULT_SYMBOLS, type Quote } from "../providers/markets.js";
 import { todayKey } from "./dateKey.js";
-import type { UnifiedMessage } from "../providers/types.js";
+import { eventLocalDateKey } from "./eventTime.js";
+import type { CalendarEvent, UnifiedMessage } from "../providers/types.js";
 
 // Briefing synthesis is a once-a-day, moderately complex writeup — the richer assistant tier
 // is the right fit, same as assistant.ts's routing, rather than the flat Opus default this
@@ -134,6 +135,12 @@ export function describeLocationStreak(checkin: TravelCheckinRow | undefined, no
   return `Currently in ${place} — arrived ${daysSince} day${daysSince === 1 ? "" : "s"} ago, been there ${daysSince} day${daysSince === 1 ? "" : "s"}.`;
 }
 
+// Timed events keep their zoned ISO string (unambiguous for the model); an all-day event's plain
+// date would otherwise read as a midnight start.
+export function describeEventTime(e: CalendarEvent): string {
+  return e.allDay ? `${e.title} (all day)` : `${e.title} at ${e.start}`;
+}
+
 async function buildBriefingText(ownerId: number): Promise<string> {
   const settings = getBriefingSettings(ownerId);
   const assistantName = getSetting(ownerId, "assistant_name") ?? "Marlowe";
@@ -150,8 +157,9 @@ async function buildBriefingText(ownerId: number): Promise<string> {
 
   const unread = selectUnreadSinceMidnight(messages, now);
   const todayKeyStr = todayKey();
-  const todayEvents = events.filter((e) => e.start.startsWith(todayKeyStr));
-  const upcomingEvents = events.filter((e) => !e.start.startsWith(todayKeyStr));
+  // By calendar day, not the string prefix — a UTC "Z" time near midnight is a different local day.
+  const todayEvents = events.filter((e) => eventLocalDateKey(e.start) === todayKeyStr);
+  const upcomingEvents = events.filter((e) => eventLocalDateKey(e.start) !== todayKeyStr);
   const location = describeLocationStreak(listCheckins(ownerId, 1)[0], now);
   const { headlines: news, quotes, weather } = await getBriefingFeed(ownerId);
 
@@ -175,10 +183,10 @@ async function buildBriefingText(ownerId: number): Promise<string> {
         .join("; ") || "none"
     }`,
     `Today's calendar events: ${
-      todayEvents.map((e) => `${e.title} at ${e.start}`).join("; ") || "nothing scheduled"
+      todayEvents.map(describeEventTime).join("; ") || "nothing scheduled"
     }`,
     `Calendar events in the next 3 days (not today) — mention only if there's something notable, e.g. a flight or a change of accommodation: ${
-      upcomingEvents.map((e) => `${e.title} at ${e.start}`).join("; ") || "none"
+      upcomingEvents.map(describeEventTime).join("; ") || "none"
     }`,
     `Emails that look like they need a reply (unread, over 3 days old, not automated): ${
       flagged.map((m) => `"${m.subject}" from ${m.from}`).join("; ") || "none"

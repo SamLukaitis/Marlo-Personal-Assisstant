@@ -29,6 +29,7 @@ import { requireAuth, requireAdmin } from "./middleware/auth.js";
 import { startScheduler } from "./services/scheduler.js";
 import { startReminderScheduler } from "./services/reminderScheduler.js";
 import { installLogCapture } from "./services/logCapture.js";
+import { configureTrustProxy } from "./config.js";
 
 // Installed before anything else has a chance to log, so every console.error/console.warn from
 // here on (including ones during route registration below) is captured for the admin Portal.
@@ -50,6 +51,7 @@ process.on("uncaughtException", (err) => {
 
 const app = express();
 const PORT = process.env.PORT ?? 4000;
+configureTrustProxy(app);
 
 // credentials: true is required for the browser to actually send the session cookie — without
 // it, a cross-origin request (local dev: client on :5173, server on :4000) silently drops

@@ -10,6 +10,7 @@ import {
 import * as g from "../providers/google.js";
 import * as ms from "../providers/microsoft.js";
 import * as local from "../providers/local.js";
+import { eventTimeMs } from "./eventTime.js";
 import type {
   UnifiedMessage,
   CalendarEvent,
@@ -323,7 +324,9 @@ export async function hubListEvents(ownerId: number, days = 7): Promise<Calendar
       a.provider === "google" ? g.googleListEvents(a, days) : ms.microsoftListEvents(a, days)
     )
   );
-  return settleForAccounts(accounts, results).sort((a, b) => (a.start > b.start ? 1 : -1));
+  // Providers return different string shapes (UTC "Z", "+02:00" offsets, all-day dates), so
+  // sort by the actual instant rather than comparing the strings.
+  return settleForAccounts(accounts, results).sort((a, b) => eventTimeMs(a.start) - eventTimeMs(b.start));
 }
 
 export async function hubSearchFiles(ownerId: number, query: string): Promise<FileHit[]> {

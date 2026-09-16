@@ -293,15 +293,32 @@ describe("handleFirstTaskReply", () => {
     expect(getPendingSetup(ownerId)).toBe("ask_briefing");
   });
 
-  it("on a real request: forwards it to ordinary chat handling, then asks the briefing question right after", async () => {
+  // handleText only queues the message; the assistant answers after a debounce. The briefing
+  // question must wait for that answer (see postConnectSetup.firstTask.integration.test.ts).
+  it("on a real request: forwards it to ordinary chat handling, and asks the briefing question only once it's answered", async () => {
     const ownerId = newOwnerId();
     await pastName(ownerId);
 
     const handled = await handleFirstTaskReply(ownerId, text("reply to John's email for me"));
 
     expect(handled).toBe(true);
-    expect(handleText).toHaveBeenCalledWith(ownerId, PHONE, "reply to John's email for me", expect.any(String));
+    expect(handleText).toHaveBeenCalledWith(
+      ownerId,
+      PHONE,
+      "reply to John's email for me",
+      expect.any(String),
+      undefined,
+      undefined,
+      expect.any(Function)
+    );
+    expect(getPendingSetup(ownerId)).toBe("ask_first_task");
+    expect(sendWhatsAppReplyButtons).not.toHaveBeenCalled();
+
+    const afterReply = vi.mocked(handleText).mock.calls[0][6]!;
+    await afterReply();
+
     expect(getPendingSetup(ownerId)).toBe("ask_briefing");
+    expect(sendWhatsAppReplyButtons).toHaveBeenCalledTimes(1);
   });
 });
 

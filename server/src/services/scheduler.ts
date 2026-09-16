@@ -12,7 +12,7 @@ import {
   pruneOldServerLogs,
 } from "../db/store.js";
 import { isWhatsAppConfigured } from "../providers/whatsapp.js";
-import { sendProactiveMessage } from "./outbound.js";
+import { sendToAllNumbers } from "./proactiveDelivery.js";
 import { countTravelDays } from "./travelDays.js";
 import { checkForNewImportantMessages } from "./alerts.js";
 import { checkNewEmailsAgainstRecentDocuments } from "./reconciliation.js";
@@ -75,10 +75,12 @@ async function runDailyCheckForUser(ownerId: number): Promise<void> {
     // with travel off gets no Schengen line, same as their Setup page shows no travel section.
     const alert = getEnabledTools(ownerId).has("travel") ? schengenAlertLine(ownerId) : null;
     const message = alert ? `${briefing.content}\n\n${alert}` : briefing.content;
-    for (const number of numbers) {
-      await sendProactiveMessage(number, message, "digest");
+    // Only stamp the day done once every number has it; a retry next tick skips numbers that
+    // already got today's briefing (see proactiveDelivery.ts).
+    const itemKey = `daily-briefing:${todayKey()}`;
+    if (await sendToAllNumbers(ownerId, itemKey, numbers, message, "digest", "scheduler")) {
+      setSetting(ownerId, "last_proactive_send_date", todayKey());
     }
-    setSetting(ownerId, "last_proactive_send_date", todayKey());
   } catch (err) {
     console.error(`scheduler: failed to send proactive briefing for user ${ownerId}`, err);
   }

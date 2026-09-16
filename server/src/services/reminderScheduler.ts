@@ -12,34 +12,31 @@ import {
   type ReminderRow,
 } from "../db/store.js";
 import { isWhatsAppConfigured } from "../providers/whatsapp.js";
-import { sendProactiveMessage } from "./outbound.js";
+import { sendToAllNumbers } from "./proactiveDelivery.js";
 
 const REMINDER_CHECK_INTERVAL_MS = 15 * 1000;
 const UNTIL_REPLY_GIVE_UP_WINDOW_MS = 24 * 60 * 60 * 1000;
 const MAX_REMINDERS_PER_TICK = 10;
-
-async function sendToAllNumbers(numbers: string[], text: string): Promise<boolean> {
-  let allSucceeded = true;
-  for (const number of numbers) {
-    try {
-      await sendProactiveMessage(number, text, "alert");
-    } catch (err) {
-      console.error("reminderScheduler: failed to send", err);
-      allSucceeded = false;
-    }
-  }
-  return allSucceeded;
-}
 
 async function sendDueReminders(ownerId: number, numbers: string[], due: ReminderRow[]): Promise<void> {
   // Capped per tick, not per reminder ever: anything past the cap stays due (ordered
   // soonest-first) and is retried on the next 15s tick, so a burst drains naturally instead of
   // needing separate overflow bookkeeping — same spirit as the old memoryReminders.ts.
   for (const reminder of due.slice(0, MAX_REMINDERS_PER_TICK)) {
-    const succeeded = await sendToAllNumbers(numbers, `⏰ ${reminder.message}`);
+    // Keyed on this occurrence (next_fire_at moves on once it's sent), so the retry below reaches
+    // only the numbers that actually missed it — see proactiveDelivery.ts.
+    const itemKey = `reminder:${reminder.id}:${reminder.nextFireAt}`;
+    const succeeded = await sendToAllNumbers(
+      ownerId,
+      itemKey,
+      numbers,
+      `⏰ ${reminder.message}`,
+      "alert",
+      "reminderScheduler"
+    );
     // Only advance (mark done / schedule the next occurrence) once every number actually got it —
-    // a failed send leaves next_fire_at untouched so it's retried in full next tick, rather than
-    // silently skipping an occurrence.
+    // a failed send leaves next_fire_at untouched so it's retried next tick, rather than silently
+    // skipping an occurrence.
     if (succeeded) {
       advanceReminderAfterSend(reminder.id);
     }
@@ -51,8 +48,12 @@ async function giveUpOnStaleUntilReplyReminders(ownerId: number, numbers: string
   const stale = listRemindersToGiveUpOnForOwner(ownerId, cutoff);
   for (const reminder of stale.slice(0, MAX_REMINDERS_PER_TICK)) {
     await sendToAllNumbers(
+      ownerId,
+      `reminder-give-up:${reminder.id}`,
       numbers,
-      `⚠️ I've been trying to remind you about this for 24 hours with no reply, so I'm stopping: "${reminder.message}"`
+      `⚠️ I've been trying to remind you about this for 24 hours with no reply, so I'm stopping: "${reminder.message}"`,
+      "alert",
+      "reminderScheduler"
     );
     // Marked given-up regardless of whether the notice itself sent — this is a one-shot notice,
     // not a reminder, so it doesn't get its own retry loop.

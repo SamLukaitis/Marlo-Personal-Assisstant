@@ -40,7 +40,8 @@ async function handleLink(
   from: string,
   url: string,
   messageId: string,
-  historyRowId: number
+  historyRowId: number,
+  afterReply?: () => Promise<void>
 ): Promise<void> {
   const result = await ingestWhatsAppLink({ ownerId, phone: from, url });
 
@@ -48,6 +49,7 @@ async function handleLink(
     const reply = linkFailureMessage(result.reason);
     appendWhatsAppMessage(ownerId, from, "assistant", reply);
     await sendWhatsAppMessage(from, reply);
+    await afterReply?.();
     return;
   }
 
@@ -59,7 +61,7 @@ async function handleLink(
     `confirm and/or act on it. Extracted content:\n${result.doc.extractedText}`;
   // No caption to judge completeness from — same default as an uncaptioned media attachment,
   // biased toward waiting since a bare link is often followed by an explanatory message.
-  queueForAssistant(ownerId, from, messageId, historyRowId, docContext, false);
+  queueForAssistant(ownerId, from, messageId, historyRowId, docContext, false, afterReply);
 }
 
 // Folds a dropped WhatsApp pin into the conversation the same way handleLink folds in a saved
@@ -92,13 +94,16 @@ export async function handleLocation(
   queueForAssistant(ownerId, from, messageId, rowId, null, true);
 }
 
+// afterReply, if given, runs once this message has actually been answered — the assistant reply is
+// debounced (messageBatching.ts), so it usually hasn't been sent yet when this returns.
 export async function handleText(
   ownerId: number,
   from: string,
   text: string,
   messageId: string,
   quotedMessageId?: string,
-  forwarded?: boolean
+  forwarded?: boolean,
+  afterReply?: () => Promise<void>
 ): Promise<void> {
   const rowId = appendWhatsAppMessage(ownerId, from, "user", text);
 
@@ -108,6 +113,7 @@ export async function handleText(
   if (isHelpTrigger(text)) {
     appendWhatsAppMessage(ownerId, from, "assistant", MARLOWE_HELP_TEXT);
     await sendWhatsAppMessage(from, MARLOWE_HELP_TEXT);
+    await afterReply?.();
     return;
   }
 
@@ -117,6 +123,7 @@ export async function handleText(
     const versionText = buildVersionText();
     appendWhatsAppMessage(ownerId, from, "assistant", versionText);
     await sendWhatsAppMessage(from, versionText);
+    await afterReply?.();
     return;
   }
 
@@ -127,7 +134,7 @@ export async function handleText(
   // document store; a false negative just means the user re-sends the bare link).
   const url = findSaveableUrl(text);
   if (url) {
-    await handleLink(ownerId, from, url, messageId, rowId);
+    await handleLink(ownerId, from, url, messageId, rowId, afterReply);
     return;
   }
 
@@ -136,5 +143,5 @@ export async function handleText(
   // actually pointed at instead of guessing — see quotedMessage.ts.
   const quotedContext = resolveQuotedMessageContext(ownerId, quotedMessageId, forwarded);
   const override = quotedContext ? `${quotedContext}\n\n${text}` : null;
-  queueForAssistant(ownerId, from, messageId, rowId, override, looksComplete(text));
+  queueForAssistant(ownerId, from, messageId, rowId, override, looksComplete(text), afterReply);
 }

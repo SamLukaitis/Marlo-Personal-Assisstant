@@ -21,6 +21,9 @@ interface BufferedEntry {
   // saved to point at (tests with a mocked store) — its override, if any, is then just appended.
   rowId: number | undefined;
   override: string | null;
+  // Runs once the reply covering this message has been sent (or the error message, if the call
+  // failed) — for a caller that must not send anything else until the user has their answer.
+  afterReply?: () => Promise<void>;
 }
 
 interface BatchState {
@@ -40,14 +43,16 @@ const batches = new Map<string, BatchState>();
 // persisted history line (extracted document/link text, a resolved quoted-reply) — null means the
 // persisted line is already what the model should see. historyRowId is the id appendWhatsAppMessage
 // returned for this message's own row. fastPath is looksComplete(text) for text messages, true for
-// location, and looksComplete(caption) (or false with no caption) for media.
+// location, and looksComplete(caption) (or false with no caption) for media. afterReply: see
+// BufferedEntry.
 export function queueForAssistant(
   ownerId: number,
   from: string,
   messageId: string,
   historyRowId: number | undefined,
   contentOverride: string | null,
-  fastPath: boolean
+  fastPath: boolean,
+  afterReply?: () => Promise<void>
 ): void {
   let state = batches.get(from);
   if (!state) {
@@ -62,7 +67,7 @@ export function queueForAssistant(
     };
     batches.set(from, state);
   }
-  state.entries.push({ rowId: historyRowId, override: contentOverride });
+  state.entries.push({ rowId: historyRowId, override: contentOverride, afterReply });
   state.lastMessageId = messageId;
   state.lastFastPath = fastPath;
 
@@ -99,6 +104,9 @@ async function flush(from: string): Promise<void> {
       from,
       "Sorry, I hit an error handling that — check the server logs."
     ).catch(() => {});
+  }
+  try {
+    await runAfterReplyCallbacks(entries);
   } finally {
     state.running = false;
     if (state.moreArrivedWhileRunning) {
@@ -107,6 +115,17 @@ async function flush(from: string): Promise<void> {
       state.timer = setTimeout(() => void flush(from), delay);
     } else if (state.entries.length === 0) {
       batches.delete(from);
+    }
+  }
+}
+
+async function runAfterReplyCallbacks(entries: BufferedEntry[]): Promise<void> {
+  for (const entry of entries) {
+    if (!entry.afterReply) continue;
+    try {
+      await entry.afterReply();
+    } catch (err) {
+      console.error("whatsapp: after-reply callback failed", err);
     }
   }
 }

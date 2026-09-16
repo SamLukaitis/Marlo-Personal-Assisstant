@@ -92,6 +92,28 @@ describe("runReminderCheckForOwner", () => {
     expect(listActiveRemindersForOwner(user.id)).toHaveLength(1);
   });
 
+  // Without a per-number delivery ledger the whole reminder is retried, so the numbers that did
+  // get it are pinged again — every 15 seconds, at this tick rate.
+  it("on retry after a partial failure, only resends to the number that missed it", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("reminder-partial"));
+    registerActivePhone(user.id);
+    const second = registerActivePhone(user.id);
+    createReminder(user.id, { message: "Call the bank", mode: "once", nextFireAt: Date.now() - 60_000 });
+    vi.mocked(sendWhatsAppMessage).mockImplementation(async (to: string) => {
+      if (to === second) throw new Error("network error");
+      return undefined;
+    });
+
+    await runReminderCheckForOwner(user.id);
+    expect(listActiveRemindersForOwner(user.id)).toHaveLength(1);
+
+    vi.mocked(sendWhatsAppMessage).mockReset().mockResolvedValue(undefined);
+    await runReminderCheckForOwner(user.id);
+
+    expect(vi.mocked(sendWhatsAppMessage).mock.calls.map((c) => c[0])).toEqual([second]);
+    expect(listActiveRemindersForOwner(user.id)).toHaveLength(0);
+  });
+
   it("does nothing when WhatsApp isn't configured", async () => {
     const user = findOrCreateUserByEmail(uniqueEmail("reminder-unconfigured"));
     registerActivePhone(user.id);

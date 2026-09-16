@@ -1,4 +1,5 @@
 import type { CalendarEvent } from "../providers/types.js";
+import { eventTimeMs } from "./eventTime.js";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const HOUR_MS = 60 * 60 * 1000;
@@ -58,7 +59,7 @@ export function findFreeSlots(events: CalendarEvent[], opts: FindFreeSlotsOption
 
   const busy = mergeIntervals(
     events
-      .map((e) => ({ start: new Date(e.start).getTime(), end: new Date(e.end).getTime() }))
+      .map((e) => ({ start: eventTimeMs(e.start), end: eventTimeMs(e.end) }))
       .filter((i) => Number.isFinite(i.start) && Number.isFinite(i.end) && i.end > i.start)
   );
 

@@ -11,16 +11,34 @@ export const helpChatRoutes = Router();
 const RATE_LIMIT_WINDOW_MS = 10 * 60 * 1000;
 const RATE_LIMIT_MAX_PER_WINDOW = 15;
 const requestTimestamps = new Map<string, number[]>();
+let lastSweepAt = 0;
 
 function isRateLimited(ip: string): boolean {
   const now = Date.now();
+  // Drop visitors with nothing left in the window, at most once per window — otherwise every IP
+  // that ever sent one message stays in the map until the next restart.
+  if (now - lastSweepAt >= RATE_LIMIT_WINDOW_MS) {
+    for (const [key, times] of requestTimestamps) {
+      if (times.every((t) => now - t >= RATE_LIMIT_WINDOW_MS)) requestTimestamps.delete(key);
+    }
+    lastSweepAt = now;
+  }
   const recent = (requestTimestamps.get(ip) ?? []).filter((t) => now - t < RATE_LIMIT_WINDOW_MS);
   recent.push(now);
   requestTimestamps.set(ip, recent);
   return recent.length > RATE_LIMIT_MAX_PER_WINDOW;
 }
 
+export function helpChatRateLimitTrackedVisitors(): number {
+  return requestTimestamps.size;
+}
+
 const MAX_HISTORY_TURNS = 10;
+// Every character here goes into a paid model call, and the widget's own input never needs more.
+// History comes back from the client too, so its turns are capped as well (assistant replies can
+// legitimately run longer than a question, hence the larger budget).
+export const MAX_HELP_CHAT_MESSAGE_CHARS = 1000;
+const MAX_HISTORY_TURN_CHARS = MAX_HELP_CHAT_MESSAGE_CHARS * 2;
 
 function isValidTurn(t: unknown): t is HelpChatTurn {
   return (
@@ -43,9 +61,16 @@ helpChatRoutes.post("/api/help-chat", async (req, res) => {
     res.status(400).json({ error: "message is required" });
     return;
   }
+  if (message.length > MAX_HELP_CHAT_MESSAGE_CHARS) {
+    res.status(400).json({ error: `Please keep messages under ${MAX_HELP_CHAT_MESSAGE_CHARS} characters.` });
+    return;
+  }
 
   const rawHistory = Array.isArray(req.body?.history) ? req.body.history : [];
-  const history: HelpChatTurn[] = rawHistory.filter(isValidTurn).slice(-MAX_HISTORY_TURNS);
+  const history: HelpChatTurn[] = rawHistory
+    .filter(isValidTurn)
+    .slice(-MAX_HISTORY_TURNS)
+    .map((t: HelpChatTurn) => ({ role: t.role, text: t.text.slice(0, MAX_HISTORY_TURN_CHARS) }));
   history.push({ role: "user", text: message });
 
   try {

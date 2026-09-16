@@ -21,8 +21,11 @@ export interface CalendarEvent {
   accountEmail: string;
   provider: Provider;
   title: string;
-  start: string; // ISO date
-  end: string; // ISO date
+  // A zoned ISO datetime ("...Z" or "...+02:00"), or for an all-day event a plain "YYYY-MM-DD"
+  // (end exclusive). Compare/bucket these with services/eventTime.ts, never new Date() or strings.
+  start: string;
+  end: string;
+  allDay?: boolean;
   location?: string;
   link?: string;
 }

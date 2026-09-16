@@ -370,6 +370,7 @@ export async function googleListEvents(
     title: e.summary ?? "(untitled)",
     start: e.start?.dateTime ?? e.start?.date ?? "",
     end: e.end?.dateTime ?? e.end?.date ?? "",
+    ...(!e.start?.dateTime && e.start?.date ? { allDay: true } : {}),
     location: e.location ?? undefined,
     link: e.htmlLink ?? undefined,
   }));
@@ -415,6 +416,7 @@ function eventToCalendarEvent(account: AccountRow, e: {
     title: e.summary ?? "(untitled)",
     start: e.start?.dateTime ?? e.start?.date ?? "",
     end: e.end?.dateTime ?? e.end?.date ?? "",
+    ...(!e.start?.dateTime && e.start?.date ? { allDay: true } : {}),
     location: e.location ?? undefined,
     link: e.htmlLink ?? undefined,
   };

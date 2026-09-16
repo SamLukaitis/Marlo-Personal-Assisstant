@@ -295,6 +295,84 @@ describe("sendChoiceMessage", () => {
     const body = JSON.parse(fetchMock.mock.calls[0][1].body);
     expect(body.interactive.type).toBe("list");
   });
+
+  // Meta rejects an interactive body over 1,024 chars — exactly what an email draft shown in an
+  // ask_user_choice question produces. The user used to get "Sorry, I hit an error" instead.
+  it("sends an over-long question as a plain message first, then the buttons under a short prompt", async () => {
+    const fetchMock = mockFetchOk();
+    const draft = `To: jane@x.com\nSubject: Re: Thursday\n\n${"Lots of words here. ".repeat(80)}\n\nReady to send this?`;
+
+    await sendChoiceMessage("447000000001", draft, [
+      { id: "pa:abc:edit", title: "Edit" },
+      { id: "pa:abc:yes", title: "Send" },
+      { id: "pa:abc:no", title: "Leave in Drafts" },
+    ]);
+
+    const bodies = fetchMock.mock.calls.map((c) => JSON.parse(c[1].body));
+    const texts = bodies.filter((b) => b.type === "text").map((b) => b.text.body);
+    const interactive = bodies.filter((b) => b.type === "interactive");
+    expect(texts.join("\n")).toContain("Lots of words here.");
+    expect(texts.every((t) => t.length <= 4096)).toBe(true);
+    expect(interactive).toHaveLength(1);
+    expect(interactive[0].interactive.body.text).toBe("Ready to send this?");
+    expect(bodies[bodies.length - 1].type).toBe("interactive");
+  });
+
+  it("falls back to a generic prompt when even the last paragraph is too long for the body", async () => {
+    const fetchMock = mockFetchOk();
+
+    await sendChoiceMessage("447000000001", "x".repeat(3000), [
+      { id: "pa:abc:yes", title: "Yes" },
+      { id: "pa:abc:no", title: "No" },
+    ]);
+
+    const bodies = fetchMock.mock.calls.map((c) => JSON.parse(c[1].body));
+    const interactive = bodies.find((b) => b.type === "interactive");
+    expect(interactive.interactive.body.text.length).toBeLessThanOrEqual(1024);
+  });
+
+  it("keeps button titles within WhatsApp's 20-character limit", async () => {
+    const fetchMock = mockFetchOk();
+
+    await sendChoiceMessage("447000000001", "Send it?", [
+      { id: "pa:abc:yes", title: "Send it to everyone right now" },
+      { id: "pa:abc:no", title: "No" },
+    ]);
+
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body);
+    const titles: string[] =
+      body.interactive.type === "button"
+        ? body.interactive.action.buttons.map((b: { reply: { title: string } }) => b.reply.title)
+        : body.interactive.action.sections[0].rows.map((r: { title: string }) => r.title);
+    const limit = body.interactive.type === "button" ? 20 : 24;
+    expect(titles.every((t) => t.length <= limit)).toBe(true);
+  });
+
+  it("keeps list row titles within 24 characters, with the full label in the row description", async () => {
+    const fetchMock = mockFetchOk();
+    const longName = "Jane Longsurname-Doublebarrel (work)";
+
+    await sendChoiceMessage("447000000001", "Which Jane?", [
+      { id: "pa:abc:0", title: longName },
+      { id: "pa:abc:1", title: "B" },
+      { id: "pa:abc:2", title: "C" },
+      { id: "pa:abc:3", title: "D" },
+    ]);
+
+    const rows = JSON.parse(fetchMock.mock.calls[0][1].body).interactive.action.sections[0].rows;
+    expect(rows.every((r: { title: string }) => r.title.length <= 24)).toBe(true);
+    expect(rows[0].description).toBe(longName);
+  });
+
+  it("never sends more than 10 list rows", async () => {
+    const fetchMock = mockFetchOk();
+    const choices = Array.from({ length: 12 }, (_, i) => ({ id: `pa:abc:${i}`, title: `Option ${i}` }));
+
+    await sendChoiceMessage("447000000001", "Which one?", choices);
+
+    const rows = JSON.parse(fetchMock.mock.calls[0][1].body).interactive.action.sections[0].rows;
+    expect(rows).toHaveLength(10);
+  });
 });
 
 describe("sendWhatsAppMediaFromBuffer", () => {

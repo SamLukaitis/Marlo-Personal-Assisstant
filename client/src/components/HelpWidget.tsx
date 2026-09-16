@@ -81,6 +81,7 @@ export function HelpWidget() {
               value={draft}
               onChange={(e) => setDraft(e.target.value)}
               placeholder="Ask a question…"
+              maxLength={1000}
               disabled={sending}
               aria-label="Your question"
             />

@@ -10,7 +10,7 @@ vi.mock("../db/store.js", () => ({
   updateAccountTokens: vi.fn(),
 }));
 
-const { microsoftCreateEvent, microsoftUpdateEvent } = await import("./microsoft.js");
+const { microsoftCreateEvent, microsoftUpdateEvent, microsoftListEvents } = await import("./microsoft.js");
 
 function fakeAccount(overrides: Partial<AccountRow> = {}): AccountRow {
   return {
@@ -92,5 +92,54 @@ describe("microsoftUpdateEvent", () => {
     const body = JSON.parse(requestInit!.body as string);
     expect(body.start).toEqual({ dateTime: "2026-09-19T18:00:00", timeZone: "America/Bogota" });
     expect(body.end).toEqual({ dateTime: "2026-09-19T21:00:00", timeZone: "America/Lima" });
+  });
+});
+
+// Graph returns event times in UTC but with no zone marker ("2026-09-15T09:00:00.0000000"), and
+// everything downstream (the client, findFreeSlots, the briefing, the model) parsed that as local
+// time — so an Outlook event showed at the wrong hour anywhere the server/user wasn't on UTC.
+describe("microsoftListEvents", () => {
+  it("asks Graph for UTC and returns times with an explicit UTC marker", async () => {
+    vi.mocked(fetch).mockResolvedValue(
+      mockGraphResponse({
+        value: [
+          {
+            id: "evt-utc",
+            subject: "Standup",
+            isAllDay: false,
+            start: { dateTime: "2026-09-15T09:00:00.0000000", timeZone: "UTC" },
+            end: { dateTime: "2026-09-15T09:30:00.0000000", timeZone: "UTC" },
+          },
+        ],
+      })
+    );
+
+    const [event] = await microsoftListEvents(fakeAccount(), 7);
+
+    expect(new Date(event.start).getTime()).toBe(Date.UTC(2026, 8, 15, 9, 0));
+    expect(new Date(event.end).getTime()).toBe(Date.UTC(2026, 8, 15, 9, 30));
+    expect(event.start).toMatch(/Z$/);
+    const [, requestInit] = vi.mocked(fetch).mock.calls[0];
+    expect((requestInit!.headers as Record<string, string>).Prefer).toBe('outlook.timezone="UTC"');
+  });
+
+  it("returns an all-day event as plain dates, flagged all-day, like Google does", async () => {
+    vi.mocked(fetch).mockResolvedValue(
+      mockGraphResponse({
+        value: [
+          {
+            id: "evt-allday",
+            subject: "Bank holiday",
+            isAllDay: true,
+            start: { dateTime: "2026-09-15T00:00:00.0000000", timeZone: "UTC" },
+            end: { dateTime: "2026-09-16T00:00:00.0000000", timeZone: "UTC" },
+          },
+        ],
+      })
+    );
+
+    const [event] = await microsoftListEvents(fakeAccount(), 7);
+
+    expect(event).toMatchObject({ start: "2026-09-15", end: "2026-09-16", allDay: true });
   });
 });
