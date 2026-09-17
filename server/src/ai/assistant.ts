@@ -1675,7 +1675,7 @@ export function buildSystemPrompt(ownerId: number, conversationSummary?: string)
           return `- id ${a.id}: ${a.email} (${a.provider})${restrictions.length ? ` — ${restrictions.join(", ")}` : ""}`;
         })
         .join("\n")
-    : "(none connected — tell the user to connect an account on the Setup page first)";
+    : "(none connected — this user has no mailbox linked. Anything needing email or calendar is unavailable: say so plainly in one line and offer to connect an inbox, e.g. \"I'd need your email for that — want to connect it?\". Most of these users are on WhatsApp only and have no access to our website — don't reference web-based setup. Everything else — reminders, to-dos, notes, documents they send, and general questions — works normally, so answer those without mentioning the missing inbox.)";
 
   const folders = listLocalFolders(ownerId);
   const folderList = folders.length
