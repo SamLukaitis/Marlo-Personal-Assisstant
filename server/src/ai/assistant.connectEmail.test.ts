@@ -12,6 +12,7 @@ const { resolveRegistrationUser } = await import("../routes/authRoutes.js");
 const {
   findOrCreateUserByPhone,
   findOrCreateUserByEmail,
+  addPhoneNumberForUser,
   upsertAccount,
   upsertPendingRegistration,
   completePendingRegistration,
@@ -121,6 +122,42 @@ describe("connect_email tool", () => {
     await runTool(user.id, "connect_email", { provider: "google" });
 
     expect(getPendingRegistration(phone)?.step).toBe("completed");
+  });
+
+  // Review finding #2: setPendingRegistrationToken (store.ts) is an UPDATE keyed on phone — with
+  // no matching row it still hands back a token nothing can ever redeem. Two real populations
+  // reach a phone with zero accounts and no pending row: an admin's replay-onboarding action, and
+  // a web-registered user who added this number in Settings then deleted their mailbox. This test
+  // mirrors the latter directly (findOrCreateUserByEmail + addPhoneNumberForUser, no registration
+  // row ever created).
+  it("fails clearly instead of sending a dead link when there's no pending-registration row for this phone", async () => {
+    const phone = freshPhone();
+    const user = findOrCreateUserByEmail(`web-registered-${phone}@example.com`);
+    addPhoneNumberForUser(user.id, phone);
+    expect(getPendingRegistration(phone)).toBeNull();
+
+    const result = await runTool(user.id, "connect_email", { provider: "google" });
+
+    expect(result).toEqual({ error: expect.stringContaining("registration record is missing") });
+    expect(sendWhatsAppCtaUrl).not.toHaveBeenCalled();
+  });
+
+  // Review finding #4: sendConnectLink used to return void for both a real send and a
+  // cooldown-swallowed one, so the tool always reported ok:true — telling the user a link is on
+  // its way even when the only thing sent was "Still working on it...".
+  it("surfaces the cooldown instead of claiming success when a second call lands within it", async () => {
+    const phone = freshPhone();
+    const user = phoneOnlyAccount(phone);
+
+    const first = await runTool(user.id, "connect_email", { provider: "google" });
+    expect(first).toEqual({ ok: true });
+
+    // "actually, Outlook" moments later — still within the resend cooldown.
+    const second = await runTool(user.id, "connect_email", { provider: "microsoft" });
+
+    expect(second).toEqual({ error: expect.stringContaining("A link was just sent") });
+    expect(sendWhatsAppCtaUrl).toHaveBeenCalledTimes(1); // only the first (Gmail) link ever went out
+    expect(sendWhatsAppMessage).toHaveBeenCalledWith(phone, expect.stringContaining("Still working on it"));
   });
 
   it("end-to-end: the issued token resolves back to this phone, and OAuth attaches the address to the existing account rather than creating a second one", async () => {

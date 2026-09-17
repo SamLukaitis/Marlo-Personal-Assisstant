@@ -149,7 +149,12 @@ async function sendProviderLink(row: PendingRegistrationRow): Promise<void> {
     await askProvider(row);
     return;
   }
-  await sendConnectLink(row.phone, provider);
+  const result = await sendConnectLink(row.phone, provider);
+  // "no_pending_row" shouldn't happen here — this row was just read from the DB — but if a race
+  // (e.g. an admin's replay-onboarding running mid-request) ever deletes it between the read and
+  // here, don't advance the step for a link that was never actually sent. "throttled" already sent
+  // its own reply; same reasoning.
+  if (result !== "sent") return;
   upsertPendingRegistration(row.phone, { step: "awaiting_link_tap" });
 }
 
@@ -167,8 +172,9 @@ async function sendProviderLink(row: PendingRegistrationRow): Promise<void> {
 // account that already existed — via connect_email (assistant.ts) rather than fresh registration.
 // authRoutes.ts derives it from whether the phone already resolved to an owner BEFORE this OAuth
 // round trip (the same fact resolveRegistrationUser branches on). Threaded through to
-// startPostConnectSetup so it can skip the fresh-signup question chain for someone who has
-// already been using Marlowe — see that function's own comment for why.
+// startPostConnectSetup so it can skip the parts of the fresh-signup question chain that don't
+// apply to someone who has already been using Marlowe — see that function's own comment for which
+// parts and why.
 export async function sendFirstValueAndBriefingPrompt(
   ownerId: number,
   phone: string,
@@ -177,8 +183,10 @@ export async function sendFirstValueAndBriefingPrompt(
   // Carry the name captured earlier in this same registration (handleAwaitingName below) forward
   // into the durable user_name setting, so postConnectSetup's own chain doesn't ask "what should
   // I call you?" a second time — see the comment on that check in startPostConnectSetup for the
-  // bug this prevents. A no-op for the linkedExistingAccount case: pending.name is only ever
-  // populated by the awaiting_name registration step, which a phone-only account skipped entirely.
+  // bug this prevents. Still correct, just redundant, for the linkedExistingAccount case: a
+  // phone-only account's row keeps whatever name was typed at the awaiting_name step, and
+  // handleEmailConfirmTap's decline branch already wrote that same value to user_name at account
+  // creation — so this just re-writes the value already there, not a stale or different one.
   const pending = getPendingRegistration(phone);
   if (pending?.name && isPlausibleName(pending.name)) {
     setSetting(ownerId, "user_name", pending.name);

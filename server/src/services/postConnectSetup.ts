@@ -28,7 +28,7 @@ import {
   getSetting,
   listAccounts,
 } from "../db/store.js";
-import { getBriefingSettings, saveBriefingSettings } from "./briefing.js";
+import { getBriefingSettings, saveBriefingSettings, hasBriefingSettings } from "./briefing.js";
 import { todayKey } from "./dateKey.js";
 import { sendWhatsAppMessage, sendWhatsAppReplyButtons } from "../providers/whatsapp.js";
 import { hubListMessages, hubListEvents } from "./hub.js";
@@ -133,32 +133,25 @@ async function askTeamsOrFinish(ownerId: number, phone: string): Promise<void> {
   }
 }
 
-// What a mailbox-less account that has already been in use gets instead of the scripted chain
-// below — see startPostConnectSetup's linkedExistingAccount comment for why the chain itself is
-// skipped for this case.
-async function announceCapabilitiesUnlocked(phone: string): Promise<void> {
-  await reply(
-    phone,
-    "You can now ask me about your email and calendar too. Just say the word if you'd like a daily " +
-      "morning briefing or (for Outlook) Teams chat search turned on — I can set either up whenever you like."
-  );
-}
-
 // Called from the OAuth callback (via whatsappRegistration.ts) once the mailbox is actually
 // connected. Sends the "connected" confirmation + a best-effort first-value fact, then starts the
 // chain with the first-task check.
 //
 // linkedExistingAccount (Task 8): true when the owner's account predates this connection — a
 // phone-only user who used Marlowe for a while before connecting a mailbox via the assistant's
-// own connect_email tool, rather than someone signing up fresh. The chain below (first-task
-// check, daily-briefing yes/no, Teams yes/no) was written for a brand-new signup with nothing
-// configured yet; for an established account it's not just redundant copy ("let's finish setting
-// up" to someone who's been chatting with Marlowe for weeks) but an actual data hazard —
-// answering the briefing question unconditionally overwrites proactive/topics via
-// saveBriefingSettings, silently discarding any preference the person already set through the
-// assistant's own set_briefing_preferences tool. The user_name check just below already guards
-// the one question a phone-only account could concretely have answered before (their name); this
-// flag guards the rest by skipping them outright rather than guessing which answers are stale.
+// own connect_email tool, rather than someone signing up fresh. askName/askFirstTask are always
+// skipped for this case: the user is mid-conversation, already named (guarded below the same way
+// as a fresh signup), and "anything you'd like me to look at right now, or shall we finish setting
+// up?" reads as reverting to onboarding mode for someone who's been chatting with Marlowe for
+// weeks. askBriefing is narrower: it's skipped only when hasBriefingSettings(ownerId) is already
+// true, because its Yes/No handler (handlePostConnectSetupReply) unconditionally overwrites
+// `topics` via saveBriefingSettings — a real data-loss risk if the person configured it through
+// the assistant's own set_briefing_preferences tool before ever connecting a mailbox — but for the
+// majority who never touched it, running the question is still the right call: it's the
+// highest-value item in the chain (a two-button tap converts far better than being told to ask for
+// it later), and skipping it unconditionally would also drop askTeamsOrFinish's Microsoft-Teams
+// question and the closing message's feedback prompt, the only in-product feedback channel for
+// WhatsApp-only users, for every linked-later user including the ones with nothing to protect.
 export async function startPostConnectSetup(
   ownerId: number,
   phone: string,
@@ -222,7 +215,15 @@ export async function startPostConnectSetup(
 
   await reply(phone, `*Connected!* ✅ I can see your inbox and your calendar.${fact}`);
   if (linkedExistingAccount) {
-    await announceCapabilitiesUnlocked(phone);
+    if (hasBriefingSettings(ownerId)) {
+      // Already answered (or deliberately left at defaults) via set_briefing_preferences — asking
+      // again would risk the topics-overwrite described above for no benefit, so go straight to
+      // the next question that's still genuinely new (Teams, for a Microsoft-linked owner) or the
+      // closing/feedback message.
+      await askTeamsOrFinish(ownerId, phone);
+    } else {
+      await askBriefing(ownerId, phone);
+    }
     return;
   }
   // Pre-connect registration (whatsappRegistration.ts's sendFirstValueAndBriefingPrompt) already

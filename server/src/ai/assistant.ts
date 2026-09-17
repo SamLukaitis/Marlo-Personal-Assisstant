@@ -1415,8 +1415,20 @@ export async function runTool(
       if (provider !== "google" && provider !== "microsoft") {
         return { error: `unknown provider: ${provider}` };
       }
-      await sendConnectLink(phoneNumber, provider as RegistrationProvider);
-      return { ok: true };
+      const result = await sendConnectLink(phoneNumber, provider as RegistrationProvider);
+      switch (result) {
+        case "sent":
+          return { ok: true };
+        case "throttled":
+          // A link already went out within the last minute (its own "still working on it..."
+          // message was sent directly) — reporting ok:true here as well would make the model tell
+          // the user a (second, different-provider) link is coming when none was actually sent.
+          return { error: "A link was just sent — give it a few seconds, then ask again if it still hasn't arrived." };
+        case "no_pending_row":
+          // Genuinely unexpected for a phone-only account (see sendConnectLink's own comment) —
+          // surface it plainly rather than claim success for a link nobody can ever redeem.
+          return { error: "Couldn't send a connect link — this account's registration record is missing. This needs a developer to look at; don't keep retrying." };
+      }
     }
     case "connect_xero": {
       try {

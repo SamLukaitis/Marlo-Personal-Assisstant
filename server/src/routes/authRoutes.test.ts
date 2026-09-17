@@ -31,8 +31,10 @@ vi.mock("../services/whatsappRegistration.js", () => ({
 const { authRoutes } = await import("./authRoutes.js");
 const { exchangeGoogleCode, handleGoogleCallback } = await import("../providers/google.js");
 const { exchangeMicrosoftCode, microsoftGetGraphUserId } = await import("../providers/microsoft.js");
+const { sendFirstValueAndBriefingPrompt } = await import("../services/whatsappRegistration.js");
 const {
   findOrCreateUserByEmail,
+  findOrCreateUserByPhone,
   getUserByEmail,
   listAccounts,
   upsertAccount,
@@ -450,18 +452,21 @@ describe("GET /auth/microsoft/callback — connect intent identity", () => {
   });
 });
 
+// Module-scoped (not nested in a describe) so the "linkedExistingAccount" describe block below
+// can reuse it without duplicating a second copy that could drift from this one.
+async function registerViaMicrosoft(app: express.Express, phone: string, typedEmail: string) {
+  addInvitedPhone(phone);
+  upsertPendingRegistration(phone, { step: "awaiting_link_tap", typedEmail, provider: "microsoft" });
+  const token = setPendingRegistrationToken(phone);
+  const start = await request(app).get(`/auth/microsoft/register?token=${token}`);
+  const nonceCookie = parseSetCookie(start, "oauth_nonce")!;
+  const state = new URL(start.headers.location).searchParams.get("state")!;
+  return request(app)
+    .get(`/auth/microsoft/callback?code=fakecode&state=${encodeURIComponent(state)}`)
+    .set("Cookie", nonceCookie);
+}
+
 describe("GET /auth/microsoft/callback — WhatsApp registration identity", () => {
-  async function registerViaMicrosoft(app: express.Express, phone: string, typedEmail: string) {
-    addInvitedPhone(phone);
-    upsertPendingRegistration(phone, { step: "awaiting_link_tap", typedEmail, provider: "microsoft" });
-    const token = setPendingRegistrationToken(phone);
-    const start = await request(app).get(`/auth/microsoft/register?token=${token}`);
-    const nonceCookie = parseSetCookie(start, "oauth_nonce")!;
-    const state = new URL(start.headers.location).searchParams.get("state")!;
-    return request(app)
-      .get(`/auth/microsoft/callback?code=fakecode&state=${encodeURIComponent(state)}`)
-      .set("Cookie", nonceCookie);
-  }
 
   it("refuses to bind a new phone to an existing user's email without proof of the same Microsoft account", async () => {
     const app = buildApp();
@@ -503,6 +508,84 @@ describe("GET /auth/microsoft/callback — WhatsApp registration identity", () =
 
     expect(callback.headers.location).toBe("http://localhost:5173/connected");
     expect(resolveOwnerByPhone(phone)).toBe(user.id);
+  });
+});
+
+// This flag is the seam the whole hazard-guard in postConnectSetup.ts hinges on (review finding
+// #3): inverting it either re-onboards a long-time phone-only user (the exact bug this task exists
+// to prevent) or silently drops the onboarding chain for a genuine new signup. Asserted directly
+// against the mocked sendFirstValueAndBriefingPrompt call, not just indirectly through
+// resolveRegistrationUser (which the earlier e2e test in assistant.connectEmail.test.ts already
+// covers but which bypasses this derivation entirely).
+async function registerViaGoogle(app: express.Express, phone: string, email: string) {
+  addInvitedPhone(phone);
+  upsertPendingRegistration(phone, { step: "awaiting_link_tap", typedEmail: email, provider: "google" });
+  const token = setPendingRegistrationToken(phone);
+  const start = await request(app).get(`/auth/google/register?token=${token}`);
+  const nonceCookie = parseSetCookie(start, "oauth_nonce")!;
+  const state = new URL(start.headers.location).searchParams.get("state")!;
+  return request(app)
+    .get(`/auth/google/callback?code=fakecode&state=${encodeURIComponent(state)}`)
+    .set("Cookie", nonceCookie);
+}
+
+describe("linkedExistingAccount signal passed to sendFirstValueAndBriefingPrompt", () => {
+  it("Google: true when the phone already owned a (phone-only) account before this connection", async () => {
+    const app = buildApp();
+    const phone = freshPhone();
+    const existing = findOrCreateUserByPhone(phone);
+    const email = uniqueEmail("google-link-existing");
+    vi.mocked(exchangeGoogleCode).mockResolvedValue({
+      email,
+      accessToken: "at",
+      refreshToken: "rt",
+      expiryDate: Date.now() + 3600_000,
+    });
+
+    await registerViaGoogle(app, phone, email);
+
+    expect(sendFirstValueAndBriefingPrompt).toHaveBeenCalledWith(existing.id, phone, true);
+  });
+
+  it("Google: false for a fresh signup with no prior account on this phone", async () => {
+    const app = buildApp();
+    const phone = freshPhone();
+    const email = uniqueEmail("google-link-fresh");
+    vi.mocked(exchangeGoogleCode).mockResolvedValue({
+      email,
+      accessToken: "at",
+      refreshToken: "rt",
+      expiryDate: Date.now() + 3600_000,
+    });
+
+    await registerViaGoogle(app, phone, email);
+
+    const user = getUserByEmail(email)!;
+    expect(sendFirstValueAndBriefingPrompt).toHaveBeenCalledWith(user.id, phone, false);
+  });
+
+  it("Microsoft: true when the phone already owned a (phone-only) account before this connection", async () => {
+    const app = buildApp();
+    const phone = freshPhone();
+    const existing = findOrCreateUserByPhone(phone);
+    const email = uniqueEmail("ms-link-existing");
+    vi.mocked(exchangeMicrosoftCode).mockResolvedValue(msAuth(email, "tenant-le1", "obj-le1", "graph-le1"));
+
+    await registerViaMicrosoft(app, phone, email);
+
+    expect(sendFirstValueAndBriefingPrompt).toHaveBeenCalledWith(existing.id, phone, true);
+  });
+
+  it("Microsoft: false for a fresh signup with no prior account on this phone", async () => {
+    const app = buildApp();
+    const phone = freshPhone();
+    const email = uniqueEmail("ms-link-fresh");
+    vi.mocked(exchangeMicrosoftCode).mockResolvedValue(msAuth(email, "tenant-le2", "obj-le2", "graph-le2"));
+
+    await registerViaMicrosoft(app, phone, email);
+
+    const user = getUserByEmail(email)!;
+    expect(sendFirstValueAndBriefingPrompt).toHaveBeenCalledWith(user.id, phone, false);
   });
 });
 

@@ -6,7 +6,7 @@
 // assistant.ts doesn't need to import whatsappRegistration.ts (which itself imports assistant.ts
 // for getRegistrationAssistReply) — that would make the two modules circularly dependent on each
 // other for no reason beyond this one shared function.
-import { setPendingRegistrationToken, type RegistrationProvider } from "../db/store.js";
+import { setPendingRegistrationToken, getPendingRegistration, type RegistrationProvider } from "../db/store.js";
 import { sendWhatsAppMessage, sendWhatsAppCtaUrl } from "../providers/whatsapp.js";
 import { SERVER_URL } from "../config.js";
 
@@ -27,15 +27,33 @@ const PROVIDER_LABEL: Record<RegistrationProvider, string> = {
   microsoft: "Outlook",
 };
 
+// "sent" — a real link went out. "throttled" — the cooldown swallowed it, and the "still working
+// on it" reply went out instead; a caller that already told the user a link is coming must not
+// report success here, or a provider switch within the cooldown window (e.g. "actually, Outlook")
+// silently produces no Outlook link at all. "no_pending_row" — see the check below.
+export type ConnectLinkResult = "sent" | "throttled" | "no_pending_row";
+
 // Does NOT touch pending_whatsapp_registrations' `step` — that's each caller's own decision.
 // whatsappRegistration.ts's sendProviderLink advances it to awaiting_link_tap; the connect_email
 // tool must NOT move a completed row back into the registration state machine (see
 // handlePendingRegistration's routing in whatsappRegistration.ts) so it deliberately leaves it
 // alone.
-export async function sendConnectLink(phone: string, provider: RegistrationProvider): Promise<void> {
+export async function sendConnectLink(phone: string, provider: RegistrationProvider): Promise<ConnectLinkResult> {
   if (withinCooldown(phone)) {
     await sendWhatsAppMessage(phone, "Still working on it — give it a few seconds and try again if the link doesn't work.");
-    return;
+    return "throttled";
+  }
+  // setPendingRegistrationToken (store.ts) is `UPDATE ... WHERE phone = ?` — with no matching row
+  // it still hands back a fresh random token that can never be redeemed (nothing's token_hash was
+  // actually set, so peekPendingRegistrationByToken/consumePendingRegistrationToken find no row to
+  // match it against). Two real populations can reach this with no row: an admin's
+  // replay-onboarding action (adminRoutes.ts) deletes it while keeping the account, and a
+  // web-registered user who added this number in Settings then disconnected their mailbox never
+  // had one at all. Check first rather than send a CTA that's silently dead on arrival — the
+  // person would tap it, land on `/auth/.../register?error=expired`, and get no explanation and no
+  // way to retry into something that works.
+  if (!getPendingRegistration(phone)) {
+    return "no_pending_row";
   }
   const token = setPendingRegistrationToken(phone);
   lastTokenIssuedAt.set(phone, Date.now());
@@ -47,4 +65,5 @@ export async function sendConnectLink(phone: string, provider: RegistrationProvi
     `Connect ${PROVIDER_LABEL[provider]}`,
     link
   );
+  return "sent";
 }
