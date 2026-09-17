@@ -2813,6 +2813,12 @@ export function getApiUsageByPurpose(sinceMs: number): ApiUsageByPurposeRow[] {
 }
 
 export interface ApiUsageByOwnerModelRow {
+  // ownerId is what callers must group on, not ownerEmail — a phone-first account has no email,
+  // so keying on the address collapses every one of them into a single bucket. ownerExists
+  // separates the two remaining reasons the email can be null: 0 means the users row is gone
+  // (deleted account), 1 means the account is alive but has never linked a mailbox.
+  ownerId: number | null;
+  ownerExists: number;
   ownerEmail: string | null;
   model: string;
   calls: number;
@@ -2825,12 +2831,16 @@ export interface ApiUsageByOwnerModelRow {
 // Grouped by owner AND model (not just owner) so the caller can apply per-model pricing before
 // collapsing to one total per owner — mirrors how getApiUsageSummary's rows feed byPurpose's
 // cost totals in portalRoutes.ts, for the same reason (a blended rate across models would be
-// wrong). ownerEmail is null both for pre-login WhatsApp calls (no owner yet) and for a user
-// since deleted (e.g. via reset-test-phone) — LEFT JOIN, not JOIN.
+// wrong). ownerEmail is null for three different reasons now — pre-login WhatsApp calls (no owner
+// yet), a user since deleted (e.g. via reset-test-phone), and a phone-first account that has never
+// linked a mailbox — which is why ownerId/ownerExists are selected alongside it. LEFT JOIN, not
+// JOIN.
 export function getApiUsageByOwner(sinceMs: number): ApiUsageByOwnerModelRow[] {
   return db
     .prepare(
       `SELECT
+         u.owner_id AS ownerId,
+         (us.id IS NOT NULL) AS ownerExists,
          us.email AS ownerEmail,
          u.model,
          COUNT(*) AS calls,
@@ -2848,6 +2858,9 @@ export function getApiUsageByOwner(sinceMs: number): ApiUsageByOwnerModelRow[] {
 
 export interface ApiUsageCallRow {
   id: number;
+  // See ApiUsageByOwnerModelRow above for why a null ownerEmail is ambiguous on its own.
+  ownerId: number | null;
+  ownerExists: number;
   ownerEmail: string | null;
   channel: string;
   model: string;
@@ -2866,7 +2879,8 @@ export interface ApiUsageCallRow {
 export function listRecentApiUsage(limit: number): ApiUsageCallRow[] {
   return db
     .prepare(
-      `SELECT u.id, us.email AS ownerEmail, u.channel, u.model, u.purpose,
+      `SELECT u.id, u.owner_id AS ownerId, (us.id IS NOT NULL) AS ownerExists,
+              us.email AS ownerEmail, u.channel, u.model, u.purpose,
               u.input_tokens AS inputTokens, u.output_tokens AS outputTokens,
               u.cache_read_tokens AS cacheReadTokens, u.cache_creation_tokens AS cacheCreationTokens,
               u.created_at AS createdAt

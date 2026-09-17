@@ -5,6 +5,7 @@ import {
   getApiUsageSummary,
   getApiUsageByPurpose,
   listRecentApiUsage,
+  getApiUsageByOwner,
 } from "./store.js";
 
 let counter = 0;
@@ -77,5 +78,53 @@ describe("recordApiUsage / getApiUsageSummary / getApiUsageByPurpose", () => {
     const ownedIndex = recent.findIndex((r) => r.purpose === "recent_calls_test_marker");
     const anonIndex = recent.findIndex((r) => r.purpose === "recent_calls_test_marker_anon");
     expect(anonIndex).toBeLessThan(ownedIndex);
+  });
+});
+
+// Cost attribution has to key on owner id, not the owner's email address. Once phone-first
+// accounts exist (they have no email), keying on the address collapsed every one of them into a
+// single bucket that also swept up genuinely ownerless pre-login calls, so an admin could not see
+// what any individual phone-first user costs. ownerId/ownerExists are what tell the three reasons
+// for a null ownerEmail apart: no owner at all, a deleted account, and an account with no mailbox.
+describe("getApiUsageByOwner attribution", () => {
+  it("surfaces ownerId and keeps distinct owners in distinct rows", () => {
+    const a = findOrCreateUserByEmail(uniqueEmail("usage-owner-a"));
+    const b = findOrCreateUserByEmail(uniqueEmail("usage-owner-b"));
+    const model = `test-model-${Date.now()}`;
+
+    recordApiUsage(a.id, "whatsapp", model, "assistant_chat", 10, 5, 0, 0);
+    recordApiUsage(b.id, "whatsapp", model, "assistant_chat", 20, 7, 0, 0);
+    recordApiUsage(null, "web", model, "help_widget", 30, 9, 0, 0);
+
+    const rows = getApiUsageByOwner(0).filter((r) => r.model === model);
+
+    expect(rows).toHaveLength(3);
+    const byOwner = new Map(rows.map((r) => [r.ownerId, r]));
+    expect(byOwner.get(a.id)?.ownerEmail).toBe(a.email);
+    expect(byOwner.get(b.id)?.ownerEmail).toBe(b.email);
+    // A call with no owner at all: no id to attribute it to, and nothing to join to.
+    expect(byOwner.get(null)?.ownerEmail).toBeNull();
+    expect(byOwner.get(null)?.ownerExists).toBeFalsy();
+  });
+
+  it("reports ownerExists for a live account so a null email can be told from a missing row", () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("usage-owner-live"));
+    const model = `test-model-live-${Date.now()}`;
+    recordApiUsage(user.id, "whatsapp", model, "assistant_chat", 11, 3, 0, 0);
+
+    const row = getApiUsageByOwner(0).find((r) => r.model === model && r.ownerId === user.id);
+
+    expect(row?.ownerExists).toBeTruthy();
+  });
+
+  it("carries ownerId onto individual calls too, not just the rollup", () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("usage-call-owner"));
+    const model = `test-model-call-${Date.now()}`;
+    recordApiUsage(user.id, "whatsapp", model, "assistant_chat", 12, 4, 0, 0);
+
+    const call = listRecentApiUsage(200).find((r) => r.model === model);
+
+    expect(call?.ownerId).toBe(user.id);
+    expect(call?.ownerExists).toBeTruthy();
   });
 });

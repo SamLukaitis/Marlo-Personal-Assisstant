@@ -10,6 +10,7 @@ import {
   explainServerLog,
   fetchUsageSummary,
   usagePurposeLabel,
+  usageOwnerLabel,
   fetchAdminTodos,
   addAdminTodo,
   setAdminTodoDone,
@@ -712,9 +713,9 @@ function UsageTab() {
                 const tokens = o.inputTokens + o.outputTokens + o.cacheReadTokens + o.cacheCreationTokens;
                 const share = totalTokens > 0 ? Math.round((tokens / totalTokens) * 100) : 0;
                 return (
-                  <div key={o.ownerEmail ?? "(no user yet)"} style={{ marginBottom: 10 }}>
+                  <div key={o.ownerId ?? "no-owner"} style={{ marginBottom: 10 }}>
                     <div className="row" style={{ justifyContent: "space-between", fontSize: 13 }}>
-                      <span>{o.ownerEmail ?? "(no user yet — e.g. WhatsApp sign-up in progress)"}</span>
+                      <span>{usageOwnerLabel(o)}</span>
                       <span className="muted">
                         {o.calls} call{o.calls === 1 ? "" : "s"} · {tokens.toLocaleString()} tok.
                         {o.estimatedCost != null ? ` · $${o.estimatedCost.toFixed(3)}` : ""}
@@ -805,7 +806,7 @@ function UsageTab() {
                     <tr key={r.id} className="data-row">
                       <td style={{ ...tdText, whiteSpace: "nowrap" }}>{timeAgo(r.createdAt)}</td>
                       <td style={tdText}>{usagePurposeLabel(r.purpose)}</td>
-                      <td style={tdText}>{r.ownerEmail ?? "—"}</td>
+                      <td style={tdText}>{usageOwnerLabel(r)}</td>
                       <td style={tdText}>{r.channel}</td>
                       <td style={tdText}>{r.model}</td>
                       <td style={tdNum}>{r.inputTokens.toLocaleString()}</td>
