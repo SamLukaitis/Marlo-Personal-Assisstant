@@ -3,6 +3,7 @@ import path from "node:path";
 import fs from "node:fs";
 import crypto from "node:crypto";
 import { encryptField, decryptField } from "../services/crypto.js";
+import { migrateUsersEmailNullable } from "./migrations/usersEmailNullable.js";
 
 // DATA_DIR lets tests (see server/src/test/setup.ts) point this at an isolated temp directory
 // instead of the real server/data — unset in normal dev/production, where this falls back to
@@ -86,7 +87,7 @@ db.exec(`
   -- these; they simply didn't exist before).
   CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    email TEXT NOT NULL UNIQUE,
+    email TEXT UNIQUE,
     created_at INTEGER NOT NULL
   );
   CREATE TABLE IF NOT EXISTS invited_emails (
@@ -301,6 +302,14 @@ const userColumns = (db.prepare(`PRAGMA table_info(users)`).all() as { name: str
 if (!userColumns.includes("is_admin")) {
   db.exec(`ALTER TABLE users ADD COLUMN is_admin INTEGER NOT NULL DEFAULT 0`);
 }
+
+// Must run AFTER the is_admin ALTER above: the rebuild copies that column, so it has to exist
+// before the copy. Phone-first accounts need a users row with no email — see the migration's own
+// comment for why this one is transaction-wrapped when the api_usage rebuild below is not. The
+// backup path is only ever touched when a rebuild is actually about to happen (see the migration's
+// guard) — nothing in this codebase backed this file up before, and it is the only copy of every
+// account on a Railway volume, so it is worth a `.bak` on the one boot that needs it.
+migrateUsersEmailNullable(db, path.join(dataDir, `app.db.bak-${Date.now()}`));
 
 // api_usage originally only tracked the main assistant chat (owner_id required, no purpose
 // column). Recording usage for calls with no signed-in owner yet (the public help widget, the
