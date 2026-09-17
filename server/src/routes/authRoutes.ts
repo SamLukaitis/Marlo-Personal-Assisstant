@@ -18,6 +18,9 @@ import {
   isPhoneInvited,
   findOrCreateUserByEmail,
   getUserByEmail,
+  getUser,
+  setUserEmail,
+  resolveOwnerByPhone,
   createSession,
   deleteSession,
   getUserIdBySessionToken,
@@ -29,6 +32,7 @@ import {
   getUserIdByIdentity,
   linkIdentity,
   hasIdentity,
+  type UserRow,
 } from "../db/store.js";
 import { sendWhatsAppMessage } from "../providers/whatsapp.js";
 import { sendFirstValueAndBriefingPrompt } from "../services/whatsappRegistration.js";
@@ -159,6 +163,38 @@ function googleMayUseExistingUser(userId: number, googleEmail: string): boolean 
   if (!hasIdentity(userId, "microsoft")) return true;
   const normalized = googleEmail.trim().toLowerCase();
   return listAccounts(userId, "google").some((a) => a.email.trim().toLowerCase() === normalized);
+}
+
+// Both OAuth callbacks need the same three-way decision once a registration completes, so it
+// lives here rather than being written twice and drifting.
+//
+// The phone-first case is the new one: when this number already owns an account (created by
+// declining email during onboarding), the address is attached to THAT row. Calling
+// findOrCreateUserByEmail instead would quietly create a second account and strand every to-do,
+// document and memory the person already has.
+export type RegistrationUserResult =
+  | { kind: "ok"; userId: number }
+  | { kind: "account_exists" };
+
+export function resolveRegistrationUser(phone: string, email: string): RegistrationUserResult {
+  const existingByEmail = getUserByEmail(email);
+  const phoneOwnerId = resolveOwnerByPhone(phone);
+
+  if (phoneOwnerId !== null) {
+    // Already the same account — nothing to attach, just proceed.
+    if (existingByEmail && existingByEmail.id === phoneOwnerId) {
+      return { kind: "ok", userId: phoneOwnerId };
+    }
+    // The address belongs to somebody else. Refuse rather than merge: the same call both
+    // collision checks in this codebase already make.
+    if (existingByEmail) {
+      return { kind: "account_exists" };
+    }
+    setUserEmail(phoneOwnerId, email);
+    return { kind: "ok", userId: phoneOwnerId };
+  }
+
+  return { kind: "ok", userId: existingByEmail?.id ?? findOrCreateUserByEmail(email).id };
 }
 
 const ACCOUNT_EXISTS_WHATSAPP_TEXT =
@@ -322,7 +358,13 @@ authRoutes.get("/auth/google/callback", async (req, res) => {
         sendWhatsAppMessage(reg.phone, ACCOUNT_EXISTS_WHATSAPP_TEXT).catch(() => {});
         return;
       }
-      const user = existingUser ?? findOrCreateUserByEmail(auth.email);
+      const resolution = resolveRegistrationUser(reg.phone, auth.email);
+      if (resolution.kind === "account_exists") {
+        res.redirect(`${CLIENT_URL}/connected?error=account_exists`);
+        sendWhatsAppMessage(reg.phone, ACCOUNT_EXISTS_WHATSAPP_TEXT).catch(() => {});
+        return;
+      }
+      const user = getUser(resolution.userId) as UserRow;
       try {
         addPhoneNumberForUser(user.id, reg.phone);
       } catch {
@@ -447,7 +489,18 @@ authRoutes.get("/auth/microsoft/callback", async (req, res) => {
         sendWhatsAppMessage(reg.phone, ACCOUNT_EXISTS_WHATSAPP_TEXT).catch(() => {});
         return;
       }
-      const userId = resolved === "none" ? findOrCreateUserByEmail(auth.email).id : resolved;
+      let userId: number;
+      if (resolved === "none") {
+        const resolution = resolveRegistrationUser(reg.phone, auth.email);
+        if (resolution.kind === "account_exists") {
+          res.redirect(`${CLIENT_URL}/connected?error=account_exists`);
+          sendWhatsAppMessage(reg.phone, ACCOUNT_EXISTS_WHATSAPP_TEXT).catch(() => {});
+          return;
+        }
+        userId = resolution.userId;
+      } else {
+        userId = resolved;
+      }
       try {
         addPhoneNumberForUser(userId, reg.phone);
       } catch {

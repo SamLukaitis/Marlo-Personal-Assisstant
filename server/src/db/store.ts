@@ -2554,6 +2554,13 @@ export function findOrCreateUserByPhone(phone: string): UserRow {
   return create();
 }
 
+// Attaches an address to a phone-first account once its owner links a mailbox. Throws on a
+// collision rather than overwriting, since users.email is UNIQUE and the caller is expected to
+// have checked — a thrown error here means a race, not a normal path.
+export function setUserEmail(userId: number, email: string): void {
+  db.prepare(`UPDATE users SET email = ? WHERE id = ?`).run(normalizeEmail(email), userId);
+}
+
 // Read-only, unlike findOrCreateUserByEmail — used to check "does this email already belong to
 // someone" without the side effect of creating a row for an address that was only typed into a
 // WhatsApp conversation, not yet OAuth-verified.
