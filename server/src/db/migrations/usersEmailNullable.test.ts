@@ -125,29 +125,57 @@ describe("migrateUsersEmailNullable", () => {
     expect(inserted.lastInsertRowid).toBe(4);
   });
 
-  it("rolls back and leaves the original table (and its child rows) intact if the copy silently skips a row", () => {
+  it("rolls back and leaves the original table (and its child rows) intact when the row-count guard trips", () => {
+    // Pre-creating users_new (with a conflicting row, or a stray trigger) only tests that
+    // CREATE TABLE fails before the copy ever runs — before the guard, before anything
+    // destructive — and, tried against a real BEFORE INSERT trigger, is not even reachable:
+    // SQLite refuses to CREATE TRIGGER against a table that doesn't exist yet, and users_new is
+    // created by the function under test. A version of this test that pre-created users_new and
+    // let CREATE TABLE IF NOT EXISTS no-op against it was reverted — an IF NOT EXISTS here means
+    // a stray users_new with the wrong shape (no UNIQUE, no AUTOINCREMENT, no NOT NULL — exactly
+    // what a half-finished manual repair would leave) would pass every guard silently, since none
+    // of them inspect users_new's own column definitions.
+    //
+    // So the guard is exercised through the one seam the function actually exposes — its `db`
+    // parameter — with a Proxy that forwards everything to the real Database except the
+    // migration's own "before" snapshot (`SELECT count(*) AS n FROM users`, matched by exact SQL
+    // text so the "after" query against users_new is untouched), which it inflates by one. The
+    // copy itself is untouched and genuinely copies both real rows; it is the inflated "before"
+    // that the guard's comparison catches.
     const db = buildLegacyDb();
     db.prepare(`INSERT INTO users (id, email, created_at) VALUES (?, ?, ?)`).run(1, "owner@example.com", 1000);
     db.prepare(`INSERT INTO users (id, email, created_at) VALUES (?, ?, ?)`).run(7, "second@example.com", 2000);
     db.prepare(`INSERT INTO sessions (id, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)`).run("sess-1", 1, 1000, 9999);
 
-    // Pre-creating users_new with a stale row (or letting a plain CREATE collide) only tests
-    // that CREATE TABLE fails before the copy ever runs — before the guard, before anything
-    // destructive. To exercise the row-count guard itself, the copy has to genuinely succeed as
-    // SQL yet still come up short: this trigger does that. RAISE(IGNORE) silently drops just the
-    // id=7 row from the INSERT...SELECT without erroring the statement, so the CREATE TABLE IF
-    // NOT EXISTS in the migration is a no-op against this table and the guard's own count check
-    // is what has to catch the missing row.
-    db.exec(`CREATE TABLE users_new (id INTEGER PRIMARY KEY AUTOINCREMENT, email TEXT UNIQUE, created_at INTEGER NOT NULL, is_admin INTEGER NOT NULL DEFAULT 0)`);
-    db.exec(`CREATE TRIGGER skip_seven BEFORE INSERT ON users_new WHEN new.id = 7 BEGIN SELECT RAISE(IGNORE); END;`);
+    let intercepted = false;
+    const handler: ProxyHandler<Database.Database> = {
+      get(target, prop) {
+        if (prop === "prepare") {
+          return (sql: string) => {
+            const stmt = target.prepare(sql);
+            if (!intercepted && sql === `SELECT count(*) AS n FROM users`) {
+              intercepted = true;
+              return { get: () => ({ n: (stmt.get() as { n: number }).n + 1 }) };
+            }
+            return stmt;
+          };
+        }
+        const value = Reflect.get(target, prop, target);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    };
+    const proxied = new Proxy(db, handler);
 
-    expect(() => migrateUsersEmailNullable(db)).toThrow(/copied 1 of 2 rows/);
+    expect(() => migrateUsersEmailNullable(proxied)).toThrow(/copied 2 of 3 rows/);
 
     // The original table and its child rows survived the failure — this is the property that
-    // matters most: a genuinely short copy still rolls back cleanly.
+    // matters most: a genuinely tripped guard still rolls back cleanly.
     expect(db.prepare(`SELECT count(*) AS n FROM users`).get()).toEqual({ n: 2 });
     expect(db.prepare(`SELECT count(*) AS n FROM sessions`).get()).toEqual({ n: 1 });
     expect(emailIsNullable(db)).toBe(false);
+    // Restoration-on-throw is exactly what the `finally` around rebuild() exists for — the other
+    // FK assertion (above) only ever exercised the success path.
+    expect(db.pragma(`foreign_keys`, { simple: true })).toBe(1);
   });
 
   it("backs up the pre-migration rows to backupPath via VACUUM INTO, when given a file-backed source", () => {

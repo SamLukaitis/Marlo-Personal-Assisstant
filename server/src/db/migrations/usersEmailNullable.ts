@@ -17,17 +17,24 @@ import type Database from "better-sqlite3";
 // `DROP TABLE users` below performs an implicit `DELETE FROM users` that fires immediate FK
 // checks against every one of the 29 child tables (sessions, user_phone_numbers, ...) — it throws
 // "FOREIGN KEY constraint failed" even for a single row, and the server would crash-loop on
-// every boot against a real database. `users` is the only *parent*-table rebuild in this file;
-// the other rebuilds in store.ts (api_usage, accounts, ...) are children, so dropping them is
-// legal with FKs on and this problem is specific to this migration. `defer_foreign_keys` does not
-// help — the implicit delete still raises immediately, deferred or not.
+// every boot against a real database. `users` is the rebuild this module owns; it is not the only
+// *parent*-table rebuild in the codebase — `documents` (store.ts:571-587) is a known latent
+// instance of the exact same hazard, since document_match_keys.document_id REFERENCES
+// documents(id) (store.ts:143) and that rebuild does not disable foreign_keys around it. Fixing
+// that one is out of scope here. `defer_foreign_keys` does not help either way — the implicit
+// delete still raises immediately, deferred or not.
 //
 // The fix is SQLite's own documented table-rebuild procedure: disable `foreign_keys` around the
 // transaction (the pragma is a no-op *inside* one, so it has to be set before rebuild() opens it)
 // and restore it in `finally` so a throw never leaves enforcement off. `PRAGMA foreign_key_check`
 // after the rename is a second, independent guard beside the row-count check — it runs regardless
 // of the enforcement pragma, so it still catches an orphaned reference even if the toggle above
-// were ever wrong or removed.
+// were ever wrong or removed. It is scoped to violations this rebuild introduced (see
+// violationsBefore/violationsAfter below), not a bare unscoped scan — deleteUserCompletely has
+// documented history of leaving owner-scoped rows behind (findRemainingOwnerReferences below), so
+// a pre-existing orphan elsewhere in the database is plausible, and failing the migration over
+// damage this rebuild didn't cause would turn an unrelated pre-existing problem into a boot
+// crash-loop.
 //
 // backupPath is optional and only meaningful when a rebuild is actually about to happen — this
 // runs once per boot at most (the guard below makes every later boot a no-op), and unit tests
@@ -64,13 +71,21 @@ export function migrateUsersEmailNullable(db: Database.Database, backupPath?: st
       | { seq: number }
       | undefined;
 
-    // IF NOT EXISTS: under normal operation users_new never pre-exists (the whole rebuild is one
-    // transaction, so a crash mid-window leaves nothing behind), but treating a stray leftover as
-    // fatal here would mean a human's old debugging artifact — or a test setting up a controlled
-    // short-copy scenario for the row-count guard below — blocks the migration at CREATE, before
-    // the copy even runs, which is a strictly worse failure mode than the guards that follow.
+    // Scoped, not a bare foreign_key_check: see the module comment above for why a pre-existing
+    // orphan elsewhere must not abort this migration. Captured before any of this rebuild's own
+    // statements run, so it reflects the database's state walking in.
+    const violationsBefore = (db.pragma(`foreign_key_check`) as unknown[]).length;
+
+    // No IF NOT EXISTS. The whole rebuild below is one transaction, so a crash mid-window leaves
+    // nothing behind — the only way users_new can already exist is that a human put it there (a
+    // half-finished manual repair, a rehearsal against a copy of prod), which is exactly the
+    // population most likely to have the wrong shape. Every guard in this function checks row
+    // counts and FK references, not users_new's own column definitions — a stray 3-column
+    // `users_new (id INTEGER PRIMARY KEY, email TEXT, created_at INTEGER, is_admin INTEGER)`
+    // would pass every one of them while silently dropping UNIQUE off email, AUTOINCREMENT off
+    // id, and NOT NULL off created_at. Failing loudly at CREATE is the correct behavior here.
     db.exec(`
-      CREATE TABLE IF NOT EXISTS users_new (
+      CREATE TABLE users_new (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         email TEXT UNIQUE,
         created_at INTEGER NOT NULL,
@@ -102,12 +117,17 @@ export function migrateUsersEmailNullable(db: Database.Database, backupPath?: st
       }
     }
 
-    // Second guard alongside the row-count check above: confirms every child-table reference
-    // into users still resolves post-rebuild. Runs independent of the foreign_keys pragma, so
-    // it still catches damage even if the toggle around this transaction were ever wrong.
-    const violations = db.pragma(`foreign_key_check`) as unknown[];
-    if (violations.length > 0) {
-      throw new Error(`users rebuild left ${violations.length} foreign key violation(s): ${JSON.stringify(violations)}`);
+    // Second guard alongside the row-count check above: confirms this rebuild didn't orphan any
+    // child-table reference into users. Compared against violationsBefore, not zero — an
+    // unscoped `violations.length > 0` would abort the migration over a pre-existing orphan this
+    // rebuild had nothing to do with, and module-load code aborting is a boot crash-loop. Runs
+    // independent of the foreign_keys pragma, so it still catches new damage even if the toggle
+    // around this transaction were ever wrong.
+    const violationsAfter = (db.pragma(`foreign_key_check`) as unknown[]).length;
+    if (violationsAfter > violationsBefore) {
+      throw new Error(
+        `users rebuild introduced ${violationsAfter - violationsBefore} new foreign key violation(s)`
+      );
     }
   });
 

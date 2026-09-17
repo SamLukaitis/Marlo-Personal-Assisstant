@@ -89,7 +89,10 @@ address.
 
 Guarded by reading the `notnull` flag from `PRAGMA table_info(users)` so the migration is
 idempotent and a no-op on the second boot, matching the existing lightweight-migration style in
-`store.ts`. Because foreign keys are off, no other table needs touching and nothing cascades.
+`store.ts`. No other table's schema needs touching — child tables keep referencing `users(id)`
+unchanged — but because foreign keys are on by default, the rebuild has to disable `foreign_keys`
+around its own transaction so `DROP TABLE users` doesn't trip their FK checks, and run `PRAGMA
+foreign_key_check` afterward to confirm none of them ended up orphaned.
 
 Rollback: the migration only widens what the column accepts. Existing rows are copied verbatim,
 so a phone-first deployment can be reverted as long as no `NULL`-email rows have been created
@@ -184,7 +187,10 @@ routine:
   — exactly when a container OOM-kill or deploy timeout would land.
 - *`users` is the root of the graph.* Losing `api_usage` costs a chart; it is append-only
   telemetry. Losing `users` orphans all 29 tables keyed on `owner_id` — accounts, documents,
-  to-dos, memory, connected mailboxes — and because foreign keys are off, nothing would complain.
+  to-dos, memory, connected mailboxes — and with foreign keys on by default, orphaning any of them
+  raises `FOREIGN KEY constraint failed` immediately. That is what makes the destructive window
+  above dangerous, not safe: a crash mid-window doesn't fail quietly, it fails loudly on every boot
+  after, against a database `users` no longer has any table for.
 
 There are also no backups: nothing in the codebase writes one, and the database is a single file
 on a Railway volume.
