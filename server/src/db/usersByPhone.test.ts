@@ -5,6 +5,7 @@ import {
   addPhoneNumberForUser,
   resolveOwnerByPhone,
   getUser,
+  listAllUserIds,
 } from "./store.js";
 
 let counter = 0;
@@ -37,11 +38,15 @@ describe("findOrCreateUserByPhone", () => {
     const phone = freshPhone();
     const existing = findOrCreateUserByEmail(`linked-${phone}@example.com`);
     addPhoneNumberForUser(existing.id, phone);
+    const userCountBefore = listAllUserIds().length;
 
     const resolved = findOrCreateUserByPhone(phone);
 
     expect(resolved.id).toBe(existing.id);
     expect(resolved.email).toBe(`linked-${phone}@example.com`);
+    // The returned id matching isn't proof alone — a bug that returned the right id while also
+    // inserting a stray second users row would pass the two assertions above.
+    expect(listAllUserIds().length).toBe(userCountBefore);
   });
 
   it("gives two different numbers two different accounts", () => {

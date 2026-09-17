@@ -1,4 +1,5 @@
 import type Database from "better-sqlite3";
+import fs from "node:fs";
 
 // Phone-first accounts (docs/superpowers/specs/2026-09-17-phone-first-accounts-design.md) need a
 // users row with no email, but the column shipped as `email TEXT NOT NULL UNIQUE` and SQLite
@@ -37,23 +38,49 @@ import type Database from "better-sqlite3";
 // crash-loop.
 //
 // backupPath is optional and only meaningful when a rebuild is actually about to happen — this
-// runs once per boot at most (the guard below makes every later boot a no-op), and unit tests
-// pass no path at all since they run against :memory: (VACUUM INTO requires a real source file).
-// The backup is taken with VACUUM INTO rather than the async db.backup() API: it needs to finish
-// before the synchronous rebuild below starts touching the schema, not race it.
+// runs once per boot at most in the success case (the guard below makes every later boot a no-op),
+// and unit tests pass no path at all since they run against :memory: (VACUUM INTO requires a real
+// source file). The backup is taken with VACUUM INTO rather than the async db.backup() API: it
+// needs to finish before the synchronous rebuild below starts touching the schema, not race it.
+//
+// The caller (store.ts) is expected to pass a FIXED path, not one suffixed with Date.now() —
+// this function trusts that and only checks existence, but the reason belongs here since it's
+// this function's own repeated-boot behavior that motivates it. If the rebuild below throws
+// (e.g. the loud CREATE TABLE failure when a stray users_new already exists), the notnull guard
+// above still sees the unmigrated column on every subsequent restart, so this function runs again
+// on every boot of a crash loop. A fresh filename each time would write a full copy of the
+// database into the same volume on every one of those restarts; skipping when the fixed path
+// already exists caps it at one pre-migration snapshot, which is the actual goal.
 export function migrateUsersEmailNullable(db: Database.Database, backupPath?: string): void {
   const columns = db.prepare(`PRAGMA table_info(users)`).all() as { name: string; notnull: number }[];
   const email = columns.find((c) => c.name === "email");
   // Already nullable (or a fresh database created from the current schema) — nothing to do.
   if (!email || email.notnull === 0) return;
 
+  // The copy below hardcodes exactly these four columns (id, email, created_at, is_admin) — the
+  // only ones users had when this migration was written. A future column added to users in
+  // store.ts, ahead of this migration's call site, would silently be dropped by that hardcoded
+  // list on the one boot the rebuild actually fires — and no test would ever catch it, since
+  // tests run against a fresh DB where this migration no-ops. Failing loudly here instead.
+  if (columns.length !== 4) {
+    throw new Error(
+      `migrateUsersEmailNullable: expected users to have exactly 4 columns (id, email, created_at, is_admin) before the rebuild, found ${columns.length} — the copy list below (and this check) must be updated together`
+    );
+  }
+
   if (backupPath) {
-    // Best-effort: a failed backup must not stop the rebuild, since the rebuild itself is
-    // transaction-safe on its own and does not depend on the backup succeeding.
-    try {
-      db.prepare(`VACUUM INTO ?`).run(backupPath);
-    } catch (err) {
-      console.error("migrateUsersEmailNullable: pre-migration backup failed", err);
+    if (fs.existsSync(backupPath)) {
+      // Already have the one pre-migration snapshot this is for — see the module comment above
+      // for why re-taking it on every crash-loop restart is exactly what must not happen.
+      console.log(`migrateUsersEmailNullable: backup already exists at ${backupPath}, skipping`);
+    } else {
+      // Best-effort: a failed backup must not stop the rebuild, since the rebuild itself is
+      // transaction-safe on its own and does not depend on the backup succeeding.
+      try {
+        db.prepare(`VACUUM INTO ?`).run(backupPath);
+      } catch (err) {
+        console.error("migrateUsersEmailNullable: pre-migration backup failed", err);
+      }
     }
   }
 

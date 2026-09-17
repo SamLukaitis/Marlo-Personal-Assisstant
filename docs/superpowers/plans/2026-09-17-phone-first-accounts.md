@@ -25,6 +25,15 @@
 
 ### Task 1: Make `users.email` nullable
 
+> **SUPERSEDED — see the shipped migration and Ruling 2 in the ledger.** The migration code
+> embedded below predates the foreign-keys fix: it assumes `PRAGMA foreign_keys` is OFF, which
+> the ledger's Ruling 2 found to be false (better-sqlite3 defaults it ON and nothing in `store.ts`
+> disables it). What actually shipped — including the `foreign_keys` toggle around the rebuild
+> transaction, the Proxy-tested row-count guard from Ruling 3, and the before/after
+> `foreign_key_check` comparison from Ruling 4 — lives in
+> `server/src/db/migrations/usersEmailNullable.ts`. This section is left as-written for history;
+> do not follow it as instructions.
+
 The sharp edge of the whole feature. Extracted into its own module because `store.ts` runs migrations at module-load time against a fresh temp DB per test run — there is no way to test an in-place migration from the normal harness, since the schema is created new. A standalone function taking a `Database` lets a test build the *old* schema deliberately and run the migration against it.
 
 **Files:**

@@ -206,4 +206,83 @@ describe("migrateUsersEmailNullable", () => {
       backup.close();
     }
   });
+
+  it("does not overwrite or duplicate the backup across repeated runs against a rebuild that keeps failing", () => {
+    // Regression for the crash-loop disk-fill bug: a persistently-failing rebuild (e.g. a stray
+    // users_new left by a half-finished manual repair — see the migration's own CREATE TABLE
+    // comment for why that fails loudly instead of silently) means the notnull guard above still
+    // sees the unmigrated column on every subsequent boot, so this function runs again on every
+    // restart. A Date.now()-suffixed path would write a fresh full-DB backup on every one of
+    // those restarts; a fixed path plus "skip if it already exists" must cap it at one.
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "users-email-nullable-"));
+    const sourcePath = path.join(tmpDir, "source.db");
+    const backupPath = path.join(tmpDir, "app.db.bak-users-email-nullable");
+
+    const db = buildLegacyDb(sourcePath);
+    db.prepare(`INSERT INTO users (id, email, created_at, is_admin) VALUES (?, ?, ?, ?)`).run(1, "owner@example.com", 1000, 1);
+    // No IF NOT EXISTS on the migration's own CREATE TABLE users_new — this pre-existing table is
+    // exactly what makes the rebuild fail on every single call below, reproducing the crash loop.
+    db.exec(`CREATE TABLE users_new (id INTEGER PRIMARY KEY)`);
+
+    expect(() => migrateUsersEmailNullable(db, backupPath)).toThrow();
+    expect(fs.existsSync(backupPath)).toBe(true);
+    const firstBackupContent = fs.readFileSync(backupPath);
+
+    // A real database keeps accruing writes between crash-loop restarts — if the backup were
+    // re-taken on a later call, this row would show up in it.
+    db.prepare(`INSERT INTO users (id, email, created_at, is_admin) VALUES (?, ?, ?, ?)`).run(2, "second@example.com", 2000, 0);
+
+    expect(() => migrateUsersEmailNullable(db, backupPath)).toThrow();
+    expect(() => migrateUsersEmailNullable(db, backupPath)).toThrow();
+
+    const backupFiles = fs.readdirSync(tmpDir).filter((f) => f.startsWith("app.db.bak"));
+    expect(backupFiles).toEqual(["app.db.bak-users-email-nullable"]);
+    expect(fs.readFileSync(backupPath)).toEqual(firstBackupContent);
+  });
+
+  it("throws when users has any column count other than the 4 the hardcoded copy list expects", () => {
+    // Guards against a future users column landing ahead of this migration's call site in
+    // store.ts and being silently dropped by the copy INSERT's hardcoded column list on the one
+    // boot the rebuild fires — a scenario no other test can catch, since every other test's DB
+    // (and the real one, post-migration) never re-enters this function with email still NOT NULL.
+    const db = buildLegacyDb();
+    db.exec(`ALTER TABLE users ADD COLUMN nickname TEXT`);
+
+    expect(() => migrateUsersEmailNullable(db)).toThrow(/exactly 4 columns/);
+  });
+
+  it("throws when the rebuild introduces a new foreign key violation not present before it started", () => {
+    // Real SQLite semantics can't actually trip this guard through normal use: the row-count
+    // guard above already catches the only way a legitimate rebuild could orphan a child
+    // reference (copying fewer rows than existed), and every surviving row's id is copied
+    // verbatim, so no existing child reference is ever invalidated. Exercised the same way as the
+    // row-count guard's own test above — through the `db` parameter's only seam, a Proxy that
+    // fakes db.pragma('foreign_key_check')'s second (after) answer without touching its first
+    // (before) one or any other pragma call.
+    const db = buildLegacyDb();
+    db.prepare(`INSERT INTO users (id, email, created_at) VALUES (?, ?, ?)`).run(1, "owner@example.com", 1000);
+
+    let foreignKeyCheckCalls = 0;
+    const handler: ProxyHandler<Database.Database> = {
+      get(target, prop) {
+        if (prop === "pragma") {
+          return (sql: string, opts?: Database.PragmaOptions) => {
+            if (sql === "foreign_key_check") {
+              foreignKeyCheckCalls += 1;
+              // First call is violationsBefore — let it reflect reality (empty). Second is
+              // violationsAfter — faked non-empty to simulate a violation this rebuild
+              // "introduced", which nothing about this legitimate rebuild actually does.
+              return foreignKeyCheckCalls === 1 ? [] : [{ table: "sessions", rowid: 1, parent: "users", fkid: 0 }];
+            }
+            return target.pragma(sql, opts as never);
+          };
+        }
+        const value = Reflect.get(target, prop, target);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    };
+    const proxied = new Proxy(db, handler);
+
+    expect(() => migrateUsersEmailNullable(proxied)).toThrow(/introduced 1 new foreign key violation/);
+  });
 });

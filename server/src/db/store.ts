@@ -309,7 +309,15 @@ if (!userColumns.includes("is_admin")) {
 // backup path is only ever touched when a rebuild is actually about to happen (see the migration's
 // guard) — nothing in this codebase backed this file up before, and it is the only copy of every
 // account on a Railway volume, so it is worth a `.bak` on the one boot that needs it.
-migrateUsersEmailNullable(db, path.join(dataDir, `app.db.bak-${Date.now()}`));
+//
+// Fixed filename, deliberately NOT suffixed with Date.now(): this line is recomputed on every
+// module load, i.e. every boot, and if the rebuild throws persistently (a stray users_new — see
+// the migration's own CREATE TABLE comment) the notnull guard still sees the column unmigrated
+// next boot, so this call fires again on every restart. A per-boot filename would write a full
+// copy of the database into this same Railway volume on every restart of a crash loop; the
+// migration itself skips the backup once this fixed path already exists, so a crash loop still
+// only ever produces the one pre-migration snapshot.
+migrateUsersEmailNullable(db, path.join(dataDir, `app.db.bak-users-email-nullable`));
 
 // api_usage originally only tracked the main assistant chat (owner_id required, no purpose
 // column). Recording usage for calls with no signed-in owner yet (the public help widget, the

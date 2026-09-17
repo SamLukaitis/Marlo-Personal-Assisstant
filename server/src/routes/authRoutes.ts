@@ -499,15 +499,18 @@ authRoutes.get("/auth/microsoft/callback", async (req, res) => {
         sendWhatsAppMessage(reg.phone, ACCOUNT_EXISTS_WHATSAPP_TEXT).catch(() => {});
         return;
       }
+      // See the matching comment on the Google callback above. Computed unconditionally, before
+      // either branch below — NOT only on the resolveRegistrationUser (resolved === "none") path.
+      // resolveMicrosoftUser resolves from user_identities (authRoutes.ts above), which survives
+      // deleteAccount (accountRoutes.ts): a user who connects Outlook, later disconnects the
+      // mailbox, then asks Marlowe to connect email again reaches the `else` branch below with
+      // listAccounts(userId) empty but resolved !== "none". Reading it only inside the "none"
+      // branch left that case permanently false, which made startPostConnectSetup run the full
+      // fresh-signup chain (including the topics overwrite Task 8 exists to prevent) on an
+      // established account.
+      const linkedExistingAccount = resolveOwnerByPhone(reg.phone) !== null;
       let userId: number;
-      // See the matching comment on the Google callback above. Only meaningful on the
-      // resolveRegistrationUser branch — the `else` below means an existing Microsoft identity/
-      // account already resolved this user, so listAccounts(userId) was already non-empty and
-      // connect_email (the only caller that can reach linkedExistingAccount=true in practice)
-      // would have refused before ever issuing a link.
-      let linkedExistingAccount = false;
       if (resolved === "none") {
-        linkedExistingAccount = resolveOwnerByPhone(reg.phone) !== null;
         const resolution = resolveRegistrationUser(reg.phone, auth.email);
         if (resolution.kind === "account_exists") {
           res.redirect(`${CLIENT_URL}/connected?error=account_exists`);

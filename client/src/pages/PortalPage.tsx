@@ -861,7 +861,10 @@ function AdminsTab({ currentUserId }: { currentUserId: number }) {
         candidates.map((c) => (
           <div key={c.id} className="data-row row" style={{ justifyContent: "space-between" }}>
             <span style={{ fontSize: 13.5 }}>
-              {c.email ?? "No email connected"}
+              {/* Matches usageOwnerLabel (api/client.ts): a beta that's mostly phone-first would
+                  otherwise render every phone-only row identically, with no way to tell them
+                  apart or audit who holds a live "Make admin" button. */}
+              {c.email ?? `No email connected (#${c.id})`}
               {c.id === currentUserId && <span className="muted"> (you)</span>}
               {c.isAppOwner && <span className="badge-pill" style={{ marginLeft: 8 }}>owner</span>}
               {c.isAdmin && !c.isAppOwner && <span className="badge-pill" style={{ marginLeft: 8 }}>admin</span>}

@@ -5,6 +5,7 @@ import {
   findOrCreateUserByEmail,
   getUser,
   resolveOwnerByPhone,
+  listAllUserIds,
 } from "../db/store.js";
 
 let counter = 0;
@@ -18,6 +19,7 @@ describe("resolveRegistrationUser", () => {
     const phone = freshPhone();
     const phoneOnly = findOrCreateUserByPhone(phone);
     const email = `linked-${phone}@example.com`;
+    const userCountBefore = listAllUserIds().length;
 
     const result = resolveRegistrationUser(phone, email);
 
@@ -25,6 +27,9 @@ describe("resolveRegistrationUser", () => {
     if (result.kind !== "ok") return;
     expect(result.userId).toBe(phoneOnly.id);
     expect(getUser(phoneOnly.id)?.email).toBe(email);
+    // The name of this test is the claim under test: matching the returned id alone would also
+    // pass if a stray second users row got created alongside it.
+    expect(listAllUserIds().length).toBe(userCountBefore);
   });
 
   it("refuses when that email already belongs to a different account, leaving both intact", () => {

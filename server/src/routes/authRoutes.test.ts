@@ -587,6 +587,24 @@ describe("linkedExistingAccount signal passed to sendFirstValueAndBriefingPrompt
     const user = getUserByEmail(email)!;
     expect(sendFirstValueAndBriefingPrompt).toHaveBeenCalledWith(user.id, phone, false);
   });
+
+  it("Microsoft: true when a linked identity's mailbox was already disconnected — resolveMicrosoftUser resolves from user_identities, which deleteAccount doesn't touch, so this reaches the `else` branch with listAccounts empty (review finding #3)", async () => {
+    const app = buildApp();
+    const phone = freshPhone();
+    const email = uniqueEmail("ms-link-reconnect");
+    // The phone already owns an account (from earlier registration) with a Microsoft identity
+    // linked but no accounts row — exactly what's left after connecting Outlook and then
+    // disconnecting it via accountRoutes' deleteAccount, which removes the account but not the
+    // user_identities row.
+    const existing = findOrCreateUserByPhone(phone);
+    linkIdentity(existing.id, "microsoft", "tenant-recon:obj-recon");
+    expect(listAccounts(existing.id, "microsoft")).toEqual([]);
+    vi.mocked(exchangeMicrosoftCode).mockResolvedValue(msAuth(email, "tenant-recon", "obj-recon", "graph-recon"));
+
+    await registerViaMicrosoft(app, phone, email);
+
+    expect(sendFirstValueAndBriefingPrompt).toHaveBeenCalledWith(existing.id, phone, true);
+  });
 });
 
 describe("Google sign-in can't take over a Microsoft-identified user", () => {

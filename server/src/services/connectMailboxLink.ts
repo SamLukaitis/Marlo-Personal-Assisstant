@@ -22,6 +22,19 @@ function withinCooldown(phone: string): boolean {
   return last !== undefined && Date.now() - last < RESEND_COOLDOWN_MS;
 }
 
+// Prunes on every write instead of a timer — this Map is now shared by two callers (this file's
+// own header comment) and has no other expiry, so left alone it grows by one entry forever for
+// every phone that has ever asked for a connect link. A scan bounded by the last minute's worth
+// of callers, on the already-infrequent "issue a token" path, is cheap enough not to need a
+// background interval.
+function recordTokenIssued(phone: string): void {
+  const now = Date.now();
+  for (const [key, issuedAt] of lastTokenIssuedAt) {
+    if (now - issuedAt >= RESEND_COOLDOWN_MS) lastTokenIssuedAt.delete(key);
+  }
+  lastTokenIssuedAt.set(phone, now);
+}
+
 const PROVIDER_LABEL: Record<RegistrationProvider, string> = {
   google: "Gmail",
   microsoft: "Outlook",
@@ -56,7 +69,7 @@ export async function sendConnectLink(phone: string, provider: RegistrationProvi
     return "no_pending_row";
   }
   const token = setPendingRegistrationToken(phone);
-  lastTokenIssuedAt.set(phone, Date.now());
+  recordTokenIssued(phone);
   const path = provider === "google" ? "/auth/google/register" : "/auth/microsoft/register";
   const link = `${SERVER_URL}${path}?token=${token}`;
   await sendWhatsAppCtaUrl(
