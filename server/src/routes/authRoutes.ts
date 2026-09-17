@@ -181,13 +181,19 @@ export function resolveRegistrationUser(phone: string, email: string): Registrat
   const phoneOwnerId = resolveOwnerByPhone(phone);
 
   if (phoneOwnerId !== null) {
-    // Already the same account — nothing to attach, just proceed.
+    // Already the same account — nothing to attach, just proceed. (Also covers the "re-link the
+    // same address" case: setUserEmail already wrote it, so this is a no-op, not a second write.)
     if (existingByEmail && existingByEmail.id === phoneOwnerId) {
       return { kind: "ok", userId: phoneOwnerId };
     }
-    // The address belongs to somebody else. Refuse rather than merge: the same call both
-    // collision checks in this codebase already make.
-    if (existingByEmail) {
+    // Either the address belongs to somebody else, or the phone owner's row already has a
+    // DIFFERENT address of its own (a Gmail-linked account later trying to link Outlook). Refuse
+    // both rather than merge or overwrite: swapping the mailbox on an existing account isn't
+    // supported, and silently moving identity half-way is worse than refusing — the old address
+    // would stop resolving to this user (locking them out of web sign-in, and out of admin if
+    // they're the app owner) with nothing on screen to explain why.
+    const phoneOwner = getUser(phoneOwnerId);
+    if (existingByEmail || phoneOwner?.email !== null) {
       return { kind: "account_exists" };
     }
     setUserEmail(phoneOwnerId, email);
