@@ -167,10 +167,47 @@ Also covered:
 
 ## Risks
 
-**The `users` rebuild is the sharp edge.** It is the one step that can lose data if it goes wrong,
-and it runs at boot against the production SQLite file. Mitigation: wrap in a transaction, verify
-the row count matches before dropping the old table, and rehearse against a copy of the
-production database before deploying.
+**The `users` rebuild is the sharp edge.** Three things make it genuinely dangerous rather than
+routine:
+
+- *The rebuild has a destructive window.* `CREATE` → copy → `DROP users` → `RENAME` leaves a
+  moment with no `users` table. The existing precedent in this codebase — the `api_usage` rebuild
+  at `store.ts:314-331` — runs that sequence in a bare `db.exec()`, where each statement
+  auto-commits individually. A crash in the window leaves a database with no `users` table.
+- *It runs unattended at boot.* Every migration in `store.ts` is top-level module code executing
+  at import. This fires automatically on the next deploy, against live data, with nobody watching
+  — exactly when a container OOM-kill or deploy timeout would land.
+- *`users` is the root of the graph.* Losing `api_usage` costs a chart; it is append-only
+  telemetry. Losing `users` orphans all 29 tables keyed on `owner_id` — accounts, documents,
+  to-dos, memory, connected mailboxes — and because foreign keys are off, nothing would complain.
+
+There are also no backups: nothing in the codebase writes one, and the database is a single file
+on a Railway volume.
+
+These four mitigations are implementation requirements, not suggestions:
+
+1. **Wrap the rebuild in `db.transaction(...)`.** SQLite DDL is transactional — `DROP TABLE` and
+   `ALTER TABLE RENAME` both roll back. Do not copy the bare-`exec` pattern from the `api_usage`
+   precedent. This closes the destructive window and is the single most important mitigation.
+2. **Verify row counts before dropping.** Count both tables inside the transaction and throw if
+   they disagree. A throw inside a better-sqlite3 transaction rolls back, so a partial copy can
+   never reach the `DROP`.
+3. **Back up the file first.** `db.backup()` is online-safe and the database is small. Write
+   `app.db.bak-<timestamp>` before the migration runs.
+4. **Rehearse against a copy of production.** Pull the real `app.db`, run the migration locally,
+   confirm row count and that existing users keep their emails. The other three limit damage;
+   this one prevents it.
+
+The `PRAGMA table_info` idempotency guard means this runs once and no-ops forever after, so there
+is no repeat exposure.
+
+**Alternative considered and rejected: synthetic emails.** Keeping `email NOT NULL UNIQUE` and
+giving phone-only users an address like `447911123456@phone.marlowe.local` needs no migration and
+carries no risk to existing data. Rejected because it trades a one-time bounded risk for
+permanent complexity: the fake address is a lie stored in the database, and every one of the ~18
+`user.email` read sites must learn to recognise it or leak it into the admin list, settings page
+and alert copy as though it were real. Worth revisiting only if the rebuild has to happen at a
+moment when the beta cannot tolerate any risk at all.
 
 **Two accounts for one person.** Someone who signs up phone-only and later signs into the portal
 with Google — having never linked it — would create a second, email-keyed account. The phone is
