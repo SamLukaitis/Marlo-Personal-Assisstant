@@ -6,7 +6,8 @@ import {
   addInvitedPhone,
   removeInvitedPhone,
   resolveOwnerByPhone,
-  getReplayParkedOwner,
+  clearReplayPark,
+  listReplayParkedPhonesForUser,
   deleteUserCompletely,
   deletePendingRegistration,
   normalizePhone,
@@ -170,20 +171,16 @@ adminRoutes.post("/api/admin/reset-test-phone", (req, res) => {
   deletePendingRegistration(phone);
 
   const ownerId = resolveOwnerByPhone(phone);
-  // A number parked by replay-onboarding no longer resolves, so without this the wipe would
-  // silently report "no account" and do nothing. Refuse loudly instead — and deliberately do NOT
-  // fall back to the parked owner: that owner is a real account mid-replay (the whole point of
-  // replay is keeping its data), so resolving through the park marker here would turn this
-  // endpoint into a one-tap wipe of the operator's own live account.
-  const parkedOwner = ownerId === null ? getReplayParkedOwner(phone) : null;
-  if (parkedOwner !== null) {
-    res.status(409).json({
-      error:
-        "That number is parked by a replay-onboarding on an account that still has its data. " +
-        "Finish re-onboarding (or re-add the number in Settings) before wiping it.",
-    });
-    return;
-  }
+  // Replay-onboarding leaves the number unbound but remembers which account it came from, so the
+  // next registration is handed back to that account rather than creating a second one (see
+  // resetOnboardingConnectionState). This endpoint's whole promise is that the same number can go
+  // through signup from a clean slate, which that marker would quietly break — so drop it.
+  //
+  // Deliberately does NOT wipe the account the marker points at: that is a live account mid-replay
+  // whose data replay exists to preserve, and following the marker here would make this a one-tap
+  // wipe of the operator's own hub. An earlier version refused the whole request with a 409
+  // instead, which removed the only escape hatch from a number nothing else could unstick.
+  const clearedReplayPark = clearReplayPark(phone);
   try {
     if (ownerId !== null) {
       const { deletedDocumentPaths } = deleteUserCompletely(ownerId);
@@ -211,7 +208,7 @@ adminRoutes.post("/api/admin/reset-test-phone", (req, res) => {
     return;
   }
 
-  res.json({ ok: true, hadAccount: ownerId !== null });
+  res.json({ ok: true, hadAccount: ownerId !== null, clearedReplayPark });
 });
 
 // For replaying the WhatsApp onboarding UX end-to-end on an account you actually want to keep —
@@ -227,12 +224,19 @@ adminRoutes.post("/api/admin/replay-onboarding", (req, res) => {
     res.status(403).json({ error: "not allowed" });
     return;
   }
-  const phones = listPhoneNumbersForUser(userId);
-  for (const p of phones) {
-    deletePendingRegistration(p.phone);
+  // Includes numbers already unbound by an EARLIER replay: the live rows are gone by then, so
+  // going by listPhoneNumbersForUser alone would clear nothing on a second replay and leave the
+  // half-finished pending_whatsapp_registrations row behind — the next WhatsApp message would
+  // resume mid-flow ("what's your email address?") instead of starting over, which reads as replay
+  // having done nothing at all.
+  const phones = [
+    ...new Set([...listPhoneNumbersForUser(userId).map((p) => p.phone), ...listReplayParkedPhonesForUser(userId)]),
+  ];
+  for (const phone of phones) {
+    deletePendingRegistration(phone);
   }
   resetOnboardingConnectionState(userId);
-  res.json({ ok: true, unboundPhones: phones.map((p) => p.phone) });
+  res.json({ ok: true, unboundPhones: phones });
 });
 
 // The conversation viewer for watching a test user's onboarding/chat play out instead of guessing

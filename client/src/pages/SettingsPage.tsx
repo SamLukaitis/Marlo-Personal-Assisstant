@@ -312,7 +312,12 @@ export function SettingsPage() {
       setResetMessage(
         result.hadAccount
           ? `Done — the account behind ${phone} was fully deleted. Message it again to sign up from scratch.`
-          : `Done — no account was bound to ${phone} yet, but any half-finished registration for it is cleared.`
+          : result.clearedReplayPark
+            ? // The number was unbound by a replay-onboarding, so there was no account to delete —
+              // but it was still going to be handed back to the account that replayed it. Say so,
+              // rather than letting "no account was bound" imply nothing happened.
+              `Done — ${phone} was unbound by a replay-onboarding, so no account was deleted. It no longer points back at the account that replayed it, and any half-finished registration is cleared.`
+            : `Done — no account was bound to ${phone} yet, but any half-finished registration for it is cleared.`
       );
       setResetPhone("");
     } catch (err) {

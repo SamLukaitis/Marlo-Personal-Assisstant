@@ -21,6 +21,7 @@ import {
   getUser,
   setUserEmail,
   resolveOwnerByPhone,
+  getReplayParkedOwner,
   createSession,
   deleteSession,
   getUserIdBySessionToken,
@@ -178,7 +179,15 @@ export type RegistrationUserResult =
 
 export function resolveRegistrationUser(phone: string, email: string): RegistrationUserResult {
   const existingByEmail = getUserByEmail(email);
-  const phoneOwnerId = resolveOwnerByPhone(phone);
+  // A number unbound by replay-onboarding counts as owned for this decision, exactly like a live
+  // binding. Reading resolveOwnerByPhone alone was the hole that kept the original split bug alive
+  // on this path: for a replayed PHONE-ONLY account (users.email still NULL, nothing for
+  // getUserByEmail to find) the whole phone-first branch below was skipped, the fall-through
+  // minted a brand-new account from the address, and the addPhoneNumberForUser that followed threw
+  // "already registered to another account" — leaving an orphan account behind on every attempt
+  // and no way to connect the mailbox. findOrCreateUserByPhone (the "No" tap) got this lookup when
+  // parking was introduced; this path, the "Yes" tap, did not.
+  const phoneOwnerId = resolveOwnerByPhone(phone) ?? getReplayParkedOwner(phone);
 
   if (phoneOwnerId !== null) {
     // Already the same account — nothing to attach, just proceed. (Also covers the "re-link the

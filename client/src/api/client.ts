@@ -609,7 +609,9 @@ export async function dismissWaitlistRequest(phone: string): Promise<WaitlistReq
 // Wipes any in-progress WhatsApp registration for this number, and if it's already bound to a
 // full account, wipes that account entirely — so the same phone/email can go through the
 // WhatsApp-native signup flow again from scratch. Irreversible; the caller should confirm first.
-export async function resetTestPhone(phone: string): Promise<{ ok: true; hadAccount: boolean }> {
+export async function resetTestPhone(
+  phone: string
+): Promise<{ ok: true; hadAccount: boolean; clearedReplayPark: boolean }> {
   const res = await fetch(
     `${API_BASE}/api/admin/reset-test-phone`,
     withCredentials({
