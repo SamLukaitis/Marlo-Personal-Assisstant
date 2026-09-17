@@ -14,6 +14,7 @@ const {
   findOrCreateUserByEmail,
   addPhoneNumberForUser,
   addInvitedPhone,
+  removeInvitedPhone,
   listWaitlistRequests,
   resolveOwnerByPhone,
   getUser,
@@ -315,8 +316,13 @@ describe("handlePendingRegistration — declining email creates a phone-only acc
     expect(getPendingRegistration(phone)?.step).toBe("completed");
   });
 
-  // The regression that matters most. Before this feature the next message fell through to
-  // getRegistrationAssistReply, which nudges the person back toward giving an email.
+  // Proves handlePendingRegistration itself stops treating the number as still-in-registration
+  // once No is tapped (step is "completed", so a follow-up here hits the no-op case rather than
+  // getRegistrationAssistReply). It does NOT prove the message reaches the assistant — that
+  // depends on whatsappRoutes.ts's resolveOwnerByPhone fork, which is a separate module this file
+  // doesn't exercise; see "handleIncoming — routing after an account exists" in
+  // whatsappRoutes.test.ts for that end-to-end proof, and the "creates an account..." test above
+  // for the resolveOwnerByPhone fact that fork actually branches on.
   it("does not re-ask for an email when they send a real request afterwards", async () => {
     const phone = freshPhone();
     addInvitedPhone(phone);
@@ -356,5 +362,58 @@ describe("handlePendingRegistration — declining email creates a phone-only acc
 
     // getSetting returns null (not undefined) for a missing key.
     expect(getSetting(resolveOwnerByPhone(phone)!, "user_name")).toBeNull();
+  });
+
+  // The hole this closes: once an account exists, resolveOwnerByPhone resolves the number and
+  // the invite gate is never consulted for it again — so if No skipped this re-check, a number
+  // revoked mid-conversation would get permanent access via a single tap.
+  it("does not create an account if the invite was revoked while awaiting the email choice", async () => {
+    const phone = freshPhone();
+    addInvitedPhone(phone);
+    upsertPendingRegistration(phone, { step: "awaiting_email_confirm", name: "Sam" });
+    removeInvitedPhone(phone); // simulates an admin revoke mid-conversation
+
+    await handlePendingRegistration({
+      kind: "interactive",
+      from: phone,
+      messageId: "m1",
+      buttonId: "email_confirm_no",
+    });
+
+    expect(resolveOwnerByPhone(phone)).toBeNull();
+  });
+});
+
+// Pre-existing narrow regex, widened here — "nah"/"nope"/"no thx" used to fall through to
+// getRegistrationAssistReply, the exact deflection this task removes, just for a different set of
+// typed words than "no"/"n".
+describe("handlePendingRegistration — typed decline recognizes common short forms", () => {
+  it.each(["nah", "nope", "no thx"])("treats %s as a decline, same as tapping No", async (text) => {
+    const phone = freshPhone();
+    addInvitedPhone(phone);
+    upsertPendingRegistration(phone, { step: "awaiting_email_confirm", name: "Sam" });
+
+    await handlePendingRegistration({ kind: "text", from: phone, text, messageId: "m1" });
+
+    expect(resolveOwnerByPhone(phone)).not.toBeNull();
+    expect(getPendingRegistration(phone)?.step).toBe("completed");
+  });
+
+  // A longer sentence that happens to start with a decline word is real free text, not a decline
+  // — it must still reach the assistant-backed help reply instead of being misread.
+  it("does not treat a longer sentence starting with a decline word as a decline", async () => {
+    const phone = freshPhone();
+    addInvitedPhone(phone);
+    upsertPendingRegistration(phone, { step: "awaiting_email_confirm", name: "Sam" });
+
+    await handlePendingRegistration({
+      kind: "text",
+      from: phone,
+      text: "nope not sure what my email is",
+      messageId: "m1",
+    });
+
+    expect(resolveOwnerByPhone(phone)).toBeNull();
+    expect(getPendingRegistration(phone)?.step).toBe("awaiting_email_confirm");
   });
 });

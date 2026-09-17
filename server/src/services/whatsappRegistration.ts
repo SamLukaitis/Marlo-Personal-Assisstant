@@ -243,6 +243,16 @@ async function handleEmailConfirmTap(row: PendingRegistrationRow, buttonId: stri
     return;
   }
   if (buttonId === EMAIL_CONFIRM_BUTTON_IDS.no) {
+    // Authoritative re-check of the same gate whatsappRegistration.ts's first-contact check
+    // already passed — re-checked here in case the invite was revoked mid-conversation, same
+    // defense-in-depth shape authRoutes.ts's OAuth callbacks use. This is a new account-creation
+    // site, so without this check a revoked number could still get a fully working account: once
+    // one exists, resolveOwnerByPhone resolves it and the invite gate is never consulted again.
+    if (!isPhoneInvited(row.phone)) {
+      const { isNewRequest } = recordWaitlistRequest(row.phone);
+      await reply(row.phone, isNewRequest ? MARLOWE_WAITLIST_TEXT : MARLOWE_WAITLIST_REMINDER_TEXT).catch(() => {});
+      return;
+    }
     // A real choice now, not a holding pattern: create the account from the phone number alone so
     // the promise in the reply below is one Marlowe can actually keep. Until this existed the step
     // stayed parked here and the next message was deflected back to the email question.
@@ -278,7 +288,10 @@ async function handleAwaitingEmailConfirmText(row: PendingRegistrationRow, text:
     await handleEmailConfirmTap(row, EMAIL_CONFIRM_BUTTON_IDS.yes);
     return;
   }
-  if (/^no?( thanks)?$/i.test(trimmed)) {
+  // Anchored to short whole-word decline forms, not a general "starts with no" match — a longer
+  // sentence that happens to start with one of these words must still fall through to the
+  // assistant reply below rather than being misread as a decline.
+  if (/^(n|no|nah|nope)( thanks| thx)?$/i.test(trimmed)) {
     await handleEmailConfirmTap(row, EMAIL_CONFIRM_BUTTON_IDS.no);
     return;
   }
