@@ -222,14 +222,14 @@ async function handleAwaitingName(row: PendingRegistrationRow, text: string): Pr
   const greeting = name ? `Hi ${name}.` : "Hi there.";
   // Sent as separate WhatsApp messages (not joined with \n\n) to match a real conversational
   // back-and-forth rather than one long wall of text.
-  await reply(row.phone, `${greeting} I hope to be helpful with anything you could need, so please, ask me anything`);
+  await reply(row.phone, `${greeting} I hope to be helpful with anything you could need, so please, ask me anything.`);
   await reply(
     row.phone,
     "My developers are always adding features, so if you give me a request I cannot meet, I'll send this over to them to build ASAP."
   );
   await reply(
     row.phone,
-    "For the moment, people have asked me to help plan their calendar and travel plans, organise their inboxes, and remind them of important information and events."
+    "Most people ask me to help plan their calendar and travel plans, organise their inboxes, and remind them of important information and events."
   );
   await askEmailConfirm(updated);
 }
