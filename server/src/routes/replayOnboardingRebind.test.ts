@@ -9,6 +9,8 @@ import {
   listPhoneNumbersForUser,
   addPhoneNumberForUser,
   resetOnboardingConnectionState,
+  getReplayParkedOwner,
+  deleteUserCompletely,
 } from "../db/store.js";
 
 let counter = 0;
@@ -80,14 +82,64 @@ describe("replay onboarding — the number stays owned by the account that was r
     expect(listPhoneNumbersForUser(original.id)).toHaveLength(1);
   });
 
-  it("a replayed number still cannot be taken over by a different account", () => {
+  // A replayed number is genuinely unbound, exactly as it was before any of this: the row is gone,
+  // so anybody signed in can claim it from Settings the same way they could claim a number nobody
+  // had ever registered (this app verifies phone ownership nowhere — that was already the model).
+  // The first attempt at the split fix kept the row and refused this, which is what dead-ended a
+  // real operator: the number showed as bound to nothing, Settings refused to add it, and
+  // reset-test-phone refused to clear it.
+  it("a replayed number can be claimed by another account, and claiming it drops the park marker", () => {
     const phone = freshPhone();
     const original = findOrCreateUserByPhone(phone);
     const stranger = findOrCreateUserByEmail(`stranger-${counter}@example.com`);
 
     resetOnboardingConnectionState(original.id);
+    addPhoneNumberForUser(stranger.id, phone);
 
-    expect(() => addPhoneNumberForUser(stranger.id, phone)).toThrow(/already registered/i);
-    expect(resolveOwnerByPhone(phone)).toBeNull();
+    expect(resolveOwnerByPhone(phone)).toBe(stranger.id);
+    // The live binding wins outright — the marker must not survive to divert a later registration
+    // back to the account that replayed it.
+    expect(getReplayParkedOwner(phone)).toBeNull();
+    expect(findOrCreateUserByPhone(phone).id).toBe(stranger.id);
+  });
+
+  // The hole the first attempt left open: only the "No" tap (findOrCreateUserByPhone) learned to
+  // read the park marker. The "Yes" tap ends at the OAuth callback instead, which asks
+  // resolveRegistrationUser — and for a phone-only account there is no email for getUserByEmail to
+  // match on, so it minted a brand-new account from the address and the addPhoneNumberForUser that
+  // followed threw "already registered to another account". An orphan account per attempt, and the
+  // mailbox could never be connected.
+  it("connecting a mailbox after a replay attaches it to the replayed phone-only account", () => {
+    const phone = freshPhone();
+    const original = findOrCreateUserByPhone(phone); // phone-only: users.email is NULL
+    expect(getUser(original.id)?.email).toBeNull();
+    const userCountBefore = listAllUserIds().length;
+
+    resetOnboardingConnectionState(original.id);
+
+    const email = `late-connect-${phone}@example.com`;
+    const result = resolveRegistrationUser(phone, email);
+
+    expect(result.kind).toBe("ok");
+    if (result.kind !== "ok") return;
+    expect(result.userId).toBe(original.id);
+    expect(listAllUserIds().length).toBe(userCountBefore);
+    expect(getUser(original.id)?.email).toBe(email);
+    // ...and the phone binds back to that same account rather than throwing.
+    expect(() => addPhoneNumberForUser(result.userId, phone)).not.toThrow();
+    expect(resolveOwnerByPhone(phone)).toBe(original.id);
+  });
+
+  it("a park marker whose account has since been wiped reads as an unknown number", () => {
+    const phone = freshPhone();
+    const original = findOrCreateUserByPhone(phone);
+
+    resetOnboardingConnectionState(original.id);
+    deleteUserCompletely(original.id);
+
+    expect(getReplayParkedOwner(phone)).toBeNull();
+    // A brand-new account, not a resurrection of the deleted one.
+    const fresh = findOrCreateUserByPhone(phone);
+    expect(fresh.id).not.toBe(original.id);
   });
 });

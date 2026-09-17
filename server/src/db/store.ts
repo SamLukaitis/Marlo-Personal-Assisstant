@@ -4,6 +4,7 @@ import fs from "node:fs";
 import crypto from "node:crypto";
 import { encryptField, decryptField } from "../services/crypto.js";
 import { migrateUsersEmailNullable } from "./migrations/usersEmailNullable.js";
+import { migrateReplayParkMarker } from "./migrations/replayParkMarker.js";
 
 // DATA_DIR lets tests (see server/src/test/setup.ts) point this at an isolated temp directory
 // instead of the real server/data — unset in normal dev/production, where this falls back to
@@ -122,6 +123,27 @@ db.exec(`
     created_at INTEGER NOT NULL
   );
   CREATE INDEX IF NOT EXISTS idx_user_phone_numbers_user ON user_phone_numbers(user_id);
+  -- Written by resetOnboardingConnectionState ("replay onboarding"), which DELETES this owner's
+  -- user_phone_numbers rows so the number is genuinely unbound again, and records here which
+  -- account each one came from. That fact is what stops the "No" tap at the email question (and a
+  -- re-connected mailbox) from minting a SECOND, phone-only account while the original keeps the
+  -- address — a split no later mailbox connect could undo.
+  --
+  -- Deliberately its own table rather than a marker column on the row it replaces (the shape this
+  -- branch shipped first, as unbound_for_replay_at): user_phone_numbers.phone is UNIQUE, so a row
+  -- kept behind but filtered out of every read was invisible in Settings while still blocking
+  -- every write — including the "add the number from Settings" step the failure told people to
+  -- take. That is a worse dead end than the bug it fixed. With the row gone, the number is free
+  -- for whoever legitimately claims it and nothing needs a second view of the same table.
+  --
+  -- Only findOrCreateUserByPhone and resolveRegistrationUser consult this, and a live
+  -- user_phone_numbers row always beats an entry here — see getReplayParkedOwner.
+  CREATE TABLE IF NOT EXISTS replay_parked_phones (
+    phone TEXT PRIMARY KEY,
+    owner_id INTEGER NOT NULL REFERENCES users(id),
+    parked_at INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_replay_parked_phones_owner ON replay_parked_phones(owner_id);
   CREATE TABLE IF NOT EXISTS user_enabled_tools (
     owner_id INTEGER NOT NULL REFERENCES users(id),
     tool_key TEXT NOT NULL,
@@ -926,16 +948,12 @@ if (!userPhoneNumberColumns.includes("last_inbound_at")) {
   db.exec(`ALTER TABLE user_phone_numbers ADD COLUMN last_inbound_at INTEGER`);
 }
 
-// Set by resetOnboardingConnectionState ("replay onboarding") to park a number instead of
-// deleting its row: the number stops resolving (so the next inbound message re-enters
-// registration, which is the whole point of replay) while the row goes on remembering WHICH
-// account it belongs to. Deleting it threw that fact away, and the "No" tap at the email question
-// then minted a second, phone-only account — leaving the original account holding the email and
-// the new one holding the number, a split no later mailbox connect could undo. Null means an
-// ordinary, live binding.
-if (!userPhoneNumberColumns.includes("unbound_for_replay_at")) {
-  db.exec(`ALTER TABLE user_phone_numbers ADD COLUMN unbound_for_replay_at INTEGER`);
-}
+// Carries a DB that was deployed with the first, short-lived shape of the replay park marker (a
+// nullable unbound_for_replay_at column on the row being parked) over to replay_parked_phones.
+// Without it, a number parked by that design would stay invisible AND unclaimable forever: nothing
+// reads the column any more, so nothing would ever unpark it, while its row went on holding the
+// UNIQUE phone slot. See the migration's own comment for the full story.
+migrateReplayParkMarker(db);
 
 // Which OAuth provider the person picked at the "Gmail or Outlook?" button step of registration
 // — see services/whatsappRegistration.ts. Needed so a later "resend" only re-sends that one link
@@ -1756,14 +1774,15 @@ export interface UserPhoneNumberRow {
   createdAt: number;
 }
 
-// Parked-by-replay rows are filtered out, matching resolveOwnerByPhone: Settings must not show a
-// number as bound while it is unbound, and handleAwaitingEmail's "that email is already connected
-// elsewhere" guard reads this list to decide whether an account is mid-replay and may reconnect.
+// Every row here is a live binding — replay-onboarding deletes the rows it unbinds rather than
+// marking them (see replay_parked_phones), so there is nothing to filter. handleAwaitingEmail's
+// "that email is already connected elsewhere" guard depends on that: it reads this list to decide
+// whether an account is mid-replay and may reconnect its mailbox.
 export function listPhoneNumbersForUser(ownerId: number): UserPhoneNumberRow[] {
   return db
     .prepare(
       `SELECT id, user_id AS userId, phone, created_at AS createdAt FROM user_phone_numbers
-       WHERE user_id = ? AND unbound_for_replay_at IS NULL`
+       WHERE user_id = ?`
     )
     .all(ownerId) as UserPhoneNumberRow[];
 }
@@ -1772,33 +1791,31 @@ export function listPhoneNumbersForUser(ownerId: number): UserPhoneNumberRow[] {
 // someone else's existing row if the number's already registered to a different account.
 export function addPhoneNumberForUser(ownerId: number, phone: string): UserPhoneNumberRow {
   const normalized = normalizePhone(phone);
-  // Deliberately reads past the unbound_for_replay_at filter resolveOwnerByPhone applies. A row
-  // parked by replay still occupies the number (phone is UNIQUE), so going by resolveOwnerByPhone
-  // alone would send a parked row down the INSERT path and hit the constraint — and a *different*
-  // owner must still be refused rather than handed a number that is only temporarily unbound.
   const existing = db
-    .prepare(
-      `SELECT id, user_id AS userId, phone, created_at AS createdAt,
-              unbound_for_replay_at AS unboundForReplayAt
-       FROM user_phone_numbers WHERE phone = ?`
-    )
-    .get(normalized) as (UserPhoneNumberRow & { unboundForReplayAt: number | null }) | undefined;
+    .prepare(`SELECT id, user_id AS userId, phone, created_at AS createdAt FROM user_phone_numbers WHERE phone = ?`)
+    .get(normalized) as UserPhoneNumberRow | undefined;
   if (existing && existing.userId !== ownerId) {
     throw new Error("This phone number is already registered to another account.");
   }
-  if (existing) {
-    // Same owner: either already bound (no-op, as before) or parked by replay, which re-binds it.
-    if (existing.unboundForReplayAt !== null) {
-      db.prepare(`UPDATE user_phone_numbers SET unbound_for_replay_at = NULL WHERE id = ?`).run(existing.id);
+  const bind = db.transaction(() => {
+    let row = existing;
+    if (!row) {
+      const info = db
+        .prepare(`INSERT INTO user_phone_numbers (user_id, phone, created_at) VALUES (?, ?, ?)`)
+        .run(ownerId, normalized, Date.now());
+      row = db
+        .prepare(`SELECT id, user_id AS userId, phone, created_at AS createdAt FROM user_phone_numbers WHERE id = ?`)
+        .get(info.lastInsertRowid) as UserPhoneNumberRow;
     }
-    return { id: existing.id, userId: existing.userId, phone: existing.phone, createdAt: existing.createdAt };
-  }
-  const info = db
-    .prepare(`INSERT INTO user_phone_numbers (user_id, phone, created_at) VALUES (?, ?, ?)`)
-    .run(ownerId, normalized, Date.now());
-  return db
-    .prepare(`SELECT id, user_id AS userId, phone, created_at AS createdAt FROM user_phone_numbers WHERE id = ?`)
-    .get(info.lastInsertRowid) as UserPhoneNumberRow;
+    // A live binding always beats a replay park marker, so drop the marker here rather than in
+    // each caller. Covers both halves of re-onboarding (the original owner reclaiming its own
+    // number) and the case the previous design made impossible: somebody else legitimately
+    // claiming a number that is sitting unbound. Leaving the marker behind would let a later
+    // inbound message be handed to the account the number used to belong to.
+    db.prepare(`DELETE FROM replay_parked_phones WHERE phone = ?`).run(normalized);
+    return row;
+  });
+  return bind();
 }
 
 export function removePhoneNumberForUser(ownerId: number, id: number): void {
@@ -1835,19 +1852,53 @@ export function setToolEnabled(ownerId: number, toolKey: ToolKey, enabled: boole
 export function resolveOwnerByPhone(phone: string): number | null {
   const normalized = normalizePhone(phone);
   const row = db
-    .prepare(`SELECT user_id AS userId FROM user_phone_numbers WHERE phone = ? AND unbound_for_replay_at IS NULL`)
+    .prepare(`SELECT user_id AS userId FROM user_phone_numbers WHERE phone = ?`)
     .get(normalized) as { userId: number } | undefined;
   return row ? row.userId : null;
 }
 
-// The owner a replay-parked number is waiting to be handed back to, or null for a number that is
-// live or genuinely unknown. Only findOrCreateUserByPhone consults this — every other caller
-// should keep treating a parked number as unresolved, which is what replay is for.
+// The account a replay-parked number should be handed back to, or null for a number that is bound,
+// never parked, or parked to an account that has since been deleted.
+//
+// Only the two places that decide which account a completing registration belongs to consult this
+// — findOrCreateUserByPhone (the "No" tap) and resolveRegistrationUser (a mailbox connected at the
+// end of OAuth). Everywhere else must keep treating a parked number as unregistered, which is the
+// entire point of replay: the next inbound message has to re-enter handlePendingRegistration.
+//
+// A live binding wins: if somebody has legitimately claimed the number since it was parked, the
+// stale marker must not divert their registration to the previous owner. addPhoneNumberForUser
+// already deletes the marker on every bind, so this check is belt-and-braces for a marker that
+// outlived its delete.
 export function getReplayParkedOwner(phone: string): number | null {
+  const normalized = normalizePhone(phone);
+  if (resolveOwnerByPhone(normalized) !== null) return null;
   const row = db
-    .prepare(`SELECT user_id AS userId FROM user_phone_numbers WHERE phone = ? AND unbound_for_replay_at IS NOT NULL`)
-    .get(normalizePhone(phone)) as { userId: number } | undefined;
-  return row ? row.userId : null;
+    .prepare(`SELECT owner_id AS ownerId FROM replay_parked_phones WHERE phone = ?`)
+    .get(normalized) as { ownerId: number } | undefined;
+  if (!row) return null;
+  // The owner can be gone — reset-test-phone wipes accounts outright, and this table's rows are
+  // purged with them. A marker pointing at nothing must read as "unknown number", not crash the
+  // caller's getUser(...) as UserRow cast.
+  return getUser(row.ownerId) ? row.ownerId : null;
+}
+
+// The numbers this owner has parked by replaying onboarding. replay-onboarding clears the
+// half-finished registration for every number it unbinds, and on a REPEAT replay the live rows are
+// already gone — so the list it works from has to include these or the stale
+// pending_whatsapp_registrations row survives and the next message resumes mid-flow instead of
+// starting over.
+export function listReplayParkedPhonesForUser(ownerId: number): string[] {
+  return (
+    db.prepare(`SELECT phone FROM replay_parked_phones WHERE owner_id = ?`).all(ownerId) as { phone: string }[]
+  ).map((r) => r.phone);
+}
+
+// Drops the "this number belongs to that account" marker without touching the account itself.
+// reset-test-phone calls this: its promise is that the same number can go through signup from a
+// clean slate, which a surviving marker would break by handing the next registration straight back
+// to the account that was mid-replay. Returns whether there was anything to clear.
+export function clearReplayPark(phone: string): boolean {
+  return db.prepare(`DELETE FROM replay_parked_phones WHERE phone = ?`).run(normalizePhone(phone)).changes > 0;
 }
 
 // Called once per inbound webhook message, right after the sender resolves to an owner — see
@@ -2591,13 +2642,13 @@ export function findOrCreateUserByPhone(phone: string): UserRow {
     return getUser(existingOwner) as UserRow;
   }
 
-  // A number parked by replay-onboarding still remembers its owner, so hand that account back
+  // A number unbound by replay-onboarding still remembers its owner, so hand that account back
   // rather than minting a second one. Creating a new row here was the bug: the replayed account
   // kept the email while the new phone-only account took the number, and every later attempt to
   // connect that mailbox was refused as "already belongs to a Marlowe account" with no way out.
   const parkedOwner = getReplayParkedOwner(normalized);
   if (parkedOwner !== null) {
-    addPhoneNumberForUser(parkedOwner, normalized); // clears unbound_for_replay_at
+    addPhoneNumberForUser(parkedOwner, normalized); // re-binds, and clears the park marker
     return getUser(parkedOwner) as UserRow;
   }
 
@@ -3235,8 +3286,9 @@ export function deleteUserCompletely(ownerId: number): { deletedDocumentPaths: s
     db.prepare(
       `DELETE FROM whatsapp_conversation_summaries WHERE phone IN (
          SELECT phone FROM user_phone_numbers WHERE user_id = ?
+         UNION SELECT phone FROM replay_parked_phones WHERE owner_id = ?
          UNION SELECT phone FROM whatsapp_messages WHERE owner_id = ?)`
-    ).run(ownerId, ownerId);
+    ).run(ownerId, ownerId, ownerId);
     // whatsapp_message_wamids.message_id REFERENCES whatsapp_messages(id) — must be deleted
     // before whatsapp_messages itself or the FK constraint rejects the whatsapp_messages delete.
     db.prepare(
@@ -3282,6 +3334,11 @@ export function deleteUserCompletely(ownerId: number): { deletedDocumentPaths: s
     db.prepare(`DELETE FROM admin_todos WHERE created_by = ?`).run(ownerId);
     db.prepare(`DELETE FROM poster_notes WHERE author_id = ?`).run(ownerId);
     db.prepare(`DELETE FROM user_phone_numbers WHERE user_id = ?`).run(ownerId);
+    // replay_parked_phones.owner_id is NOT NULL REFERENCES users(id) — the same shape that has
+    // broken the DELETE FROM users below three times already (pending_setup/pending_actions,
+    // document_match_keys, admin_todos/poster_notes). An owner wiped while mid-replay would leave
+    // a marker row behind and fail the purge with a bare "FOREIGN KEY constraint failed".
+    db.prepare(`DELETE FROM replay_parked_phones WHERE owner_id = ?`).run(ownerId);
     db.prepare(`DELETE FROM user_identities WHERE user_id = ?`).run(ownerId);
     db.prepare(`DELETE FROM sessions WHERE user_id = ?`).run(ownerId);
     db.prepare(`DELETE FROM users WHERE id = ?`).run(ownerId);
@@ -3297,11 +3354,14 @@ export function deleteUserCompletely(ownerId: number): { deletedDocumentPaths: s
 // - accounts: forces a real OAuth reconnect rather than silently reusing the old tokens.
 // - pending_setup: restarts the post-connect chain (first-task/briefing/Teams/closing) from
 //   its first step instead of resuming mid-way.
-// - user_phone_numbers: parks every phone this owner had (unbound_for_replay_at), so
-//   resolveOwnerByPhone(phone) returns null again and the next inbound WhatsApp message from it
-//   re-enters handlePendingRegistration instead of going straight to normal chat. The rows are
-//   parked rather than deleted so they still record who the number belongs to — see
-//   findOrCreateUserByPhone, which hands that same account back instead of creating a second one.
+// - user_phone_numbers: deletes every phone this owner had, so resolveOwnerByPhone(phone) returns
+//   null again and the next inbound WhatsApp message from it re-enters handlePendingRegistration
+//   instead of going straight to normal chat. Each deleted number is recorded in
+//   replay_parked_phones first, so the fact it belonged to THIS account survives the delete — see
+//   findOrCreateUserByPhone and resolveRegistrationUser, which hand that same account back rather
+//   than creating a second one. The row itself must go (not merely be flagged): phone is UNIQUE,
+//   and a row kept behind blocks every re-bind of the number, including the "add it from Settings"
+//   remedy the failure message points people at.
 // handleAwaitingEmail (whatsappRegistration.ts) is the other half of this: it only lets a typed
 // email that already belongs to an account through when that account currently has zero phones
 // bound, which is exactly the state this function leaves it in.
@@ -3309,7 +3369,11 @@ export function resetOnboardingConnectionState(ownerId: number): void {
   const reset = db.transaction(() => {
     db.prepare(`DELETE FROM accounts WHERE owner_id = ?`).run(ownerId);
     db.prepare(`DELETE FROM pending_setup WHERE owner_id = ?`).run(ownerId);
-    db.prepare(`UPDATE user_phone_numbers SET unbound_for_replay_at = ? WHERE user_id = ?`).run(Date.now(), ownerId);
+    db.prepare(
+      `INSERT OR REPLACE INTO replay_parked_phones (phone, owner_id, parked_at)
+         SELECT phone, user_id, ? FROM user_phone_numbers WHERE user_id = ?`
+    ).run(Date.now(), ownerId);
+    db.prepare(`DELETE FROM user_phone_numbers WHERE user_id = ?`).run(ownerId);
   });
   reset();
 }
