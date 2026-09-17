@@ -6,6 +6,7 @@ import {
   addInvitedPhone,
   removeInvitedPhone,
   resolveOwnerByPhone,
+  getReplayParkedOwner,
   deleteUserCompletely,
   deletePendingRegistration,
   normalizePhone,
@@ -169,6 +170,20 @@ adminRoutes.post("/api/admin/reset-test-phone", (req, res) => {
   deletePendingRegistration(phone);
 
   const ownerId = resolveOwnerByPhone(phone);
+  // A number parked by replay-onboarding no longer resolves, so without this the wipe would
+  // silently report "no account" and do nothing. Refuse loudly instead — and deliberately do NOT
+  // fall back to the parked owner: that owner is a real account mid-replay (the whole point of
+  // replay is keeping its data), so resolving through the park marker here would turn this
+  // endpoint into a one-tap wipe of the operator's own live account.
+  const parkedOwner = ownerId === null ? getReplayParkedOwner(phone) : null;
+  if (parkedOwner !== null) {
+    res.status(409).json({
+      error:
+        "That number is parked by a replay-onboarding on an account that still has its data. " +
+        "Finish re-onboarding (or re-add the number in Settings) before wiping it.",
+    });
+    return;
+  }
   try {
     if (ownerId !== null) {
       const { deletedDocumentPaths } = deleteUserCompletely(ownerId);

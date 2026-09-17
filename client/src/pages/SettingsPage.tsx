@@ -104,6 +104,7 @@ export function SettingsPage() {
   const [allowedNumbers, setAllowedNumbers] = useState<string[]>([]);
   const [newNumber, setNewNumber] = useState("");
   const [numbersSaved, setNumbersSaved] = useState(false);
+  const [numbersError, setNumbersError] = useState<string | null>(null);
   const [alertSettings, setAlertSettings] = useState<AlertSettings>({ enabled: false });
   const [alertSaved, setAlertSaved] = useState(false);
   const [importantEmailSettings, setImportantEmailSettings] = useState<ImportantEmailAlertSettings>({
@@ -385,13 +386,24 @@ export function SettingsPage() {
   // led to a stale old number and, in one real case, someone else's number both still receiving
   // an account's private alerts indefinitely. This form only renders when there's no number set
   // (see below) — remove the current one first to set a new one.
+  // The save is awaited BEFORE the number is put on screen, and its failure is rendered. Showing
+  // it optimistically first meant a rejected number (409 — already registered to another account)
+  // left the rejected number listed, no error anywhere, and the throw surfacing only as an
+  // unhandled rejection in the console: the page said the number was added when the server had
+  // refused it. People then reported the number as added and retried the flow that depends on it.
   async function handleAddNumber(e: React.FormEvent) {
     e.preventDefault();
     if (!newNumber.trim()) return;
     const next = [newNumber.trim()];
-    setAllowedNumbers(next);
+    setNumbersError(null);
+    try {
+      await saveWhatsAppAllowedNumbers(next);
+    } catch (err) {
+      setNumbersError((err as Error).message);
+      return;
+    }
     setNewNumber("");
-    await saveWhatsAppAllowedNumbers(next);
+    setAllowedNumbers(next);
     setNumbersSaved(true);
     setTimeout(() => setNumbersSaved(false), 2500);
     load();
@@ -399,8 +411,14 @@ export function SettingsPage() {
 
   async function handleRemoveNumber(number: string) {
     const next = allowedNumbers.filter((n) => n !== number);
+    setNumbersError(null);
+    try {
+      await saveWhatsAppAllowedNumbers(next);
+    } catch (err) {
+      setNumbersError((err as Error).message);
+      return;
+    }
     setAllowedNumbers(next);
-    await saveWhatsAppAllowedNumbers(next);
   }
 
   return (
@@ -736,6 +754,11 @@ export function SettingsPage() {
                     <span className="saved-note" style={{ display: "block", marginTop: 8 }}>
                       Saved
                     </span>
+                  )}
+                  {numbersError && (
+                    <p className="error" style={{ marginTop: 8 }}>
+                      {numbersError}
+                    </p>
                   )}
                   {allowedNumbers.length === 0 ? (
                     <p className="muted" style={{ marginTop: 12 }}>
