@@ -2530,6 +2530,30 @@ export function findOrCreateUserByEmail(email: string): UserRow {
   return row;
 }
 
+// The phone-first counterpart to findOrCreateUserByEmail: a WhatsApp number is enough to own an
+// account, with email attached later if the person ever wants inbox/calendar help. The row is
+// created with a null email deliberately — see migrations/usersEmailNullable.ts.
+//
+// Wrapped in a transaction so a crash between the users INSERT and the phone binding cannot leave
+// an orphaned, unreachable account: resolveOwnerByPhone is the only way back to this row, so a
+// half-written pair would be invisible to every caller and silently re-created on the next message.
+export function findOrCreateUserByPhone(phone: string): UserRow {
+  const normalized = normalizePhone(phone);
+  const existingOwner = resolveOwnerByPhone(normalized);
+  if (existingOwner !== null) {
+    return getUser(existingOwner) as UserRow;
+  }
+
+  const create = db.transaction(() => {
+    const info = db.prepare(`INSERT INTO users (email, created_at) VALUES (NULL, ?)`).run(Date.now());
+    const userId = Number(info.lastInsertRowid);
+    addPhoneNumberForUser(userId, normalized);
+    return getUser(userId) as UserRow;
+  });
+
+  return create();
+}
+
 // Read-only, unlike findOrCreateUserByEmail — used to check "does this email already belong to
 // someone" without the side effect of creating a row for an address that was only typed into a
 // WhatsApp conversation, not yet OAuth-verified.

@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   findOrCreateUserByEmail,
+  findOrCreateUserByPhone,
   recordApiUsage,
   getApiUsageSummary,
   getApiUsageByPurpose,
@@ -12,6 +13,11 @@ let counter = 0;
 function uniqueEmail(prefix: string): string {
   counter += 1;
   return `${prefix}-${Date.now()}-${counter}@example.com`;
+}
+
+function uniquePhone(): string {
+  counter += 1;
+  return `44791${String(Date.now()).slice(-6)}${String(counter).padStart(2, "0")}`;
 }
 
 describe("recordApiUsage / getApiUsageSummary / getApiUsageByPurpose", () => {
@@ -126,5 +132,20 @@ describe("getApiUsageByOwner attribution", () => {
 
     expect(call?.ownerId).toBe(user.id);
     expect(call?.ownerExists).toBeTruthy();
+  });
+
+  it("attributes a phone-first account (null email) to its own id, not the no-owner bucket", () => {
+    const user = findOrCreateUserByPhone(uniquePhone());
+    const model = `test-model-phone-${Date.now()}`;
+    recordApiUsage(user.id, "whatsapp", model, "assistant_chat", 13, 6, 0, 0);
+
+    const rows = getApiUsageByOwner(0).filter((r) => r.model === model);
+    const row = rows.find((r) => r.ownerId === user.id);
+
+    expect(row?.ownerExists).toBeTruthy();
+    expect(row?.ownerEmail).toBeNull();
+    // Must land on its own owner row, not fold into the ownerId === null bucket that anonymous
+    // (no-owner) calls use — a phone-first account has no email, but it does have an id.
+    expect(rows.find((r) => r.ownerId === null)).toBeUndefined();
   });
 });
