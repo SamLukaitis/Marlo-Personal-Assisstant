@@ -23,6 +23,7 @@ import {
 import { sendProactiveMessage } from "../services/outbound.js";
 import { MARLOWE_WAITLIST_APPROVED_TEXT } from "../services/whatsappRegistration.js";
 import type { AuthedRequest } from "../middleware/auth.js";
+import { internationalPhoneError } from "../services/phoneFormat.js";
 
 export const adminRoutes = Router();
 
@@ -77,21 +78,13 @@ adminRoutes.post("/api/admin/invites", (req, res) => {
     return;
   }
   const phone = typeof req.body?.phone === "string" ? normalizePhone(req.body.phone) : "";
-  // normalizePhone only strips non-digits, so "abc1" would survive as "1" — hence the length
-  // check. The leading-zero check is the one that actually bites in practice: WhatsApp delivers
-  // `from` in E.164 (country code, no +, never a leading 0), so a number invited in national
-  // format ("07911123456") silently never matches the number that arrives ("447911123456") and
-  // the tester just gets told they aren't invited. Reject it here rather than store a row that
-  // can never match.
-  if (phone.startsWith("0")) {
-    res.status(400).json({
-      error:
-        "Use the full international number with its country code and no leading 0 — e.g. 447911123456, not 07911123456.",
-    });
-    return;
-  }
-  if (phone.length < 8 || phone.length > 15) {
-    res.status(400).json({ error: "that doesn't look like a valid phone number" });
+  // A number invited in national format can never match the E.164 `from` WhatsApp delivers, so the
+  // tester is just told they aren't invited — see services/phoneFormat.ts for the full shape of
+  // that failure. The same check now guards the Settings binding route, which lacked it and let a
+  // real account store an unmatchable number.
+  const formatError = internationalPhoneError(phone);
+  if (formatError) {
+    res.status(400).json({ error: formatError });
     return;
   }
   addInvitedPhone(phone);

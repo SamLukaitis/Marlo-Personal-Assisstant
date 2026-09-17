@@ -23,6 +23,13 @@ function arg(name) {
 const rawPhone = arg("phone");
 const intoRaw = arg("into");
 const apply = process.argv.includes("--apply");
+// Also delete any number already on the target that can never match an inbound WhatsApp sender —
+// i.e. one stored in national format, with a leading 0. Those are what the Settings route used to
+// accept (it now rejects them; see services/phoneFormat.ts), and they are the reason the account
+// got split in the first place: the dead row looked like a working binding while every real message
+// from that number fell through to registration. Opt-in, because it is the one thing here that
+// deletes a row.
+const dropUnmatchable = process.argv.includes("--drop-unmatchable");
 
 if (!rawPhone || !intoRaw) {
   console.error("usage: node scripts/heal-split-account.cjs --phone <number> --into <userId> [--apply]");
@@ -92,6 +99,19 @@ console.log(`  pending_whatsapp_registrations for ${phone}: ${pending ? `step=${
 console.log(
   `  replay_parked_phones for ${phone}: ${hasParkTable ? "cleared if present" : "table not in this DB yet"}`
 );
+// Same rule as services/phoneFormat.ts's leading-0 check, restated here because this is a plain
+// .cjs ops script and cannot import the TypeScript module. Keep the two in step.
+const unmatchable = db
+  .prepare(`SELECT id, phone FROM user_phone_numbers WHERE user_id = ? AND phone LIKE '0%'`)
+  .all(into);
+if (unmatchable.length > 0) {
+  console.log(`\nuser ${into} also holds ${unmatchable.length} number(s) that can never match an inbound sender:`);
+  for (const u of unmatchable) {
+    console.log(`  ${u.phone}  (national format — WhatsApp delivers 44…, never 0…)`);
+  }
+  console.log(dropUnmatchable ? "  -> will be DELETED (--drop-unmatchable)" : "  -> left alone; pass --drop-unmatchable to delete");
+}
+
 console.log(`\nleft untouched on user ${row.userId}: ${leftBehind} whatsapp message(s) and everything else it holds.`);
 
 if (!apply) {
@@ -109,6 +129,11 @@ db.transaction(() => {
   // a half-finished one would resume mid-flow if the number is ever unbound again.
   db.prepare(`DELETE FROM pending_whatsapp_registrations WHERE phone = ?`).run(phone);
   if (hasParkTable) db.prepare(`DELETE FROM replay_parked_phones WHERE phone = ?`).run(phone);
+  if (dropUnmatchable) {
+    for (const u of unmatchable) {
+      db.prepare(`DELETE FROM user_phone_numbers WHERE id = ?`).run(u.id);
+    }
+  }
 })();
 
 const now = db.prepare(`SELECT user_id AS userId FROM user_phone_numbers WHERE phone = ?`).get(phone);
