@@ -43,7 +43,9 @@ vi.mock("../services/whatsappRegistration.js", async () => {
   );
   return {
     ...actual,
-    handlePendingRegistration: vi.fn(),
+    // Resolves by default, same reasoning as sendWhatsAppTypingIndicator above — handleIncoming
+    // calls .catch() on the returned promise, which throws on a bare vi.fn()'s undefined return.
+    handlePendingRegistration: vi.fn().mockResolvedValue(undefined),
   };
 });
 vi.mock("../services/postConnectSetup.js", () => ({
@@ -75,6 +77,7 @@ const { handleNameReply, handleFirstTaskReply, handlePostConnectSetupReply } = a
 );
 const { sendAssistantReply } = await import("../services/whatsappReply.js");
 const { handlePendingActionReply } = await import("../services/actionHandlers.js");
+const { handlePendingRegistration } = await import("../services/whatsappRegistration.js");
 const { maybeUpdateConversationSummary } = await import("../services/conversationSummary.js");
 const { LONG_DEBOUNCE_MS } = await import("../services/messageBatching.js");
 const { handleIncoming } = await import("./whatsappRoutes.js");
@@ -99,6 +102,7 @@ beforeEach(() => {
   vi.mocked(maybeUpdateConversationSummary).mockClear().mockResolvedValue(undefined);
   vi.mocked(getDocumentByWamid).mockReset();
   vi.mocked(getWhatsAppMessageByWamid).mockReset();
+  vi.mocked(handlePendingRegistration).mockReset().mockResolvedValue(undefined);
 });
 
 afterEach(() => {
@@ -133,6 +137,42 @@ describe("handleIncoming — help trigger for already-registered users", () => {
     await handleIncoming({ kind: "text", from: "447900000001", text: "what's on my calendar today?", messageId: "m2" });
     await flushBatch();
 
+    expect(runAssistantChat).toHaveBeenCalledTimes(1);
+  });
+});
+
+// The fork this whole file otherwise never exercises: every other test hard-mocks
+// resolveOwnerByPhone to 42, so the null branch — an unresolved number falling into
+// handlePendingRegistration instead of the assistant — had no coverage anywhere in the suite.
+// That fork is exactly where the "tap No, then get deflected back to the email question" bug
+// lived: it's the resolveOwnerByPhone result, not anything inside handlePendingRegistration
+// itself, that whatsappRegistration.test.ts can't observe from outside this module.
+describe("handleIncoming — routing on resolveOwnerByPhone's null vs. resolved fork", () => {
+  it("sends an unresolved number into registration, never the assistant", async () => {
+    vi.mocked(resolveOwnerByPhone).mockReturnValue(null);
+
+    await handleIncoming({ kind: "text", from: "447900055555", text: "hi", messageId: "m1" });
+
+    expect(handlePendingRegistration).toHaveBeenCalledTimes(1);
+    expect(runAssistantChat).not.toHaveBeenCalled();
+  });
+
+  // The regression case: once an account exists (Task 4's fix to the No branch),
+  // resolveOwnerByPhone resolves it and the very next message — e.g. "remind me to call mum at
+  // 6" — must reach the assistant instead of being routed back into registration.
+  it("sends a resolved number's message to the assistant, never back into registration", async () => {
+    vi.mocked(resolveOwnerByPhone).mockReturnValue(42);
+    vi.mocked(runAssistantChat).mockResolvedValue({ text: "a real reply" });
+
+    await handleIncoming({
+      kind: "text",
+      from: "447900000001",
+      text: "remind me to call mum at 6",
+      messageId: "m2",
+    });
+    await flushBatch();
+
+    expect(handlePendingRegistration).not.toHaveBeenCalled();
     expect(runAssistantChat).toHaveBeenCalledTimes(1);
   });
 });

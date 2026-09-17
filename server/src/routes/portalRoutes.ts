@@ -209,6 +209,8 @@ portalRoutes.get("/usage", (req, res) => {
   const ownerTotals = new Map<
     string,
     {
+      ownerId: number | null;
+      ownerExists: number;
       ownerEmail: string | null;
       calls: number;
       inputTokens: number;
@@ -219,9 +221,15 @@ portalRoutes.get("/usage", (req, res) => {
     }
   >();
   for (const r of getApiUsageByOwner(sinceMs)) {
-    const key = r.ownerEmail ?? " no-owner"; // sentinel so null-owner rows don't merge with a literal "null" email
+    // Keyed on owner id, not email: a phone-first account has no email, so keying on the address
+    // collapsed every one of them into a single bucket that also swept up genuinely ownerless
+    // pre-login calls — making per-user cost unreadable the moment phone-first accounts exist.
+    // The sentinel is only for rows with no owner at all, which genuinely do belong together.
+    const key = r.ownerId === null ? "no-owner" : `id:${r.ownerId}`;
     const cost = estimateCost(r.model, r.inputTokens, r.outputTokens, r.cacheReadTokens, r.cacheCreationTokens);
     const existing = ownerTotals.get(key) ?? {
+      ownerId: r.ownerId,
+      ownerExists: r.ownerExists,
       ownerEmail: r.ownerEmail,
       calls: 0,
       inputTokens: 0,

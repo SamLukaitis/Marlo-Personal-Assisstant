@@ -35,7 +35,8 @@ export interface Account {
 
 export interface Me {
   id: number;
-  email: string;
+  // null for a phone-first account that has never linked a mailbox.
+  email: string | null;
   /** The single APP_OWNER_EMAIL account — gates the narrower invites/reset-test-phone section in Settings. */
   isAppOwner: boolean;
   /** The app owner plus anyone promoted via the Portal's Admins tab — gates the Portal itself. */
@@ -660,7 +661,7 @@ export const fetchAdminMessages = (phone: string) =>
 
 export interface AdminCandidate {
   id: number;
-  email: string;
+  email: string | null;
   isAdmin: boolean;
   isAppOwner: boolean;
   createdAt: number;
@@ -726,6 +727,8 @@ export interface ApiUsageByPurposeRow {
 }
 
 export interface ApiUsageByOwnerRow {
+  ownerId: number | null;
+  ownerExists: number;
   ownerEmail: string | null;
   calls: number;
   inputTokens: number;
@@ -743,6 +746,8 @@ export interface ApiUsageProjection {
 
 export interface ApiUsageCallRow {
   id: number;
+  ownerId: number | null;
+  ownerExists: number;
   ownerEmail: string | null;
   channel: string;
   model: string;
@@ -773,6 +778,21 @@ export function usagePurposeLabel(purpose: string): string {
   return USAGE_PURPOSE_LABELS[purpose] ?? purpose;
 }
 
+// A usage row's ownerEmail is null for three different reasons, and collapsing them loses the
+// thing an admin is actually asking ("who is costing me this?"). Shared by every usage surface so
+// the three cases can't drift apart between the summary and the per-call table.
+export function usageOwnerLabel(row: {
+  ownerId: number | null;
+  ownerExists: number;
+  ownerEmail: string | null;
+}): string {
+  if (row.ownerId === null) return "No user yet — e.g. WhatsApp sign-up in progress";
+  if (!row.ownerExists) return `Deleted account (#${row.ownerId})`;
+  // The id matters here: phone-first accounts are now separate rows, and without it every one of
+  // them would render identically and be indistinguishable in the cost breakdown.
+  return row.ownerEmail ?? `No email connected (#${row.ownerId})`;
+}
+
 export const fetchUsageSummary = (days = 30, recentLimit = 50) =>
   getJson<{
     rows: ApiUsageRow[];
@@ -788,7 +808,7 @@ export interface AdminTodoReply {
   todoId: number;
   text: string;
   authorId: number;
-  authorEmail: string;
+  authorEmail: string | null;
   createdAt: number;
 }
 
@@ -797,7 +817,7 @@ export interface AdminTodo {
   text: string;
   done: boolean;
   createdBy: number;
-  createdByEmail: string;
+  createdByEmail: string | null;
   createdAt: number;
   doneAt: number | null;
   replies: AdminTodoReply[];
@@ -819,7 +839,7 @@ export const markAdminTodoRepliesRead = (id: number) =>
 export interface PosterNote {
   id: number;
   authorId: number;
-  authorEmail: string;
+  authorEmail: string | null;
   text: string;
   createdAt: number;
 }

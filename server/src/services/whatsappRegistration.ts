@@ -19,7 +19,6 @@
 import {
   getPendingRegistration,
   upsertPendingRegistration,
-  setPendingRegistrationToken,
   completePendingRegistration,
   deletePendingRegistration,
   isPhoneInvited,
@@ -27,19 +26,18 @@ import {
   getUserByEmail,
   listPhoneNumbersForUser,
   setSetting,
+  findOrCreateUserByPhone,
   type PendingRegistrationRow,
   type RegistrationProvider,
 } from "../db/store.js";
-import { sendWhatsAppMessage, sendWhatsAppReplyButtons, sendWhatsAppCtaUrl } from "../providers/whatsapp.js";
+import { sendWhatsAppMessage, sendWhatsAppReplyButtons } from "../providers/whatsapp.js";
 import { startPostConnectSetup } from "./postConnectSetup.js";
 import { isPlausibleName } from "./plausibleName.js";
-import { SERVER_URL } from "../config.js";
+import { sendConnectLink } from "./connectMailboxLink.js";
 import { getRegistrationAssistReply } from "../ai/assistant.js";
 import type { IncomingWhatsAppMessage } from "../providers/whatsapp.js";
 
 const IDLE_RESET_MS = 24 * 60 * 60 * 1000; // a week-old half-finished conversation starts over
-const RESEND_COOLDOWN_MS = 60 * 1000; // advisory UX throttle, not the security boundary
-const lastTokenIssuedAt = new Map<string, number>();
 
 // Used as the very first message a brand-new number ever sees, and as the answer to "help"/"menu"
 // while registration is still in progress — both cases end with the name question because that's
@@ -94,11 +92,6 @@ const PROVIDER_BUTTON_IDS: Record<RegistrationProvider, string> = {
   microsoft: "register_microsoft",
 };
 
-const PROVIDER_LABEL: Record<RegistrationProvider, string> = {
-  google: "Gmail",
-  microsoft: "Outlook",
-};
-
 // Most people's email address already says which provider they're on — asking anyway feels like
 // a redundant extra step right after they just typed it. Only the ambiguous case (a custom/work
 // domain that could be either Google Workspace or Microsoft 365) still gets the explicit question.
@@ -136,11 +129,6 @@ function currentStepPrompt(row: PendingRegistrationRow): string {
   }
 }
 
-function withinCooldown(phone: string): boolean {
-  const last = lastTokenIssuedAt.get(phone);
-  return last !== undefined && Date.now() - last < RESEND_COOLDOWN_MS;
-}
-
 async function reply(phone: string, text: string): Promise<void> {
   await sendWhatsAppMessage(phone, text);
 }
@@ -161,20 +149,12 @@ async function sendProviderLink(row: PendingRegistrationRow): Promise<void> {
     await askProvider(row);
     return;
   }
-  if (withinCooldown(row.phone)) {
-    await reply(row.phone, "Still working on it — give it a few seconds and try again if the link doesn't work.");
-    return;
-  }
-  const token = setPendingRegistrationToken(row.phone);
-  lastTokenIssuedAt.set(row.phone, Date.now());
-  const path = provider === "google" ? "/auth/google/register" : "/auth/microsoft/register";
-  const link = `${SERVER_URL}${path}?token=${token}`;
-  await sendWhatsAppCtaUrl(
-    row.phone,
-    `Almost there — tap below to connect *${PROVIDER_LABEL[provider]}*. I'll be able to read your mail and draft replies, but I can never send anything without you approving it first. This link works for ten minutes.`,
-    `Connect ${PROVIDER_LABEL[provider]}`,
-    link
-  );
+  const result = await sendConnectLink(row.phone, provider);
+  // "no_pending_row" shouldn't happen here — this row was just read from the DB — but if a race
+  // (e.g. an admin's replay-onboarding running mid-request) ever deletes it between the read and
+  // here, don't advance the step for a link that was never actually sent. "throttled" already sent
+  // its own reply; same reasoning.
+  if (result !== "sent") return;
   upsertPendingRegistration(row.phone, { step: "awaiting_link_tap" });
 }
 
@@ -187,17 +167,32 @@ async function sendProviderLink(row: PendingRegistrationRow): Promise<void> {
 // already ran before this is called, so resolveOwnerByPhone resolves it and it's routed straight
 // to the real assistant (runAssistantChat), not back into handlePendingRegistration. Hands off
 // immediately to postConnectSetup's own button chain (daily briefing, Teams, Schengen tracking).
-export async function sendFirstValueAndBriefingPrompt(ownerId: number, phone: string): Promise<void> {
+//
+// linkedExistingAccount (Task 8): true when this callback attached an address to a phone-only
+// account that already existed — via connect_email (assistant.ts) rather than fresh registration.
+// authRoutes.ts derives it from whether the phone already resolved to an owner BEFORE this OAuth
+// round trip (the same fact resolveRegistrationUser branches on). Threaded through to
+// startPostConnectSetup so it can skip the parts of the fresh-signup question chain that don't
+// apply to someone who has already been using Marlowe — see that function's own comment for which
+// parts and why.
+export async function sendFirstValueAndBriefingPrompt(
+  ownerId: number,
+  phone: string,
+  linkedExistingAccount = false
+): Promise<void> {
   // Carry the name captured earlier in this same registration (handleAwaitingName below) forward
   // into the durable user_name setting, so postConnectSetup's own chain doesn't ask "what should
   // I call you?" a second time — see the comment on that check in startPostConnectSetup for the
-  // bug this prevents.
+  // bug this prevents. Still correct, just redundant, for the linkedExistingAccount case: a
+  // phone-only account's row keeps whatever name was typed at the awaiting_name step, and
+  // handleEmailConfirmTap's decline branch already wrote that same value to user_name at account
+  // creation — so this just re-writes the value already there, not a stale or different one.
   const pending = getPendingRegistration(phone);
   if (pending?.name && isPlausibleName(pending.name)) {
     setSetting(ownerId, "user_name", pending.name);
   }
   completePendingRegistration(phone);
-  await startPostConnectSetup(ownerId, phone);
+  await startPostConnectSetup(ownerId, phone, linkedExistingAccount);
 }
 
 async function askEmailConfirm(row: PendingRegistrationRow): Promise<void> {
@@ -242,13 +237,31 @@ async function handleEmailConfirmTap(row: PendingRegistrationRow, buttonId: stri
     return;
   }
   if (buttonId === EMAIL_CONFIRM_BUTTON_IDS.no) {
-    // Not a real skip — there's no way to create an account without a connected mailbox (see
-    // feature-to-do/email-less-accounts.md), so the step deliberately stays at
-    // awaiting_email_confirm rather than advancing or completing. Whatever they send next just
-    // continues from here instead of restarting the whole conversation.
+    // Authoritative re-check of the same gate whatsappRegistration.ts's first-contact check
+    // already passed — re-checked here in case the invite was revoked mid-conversation, same
+    // defense-in-depth shape authRoutes.ts's OAuth callbacks use. This is a new account-creation
+    // site, so without this check a revoked number could still get a fully working account: once
+    // one exists, resolveOwnerByPhone resolves it and the invite gate is never consulted again.
+    if (!isPhoneInvited(row.phone)) {
+      const { isNewRequest } = recordWaitlistRequest(row.phone);
+      await reply(row.phone, isNewRequest ? MARLOWE_WAITLIST_TEXT : MARLOWE_WAITLIST_REMINDER_TEXT).catch(() => {});
+      return;
+    }
+    // A real choice now, not a holding pattern: create the account from the phone number alone so
+    // the promise in the reply below is one Marlowe can actually keep. Until this existed the step
+    // stayed parked here and the next message was deflected back to the email question.
+    const user = findOrCreateUserByPhone(row.phone);
+    // Same guard and key as sendFirstValueAndBriefingPrompt: a sentence-shaped reply was already
+    // rejected at the name step and must not become a permanent display name.
+    if (row.name && isPlausibleName(row.name)) {
+      setSetting(user.id, "user_name", row.name);
+    }
+    completePendingRegistration(row.phone);
     await reply(
       row.phone,
-      "No worries, let me know later if you'd like to connect an inbox. Let me know how I can help!"
+      "No problem — you're all set. I can keep track of reminders, to-dos and notes, hold on to any " +
+        "photos or documents you send me, and answer whatever you want to ask. Just say the word if you'd " +
+        "like to connect an inbox later."
     );
     return;
   }
@@ -269,7 +282,10 @@ async function handleAwaitingEmailConfirmText(row: PendingRegistrationRow, text:
     await handleEmailConfirmTap(row, EMAIL_CONFIRM_BUTTON_IDS.yes);
     return;
   }
-  if (/^no?( thanks)?$/i.test(trimmed)) {
+  // Anchored to short whole-word decline forms, not a general "starts with no" match — a longer
+  // sentence that happens to start with one of these words must still fall through to the
+  // assistant reply below rather than being misread as a decline.
+  if (/^(n|no|nah|nope)( thanks| thx)?$/i.test(trimmed)) {
     await handleEmailConfirmTap(row, EMAIL_CONFIRM_BUTTON_IDS.no);
     return;
   }

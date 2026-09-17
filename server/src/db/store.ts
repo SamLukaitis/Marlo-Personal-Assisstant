@@ -3,6 +3,7 @@ import path from "node:path";
 import fs from "node:fs";
 import crypto from "node:crypto";
 import { encryptField, decryptField } from "../services/crypto.js";
+import { migrateUsersEmailNullable } from "./migrations/usersEmailNullable.js";
 
 // DATA_DIR lets tests (see server/src/test/setup.ts) point this at an isolated temp directory
 // instead of the real server/data — unset in normal dev/production, where this falls back to
@@ -86,7 +87,7 @@ db.exec(`
   -- these; they simply didn't exist before).
   CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    email TEXT NOT NULL UNIQUE,
+    email TEXT UNIQUE,
     created_at INTEGER NOT NULL
   );
   CREATE TABLE IF NOT EXISTS invited_emails (
@@ -301,6 +302,22 @@ const userColumns = (db.prepare(`PRAGMA table_info(users)`).all() as { name: str
 if (!userColumns.includes("is_admin")) {
   db.exec(`ALTER TABLE users ADD COLUMN is_admin INTEGER NOT NULL DEFAULT 0`);
 }
+
+// Must run AFTER the is_admin ALTER above: the rebuild copies that column, so it has to exist
+// before the copy. Phone-first accounts need a users row with no email — see the migration's own
+// comment for why this one is transaction-wrapped when the api_usage rebuild below is not. The
+// backup path is only ever touched when a rebuild is actually about to happen (see the migration's
+// guard) — nothing in this codebase backed this file up before, and it is the only copy of every
+// account on a Railway volume, so it is worth a `.bak` on the one boot that needs it.
+//
+// Fixed filename, deliberately NOT suffixed with Date.now(): this line is recomputed on every
+// module load, i.e. every boot, and if the rebuild throws persistently (a stray users_new — see
+// the migration's own CREATE TABLE comment) the notnull guard still sees the column unmigrated
+// next boot, so this call fires again on every restart. A per-boot filename would write a full
+// copy of the database into this same Railway volume on every restart of a crash loop; the
+// migration itself skips the backup once this fixed path already exists, so a crash loop still
+// only ever produces the one pre-migration snapshot.
+migrateUsersEmailNullable(db, path.join(dataDir, `app.db.bak-users-email-nullable`));
 
 // api_usage originally only tracked the main assistant chat (owner_id required, no purpose
 // column). Recording usage for calls with no signed-in owner yet (the public help widget, the
@@ -2490,7 +2507,9 @@ export function searchReadEmails(ownerId: number, query: string, limit = 10): Re
 
 export interface UserRow {
   id: number;
-  email: string;
+  // null for a phone-first account that has never linked a mailbox — see
+  // findOrCreateUserByPhone. Every read site must handle it rather than assuming a real address.
+  email: string | null;
   createdAt: number;
 }
 
@@ -2517,6 +2536,37 @@ export function findOrCreateUserByEmail(email: string): UserRow {
       .get(info.lastInsertRowid) as UserRow;
   }
   return row;
+}
+
+// The phone-first counterpart to findOrCreateUserByEmail: a WhatsApp number is enough to own an
+// account, with email attached later if the person ever wants inbox/calendar help. The row is
+// created with a null email deliberately — see migrations/usersEmailNullable.ts.
+//
+// Wrapped in a transaction so a crash between the users INSERT and the phone binding cannot leave
+// an orphaned, unreachable account: resolveOwnerByPhone is the only way back to this row, so a
+// half-written pair would be invisible to every caller and silently re-created on the next message.
+export function findOrCreateUserByPhone(phone: string): UserRow {
+  const normalized = normalizePhone(phone);
+  const existingOwner = resolveOwnerByPhone(normalized);
+  if (existingOwner !== null) {
+    return getUser(existingOwner) as UserRow;
+  }
+
+  const create = db.transaction(() => {
+    const info = db.prepare(`INSERT INTO users (email, created_at) VALUES (NULL, ?)`).run(Date.now());
+    const userId = Number(info.lastInsertRowid);
+    addPhoneNumberForUser(userId, normalized);
+    return getUser(userId) as UserRow;
+  });
+
+  return create();
+}
+
+// Attaches an address to a phone-first account once its owner links a mailbox. Throws on a
+// collision rather than overwriting, since users.email is UNIQUE and the caller is expected to
+// have checked — a thrown error here means a race, not a normal path.
+export function setUserEmail(userId: number, email: string): void {
+  db.prepare(`UPDATE users SET email = ? WHERE id = ?`).run(normalizeEmail(email), userId);
 }
 
 // Read-only, unlike findOrCreateUserByEmail — used to check "does this email already belong to
@@ -2596,7 +2646,7 @@ export function isAdmin(userId: number): boolean {
 
 export interface AdminCandidateRow {
   id: number;
-  email: string;
+  email: string | null;
   isAdmin: boolean;
   isAppOwner: boolean;
   createdAt: number;
@@ -2608,7 +2658,7 @@ export interface AdminCandidateRow {
 export function listAdminCandidateUsers(): AdminCandidateRow[] {
   const rows = db
     .prepare(`SELECT id, email, is_admin AS isAdminFlag, created_at AS createdAt FROM users ORDER BY created_at ASC`)
-    .all() as { id: number; email: string; isAdminFlag: number; createdAt: number }[];
+    .all() as { id: number; email: string | null; isAdminFlag: number; createdAt: number }[];
   return rows.map((r) => ({
     id: r.id,
     email: r.email,
@@ -2802,6 +2852,12 @@ export function getApiUsageByPurpose(sinceMs: number): ApiUsageByPurposeRow[] {
 }
 
 export interface ApiUsageByOwnerModelRow {
+  // ownerId is what callers must group on, not ownerEmail — a phone-first account has no email,
+  // so keying on the address collapses every one of them into a single bucket. ownerExists
+  // separates the two remaining reasons the email can be null: 0 means the users row is gone
+  // (deleted account), 1 means the account is alive but has never linked a mailbox.
+  ownerId: number | null;
+  ownerExists: number;
   ownerEmail: string | null;
   model: string;
   calls: number;
@@ -2814,12 +2870,16 @@ export interface ApiUsageByOwnerModelRow {
 // Grouped by owner AND model (not just owner) so the caller can apply per-model pricing before
 // collapsing to one total per owner — mirrors how getApiUsageSummary's rows feed byPurpose's
 // cost totals in portalRoutes.ts, for the same reason (a blended rate across models would be
-// wrong). ownerEmail is null both for pre-login WhatsApp calls (no owner yet) and for a user
-// since deleted (e.g. via reset-test-phone) — LEFT JOIN, not JOIN.
+// wrong). ownerEmail is null for three different reasons now — pre-login WhatsApp calls (no owner
+// yet), a user since deleted (e.g. via reset-test-phone), and a phone-first account that has never
+// linked a mailbox — which is why ownerId/ownerExists are selected alongside it. LEFT JOIN, not
+// JOIN.
 export function getApiUsageByOwner(sinceMs: number): ApiUsageByOwnerModelRow[] {
   return db
     .prepare(
       `SELECT
+         u.owner_id AS ownerId,
+         (us.id IS NOT NULL) AS ownerExists,
          us.email AS ownerEmail,
          u.model,
          COUNT(*) AS calls,
@@ -2837,6 +2897,9 @@ export function getApiUsageByOwner(sinceMs: number): ApiUsageByOwnerModelRow[] {
 
 export interface ApiUsageCallRow {
   id: number;
+  // See ApiUsageByOwnerModelRow above for why a null ownerEmail is ambiguous on its own.
+  ownerId: number | null;
+  ownerExists: number;
   ownerEmail: string | null;
   channel: string;
   model: string;
@@ -2855,7 +2918,8 @@ export interface ApiUsageCallRow {
 export function listRecentApiUsage(limit: number): ApiUsageCallRow[] {
   return db
     .prepare(
-      `SELECT u.id, us.email AS ownerEmail, u.channel, u.model, u.purpose,
+      `SELECT u.id, u.owner_id AS ownerId, (us.id IS NOT NULL) AS ownerExists,
+              us.email AS ownerEmail, u.channel, u.model, u.purpose,
               u.input_tokens AS inputTokens, u.output_tokens AS outputTokens,
               u.cache_read_tokens AS cacheReadTokens, u.cache_creation_tokens AS cacheCreationTokens,
               u.created_at AS createdAt
@@ -2871,7 +2935,7 @@ export interface AdminTodoReplyRow {
   todoId: number;
   text: string;
   authorId: number;
-  authorEmail: string;
+  authorEmail: string | null;
   createdAt: number;
 }
 
@@ -2880,7 +2944,7 @@ export interface AdminTodoRow {
   text: string;
   done: boolean;
   createdBy: number;
-  createdByEmail: string;
+  createdByEmail: string | null;
   createdAt: number;
   doneAt: number | null;
   replies: AdminTodoReplyRow[];
@@ -2982,7 +3046,7 @@ export function markAdminTodoRepliesRead(todoId: number, userId: number): void {
 export interface PosterNoteRow {
   id: number;
   authorId: number;
-  authorEmail: string;
+  authorEmail: string | null;
   text: string;
   createdAt: number;
 }
