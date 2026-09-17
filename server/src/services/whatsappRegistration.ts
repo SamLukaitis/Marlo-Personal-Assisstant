@@ -27,6 +27,7 @@ import {
   getUserByEmail,
   listPhoneNumbersForUser,
   setSetting,
+  findOrCreateUserByPhone,
   type PendingRegistrationRow,
   type RegistrationProvider,
 } from "../db/store.js";
@@ -242,13 +243,21 @@ async function handleEmailConfirmTap(row: PendingRegistrationRow, buttonId: stri
     return;
   }
   if (buttonId === EMAIL_CONFIRM_BUTTON_IDS.no) {
-    // Not a real skip — there's no way to create an account without a connected mailbox (see
-    // feature-to-do/email-less-accounts.md), so the step deliberately stays at
-    // awaiting_email_confirm rather than advancing or completing. Whatever they send next just
-    // continues from here instead of restarting the whole conversation.
+    // A real choice now, not a holding pattern: create the account from the phone number alone so
+    // the promise in the reply below is one Marlowe can actually keep. Until this existed the step
+    // stayed parked here and the next message was deflected back to the email question.
+    const user = findOrCreateUserByPhone(row.phone);
+    // Same guard and key as sendFirstValueAndBriefingPrompt: a sentence-shaped reply was already
+    // rejected at the name step and must not become a permanent display name.
+    if (row.name && isPlausibleName(row.name)) {
+      setSetting(user.id, "user_name", row.name);
+    }
+    completePendingRegistration(row.phone);
     await reply(
       row.phone,
-      "No worries, let me know later if you'd like to connect an inbox. Let me know how I can help!"
+      "No problem — you're all set. I can keep track of reminders, to-dos and notes, hold on to any " +
+        "photos or documents you send me, and answer whatever you want to ask. Just say the word if you'd " +
+        "like to connect an inbox later."
     );
     return;
   }

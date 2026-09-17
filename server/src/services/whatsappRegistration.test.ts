@@ -15,6 +15,9 @@ const {
   addPhoneNumberForUser,
   addInvitedPhone,
   listWaitlistRequests,
+  resolveOwnerByPhone,
+  getUser,
+  getSetting,
 } = await import("../db/store.js");
 
 const PHONE = "447000003001";
@@ -258,5 +261,100 @@ describe("handlePendingRegistration — awaiting_email reconnecting an existing 
       expect.stringContaining("/auth/google/register")
     );
     expect(getPendingRegistration(phone)?.step).toBe("awaiting_link_tap");
+  });
+});
+
+// Declining email is a real choice, not a dead end: it creates a working account so the very next
+// message goes to the assistant instead of back into registration. Before this existed, Marlowe
+// said "let me know how I can help!" and then deflected every request back to the email question.
+describe("handlePendingRegistration — declining email creates a phone-only account", () => {
+  it("creates an account with no email, bound to the number", async () => {
+    const phone = freshPhone();
+    addInvitedPhone(phone);
+    upsertPendingRegistration(phone, { step: "awaiting_email_confirm", name: "Sam" });
+
+    await handlePendingRegistration({
+      kind: "interactive",
+      from: phone,
+      messageId: "m1",
+      buttonId: "email_confirm_no",
+    });
+
+    const ownerId = resolveOwnerByPhone(phone);
+    expect(ownerId).not.toBeNull();
+    expect(getUser(ownerId!)?.email).toBeNull();
+  });
+
+  it("carries the captured name onto the new account", async () => {
+    const phone = freshPhone();
+    addInvitedPhone(phone);
+    upsertPendingRegistration(phone, { step: "awaiting_email_confirm", name: "Margaret" });
+
+    await handlePendingRegistration({
+      kind: "interactive",
+      from: phone,
+      messageId: "m1",
+      buttonId: "email_confirm_no",
+    });
+
+    expect(getSetting(resolveOwnerByPhone(phone)!, "user_name")).toBe("Margaret");
+  });
+
+  it("marks the registration completed so the next message leaves the registration flow", async () => {
+    const phone = freshPhone();
+    addInvitedPhone(phone);
+    upsertPendingRegistration(phone, { step: "awaiting_email_confirm", name: "Sam" });
+
+    await handlePendingRegistration({
+      kind: "interactive",
+      from: phone,
+      messageId: "m1",
+      buttonId: "email_confirm_no",
+    });
+
+    expect(getPendingRegistration(phone)?.step).toBe("completed");
+  });
+
+  // The regression that matters most. Before this feature the next message fell through to
+  // getRegistrationAssistReply, which nudges the person back toward giving an email.
+  it("does not re-ask for an email when they send a real request afterwards", async () => {
+    const phone = freshPhone();
+    addInvitedPhone(phone);
+    upsertPendingRegistration(phone, { step: "awaiting_email_confirm", name: "Sam" });
+    await handlePendingRegistration({
+      kind: "interactive",
+      from: phone,
+      messageId: "m1",
+      buttonId: "email_confirm_no",
+    });
+    vi.mocked(sendWhatsAppMessage).mockClear();
+    vi.mocked(sendWhatsAppReplyButtons).mockClear();
+
+    await handlePendingRegistration({
+      kind: "text",
+      from: phone,
+      text: "remind me to call mum at 6",
+      messageId: "m2",
+    });
+
+    expect(sendWhatsAppReplyButtons).not.toHaveBeenCalled();
+    expect(sendWhatsAppMessage).not.toHaveBeenCalledWith(phone, expect.stringContaining("email"));
+  });
+
+  // A sentence is not a name (plausibleName.ts) — it must not become a permanent display name.
+  it("stores no name when what they typed was not a plausible one", async () => {
+    const phone = freshPhone();
+    addInvitedPhone(phone);
+    upsertPendingRegistration(phone, { step: "awaiting_email_confirm", name: "" });
+
+    await handlePendingRegistration({
+      kind: "interactive",
+      from: phone,
+      messageId: "m1",
+      buttonId: "email_confirm_no",
+    });
+
+    // getSetting returns null (not undefined) for a missing key.
+    expect(getSetting(resolveOwnerByPhone(phone)!, "user_name")).toBeNull();
   });
 });
