@@ -19,7 +19,6 @@
 import {
   getPendingRegistration,
   upsertPendingRegistration,
-  setPendingRegistrationToken,
   completePendingRegistration,
   deletePendingRegistration,
   isPhoneInvited,
@@ -31,16 +30,14 @@ import {
   type PendingRegistrationRow,
   type RegistrationProvider,
 } from "../db/store.js";
-import { sendWhatsAppMessage, sendWhatsAppReplyButtons, sendWhatsAppCtaUrl } from "../providers/whatsapp.js";
+import { sendWhatsAppMessage, sendWhatsAppReplyButtons } from "../providers/whatsapp.js";
 import { startPostConnectSetup } from "./postConnectSetup.js";
 import { isPlausibleName } from "./plausibleName.js";
-import { SERVER_URL } from "../config.js";
+import { sendConnectLink } from "./connectMailboxLink.js";
 import { getRegistrationAssistReply } from "../ai/assistant.js";
 import type { IncomingWhatsAppMessage } from "../providers/whatsapp.js";
 
 const IDLE_RESET_MS = 24 * 60 * 60 * 1000; // a week-old half-finished conversation starts over
-const RESEND_COOLDOWN_MS = 60 * 1000; // advisory UX throttle, not the security boundary
-const lastTokenIssuedAt = new Map<string, number>();
 
 // Used as the very first message a brand-new number ever sees, and as the answer to "help"/"menu"
 // while registration is still in progress — both cases end with the name question because that's
@@ -95,11 +92,6 @@ const PROVIDER_BUTTON_IDS: Record<RegistrationProvider, string> = {
   microsoft: "register_microsoft",
 };
 
-const PROVIDER_LABEL: Record<RegistrationProvider, string> = {
-  google: "Gmail",
-  microsoft: "Outlook",
-};
-
 // Most people's email address already says which provider they're on — asking anyway feels like
 // a redundant extra step right after they just typed it. Only the ambiguous case (a custom/work
 // domain that could be either Google Workspace or Microsoft 365) still gets the explicit question.
@@ -137,11 +129,6 @@ function currentStepPrompt(row: PendingRegistrationRow): string {
   }
 }
 
-function withinCooldown(phone: string): boolean {
-  const last = lastTokenIssuedAt.get(phone);
-  return last !== undefined && Date.now() - last < RESEND_COOLDOWN_MS;
-}
-
 async function reply(phone: string, text: string): Promise<void> {
   await sendWhatsAppMessage(phone, text);
 }
@@ -162,20 +149,7 @@ async function sendProviderLink(row: PendingRegistrationRow): Promise<void> {
     await askProvider(row);
     return;
   }
-  if (withinCooldown(row.phone)) {
-    await reply(row.phone, "Still working on it — give it a few seconds and try again if the link doesn't work.");
-    return;
-  }
-  const token = setPendingRegistrationToken(row.phone);
-  lastTokenIssuedAt.set(row.phone, Date.now());
-  const path = provider === "google" ? "/auth/google/register" : "/auth/microsoft/register";
-  const link = `${SERVER_URL}${path}?token=${token}`;
-  await sendWhatsAppCtaUrl(
-    row.phone,
-    `Almost there — tap below to connect *${PROVIDER_LABEL[provider]}*. I'll be able to read your mail and draft replies, but I can never send anything without you approving it first. This link works for ten minutes.`,
-    `Connect ${PROVIDER_LABEL[provider]}`,
-    link
-  );
+  await sendConnectLink(row.phone, provider);
   upsertPendingRegistration(row.phone, { step: "awaiting_link_tap" });
 }
 
@@ -188,17 +162,29 @@ async function sendProviderLink(row: PendingRegistrationRow): Promise<void> {
 // already ran before this is called, so resolveOwnerByPhone resolves it and it's routed straight
 // to the real assistant (runAssistantChat), not back into handlePendingRegistration. Hands off
 // immediately to postConnectSetup's own button chain (daily briefing, Teams, Schengen tracking).
-export async function sendFirstValueAndBriefingPrompt(ownerId: number, phone: string): Promise<void> {
+//
+// linkedExistingAccount (Task 8): true when this callback attached an address to a phone-only
+// account that already existed — via connect_email (assistant.ts) rather than fresh registration.
+// authRoutes.ts derives it from whether the phone already resolved to an owner BEFORE this OAuth
+// round trip (the same fact resolveRegistrationUser branches on). Threaded through to
+// startPostConnectSetup so it can skip the fresh-signup question chain for someone who has
+// already been using Marlowe — see that function's own comment for why.
+export async function sendFirstValueAndBriefingPrompt(
+  ownerId: number,
+  phone: string,
+  linkedExistingAccount = false
+): Promise<void> {
   // Carry the name captured earlier in this same registration (handleAwaitingName below) forward
   // into the durable user_name setting, so postConnectSetup's own chain doesn't ask "what should
   // I call you?" a second time — see the comment on that check in startPostConnectSetup for the
-  // bug this prevents.
+  // bug this prevents. A no-op for the linkedExistingAccount case: pending.name is only ever
+  // populated by the awaiting_name registration step, which a phone-only account skipped entirely.
   const pending = getPendingRegistration(phone);
   if (pending?.name && isPlausibleName(pending.name)) {
     setSetting(ownerId, "user_name", pending.name);
   }
   completePendingRegistration(phone);
-  await startPostConnectSetup(ownerId, phone);
+  await startPostConnectSetup(ownerId, phone, linkedExistingAccount);
 }
 
 async function askEmailConfirm(row: PendingRegistrationRow): Promise<void> {

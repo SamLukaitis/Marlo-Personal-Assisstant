@@ -199,6 +199,62 @@ describe("startPostConnectSetup", () => {
   });
 });
 
+// Task 8: a mailbox linked long after the account was created (via the assistant's connect_email
+// tool) must not run the fresh-signup question chain — see startPostConnectSetup's
+// linkedExistingAccount comment for the concrete hazard (askBriefing unconditionally overwrites
+// briefing prefs via saveBriefingSettings, which a long-time user may already have set through
+// set_briefing_preferences before ever connecting a mailbox).
+describe("startPostConnectSetup — linkedExistingAccount", () => {
+  it("skips the whole question chain: no name/first-task/briefing prompt, no pending_setup left behind", async () => {
+    const ownerId = newOwnerId();
+
+    await startPostConnectSetup(ownerId, PHONE, true);
+
+    expect(sendWhatsAppMessage).toHaveBeenCalledWith(PHONE, expect.stringContaining("Connected"));
+    expect(sendWhatsAppMessage).not.toHaveBeenCalledWith(PHONE, expect.stringContaining("what should I call you"));
+    expect(sendWhatsAppMessage).not.toHaveBeenCalledWith(PHONE, expect.stringContaining("finish setting up"));
+    expect(sendWhatsAppReplyButtons).not.toHaveBeenCalled(); // no ask_briefing/ask_teams buttons
+    expect(getPendingSetup(ownerId)).toBeNull();
+  });
+
+  it("does not touch briefing preferences the user already set through the assistant's own tool", async () => {
+    const ownerId = newOwnerId();
+    const { saveBriefingSettings } = await import("./briefing.js");
+    saveBriefingSettings(ownerId, {
+      ...getBriefingSettings(ownerId),
+      proactive: true,
+      includeWeather: true,
+      weatherLocation: "Lisbon",
+      sendTime: "07:30",
+    });
+
+    await startPostConnectSetup(ownerId, PHONE, true);
+
+    const settings = getBriefingSettings(ownerId);
+    expect(settings.proactive).toBe(true);
+    expect(settings.weatherLocation).toBe("Lisbon");
+    expect(settings.sendTime).toBe("07:30");
+  });
+
+  it("still sends the connected confirmation and first-value fact, same as a fresh signup", async () => {
+    const ownerId = newOwnerId();
+    vi.mocked(hubListMessages).mockResolvedValue([{ unread: true, subject: "Invoice due" } as never]);
+
+    await startPostConnectSetup(ownerId, PHONE, true);
+
+    const [, confirmText] = vi.mocked(sendWhatsAppMessage).mock.calls[0];
+    expect(confirmText).toContain("Invoice due");
+  });
+
+  it("defaults to the fresh-signup chain when the flag is omitted (unchanged behavior)", async () => {
+    const ownerId = newOwnerId();
+
+    await startPostConnectSetup(ownerId, PHONE);
+
+    expect(getPendingSetup(ownerId)).toBe("ask_name");
+  });
+});
+
 describe("handleNameReply", () => {
   it("returns false for a non-text message or when nothing is pending", async () => {
     const ownerId = newOwnerId();

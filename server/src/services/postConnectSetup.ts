@@ -133,10 +133,37 @@ async function askTeamsOrFinish(ownerId: number, phone: string): Promise<void> {
   }
 }
 
+// What a mailbox-less account that has already been in use gets instead of the scripted chain
+// below — see startPostConnectSetup's linkedExistingAccount comment for why the chain itself is
+// skipped for this case.
+async function announceCapabilitiesUnlocked(phone: string): Promise<void> {
+  await reply(
+    phone,
+    "You can now ask me about your email and calendar too. Just say the word if you'd like a daily " +
+      "morning briefing or (for Outlook) Teams chat search turned on — I can set either up whenever you like."
+  );
+}
+
 // Called from the OAuth callback (via whatsappRegistration.ts) once the mailbox is actually
 // connected. Sends the "connected" confirmation + a best-effort first-value fact, then starts the
 // chain with the first-task check.
-export async function startPostConnectSetup(ownerId: number, phone: string): Promise<void> {
+//
+// linkedExistingAccount (Task 8): true when the owner's account predates this connection — a
+// phone-only user who used Marlowe for a while before connecting a mailbox via the assistant's
+// own connect_email tool, rather than someone signing up fresh. The chain below (first-task
+// check, daily-briefing yes/no, Teams yes/no) was written for a brand-new signup with nothing
+// configured yet; for an established account it's not just redundant copy ("let's finish setting
+// up" to someone who's been chatting with Marlowe for weeks) but an actual data hazard —
+// answering the briefing question unconditionally overwrites proactive/topics via
+// saveBriefingSettings, silently discarding any preference the person already set through the
+// assistant's own set_briefing_preferences tool. The user_name check just below already guards
+// the one question a phone-only account could concretely have answered before (their name); this
+// flag guards the rest by skipping them outright rather than guessing which answers are stale.
+export async function startPostConnectSetup(
+  ownerId: number,
+  phone: string,
+  linkedExistingAccount = false
+): Promise<void> {
   // Anchors onboardingAlertSuppression.ts's grace period to this exact moment — see its own
   // comment for why this matters independently of how fast the chain below is answered.
   markOnboardingConnected(ownerId);
@@ -194,6 +221,10 @@ export async function startPostConnectSetup(ownerId: number, phone: string): Pro
   }
 
   await reply(phone, `*Connected!* ✅ I can see your inbox and your calendar.${fact}`);
+  if (linkedExistingAccount) {
+    await announceCapabilitiesUnlocked(phone);
+    return;
+  }
   // Pre-connect registration (whatsappRegistration.ts's sendFirstValueAndBriefingPrompt) already
   // asks "what should I call you?" and, if the answer was a plausible name, persists it to
   // user_name before this chain ever starts. Asking again here is a redundant repeat of a

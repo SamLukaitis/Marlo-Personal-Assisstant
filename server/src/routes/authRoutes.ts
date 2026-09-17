@@ -364,6 +364,10 @@ authRoutes.get("/auth/google/callback", async (req, res) => {
         sendWhatsAppMessage(reg.phone, ACCOUNT_EXISTS_WHATSAPP_TEXT).catch(() => {});
         return;
       }
+      // Captured before resolveRegistrationUser runs (same phoneOwnerId check it does internally)
+      // so sendFirstValueAndBriefingPrompt below can tell a fresh signup from a mailbox linked
+      // onto an account that already existed — see that function's linkedExistingAccount comment.
+      const linkedExistingAccount = resolveOwnerByPhone(reg.phone) !== null;
       const resolution = resolveRegistrationUser(reg.phone, auth.email);
       if (resolution.kind === "account_exists") {
         res.redirect(`${CLIENT_URL}/connected?error=account_exists`);
@@ -393,7 +397,7 @@ authRoutes.get("/auth/google/callback", async (req, res) => {
       // Fire-and-forget — this is the proactive WhatsApp push confirming the connection, which
       // has to happen from here since this moment (finishing OAuth in a browser) is outside any
       // inbound webhook the conversation state machine could otherwise react to.
-      sendFirstValueAndBriefingPrompt(user.id, reg.phone).catch((err) =>
+      sendFirstValueAndBriefingPrompt(user.id, reg.phone, linkedExistingAccount).catch((err) =>
         console.error("whatsapp-register: post-connect message failed", err)
       );
       return;
@@ -496,7 +500,14 @@ authRoutes.get("/auth/microsoft/callback", async (req, res) => {
         return;
       }
       let userId: number;
+      // See the matching comment on the Google callback above. Only meaningful on the
+      // resolveRegistrationUser branch — the `else` below means an existing Microsoft identity/
+      // account already resolved this user, so listAccounts(userId) was already non-empty and
+      // connect_email (the only caller that can reach linkedExistingAccount=true in practice)
+      // would have refused before ever issuing a link.
+      let linkedExistingAccount = false;
       if (resolved === "none") {
+        linkedExistingAccount = resolveOwnerByPhone(reg.phone) !== null;
         const resolution = resolveRegistrationUser(reg.phone, auth.email);
         if (resolution.kind === "account_exists") {
           res.redirect(`${CLIENT_URL}/connected?error=account_exists`);
@@ -520,7 +531,7 @@ authRoutes.get("/auth/microsoft/callback", async (req, res) => {
       saveMicrosoftAccount(userId, auth);
       setSessionCookie(res, createSession(userId));
       res.redirect(`${CLIENT_URL}/connected`);
-      sendFirstValueAndBriefingPrompt(userId, reg.phone).catch((err) =>
+      sendFirstValueAndBriefingPrompt(userId, reg.phone, linkedExistingAccount).catch((err) =>
         console.error("whatsapp-register: post-connect message failed", err)
       );
       return;

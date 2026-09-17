@@ -35,9 +35,12 @@ import {
   getPendingSetup,
   addUnmetRequest,
   recordApiUsage,
+  listPhoneNumbersForUser,
   type ToolKey,
   type DocumentRow,
+  type RegistrationProvider,
 } from "../db/store.js";
+import { sendConnectLink } from "../services/connectMailboxLink.js";
 import { validateTrip, type ExpenseData, type BookingData, type TripData } from "../services/entityValidation.js";
 import { listLocalFolders } from "../providers/local.js";
 import { fetchHeadlines, NEWS_TOPICS, type NewsTopic } from "../providers/news.js";
@@ -817,6 +820,18 @@ const ALWAYS_ON_TOOLS: Anthropic.ToolUnion[] = [
     },
   },
   {
+    name: "connect_email",
+    description:
+      "Send the user a one-tap link to connect their Gmail or Outlook/Hotmail mailbox. Call this when a user with no mailbox connected (see the note in your context about missing email/calendar access) asks to connect one, or accepts your own offer to do so. Ask which provider they use first if it isn't already obvious from the conversation, the same way onboarding does ('Do you use Gmail or Outlook/Hotmail?') — this tool needs to know which. Only for a user with nothing connected yet; adding or swapping a second mailbox isn't supported.",
+    input_schema: {
+      type: "object",
+      properties: {
+        provider: { type: "string", enum: ["google", "microsoft"], description: "Which mailbox to connect." },
+      },
+      required: ["provider"],
+    },
+  },
+  {
     name: "connect_xero",
     description:
       "Save the user's Xero forwarding email address. Once this is saved, receipts they send that get filed under the 'receipts' category and yield a recognized expense are automatically emailed to this address in the background (via their connected Gmail) — no further action needed from them or from you. Call this ONLY once the user has actually told you the address in this conversation — never guess or invent one. If they ask to 'connect Xero' / 'set up Xero' and haven't given the address yet, first explain that Xero gives every account its own unique forwarding email (in Xero: Business > Bills to pay, or Accounting > Bills, look for the 'email bills to this address' address) and ask them to paste it — then call this tool with exactly what they send.",
@@ -1382,6 +1397,27 @@ export async function runTool(
       setToolEnabled(ownerId, tool as ToolKey, !!input.enabled);
       return { ok: true };
     }
+    case "connect_email": {
+      // This is specifically the phone-only "no mailbox at all" case — Task 6's
+      // resolveRegistrationUser (authRoutes.ts) already refuses to attach a second/different
+      // address to an account that has one, so this check exists to give the model a clean reply
+      // to relay instead of sending a link that would just fail at the OAuth callback.
+      if (listAccounts(ownerId).length > 0) {
+        return { error: "This account already has a mailbox connected — connecting a second one isn't supported." };
+      }
+      const phoneNumber = listPhoneNumbersForUser(ownerId)[0]?.phone;
+      if (!phoneNumber) {
+        // Shouldn't happen — a phone-only account always has the number that created it. Surfacing
+        // this rather than silently no-op-ing if it somehow does.
+        return { error: "No WhatsApp number on file for this account — can't send a connect link." };
+      }
+      const provider = input.provider as string;
+      if (provider !== "google" && provider !== "microsoft") {
+        return { error: `unknown provider: ${provider}` };
+      }
+      await sendConnectLink(phoneNumber, provider as RegistrationProvider);
+      return { ok: true };
+    }
     case "connect_xero": {
       try {
         setXeroForwardingEmail(ownerId, input.forwarding_email as string);
@@ -1675,7 +1711,7 @@ export function buildSystemPrompt(ownerId: number, conversationSummary?: string)
           return `- id ${a.id}: ${a.email} (${a.provider})${restrictions.length ? ` — ${restrictions.join(", ")}` : ""}`;
         })
         .join("\n")
-    : "(none connected — this user has no mailbox linked. Anything needing email or calendar is unavailable: say so plainly in one line and offer to connect an inbox, e.g. \"I'd need your email for that — want to connect it?\". Most of these users are on WhatsApp only and have no access to our website — don't reference web-based setup. Everything else — reminders, to-dos, notes, documents they send, and general questions — works normally, so answer those without mentioning the missing inbox.)";
+    : "(none connected — this user has no mailbox linked. Anything needing email or calendar is unavailable: say so plainly in one line and offer to connect an inbox, e.g. \"I'd need your email for that — want to connect it?\". If they say yes, ask which they use (Gmail or Outlook/Hotmail) if that's not already obvious, then call connect_email with that provider to actually send them the link — don't just keep offering verbally. Most of these users are on WhatsApp only and have no access to our website — don't reference web-based setup. Everything else — reminders, to-dos, notes, documents they send, and general questions — works normally, so answer those without mentioning the missing inbox.)";
 
   const folders = listLocalFolders(ownerId);
   const folderList = folders.length
