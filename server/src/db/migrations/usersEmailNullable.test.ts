@@ -6,7 +6,12 @@ import path from "node:path";
 import { migrateUsersEmailNullable } from "./usersEmailNullable.js";
 
 // The pre-migration shape, exactly as store.ts created it before this migration existed —
-// including the is_admin column that an earlier ALTER adds, since the rebuild must carry it.
+// including the is_admin column that an earlier ALTER adds, since the rebuild must carry it, and
+// a real child table (store.ts's sessions) so the rebuild is exercised against the same
+// foreign-key shape production has. better-sqlite3 enables PRAGMA foreign_keys by default, so a
+// users-only schema here would never reproduce the "FOREIGN KEY constraint failed" the migration
+// otherwise throws on DROP TABLE users — every test in this file used to run against exactly that
+// blind spot.
 function buildLegacyDb(dbPath = ":memory:"): Database.Database {
   const db = new Database(dbPath);
   db.exec(`
@@ -16,6 +21,12 @@ function buildLegacyDb(dbPath = ":memory:"): Database.Database {
       created_at INTEGER NOT NULL
     );
     ALTER TABLE users ADD COLUMN is_admin INTEGER NOT NULL DEFAULT 0;
+    CREATE TABLE sessions (
+      id TEXT PRIMARY KEY,
+      user_id INTEGER NOT NULL REFERENCES users(id),
+      created_at INTEGER NOT NULL,
+      expires_at INTEGER NOT NULL
+    );
   `);
   return db;
 }
@@ -49,6 +60,27 @@ describe("migrateUsersEmailNullable", () => {
     ]);
   });
 
+  it("rebuilds without a FOREIGN KEY constraint failure when a child table has rows referencing users", () => {
+    // Regression for the actual production failure mode: better-sqlite3 enables PRAGMA
+    // foreign_keys by default and store.ts never disables it, so DROP TABLE users performs an
+    // implicit DELETE FROM users, which fires an immediate FK check against every child row.
+    // Without the foreign_keys toggle in the migration, this insert-then-migrate sequence throws
+    // "FOREIGN KEY constraint failed" and the migration never completes.
+    const db = buildLegacyDb();
+    db.prepare(`INSERT INTO users (id, email, created_at) VALUES (?, ?, ?)`).run(1, "owner@example.com", 1000);
+    db.prepare(`INSERT INTO sessions (id, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)`).run("sess-1", 1, 1000, 9999);
+
+    expect(() => migrateUsersEmailNullable(db)).not.toThrow();
+
+    expect(db.prepare(`SELECT id, user_id AS userId FROM sessions`).all()).toEqual([{ id: "sess-1", userId: 1 }]);
+    // Foreign key enforcement itself must come back on afterward — the toggle is restored, not
+    // left off for the rest of the process.
+    expect(db.pragma(`foreign_keys`, { simple: true })).toBe(1);
+    expect(() =>
+      db.prepare(`INSERT INTO sessions (id, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)`).run("sess-2", 999, 1000, 9999)
+    ).toThrow();
+  });
+
   it("accepts a NULL email after migrating, and still rejects a duplicate address", () => {
     const db = buildLegacyDb();
     migrateUsersEmailNullable(db);
@@ -75,17 +107,46 @@ describe("migrateUsersEmailNullable", () => {
     expect(db.prepare(`SELECT count(*) AS n FROM users`).get()).toEqual({ n: 1 });
   });
 
-  it("rolls back and leaves the original table intact if the copy is short", () => {
+  it("restores the AUTOINCREMENT high-water mark so a deleted user's id is never reused", () => {
     const db = buildLegacyDb();
-    db.prepare(`INSERT INTO users (email, created_at) VALUES (?, ?)`).run("owner@example.com", 1000);
-    // Force the row-count guard to trip by leaving a stale users_new behind with a conflicting
-    // row, so the INSERT...SELECT cannot copy everything.
-    db.exec(`CREATE TABLE users_new (id INTEGER PRIMARY KEY, email TEXT, created_at INTEGER, is_admin INTEGER)`);
+    db.prepare(`INSERT INTO users (email, created_at) VALUES (?, ?)`).run("a@example.com", 1000);
+    db.prepare(`INSERT INTO users (email, created_at) VALUES (?, ?)`).run("b@example.com", 2000);
+    db.prepare(`INSERT INTO users (email, created_at) VALUES (?, ?)`).run("c@example.com", 3000);
+    db.prepare(`DELETE FROM users WHERE id IN (2, 3)`).run();
 
-    expect(() => migrateUsersEmailNullable(db)).toThrow();
+    migrateUsersEmailNullable(db);
 
-    // The original table survived the failure — this is the property that matters most.
-    expect(db.prepare(`SELECT count(*) AS n FROM users`).get()).toEqual({ n: 1 });
+    // Before the fix: DROP TABLE users deletes its sqlite_sequence row, and RENAME installs
+    // users_new's own row in its place — which only reflects the max id actually copied (1),
+    // not the original high-water mark (3). The next insert would then assign id 2, reusing a
+    // deleted user's id — and per findRemainingOwnerReferences (store.ts), handing a brand-new
+    // account any leftover rows still keyed to that dead owner_id across the owner-scoped tables.
+    const inserted = db.prepare(`INSERT INTO users (email, created_at) VALUES (?, ?)`).run("d@example.com", 4000);
+    expect(inserted.lastInsertRowid).toBe(4);
+  });
+
+  it("rolls back and leaves the original table (and its child rows) intact if the copy silently skips a row", () => {
+    const db = buildLegacyDb();
+    db.prepare(`INSERT INTO users (id, email, created_at) VALUES (?, ?, ?)`).run(1, "owner@example.com", 1000);
+    db.prepare(`INSERT INTO users (id, email, created_at) VALUES (?, ?, ?)`).run(7, "second@example.com", 2000);
+    db.prepare(`INSERT INTO sessions (id, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)`).run("sess-1", 1, 1000, 9999);
+
+    // Pre-creating users_new with a stale row (or letting a plain CREATE collide) only tests
+    // that CREATE TABLE fails before the copy ever runs — before the guard, before anything
+    // destructive. To exercise the row-count guard itself, the copy has to genuinely succeed as
+    // SQL yet still come up short: this trigger does that. RAISE(IGNORE) silently drops just the
+    // id=7 row from the INSERT...SELECT without erroring the statement, so the CREATE TABLE IF
+    // NOT EXISTS in the migration is a no-op against this table and the guard's own count check
+    // is what has to catch the missing row.
+    db.exec(`CREATE TABLE users_new (id INTEGER PRIMARY KEY AUTOINCREMENT, email TEXT UNIQUE, created_at INTEGER NOT NULL, is_admin INTEGER NOT NULL DEFAULT 0)`);
+    db.exec(`CREATE TRIGGER skip_seven BEFORE INSERT ON users_new WHEN new.id = 7 BEGIN SELECT RAISE(IGNORE); END;`);
+
+    expect(() => migrateUsersEmailNullable(db)).toThrow(/copied 1 of 2 rows/);
+
+    // The original table and its child rows survived the failure — this is the property that
+    // matters most: a genuinely short copy still rolls back cleanly.
+    expect(db.prepare(`SELECT count(*) AS n FROM users`).get()).toEqual({ n: 2 });
+    expect(db.prepare(`SELECT count(*) AS n FROM sessions`).get()).toEqual({ n: 1 });
     expect(emailIsNullable(db)).toBe(false);
   });
 

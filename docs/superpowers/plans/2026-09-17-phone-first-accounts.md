@@ -14,7 +14,7 @@
 
 - Branch: `feat/phone-first-accounts`, off `master`. Already created.
 - Imports use `.js` specifiers even for `.ts` files (ESM). Match surrounding style.
-- `PRAGMA foreign_keys` is OFF and must stay off. Do not enable it.
+- `PRAGMA foreign_keys` is ON by default (better-sqlite3's default, never overridden in `store.ts`). The `users` rebuild is the one place that has to disable it around its own transaction and restore it in `finally` — `DROP TABLE users` is a parent-table drop with 29 FK-enforced children. No other task should change this setting.
 - Migrations run at module load in `store.ts`. Anything added there executes on every boot and must be idempotent.
 - Tests: `cd server && npx vitest run <path>`. Full suite: `npx vitest run`. Typecheck: `npx tsc --noEmit` in both `server/` and `client/`.
 - The repo comments *why*, not *what*. Match that register — explain reasoning a future reader would otherwise have to reconstruct.

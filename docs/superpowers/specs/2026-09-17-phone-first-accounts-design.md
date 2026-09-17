@@ -67,9 +67,11 @@ Two facts make this cheaper to change than it looks:
 
 - `user_phone_numbers.phone` is already `TEXT NOT NULL UNIQUE`. The identity key we need already
   exists and is already unique.
-- `PRAGMA foreign_keys` is never enabled, so SQLite defaults it to OFF. The 29 `REFERENCES
-  users(id)` declarations are documentation, not enforced constraints, which makes rebuilding the
-  `users` table safe.
+- better-sqlite3 enables `PRAGMA foreign_keys` by default, and `store.ts` never disables it, so
+  the 29 `REFERENCES users(id)` declarations are enforced constraints, not documentation. `DROP
+  TABLE users` performs an implicit `DELETE FROM users`, which fires an immediate FK check against
+  every child row — the `users` rebuild has to disable `foreign_keys` around its transaction
+  (SQLite's own documented table-rebuild procedure) and restore it afterward for this to be safe.
 
 ## Design
 
@@ -77,6 +79,9 @@ Two facts make this cheaper to change than it looks:
 
 SQLite cannot relax `NOT NULL` in place, so this is the standard table rebuild inside a
 transaction: create `users_new` with the relaxed column, copy every row, drop `users`, rename.
+Because `users` is a parent table with FK-enforced children, the rebuild also disables `PRAGMA
+foreign_keys` around the transaction and restores it in `finally`, and runs `PRAGMA
+foreign_key_check` after the rename as a second guard alongside the row-count check.
 
 `email` keeps its `UNIQUE` constraint. SQLite permits multiple `NULL`s in a unique column, which
 is exactly the behaviour we want: many phone-only accounts, still no two accounts sharing an
