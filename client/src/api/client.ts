@@ -35,7 +35,8 @@ export interface Account {
 
 export interface Me {
   id: number;
-  email: string;
+  // null for a phone-first account that has never linked a mailbox.
+  email: string | null;
   /** The single APP_OWNER_EMAIL account — gates the narrower invites/reset-test-phone section in Settings. */
   isAppOwner: boolean;
   /** The app owner plus anyone promoted via the Portal's Admins tab — gates the Portal itself. */
@@ -660,7 +661,7 @@ export const fetchAdminMessages = (phone: string) =>
 
 export interface AdminCandidate {
   id: number;
-  email: string;
+  email: string | null;
   isAdmin: boolean;
   isAppOwner: boolean;
   createdAt: number;
@@ -788,7 +789,7 @@ export interface AdminTodoReply {
   todoId: number;
   text: string;
   authorId: number;
-  authorEmail: string;
+  authorEmail: string | null;
   createdAt: number;
 }
 
@@ -797,7 +798,7 @@ export interface AdminTodo {
   text: string;
   done: boolean;
   createdBy: number;
-  createdByEmail: string;
+  createdByEmail: string | null;
   createdAt: number;
   doneAt: number | null;
   replies: AdminTodoReply[];
@@ -819,7 +820,7 @@ export const markAdminTodoRepliesRead = (id: number) =>
 export interface PosterNote {
   id: number;
   authorId: number;
-  authorEmail: string;
+  authorEmail: string | null;
   text: string;
   createdAt: number;
 }

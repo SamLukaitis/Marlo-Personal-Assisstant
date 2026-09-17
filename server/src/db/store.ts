@@ -2499,7 +2499,9 @@ export function searchReadEmails(ownerId: number, query: string, limit = 10): Re
 
 export interface UserRow {
   id: number;
-  email: string;
+  // null for a phone-first account that has never linked a mailbox — see
+  // findOrCreateUserByPhone. Every read site must handle it rather than assuming a real address.
+  email: string | null;
   createdAt: number;
 }
 
@@ -2605,7 +2607,7 @@ export function isAdmin(userId: number): boolean {
 
 export interface AdminCandidateRow {
   id: number;
-  email: string;
+  email: string | null;
   isAdmin: boolean;
   isAppOwner: boolean;
   createdAt: number;
@@ -2617,7 +2619,7 @@ export interface AdminCandidateRow {
 export function listAdminCandidateUsers(): AdminCandidateRow[] {
   const rows = db
     .prepare(`SELECT id, email, is_admin AS isAdminFlag, created_at AS createdAt FROM users ORDER BY created_at ASC`)
-    .all() as { id: number; email: string; isAdminFlag: number; createdAt: number }[];
+    .all() as { id: number; email: string | null; isAdminFlag: number; createdAt: number }[];
   return rows.map((r) => ({
     id: r.id,
     email: r.email,
@@ -2880,7 +2882,7 @@ export interface AdminTodoReplyRow {
   todoId: number;
   text: string;
   authorId: number;
-  authorEmail: string;
+  authorEmail: string | null;
   createdAt: number;
 }
 
@@ -2889,7 +2891,7 @@ export interface AdminTodoRow {
   text: string;
   done: boolean;
   createdBy: number;
-  createdByEmail: string;
+  createdByEmail: string | null;
   createdAt: number;
   doneAt: number | null;
   replies: AdminTodoReplyRow[];
@@ -2991,7 +2993,7 @@ export function markAdminTodoRepliesRead(todoId: number, userId: number): void {
 export interface PosterNoteRow {
   id: number;
   authorId: number;
-  authorEmail: string;
+  authorEmail: string | null;
   text: string;
   createdAt: number;
 }

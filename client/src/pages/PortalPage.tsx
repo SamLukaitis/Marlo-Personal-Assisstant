@@ -99,7 +99,7 @@ export function PortalPage() {
       if (cancelled) return;
 
       const currentIds = new Set<number>();
-      const newlyArrived: { text: string; authorEmail: string }[] = [];
+      const newlyArrived: { text: string; authorEmail: string | null }[] = [];
       for (const t of todos) {
         for (const r of t.replies) {
           currentIds.add(r.id);
@@ -114,7 +114,10 @@ export function PortalPage() {
       if (seenReplyIdsRef.current) {
         for (const arrival of newlyArrived) {
           const id = `${Date.now()}-${Math.random()}`;
-          setToasts((prev) => [...prev, { id, text: `${arrival.authorEmail} replied to "${arrival.text}"` }]);
+          setToasts((prev) => [
+            ...prev,
+            { id, text: `${arrival.authorEmail ?? "No email connected"} replied to "${arrival.text}"` },
+          ]);
           setTimeout(() => setToasts((prev) => prev.filter((t) => t.id !== id)), TOAST_DURATION_MS);
         }
       }
@@ -234,7 +237,7 @@ function TodoRow({
         <div className="todo-title" style={done ? { textDecoration: "line-through", opacity: 0.6 } : undefined}>
           {todo.text}
         </div>
-        <div className="muted todo-meta">— {todo.createdByEmail}</div>
+        <div className="muted todo-meta">— {todo.createdByEmail ?? "No email connected"}</div>
 
         <button className="todo-reply-toggle" onClick={toggleExpanded} type="button">
           <IconChat />
@@ -247,7 +250,7 @@ function TodoRow({
             {todo.replies.map((r) => (
               <div key={r.id}>
                 <div className="todo-reply-header">
-                  <span className="todo-reply-author">{r.authorEmail}</span>
+                  <span className="todo-reply-author">{r.authorEmail ?? "No email connected"}</span>
                   <span className="muted todo-reply-time">{timeAgo(r.createdAt)}</span>
                 </div>
                 <div className="todo-reply-text">{r.text}</div>
@@ -423,7 +426,7 @@ function NotesTab() {
               </button>
             </div>
             <p className="muted" style={{ margin: "8px 0 0", fontSize: 12 }}>
-              {n.authorEmail} — {timeAgo(n.createdAt)}
+              {n.authorEmail ?? "No email connected"} — {timeAgo(n.createdAt)}
             </p>
           </div>
         ))
@@ -857,7 +860,7 @@ function AdminsTab({ currentUserId }: { currentUserId: number }) {
         candidates.map((c) => (
           <div key={c.id} className="data-row row" style={{ justifyContent: "space-between" }}>
             <span style={{ fontSize: 13.5 }}>
-              {c.email}
+              {c.email ?? "No email connected"}
               {c.id === currentUserId && <span className="muted"> (you)</span>}
               {c.isAppOwner && <span className="badge-pill" style={{ marginLeft: 8 }}>owner</span>}
               {c.isAdmin && !c.isAppOwner && <span className="badge-pill" style={{ marginLeft: 8 }}>admin</span>}
