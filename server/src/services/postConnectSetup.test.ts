@@ -551,6 +551,22 @@ describe("handlePostConnectSetupReply", () => {
     expect(sendWhatsAppMessage).toHaveBeenCalledWith(PHONE, expect.stringContaining("Sam"));
   });
 
+  // The chain used to end on a statement, leaving someone who had just tapped through setup with
+  // no obvious next move — so the closing message is followed by an open question, as its own
+  // message. pending_setup is already cleared by then, so their answer reaches the assistant.
+  it("follows the closing message with an open question, as a separate message", async () => {
+    const ownerId = newOwnerId();
+    await pastFirstTask(ownerId);
+
+    await handlePostConnectSetupReply(ownerId, tap("briefing_no"));
+
+    const texts = vi.mocked(sendWhatsAppMessage).mock.calls.map(([, text]) => text);
+    const closingIndex = texts.findIndex((text) => text.includes("All set"));
+    expect(closingIndex).toBeGreaterThanOrEqual(0);
+    expect(texts[closingIndex + 1]).toMatch(/anything you need help with|any questions/i);
+    expect(getPendingSetup(ownerId)).toBeNull();
+  });
+
   // The closing message deliberately does NOT report a suppressed-alert backlog itself anymore —
   // see the comment on sendClosingMessage. By the time this runs, the backlog usually hasn't even
   // been discovered yet (the chain above typically finishes in well under a minute; the scanners
@@ -565,7 +581,10 @@ describe("handlePostConnectSetupReply", () => {
     await handlePostConnectSetupReply(ownerId, tap("briefing_no"));
 
     const closingCall = vi.mocked(sendWhatsAppMessage).mock.calls.find(([, text]) => text.includes("All set"));
-    expect(closingCall?.[1]).not.toMatch(/inbox|already/i);
+    // Matches backlog-reporting phrasing specifically, not the bare word "already" — the closing
+    // message's own feedback line ("any request I can't meet already gets flagged") is about
+    // feature requests, not mail, and must not trip this.
+    expect(closingCall?.[1]).not.toMatch(/inbox|unread|already (found|seen|spotted|noticed)/i);
     expect(takeSuppressedOnboardingAlertCount(ownerId)).toBe(3); // left untouched for the scheduler to report
   });
 });

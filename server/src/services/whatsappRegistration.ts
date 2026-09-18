@@ -4,13 +4,14 @@
 // the OAuth consent screen itself — Google/Microsoft don't allow sign-in inside an embedded
 // webview, so a one-time link is sent instead (see authRoutes.ts's "whatsapp_register" intent).
 //
-// Name/email capture stays plain conversational text. Provider is inferred from the typed
-// email's domain (detectProviderFromEmail) whenever it's unambiguous, so most people are never
-// asked at all; only a custom/work domain falls back to the explicit question, shown as tappable
-// buttons instead of two links in one message, since WhatsApp only allows one URL button per
-// message — see sendWhatsAppReplyButtons/sendWhatsAppCtaUrl in providers/whatsapp.ts.
+// The name is plain conversational text; the mailbox is two taps (Yes → Gmail/Outlook) and then
+// the link, with no address typed at all — see handleEmailConfirmTap for why asking for one first
+// bought nothing. Someone who volunteers their address anyway still skips the provider question
+// when its domain is unambiguous (detectProviderFromEmail); a custom/work domain falls back to the
+// same two buttons. Buttons rather than two links in one message because WhatsApp only allows one
+// URL button per message — see sendWhatsAppReplyButtons/sendWhatsAppCtaUrl in providers/whatsapp.ts.
 // One explicit future upgrade, not built here: Meta WhatsApp Flows (native in-chat forms) for the
-// name/email capture too.
+// name capture too.
 //
 // Everything past OAuth (first-task check, briefing + content, Teams) is handled by
 // services/postConnectSetup.ts's own chain, which forwards real requests to the assistant
@@ -45,7 +46,7 @@ const IDLE_RESET_MS = 24 * 60 * 60 * 1000; // a week-old half-finished conversat
 // separate post-registration version (chatDispatch.ts) — the two used to be one shared constant,
 // which meant an already-registered user asking "help" got asked their name again.
 export const MARLOWE_FIRST_CONTACT_TEXT =
-  "Hi, I'm Marlowe, your personal assistant. What would you like me to call you?";
+  "Hi, I'm *Marlowe*, your personal assistant. What would you like me to call you?";
 
 // What an uninvited number gets on its first message. Deliberately warm and final-sounding: the
 // person on the other end did nothing wrong, and there's no action they can take to speed it up.
@@ -225,11 +226,13 @@ async function handleAwaitingName(row: PendingRegistrationRow, text: string): Pr
   const greeting = name ? `Hi ${name}.` : "Hi there.";
   // Sent as separate WhatsApp messages (not joined with \n\n) to match a real conversational
   // back-and-forth rather than one long wall of text.
-  await reply(row.phone, `${greeting} I hope to be helpful with anything you could need, so please, ask me anything.`);
-  await reply(
-    row.phone,
-    "My developers are always adding features, so if you give me a request I cannot meet, I'll send this over to them to build ASAP."
-  );
+  //
+  // Deliberately does NOT end on "ask me anything": the next message but one asks the email
+  // question, so an invitation here collides with it — someone who takes it literally and sends
+  // a real request gets getRegistrationAssistReply's deflection back to that question instead of
+  // an answer. postConnectSetup.ts's ask_first_task makes the same offer once it can actually be
+  // honoured (a mailbox is connected and the message reaches the real assistant).
+  await reply(row.phone, `${greeting} I hope to be helpful with anything you could need.`);
   await reply(
     row.phone,
     "Most people ask me to help plan their calendar and travel plans, organise their inboxes, and remind them of important information and events."
@@ -240,8 +243,13 @@ async function handleAwaitingName(row: PendingRegistrationRow, text: string): Pr
 // buttonId comes from an IncomingInteractiveMessage tap on the buttons askEmailConfirm sent.
 async function handleEmailConfirmTap(row: PendingRegistrationRow, buttonId: string): Promise<void> {
   if (buttonId === EMAIL_CONFIRM_BUTTON_IDS.yes) {
-    upsertPendingRegistration(row.phone, { step: "awaiting_email" });
-    await reply(row.phone, "Great, what email would you like to connect");
+    // Straight to the provider buttons — the typed address was only ever an OAuth login_hint
+    // (authRoutes.ts), never the identity: the consent screen is where the account is actually
+    // chosen, and that callback re-checks "is this address already taken" itself. Asking for it
+    // first was a whole extra round trip that told us nothing the tap doesn't. Someone who types
+    // their address anyway still short-circuits via handleAwaitingEmailConfirmText below, which
+    // keeps the hint for them.
+    await askProvider(row);
     return;
   }
   if (buttonId === EMAIL_CONFIRM_BUTTON_IDS.no) {

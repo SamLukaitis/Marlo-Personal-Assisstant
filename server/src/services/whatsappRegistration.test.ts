@@ -82,7 +82,7 @@ describe("handlePendingRegistration — phone invite gate (first contact)", () =
     await handlePendingRegistration({ kind: "text", from: phone, text: "hi", messageId: "m1" });
 
     expect(sendWhatsAppMessage).toHaveBeenCalledWith(phone, expect.stringContaining("on the waitlist"));
-    expect(sendWhatsAppMessage).not.toHaveBeenCalledWith(phone, expect.stringContaining("I'm Marlowe"));
+    expect(sendWhatsAppMessage).not.toHaveBeenCalledWith(phone, expect.stringContaining("I'm *Marlowe*"));
     expect(getPendingRegistration(phone)).toBeNull();
   });
 
@@ -92,7 +92,7 @@ describe("handlePendingRegistration — phone invite gate (first contact)", () =
 
     await handlePendingRegistration({ kind: "text", from: phone, text: "hi", messageId: "m1" });
 
-    expect(sendWhatsAppMessage).toHaveBeenCalledWith(phone, expect.stringContaining("I'm Marlowe"));
+    expect(sendWhatsAppMessage).toHaveBeenCalledWith(phone, expect.stringContaining("I'm *Marlowe*"));
     expect(getPendingRegistration(phone)?.step).toBe("awaiting_name");
   });
 
@@ -262,6 +262,64 @@ describe("handlePendingRegistration — awaiting_email reconnecting an existing 
       expect.stringContaining("/auth/google/register")
     );
     expect(getPendingRegistration(phone)?.step).toBe("awaiting_link_tap");
+  });
+});
+
+// Accepting no longer asks for the address first: it was only ever an OAuth login_hint, and the
+// callback (authRoutes.ts) decides the identity and the "already taken" question for itself. Two
+// taps to a link instead of a typed address in between.
+describe("handlePendingRegistration — accepting email goes straight to the provider buttons", () => {
+  it("asks Gmail-or-Outlook on a Yes tap instead of asking for an address", async () => {
+    const phone = freshPhone();
+    addInvitedPhone(phone);
+    upsertPendingRegistration(phone, { step: "awaiting_email_confirm", name: "Sam" });
+
+    await handlePendingRegistration({
+      kind: "interactive",
+      from: phone,
+      messageId: "m1",
+      buttonId: "email_confirm_yes",
+    });
+
+    expect(sendWhatsAppReplyButtons).toHaveBeenCalledWith(phone, "Do you use Gmail or Outlook/Hotmail?", [
+      { id: "register_google", title: "Gmail" },
+      { id: "register_microsoft", title: "Outlook" },
+    ]);
+    expect(sendWhatsAppMessage).not.toHaveBeenCalled();
+    expect(getPendingRegistration(phone)?.step).toBe("awaiting_provider");
+  });
+
+  it("takes the same route for a typed yes", async () => {
+    const phone = freshPhone();
+    addInvitedPhone(phone);
+    upsertPendingRegistration(phone, { step: "awaiting_email_confirm", name: "Sam" });
+
+    await handlePendingRegistration({ kind: "text", from: phone, text: "yes", messageId: "m1" });
+
+    expect(getPendingRegistration(phone)?.step).toBe("awaiting_provider");
+  });
+
+  // The address is still accepted from anyone who volunteers it — it skips the provider question
+  // when the domain is unambiguous, and is kept as the login_hint either way.
+  it("still short-circuits to the link when they send an address instead of tapping", async () => {
+    const phone = freshPhone();
+    addInvitedPhone(phone);
+    upsertPendingRegistration(phone, { step: "awaiting_email_confirm", name: "Sam" });
+
+    await handlePendingRegistration({
+      kind: "text",
+      from: phone,
+      text: `sam+${phone}@gmail.com`,
+      messageId: "m1",
+    });
+
+    expect(sendWhatsAppCtaUrl).toHaveBeenCalledWith(
+      phone,
+      expect.stringContaining("*Gmail*"),
+      "Connect Gmail",
+      expect.stringContaining("/auth/google/register")
+    );
+    expect(getPendingRegistration(phone)?.typedEmail).toBe(`sam+${phone}@gmail.com`);
   });
 });
 
