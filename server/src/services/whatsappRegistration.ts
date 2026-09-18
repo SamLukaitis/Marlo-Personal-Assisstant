@@ -93,8 +93,9 @@ const EMAIL_CONFIRM_BUTTON_IDS = { yes: "email_confirm_yes", no: "email_confirm_
 // the AI assist reply.
 const EMAIL_CONFIRM_NO_TEXT =
   "No problem. If you want to connect your email in the future just let me know. In the " +
-  "meantime, I can keep track of reminders, to-dos and notes, hold on to any photos or " +
-  "documents you send me, and answer whatever you want to ask.";
+  "meantime, I can keep track of reminders, to-dos and notes, hold on to any photos and " +
+  "documents you send me or answer any questions you may have. Can I help you with " +
+  "anything at the moment?";
 
 const PROVIDER_BUTTON_IDS: Record<RegistrationProvider, string> = {
   google: "register_google",
