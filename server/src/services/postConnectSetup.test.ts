@@ -78,35 +78,36 @@ describe("startPostConnectSetup", () => {
     expect(getPendingSetup(ownerId)).toBe("ask_name");
   });
 
-  it("volunteers a concrete insight — the next event's title and a single unread email's subject — rather than just counts", async () => {
-    const ownerId = newOwnerId();
-    vi.mocked(hubListMessages).mockResolvedValue([
-      { unread: true, subject: "Invoice from Acme due Friday" } as never,
-      { unread: false } as never,
-    ]);
-    vi.mocked(hubListEvents).mockResolvedValue([
-      { title: "Team standup", start: "2026-09-15T09:00:00.000Z" } as never,
-    ]);
-
-    await startPostConnectSetup(ownerId, PHONE);
-
-    const [, confirmText] = vi.mocked(sendWhatsAppMessage).mock.calls[0];
-    expect(confirmText).toContain("Invoice from Acme due Friday");
-    expect(confirmText).toContain("Team standup");
-  });
-
-  it("falls back to a plain count when there's more than one unread email or no calendar events", async () => {
+  // The unread count was dropped: it was capped at the 20 most recent emails (so a busy inbox
+  // always read "20"), and a scan that checked and found nothing is the more useful thing to say.
+  it("says nothing is urgent when the 24h scan checked and found nothing, and never gives an unread count", async () => {
     const ownerId = newOwnerId();
     vi.mocked(hubListMessages).mockResolvedValue([
       { unread: true, subject: "A" } as never,
       { unread: true, subject: "B" } as never,
     ]);
-    vi.mocked(hubListEvents).mockResolvedValue([]);
+    mockScanAndCurate.mockResolvedValue({ lines: [], moreCount: 0 });
 
     await startPostConnectSetup(ownerId, PHONE);
 
     const [, confirmText] = vi.mocked(sendWhatsAppMessage).mock.calls[0];
-    expect(confirmText).toContain("2 unread emails");
+    expect(confirmText).toBe(
+      "*Connected!* ✅ I can see your inbox and your calendar. Nothing urgent in your inbox from the last 24 hours — I'll message you the moment something important comes in."
+    );
+  });
+
+  it("adds today's calendar after the nothing-urgent line", async () => {
+    const ownerId = newOwnerId();
+    vi.mocked(hubListEvents).mockResolvedValue([
+      { title: "Team standup", start: "2026-09-15T09:00:00.000Z" } as never,
+    ]);
+    mockScanAndCurate.mockResolvedValue({ lines: [], moreCount: 0 });
+
+    await startPostConnectSetup(ownerId, PHONE);
+
+    const [, confirmText] = vi.mocked(sendWhatsAppMessage).mock.calls[0];
+    expect(confirmText).toContain("Nothing urgent in your inbox from the last 24 hours — I'll message you the moment something important comes in.");
+    expect(confirmText).toContain("You've also got *Team standup* on today's calendar.");
   });
 
   // The curated important-email scan is bounded to the 24 hours before connecting (see
@@ -157,15 +158,22 @@ describe("startPostConnectSetup", () => {
     expect(confirmText).not.toContain("more");
   });
 
-  it("falls back to the plain unread count when the curated scan finds nothing (unchanged behavior)", async () => {
+  // null means the scan couldn't run (listing or classification failed) — claiming "nothing
+  // urgent" then would be a guess, so only the calendar (if any) is mentioned.
+  it("makes no inbox claim when the scan couldn't check", async () => {
     const ownerId = newOwnerId();
     vi.mocked(hubListMessages).mockResolvedValue([{ unread: true, subject: "A" } as never]);
+    vi.mocked(hubListEvents).mockResolvedValue([
+      { title: "Team standup", start: "2026-09-15T09:00:00.000Z" } as never,
+    ]);
     mockScanAndCurate.mockResolvedValue(null);
 
     await startPostConnectSetup(ownerId, PHONE);
 
     const [, confirmText] = vi.mocked(sendWhatsAppMessage).mock.calls[0];
-    expect(confirmText).toContain("1 unread email");
+    expect(confirmText).toBe(
+      "*Connected!* ✅ I can see your inbox and your calendar. I can already see *Team standup* on today's calendar."
+    );
   });
 
   it("still sends 'Connected!' even if the curated scan itself throws", async () => {
@@ -298,12 +306,12 @@ describe("startPostConnectSetup — linkedExistingAccount", () => {
 
   it("still sends the connected confirmation and first-value fact, same as a fresh signup", async () => {
     const ownerId = newOwnerId();
-    vi.mocked(hubListMessages).mockResolvedValue([{ unread: true, subject: "Invoice due" } as never]);
+    mockScanAndCurate.mockResolvedValue({ lines: ["🧾 Invoice due Friday."], moreCount: 0 });
 
     await startPostConnectSetup(ownerId, PHONE, true);
 
     const [, confirmText] = vi.mocked(sendWhatsAppMessage).mock.calls[0];
-    expect(confirmText).toContain("Invoice due");
+    expect(confirmText).toContain("Invoice due Friday");
   });
 
   it("defaults to the fresh-signup chain when the flag is omitted (unchanged behavior)", async () => {

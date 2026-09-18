@@ -31,7 +31,7 @@ import {
 import { getBriefingSettings, saveBriefingSettings, hasBriefingSettings } from "./briefing.js";
 import { todayKey } from "./dateKey.js";
 import { sendWhatsAppMessage, sendWhatsAppReplyButtons } from "../providers/whatsapp.js";
-import { hubListMessages, hubListEvents } from "./hub.js";
+import { hubListEvents } from "./hub.js";
 import { handleText } from "./chatDispatch.js";
 import { isPlausibleName } from "./plausibleName.js";
 import { wantsToContinueSetup } from "./setupIntent.js";
@@ -170,8 +170,7 @@ export async function startPostConnectSetup(
   markOnboardingConnected(ownerId);
   let fact = "";
   try {
-    const [messages, events, importantPreview] = await Promise.all([
-      hubListMessages(ownerId, { limit: 20 }).catch(() => []),
+    const [events, importantPreview] = await Promise.all([
       hubListEvents(ownerId, 1).catch(() => []),
       // Bounded to mail from the 24 hours before connecting (see importantEmailAlerts.ts's
       // isWithinOnboardingLookback) — a user's own feedback: surfacing a whole backlog of older
@@ -197,31 +196,27 @@ export async function startPostConnectSetup(
     })();
 
     if (importantPreview && importantPreview.lines.length > 0) {
-      // A real, curated finding from the last 24 hours replaces the plain unread count entirely
+      // A real, curated finding from the last 24 hours is listed right in the Connected message
       // — a user's own feedback: "instead of something like 20 unread emails it should say the
       // most important emails". Its own paragraph (it's multi-line), with the calendar fact
       // folded in as a trailing sentence rather than forced into the single joined sentence below.
       const more =
         importantPreview.moreCount > 0
-          ? `\n...and ${importantPreview.moreCount} more — just ask any time.`
+          ? `\n...plus ${importantPreview.moreCount} more — just ask and I'll run through them.`
           : "";
       const calendarNote = calendarSentence ? ` I can also see ${calendarSentence}.` : "";
-      fact = `\n\nAlready found a few things worth knowing about:\n${importantPreview.lines.join("\n")}${more}${calendarNote}`;
+      fact = `\n\nI can already see a few important things from the last 24 hours:\n${importantPreview.lines.join("\n")}${more}${calendarNote}`;
+    } else if (importantPreview) {
+      // Scanned and found nothing important. Deliberately no unread count: it only ever covered
+      // the 20 most recent emails (so a busy inbox always read "20"), and "I checked, nothing
+      // needs you" shows judgement where a count just repeats the phone's own badge.
+      const calendarNote = calendarSentence ? ` You've also got ${calendarSentence}.` : "";
+      fact =
+        " Nothing urgent in your inbox from the last 24 hours — I'll message you the moment something important comes in." +
+        calendarNote;
     } else {
-      const parts: string[] = [];
-      const unreadMessages = messages.filter((m) => m.unread);
-      const unread = unreadMessages.length;
-      // A single unread email names its actual subject instead of just a count — this and the
-      // event sentence below are the one genuine "wow" moment in the whole chain when there's no
-      // curated preview to lead with: Marlowe visibly already knows something real about the
-      // user's day before they've answered a single question.
-      if (unread === 1 && unreadMessages[0].subject) {
-        parts.push(`*1 unread email* — "${unreadMessages[0].subject}"`);
-      } else if (unread > 0) {
-        parts.push(`*${unread} unread emails*`);
-      }
-      if (calendarSentence) parts.push(calendarSentence);
-      fact = parts.length ? ` I can already see ${parts.join(" and ")}.` : "";
+      // null: the scan couldn't actually check, so make no claim about the inbox at all.
+      fact = calendarSentence ? ` I can already see ${calendarSentence}.` : "";
     }
   } catch {
     // best-effort — a missing first-value fact shouldn't block the confirmation message itself

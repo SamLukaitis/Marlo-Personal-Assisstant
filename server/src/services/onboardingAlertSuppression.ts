@@ -7,12 +7,11 @@
 // connected.
 //
 // importantEmailAlerts.ts (flagged categories: flight change, reservation confirmed, security
-// alert, etc.) doesn't use this anymore — it has its own classifier, so
-// scanAndCurateImportantEmailsForOnboarding runs synchronously at connect time instead
-// (startPostConnectSetup), baselining that backlog deterministically and surfacing a curated
-// preview right in the "Connected!" message rather than suppressing-then-flushing it later.
-// alerts.ts/reconciliation.ts still need this module because neither has a classifier to curate a
-// preview from.
+// alert, etc.) doesn't use the count-and-flush path — its pre-connect mail is surfaced by
+// scanAndCurateImportantEmailsForOnboarding's curated preview in the "Connected!" message, and it
+// only uses isPostConnectChainInProgress below to hold post-connect alerts until the chain ends.
+// alerts.ts/reconciliation.ts still need the rest of this module because neither has a
+// classifier to curate a preview from.
 //
 // isOnboardingSuppressionActive is true for two overlapping reasons:
 //  1. postConnectSetup.ts's own question chain is still in progress (getPendingSetup non-null).
@@ -58,6 +57,30 @@ function isWithinConnectionGracePeriod(ownerId: number): boolean {
   return connectedAt > 0 && Date.now() - connectedAt < GRACE_PERIOD_MS;
 }
 
+// Upper bound on how long an unfinished question chain can hold alerts back — someone who
+// abandons onboarding mid-chain must not lose alerts forever (and hub.ts releases a held Gmail
+// checkpoint after an hour anyway, so holding past that would drop mail outright).
+const CHAIN_HOLD_MAX_MS = 30 * 60 * 1000;
+
+// importantEmailAlerts.ts's gate: true only while postConnectSetup.ts's question chain is still
+// running for a recent connection. Unlike isOnboardingSuppressionActive, the caller defers
+// (leaves mail unmarked and holds the checkpoint) rather than counting it, so every alert still
+// arrives individually — just after the closing message instead of interleaved with the questions.
+//
+// Also true for the first CHAIN_START_MS after connecting regardless of pending_setup: the chain
+// only sets pending_setup once the "Connected!" message and first question have gone out (after
+// the onboarding email scan), so without this a scheduler tick landing in those first seconds
+// could send an alert ahead of "Connected!" itself.
+const CHAIN_START_MS = 2 * 60 * 1000;
+
+export function isPostConnectChainInProgress(ownerId: number): boolean {
+  const connectedAt = Number(getSetting(ownerId, CONNECTED_AT_KEY) ?? "0") || 0;
+  if (connectedAt <= 0) return false;
+  const sinceConnect = Date.now() - connectedAt;
+  if (sinceConnect < CHAIN_START_MS) return true;
+  return getPendingSetup(ownerId) !== null && sinceConnect < CHAIN_HOLD_MAX_MS;
+}
+
 export function isOnboardingSuppressionActive(ownerId: number): boolean {
   return getPendingSetup(ownerId) !== null || isWithinConnectionGracePeriod(ownerId);
 }
@@ -93,7 +116,9 @@ export async function flushOnboardingAlertSummaryIfDue(ownerId: number): Promise
   const count = takeSuppressedOnboardingAlertCount(ownerId);
   if (count === 0) return;
 
-  const text = `Also — I found *${count}* important-looking email${count === 1 ? "" : "s"} already in your inbox from before we started. I'll message you individually as new ones come in from here.`;
+  // Only mail that arrived after connecting can be counted here (hub.ts's connected_at floor), so
+  // this is "while we were setting up", not a pre-connect backlog.
+  const text = `Also — *${count}* important-looking email${count === 1 ? "" : "s"} came in while we were setting up. Just ask and I'll run through ${count === 1 ? "it" : "them"}.`;
   // Fire-and-forget on delivery failure, same precedent as alerts.ts's notify() — this is a
   // friendly one-line heads-up, not the durable record itself (every suppressed match is already
   // saved via markAlerted/saveEntity by the scanner that found it), so losing just this summary
