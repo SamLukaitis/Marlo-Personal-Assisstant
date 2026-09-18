@@ -54,6 +54,33 @@ for (const u of users) {
     `  phones:    ${phones.length === 0 ? "(none)" : phones.map((p) => `${p.phone}${p.parked ? " [PARKED by replay]" : ""}`).join(", ")}`
   );
   console.log(`  mailboxes: ${mailboxes.length === 0 ? "(none)" : mailboxes.map((a) => `${a.provider}:${a.email}`).join(", ")}`);
+  // Which numbers this account has actually held a conversation with, which is the only record of
+  // a binding that has since been deleted — an account with messages but no phone above was
+  // talking to a number it no longer owns, and this says which. Marked where that number now
+  // belongs to somebody else, i.e. the account is split.
+  const talkedTo = db
+    .prepare(`SELECT phone, COUNT(*) AS n FROM whatsapp_messages WHERE owner_id = ? GROUP BY phone ORDER BY n DESC`)
+    .all(u.id);
+  console.log(
+    `  talked to: ${
+      talkedTo.length === 0
+        ? "(no whatsapp messages)"
+        : talkedTo
+            .map((t) => {
+              const boundTo = db
+                .prepare(`SELECT user_id AS userId FROM user_phone_numbers WHERE phone = ?`)
+                .get(t.phone);
+              const where =
+                boundTo === undefined
+                  ? "unbound"
+                  : boundTo.userId === u.id
+                    ? "bound here"
+                    : `NOW BOUND TO user ${boundTo.userId}`;
+              return `${t.phone} (${t.n} msg, ${where})`;
+            })
+            .join(", ")
+    }`
+  );
   console.log(`  data:      ${data.length === 0 ? "(none)" : data.join(" ")}\n`);
 }
 
