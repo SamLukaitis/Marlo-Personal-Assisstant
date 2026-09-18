@@ -267,9 +267,9 @@ async function handleEmailConfirmTap(row: PendingRegistrationRow, buttonId: stri
     completePendingRegistration(row.phone);
     await reply(
       row.phone,
-      "No problem — you're all set. I can keep track of reminders, to-dos and notes, hold on to any " +
-        "photos or documents you send me, and answer whatever you want to ask. Just say the word if you'd " +
-        "like to connect an inbox later."
+      "No problem. If you want to connect your email in the future just let me know. In the meantime, " +
+        "I can keep track of reminders, to-dos and notes, hold on to any photos and documents you send " +
+        "me or answer any questions you may have. Can I help you with anything at the moment?"
     );
     return;
   }
