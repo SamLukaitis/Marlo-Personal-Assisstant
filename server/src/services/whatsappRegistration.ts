@@ -89,6 +89,13 @@ export function isHelpTrigger(text: string): boolean {
 
 const EMAIL_CONFIRM_BUTTON_IDS = { yes: "email_confirm_yes", no: "email_confirm_no" };
 
+// The one fixed reply to declining to connect an email — see handleEmailConfirmTap's "no" branch
+// and the isNoReply widening below for why this must never be left to the AI assist reply.
+const EMAIL_CONFIRM_NO_TEXT =
+  "No problem. If you want to connect your email in the future just let me know. In the " +
+  "meantime, I can keep track of reminders, to-dos and notes, hold on to any photos or " +
+  "documents you send me, and answer whatever you want to ask.";
+
 const PROVIDER_BUTTON_IDS: Record<RegistrationProvider, string> = {
   google: "register_google",
   microsoft: "register_microsoft",
@@ -246,10 +253,12 @@ async function handleEmailConfirmTap(row: PendingRegistrationRow, buttonId: stri
     // feature-to-do/email-less-accounts.md), so the step deliberately stays at
     // awaiting_email_confirm rather than advancing or completing. Whatever they send next just
     // continues from here instead of restarting the whole conversation.
-    await reply(
-      row.phone,
-      "No worries, let me know later if you'd like to connect an inbox. Let me know how I can help!"
-    );
+    //
+    // Fixed copy, not left to getRegistrationAssistReply's discretion — different people were
+    // getting different, sometimes off-topic replies here (the AI riffing on the earlier "I'll
+    // send that to my developers" line from handleAwaitingName) depending on exactly how they
+    // phrased "no". Onboarding should read the same for everyone.
+    await reply(row.phone, EMAIL_CONFIRM_NO_TEXT);
     return;
   }
   // Stray/unexpected button id — re-show the choice rather than silently drop it.
@@ -269,7 +278,11 @@ async function handleAwaitingEmailConfirmText(row: PendingRegistrationRow, text:
     await handleEmailConfirmTap(row, EMAIL_CONFIRM_BUTTON_IDS.yes);
     return;
   }
-  if (/^no?( thanks)?$/i.test(trimmed)) {
+  // Widened beyond a bare "no"/"no thanks" — Jake and Sam each replaying onboarding got
+  // different replies here because a slightly different phrasing ("nah", "not now") missed the
+  // old pattern and fell through to the free-form AI assist reply below. Still a fixed list, not
+  // a fuzzy classifier — anything not on this exact list still gets a real conversational reply.
+  if (/^(no?|nope|nah|not now|not right now|no thanks|no thank you)\.?$/i.test(trimmed)) {
     await handleEmailConfirmTap(row, EMAIL_CONFIRM_BUTTON_IDS.no);
     return;
   }

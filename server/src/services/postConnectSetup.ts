@@ -145,6 +145,12 @@ export async function startPostConnectSetup(ownerId: number, phone: string): Pro
     const [messages, events, importantPreview] = await Promise.all([
       hubListMessages(ownerId, { limit: 20 }).catch(() => []),
       hubListEvents(ownerId, 1).catch(() => []),
+      // Bounded to mail from the 24 hours before connecting (see importantEmailAlerts.ts's
+      // isWithinOnboardingLookback) — a user's own feedback: surfacing a whole backlog of older
+      // "important-looking" automated mail (subscription renewals, delivery notices, ...) the
+      // moment someone signs up read as Marlowe spamming them with old mail, not as a useful
+      // finding. Anything older is still baselined (never re-alerted on later) — it's just never
+      // shown here.
       scanAndCurateImportantEmailsForOnboarding(ownerId).catch((err) => {
         console.error(`postConnectSetup: onboarding important-email scan failed for owner ${ownerId}`, err);
         return null;
@@ -163,10 +169,10 @@ export async function startPostConnectSetup(ownerId: number, phone: string): Pro
     })();
 
     if (importantPreview && importantPreview.lines.length > 0) {
-      // A real, curated finding replaces the plain unread count entirely — a user's own
-      // feedback: "instead of something like 20 unread emails it should say the most important
-      // emails". Its own paragraph (it's multi-line), with the calendar fact folded in as a
-      // trailing sentence rather than forced into the single joined sentence used below.
+      // A real, curated finding from the last 24 hours replaces the plain unread count entirely
+      // — a user's own feedback: "instead of something like 20 unread emails it should say the
+      // most important emails". Its own paragraph (it's multi-line), with the calendar fact
+      // folded in as a trailing sentence rather than forced into the single joined sentence below.
       const more =
         importantPreview.moreCount > 0
           ? `\n...and ${importantPreview.moreCount} more — just ask any time.`

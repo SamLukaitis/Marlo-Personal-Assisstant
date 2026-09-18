@@ -101,9 +101,11 @@ describe("startPostConnectSetup", () => {
     expect(confirmText).toContain("2 unread emails");
   });
 
-  // A real, curated finding replaces the plain unread count entirely — see this feature's design:
-  // a user's own feedback was "instead of something like 20 unread emails it should say the most
-  // important emails".
+  // The curated important-email scan is bounded to the 24 hours before connecting (see
+  // importantEmailAlerts.ts's isWithinOnboardingLookback) — from this test's point of view (the
+  // scan itself is mocked) that just means a real, curated finding still replaces the plain
+  // unread count entirely, per the user's own feedback: "instead of something like 20 unread
+  // emails it should say the most important emails".
   it("leads with the curated important-email preview instead of a plain unread count, when one is found", async () => {
     const ownerId = newOwnerId();
     vi.mocked(hubListMessages).mockResolvedValue([
