@@ -83,7 +83,19 @@ if (donor && donor.email !== null) {
   process.exit(1);
 }
 
+// whatsapp_conversation_summaries is keyed by phone, not owner, so the row is shared by whoever has
+// held the number. Whether to drop it depends on who actually built it:
+//  - target has no messages on this number -> the summary is entirely the shell's, and inheriting it
+//    would put a stranger's conversation into the target's system prompt. Drop it.
+//  - target has messages on it -> the summary is mostly the target's own history, condensed. Keep
+//    it. Dropping resets summarizedThroughId to 0, and maybeUpdateConversationSummary then rebuilds
+//    only over RAW_HISTORY_WINDOW, so everything older is gone for good — not recoverable from the
+//    raw messages, which is why this is decided rather than left to a flag.
 const summaries = db.prepare(`SELECT COUNT(*) AS n FROM whatsapp_conversation_summaries WHERE phone = ?`).get(phone).n;
+const targetMsgs = db
+  .prepare(`SELECT COUNT(*) AS n FROM whatsapp_messages WHERE phone = ? AND owner_id = ?`)
+  .get(phone, into).n;
+const dropSummary = summaries > 0 && targetMsgs === 0;
 const pending = db.prepare(`SELECT step FROM pending_whatsapp_registrations WHERE phone = ?`).get(phone);
 const leftBehind = db
   .prepare(`SELECT COUNT(*) AS n FROM whatsapp_messages WHERE owner_id = ?`)
@@ -94,7 +106,15 @@ console.log(`move  ${phone}`);
 console.log(`from  user ${row.userId} (email NULL — the phone-only shell)`);
 console.log(`into  user ${into} (${target.email ?? "NULL"})`);
 console.log(`\nalso clears, so the number arrives clean rather than carrying the shell's state:`);
-console.log(`  whatsapp_conversation_summaries for ${phone}: ${summaries} row(s)`);
+console.log(
+  `  whatsapp_conversation_summaries for ${phone}: ${summaries} row(s) — ${
+    summaries === 0
+      ? "nothing to do"
+      : dropSummary
+        ? `DROPPED (user ${into} has no messages on this number, so the summary is the shell's)`
+        : `KEPT (user ${into} has ${targetMsgs} message(s) on this number — the summary is its own condensed history, and dropping it loses everything older than the raw window)`
+  }`
+);
 console.log(`  pending_whatsapp_registrations for ${phone}: ${pending ? `step=${pending.step}` : "none"}`);
 console.log(
   `  replay_parked_phones for ${phone}: ${hasParkTable ? "cleared if present" : "table not in this DB yet"}`
@@ -121,10 +141,7 @@ if (!apply) {
 
 db.transaction(() => {
   db.prepare(`UPDATE user_phone_numbers SET user_id = ? WHERE id = ?`).run(into, row.id);
-  // Keyed by phone, not owner — without this the target inherits the rolling conversation summary
-  // the shell built up, and it goes into the assistant's system prompt as if it were the target's
-  // own history.
-  db.prepare(`DELETE FROM whatsapp_conversation_summaries WHERE phone = ?`).run(phone);
+  if (dropSummary) db.prepare(`DELETE FROM whatsapp_conversation_summaries WHERE phone = ?`).run(phone);
   // A leftover "completed" registration row for this number is inert once the number resolves, but
   // a half-finished one would resume mid-flow if the number is ever unbound again.
   db.prepare(`DELETE FROM pending_whatsapp_registrations WHERE phone = ?`).run(phone);
