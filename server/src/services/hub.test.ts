@@ -289,6 +289,49 @@ describe("hubListNewMessages", () => {
     expect(searchReadEmails(user.id, "delayed")).toHaveLength(1);
   });
 
+  // Replaying onboarding (or reconnecting, or adding a second mailbox) gives the account a fresh
+  // id, so none of its pre-connect mail is in any scanner's ledger — without this floor, every
+  // background scan treated that whole backlog as new and alerted on days-old mail.
+  it("never returns mail received before the account was connected", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("hub-new-floor"));
+    const account = upsertAccount(user.id, {
+      provider: "google",
+      email: uniqueEmail("inbox-new-floor"),
+      accessToken: "t",
+      refreshToken: "r",
+      expiryDate: null,
+    });
+    const beforeConnect = new Date(account.connectedAt! - 60 * 60 * 1000).toISOString();
+    mockGoogleListNewMessages.mockResolvedValueOnce({
+      messages: [
+        { ...fakeMessage(account.id, "old-booking"), receivedAt: beforeConnect },
+        { ...fakeMessage(account.id, "after-connect"), receivedAt: new Date(account.connectedAt! + 1000).toISOString() },
+      ],
+      historyId: null,
+    });
+
+    const messages = await hubListNewMessages(user.id);
+
+    expect(messages.map((m) => m.id)).toEqual(["after-connect"]);
+  });
+
+  it("keeps the original connection time when the same mailbox re-authenticates", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("hub-new-floor-reauth"));
+    const details = {
+      provider: "google" as const,
+      email: uniqueEmail("inbox-new-floor-reauth"),
+      accessToken: "t",
+      refreshToken: "r",
+      expiryDate: null,
+    };
+    const first = upsertAccount(user.id, details);
+    await new Promise((r) => setTimeout(r, 5));
+    const again = upsertAccount(user.id, { ...details, accessToken: "t2" });
+
+    expect(again.id).toBe(first.id);
+    expect(again.connectedAt).toBe(first.connectedAt);
+  });
+
   it("within one withMessageCache scope, collapses repeated calls for the same owner into a single fetch — regardless of caller", async () => {
     const user = findOrCreateUserByEmail(uniqueEmail("hub-new-collapse"));
     upsertAccount(user.id, {

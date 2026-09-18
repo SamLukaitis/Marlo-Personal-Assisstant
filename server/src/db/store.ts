@@ -427,6 +427,14 @@ if (!accountColumns.includes("can_delete")) {
 if (!accountColumns.includes("history_id")) {
   db.exec(`ALTER TABLE accounts ADD COLUMN history_id TEXT`);
 }
+// When this mailbox row was first connected (set on insert, never on a re-auth of the same row).
+// hub.ts's hubListNewMessages drops anything received before it, so the background scanners
+// (alerts.ts, importantEmailAlerts.ts, reconciliation.ts) only ever act on mail that arrived
+// after connecting — the pre-connect backlog is postConnectSetup's one-time 24h preview's job.
+// NULL for rows connected before this column existed: no floor, the per-message ledger covers them.
+if (!accountColumns.includes("connected_at")) {
+  db.exec(`ALTER TABLE accounts ADD COLUMN connected_at INTEGER`);
+}
 
 // travel_checkins originally required lat/long (phone GPS check-ins only). Document-derived
 // entries (a boarding pass's arrival city) don't have exact coordinates, so lat/long need to
@@ -514,6 +522,7 @@ if (!hasOwnerId) {
         can_send INTEGER NOT NULL DEFAULT 1,
         can_delete INTEGER NOT NULL DEFAULT 1,
         history_id TEXT,
+        connected_at INTEGER,
         UNIQUE(owner_id, provider, email)
       );
     `);
@@ -1109,6 +1118,7 @@ export interface AccountRow {
   canSend: boolean;
   canDelete: boolean;
   historyId: string | null;
+  connectedAt: number | null;
 }
 
 // ownerId travels on the row itself (not just as a query filter) so code that already has an
@@ -1119,7 +1129,7 @@ const rowSelect = `id, owner_id AS ownerId, provider, email, access_token AS acc
                    refresh_token AS refreshToken, expiry_date AS expiryDate,
                    auth_broken AS authBroken, auth_broken_at AS authBrokenAt,
                    can_read AS canRead, can_send AS canSend, can_delete AS canDelete,
-                   history_id AS historyId`;
+                   history_id AS historyId, connected_at AS connectedAt`;
 
 // Tokens written before encryption was added are still plaintext in the DB. Rather than a
 // one-shot migration script (easy to miss on a host you don't shell into), decrypt lazily and
@@ -1166,8 +1176,8 @@ export function upsertAccount(
   // Reconnecting (via the OAuth flow, which is what calls this) always means auth is healthy
   // again — clear any prior broken-connection flag.
   db.prepare(
-    `INSERT INTO accounts (owner_id, provider, email, access_token, refresh_token, expiry_date, auth_broken, auth_broken_at)
-     VALUES (@ownerId, @provider, @email, @accessToken, @refreshToken, @expiryDate, 0, NULL)
+    `INSERT INTO accounts (owner_id, provider, email, access_token, refresh_token, expiry_date, auth_broken, auth_broken_at, connected_at)
+     VALUES (@ownerId, @provider, @email, @accessToken, @refreshToken, @expiryDate, 0, NULL, @connectedAt)
      ON CONFLICT(owner_id, provider, email) DO UPDATE SET
        access_token = excluded.access_token,
        refresh_token = COALESCE(excluded.refresh_token, accounts.refresh_token),
@@ -1179,6 +1189,7 @@ export function upsertAccount(
     ...account,
     accessToken: encryptField(account.accessToken),
     refreshToken: encryptField(account.refreshToken),
+    connectedAt: Date.now(),
   });
 
   return toAccountRow(

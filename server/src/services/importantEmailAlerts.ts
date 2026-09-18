@@ -7,9 +7,9 @@
 
 import {
   hubListNewMessages,
+  hubListMessages,
   hubGetMessage,
   holdNewMessageCheckpoint,
-  withMessageCache,
   AUTOMATED_SENDER_PATTERN,
 } from "./hub.js";
 import {
@@ -23,6 +23,7 @@ import {
 import { isWhatsAppConfigured } from "../providers/whatsapp.js";
 import { createHash } from "node:crypto";
 import { sendToAllNumbers } from "./proactiveDelivery.js";
+import { isPostConnectChainInProgress } from "./onboardingAlertSuppression.js";
 import {
   classifyImportantEmails,
   CATEGORY_INFO,
@@ -50,6 +51,9 @@ const ONBOARDING_PREVIEW_CATEGORY_PRIORITY: ImportantEmailCategory[] = [
   "subscription_renewal",
 ];
 const ONBOARDING_PREVIEW_LIMIT = 3;
+// How far back the onboarding preview's own list reaches — only the last 24 hours of it is ever
+// used (see isWithinOnboardingLookback), so this just needs to comfortably cover a busy day.
+const ONBOARDING_LIST_LIMIT = 50;
 
 // entities.type for a flagged email, stored the moment its alert is actually delivered — durable,
 // queryable ground truth (via list_flagged_emails in assistant.ts) so the assistant can answer a
@@ -113,8 +117,8 @@ function isImportantEmailCandidate(m: UnifiedMessage): boolean {
 // The onboarding scan (see scanAndCurateImportantEmailsForOnboarding below) only ever flags mail
 // that actually arrived in the 24 hours before connecting — a user's own feedback: surfacing a
 // whole backlog of older "important-looking" automated mail the moment someone signs up reads as
-// Marlowe spamming them with old mail, not as a useful finding. Older backlog is still baselined
-// (so it's never individually alerted on later) — it's just never classified or shown.
+// Marlowe spamming them with old mail, not as a useful finding. Older backlog is never classified
+// or shown, and never alerted on later either (hub.ts's connected_at floor).
 const ONBOARDING_LOOKBACK_MS = 24 * 60 * 60 * 1000;
 
 function isWithinOnboardingLookback(m: UnifiedMessage): boolean {
@@ -185,6 +189,13 @@ export async function checkForImportantEmails(ownerId: number): Promise<void> {
   const unscanned = candidates.filter((m) => !hasAlerted(ownerId, messageKey(m)));
   if (unscanned.length === 0) return;
 
+  // Never interleave alerts with postConnectSetup's own questions — hold everything (unmarked,
+  // checkpoint held) until the chain's closing message has gone out, then alert as normal.
+  if (isPostConnectChainInProgress(ownerId)) {
+    holdNewMessageCheckpoint(ownerId);
+    return;
+  }
+
   // Cheap deliverability gates before the paid classification call, same precedent as alerts.ts
   // and reconciliation.ts — this feature is on by default, so every deployment without WhatsApp
   // configured (or every user with no registered numbers) must not pay for classification on
@@ -244,19 +255,7 @@ export async function checkForImportantEmails(ownerId: number): Promise<void> {
     const delivered = await notifyAll(ownerId, messageKey(m), numbers, text);
     if (delivered) {
       markAlerted(ownerId, messageKey(m));
-      saveEntity<ImportantEmailEntityData>(ownerId, {
-        type: IMPORTANT_EMAIL_ENTITY_TYPE,
-        data: {
-          accountId: m.accountId,
-          accountEmail: m.accountEmail,
-          messageId: m.id,
-          category,
-          subject: m.subject,
-          from: m.from,
-          summary: summary?.trim() || m.snippet,
-          receivedAt: m.receivedAt,
-        },
-      });
+      saveFlaggedEmail(ownerId, m, match);
       if (confirmable) {
         setPendingInvoiceForward(ownerId, confirmable);
         offeredInvoiceConfirm = true;
@@ -268,7 +267,9 @@ export async function checkForImportantEmails(ownerId: number): Promise<void> {
 
   const rest = matches.slice(MAX_ALERTS_PER_CHECK);
   if (rest.length > 0) {
-    const summary = `...and ${rest.length} more important email${rest.length === 1 ? "" : "s"} — check your inbox.`;
+    // Marlowe offers to go through them itself rather than sending the user off to their inbox —
+    // each is saved as a flagged email below, so list_flagged_emails can answer the follow-up.
+    const summary = `I've also spotted ${rest.length} more important email${rest.length === 1 ? "" : "s"} — just ask and I'll run through ${rest.length === 1 ? "it" : "them"}.`;
     // Keyed on the exact set of emails it covers, so a retry of the same overflow skips numbers
     // that already have it.
     const overflowKey = `important-email-overflow:${createHash("sha256")
@@ -276,11 +277,30 @@ export async function checkForImportantEmails(ownerId: number): Promise<void> {
       .digest("hex")}`;
     const delivered = await notifyAll(ownerId, overflowKey, numbers, summary);
     if (delivered) {
-      for (const { m } of rest) markAlerted(ownerId, messageKey(m));
+      for (const { m, match } of rest) {
+        markAlerted(ownerId, messageKey(m));
+        saveFlaggedEmail(ownerId, m, match);
+      }
     } else {
       holdNewMessageCheckpoint(ownerId);
     }
   }
+}
+
+function saveFlaggedEmail(ownerId: number, m: UnifiedMessage, match: ClassifyMatch): void {
+  saveEntity<ImportantEmailEntityData>(ownerId, {
+    type: IMPORTANT_EMAIL_ENTITY_TYPE,
+    data: {
+      accountId: m.accountId,
+      accountEmail: m.accountEmail,
+      messageId: m.id,
+      category: match.category,
+      subject: m.subject,
+      from: m.from,
+      summary: match.summary?.trim() || m.snippet,
+      receivedAt: m.receivedAt,
+    },
+  });
 }
 
 export interface OnboardingImportantEmailPreview {
@@ -289,60 +309,43 @@ export interface OnboardingImportantEmailPreview {
 }
 
 // Runs once, synchronously, at the exact moment a mailbox finishes connecting
-// (postConnectSetup.ts's startPostConnectSetup) — classifies only the mail from the 24 hours
-// before connecting (see isWithinOnboardingLookback), baselines every candidate found either way
-// (matched, non-matched, or older than the lookback) so checkForImportantEmails's own
-// scheduler-driven scan never re-examines or re-alerts on any of it, and returns a curated
-// preview (the top ONBOARDING_PREVIEW_LIMIT by ONBOARDING_PREVIEW_CATEGORY_PRIORITY, plus a count
-// of the rest) for the caller to fold into its own "Connected!" message. Never sends a WhatsApp
-// message itself — sending is entirely the caller's job.
+// (postConnectSetup.ts's startPostConnectSetup) — the one scan that ever looks at pre-connect
+// mail. Classifies only what arrived in the 24 hours before connecting (see
+// isWithinOnboardingLookback) and returns a curated preview (the top ONBOARDING_PREVIEW_LIMIT by
+// ONBOARDING_PREVIEW_CATEGORY_PRIORITY, plus a count of the rest) for the caller to fold into its
+// own "Connected!" message. Never sends a WhatsApp message itself.
 //
-// This is what makes the *first* scan happen at a deterministic, known-good moment instead of
-// whenever the next 5-minute scheduler tick happens to land, which was a real, reported bug (see
-// onboardingAlertSuppression.ts's module comment) — alerts.ts/reconciliation.ts still rely on
-// that grace-period approach since neither has a classifier to curate a preview from.
-export function scanAndCurateImportantEmailsForOnboarding(
+// Deliberately a plain list, not hubListNewMessages: the scheduler's scans never see pre-connect
+// mail at all (hub.ts's connected_at floor), so there is no backlog to baseline here and no
+// checkpoint to protect — and it must run even when this owner was already baselined by an
+// earlier connection (replaying onboarding, reconnecting, adding a second mailbox), which is
+// exactly when the old owner-level early return silently dropped the preview.
+export async function scanAndCurateImportantEmailsForOnboarding(
   ownerId: number
 ): Promise<OnboardingImportantEmailPreview | null> {
-  // Its own message scope, so the Gmail checkpoint isn't saved until this scan has handled the
-  // backlog (and can be held if classification fails) — see hub.ts's withMessageCache.
-  return withMessageCache(() => scanAndCurateImportantEmailsForOnboardingInScope(ownerId));
-}
-
-async function scanAndCurateImportantEmailsForOnboardingInScope(
-  ownerId: number
-): Promise<OnboardingImportantEmailPreview | null> {
-  // Already baselined (e.g. a scheduler tick somehow beat this call to it) — nothing left for a
-  // one-time onboarding preview to do; the scheduler's own scan is now the source of truth.
-  if (getSetting(ownerId, BASELINE_KEY) === "true") return null;
+  // The scheduler's first-run branch is for accounts that predate connected_at — a fresh
+  // connection never needs it (hub.ts's floor already keeps pre-connect mail out). Settled first,
+  // before any early return below: left unset, that branch would silently swallow the first
+  // post-connect emails as "backlog" whenever this scan couldn't read the inbox.
+  setSetting(ownerId, BASELINE_KEY, "true");
 
   let messages: UnifiedMessage[];
   try {
-    messages = await hubListNewMessages(ownerId);
+    messages = await hubListMessages(ownerId, { limit: ONBOARDING_LIST_LIMIT });
   } catch (err) {
     console.error(`importantEmailAlerts: onboarding scan failed to list messages for owner ${ownerId}`, err);
-    // BASELINE_KEY stays unset — checkForImportantEmails's own first-run branch still covers
-    // this account's very first scheduler tick, just silently (no curated preview), same as
-    // before this feature existed.
     return null;
   }
-  const allCandidates = messages.filter(isImportantEmailCandidate);
+  // hub.ts swallows a per-account provider failure into an empty list, so an empty result can't
+  // be told apart from "couldn't read the inbox" — return null (no claim) rather than let
+  // postConnectSetup tell the user nothing is urgent. An empty result from here on means
+  // "checked, nothing important".
+  if (messages.length === 0) return null;
 
-  // This scan IS the baseline, regardless of whether anything below actually matches — set it
-  // now so checkForImportantEmails's own first-run branch is never reached for this owner again;
-  // from here on its `unscanned` filter sees only genuinely new mail.
-  setSetting(ownerId, BASELINE_KEY, "true");
-  if (allCandidates.length === 0) return null;
-
-  // Anything older than the lookback window is backlog, not a fresh finding — mark it seen right
-  // away (same as checkForImportantEmails's own first-run branch) without spending a
-  // classification call or ever surfacing it, so it can't show up in this preview OR get
-  // individually alerted on later.
-  const candidates = allCandidates.filter(isWithinOnboardingLookback);
-  for (const m of allCandidates) {
-    if (!isWithinOnboardingLookback(m)) markAlerted(ownerId, messageKey(m));
-  }
-  if (candidates.length === 0) return null;
+  const candidates = messages.filter(
+    (m) => isImportantEmailCandidate(m) && isWithinOnboardingLookback(m) && !hasAlerted(ownerId, messageKey(m))
+  );
+  if (candidates.length === 0) return { lines: [], moreCount: 0 };
 
   let classified: Map<number, ClassifyMatch>;
   try {
@@ -352,41 +355,18 @@ async function scanAndCurateImportantEmailsForOnboardingInScope(
     );
   } catch (err) {
     console.error(`importantEmailAlerts: onboarding classification failed for owner ${ownerId}`, err);
-    // Candidates deliberately stay unmarked even though BASELINE_KEY is now true —
-    // checkForImportantEmails's `unscanned` filter will pick every one of them straight back up
-    // on its first tick and classify+alert normally, same as any other new mail. Losing the
-    // one-time curated preview here is acceptable; losing the alerts entirely would not be — hence
-    // holding the Gmail checkpoint, without which that next tick would never list them.
-    holdNewMessageCheckpoint(ownerId);
     return null;
   }
 
-  for (let i = 0; i < candidates.length; i++) {
-    if (!classified.has(i)) markAlerted(ownerId, messageKey(candidates[i]));
-  }
+  for (const m of candidates) markAlerted(ownerId, messageKey(m));
 
   const matches = candidates
     .map((m, index) => ({ m, match: classified.get(index) }))
     .filter((x): x is { m: UnifiedMessage; match: ClassifyMatch } => !!x.match);
 
-  for (const { m, match } of matches) {
-    markAlerted(ownerId, messageKey(m));
-    saveEntity<ImportantEmailEntityData>(ownerId, {
-      type: IMPORTANT_EMAIL_ENTITY_TYPE,
-      data: {
-        accountId: m.accountId,
-        accountEmail: m.accountEmail,
-        messageId: m.id,
-        category: match.category,
-        subject: m.subject,
-        from: m.from,
-        summary: match.summary?.trim() || m.snippet,
-        receivedAt: m.receivedAt,
-      },
-    });
-  }
+  for (const { m, match } of matches) saveFlaggedEmail(ownerId, m, match);
 
-  if (matches.length === 0) return null;
+  if (matches.length === 0) return { lines: [], moreCount: 0 };
 
   const sorted = [...matches].sort(
     (a, b) =>
