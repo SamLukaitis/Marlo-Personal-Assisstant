@@ -34,6 +34,7 @@ import { sendWhatsAppMessage, sendWhatsAppReplyButtons } from "../providers/what
 import { hubListMessages, hubListEvents } from "./hub.js";
 import { handleText } from "./chatDispatch.js";
 import { isPlausibleName } from "./plausibleName.js";
+import { wantsToContinueSetup } from "./setupIntent.js";
 import { markOnboardingConnected } from "./onboardingAlertSuppression.js";
 import { scanAndCurateImportantEmailsForOnboarding } from "./importantEmailAlerts.js";
 import type { IncomingWhatsAppMessage } from "../providers/whatsapp.js";
@@ -44,7 +45,8 @@ const BUTTON_IDS: Record<"ask_briefing" | "ask_teams", { yes: string; no: string
   ask_teams: { yes: "teams_yes", no: "teams_no" },
 };
 
-// Matches a reply that means "nothing else, move on" for a free-text step — deliberately
+// Matches a reply that means "nothing else, move on" for the ask_name step (ask_first_task uses
+// setupIntent.ts's wider check instead) — deliberately
 // permissive (whole-message match, case-insensitive) rather than a substring search, so an actual
 // request that happens to contain one of these words ("skip the intro and just tell me...") isn't
 // misread as a skip.
@@ -293,7 +295,9 @@ async function advancePastFreeTextStep(
   next: (ownerId: number, phone: string) => Promise<void>
 ): Promise<void> {
   const phone = message.from;
-  if (isSkip(message.text)) {
+  // Not just isSkip: a natural "let's just set up" has to count as carrying on too, or it gets
+  // forwarded to the assistant as a request it has nothing real to answer — see setupIntent.ts.
+  if (await wantsToContinueSetup(ownerId, message.text)) {
     await reply(phone, skipReply);
     await next(ownerId, phone);
     return;
