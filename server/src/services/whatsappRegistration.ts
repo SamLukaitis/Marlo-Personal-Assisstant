@@ -88,6 +88,15 @@ export function isHelpTrigger(text: string): boolean {
 
 const EMAIL_CONFIRM_BUTTON_IDS = { yes: "email_confirm_yes", no: "email_confirm_no" };
 
+// The one fixed reply to declining to connect an email — see handleEmailConfirmTap's "no" branch
+// and handleAwaitingEmailConfirmText's decline-pattern regex for why this must never be left to
+// the AI assist reply.
+const EMAIL_CONFIRM_NO_TEXT =
+  "No problem. If you want to connect your email in the future just let me know. In the " +
+  "meantime, I can keep track of reminders, to-dos and notes, hold on to any photos and " +
+  "documents you send me or answer any questions you may have. Can I help you with " +
+  "anything at the moment?";
+
 const PROVIDER_BUTTON_IDS: Record<RegistrationProvider, string> = {
   google: "register_google",
   microsoft: "register_microsoft",
@@ -265,12 +274,11 @@ async function handleEmailConfirmTap(row: PendingRegistrationRow, buttonId: stri
       setSetting(user.id, "user_name", row.name);
     }
     completePendingRegistration(row.phone);
-    await reply(
-      row.phone,
-      "No problem. If you want to connect your email in the future just let me know. In the meantime, " +
-        "I can keep track of reminders, to-dos and notes, hold on to any photos and documents you send " +
-        "me or answer any questions you may have. Can I help you with anything at the moment?"
-    );
+    // Fixed copy, not left to getRegistrationAssistReply's discretion — different people were
+    // getting different, sometimes off-topic replies here (the AI riffing on the earlier "I'll
+    // send that to my developers" line from handleAwaitingName) depending on exactly how they
+    // phrased "no". Onboarding should read the same for everyone.
+    await reply(row.phone, EMAIL_CONFIRM_NO_TEXT);
     return;
   }
   // Stray/unexpected button id — re-show the choice rather than silently drop it.
@@ -292,8 +300,11 @@ async function handleAwaitingEmailConfirmText(row: PendingRegistrationRow, text:
   }
   // Anchored to short whole-word decline forms, not a general "starts with no" match — a longer
   // sentence that happens to start with one of these words must still fall through to the
-  // assistant reply below rather than being misread as a decline.
-  if (/^(n|no|nah|nope)( thanks| thx)?$/i.test(trimmed)) {
+  // assistant reply below rather than being misread as a decline. Widened beyond a bare
+  // "no"/"nope"/"nah" — Jake and Sam each replaying onboarding got different replies here because
+  // a slightly different phrasing ("not now") missed the original pattern and fell through to the
+  // free-form AI assist reply below. Still a fixed list, not a fuzzy classifier.
+  if (/^(n|no|nah|nope|not now|not right now)( thanks| thx| thank you)?\.?$/i.test(trimmed)) {
     await handleEmailConfirmTap(row, EMAIL_CONFIRM_BUTTON_IDS.no);
     return;
   }

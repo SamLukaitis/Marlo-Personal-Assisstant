@@ -93,6 +93,34 @@ function mentionsOwnApp(m: UnifiedMessage): boolean {
   return `${m.subject} ${m.snippet}`.toLowerCase().includes(host);
 }
 
+// A one-time verification/login code must never be forwarded as an "important" alert — by the
+// time a WhatsApp notification is read the code is typically already expired, and mistakenly
+// relaying one reads as Marlowe leaking a security-sensitive code out of the user's inbox.
+// Hardcoded and checked before anything reaches the classifier, same precedent as mentionsOwnApp
+// above — this is not the model's call to make.
+const VERIFICATION_CODE_PATTERN =
+  /verification code|one-?time (code|password|passcode)|\botp\b|security code|confirmation code|access code|login code|auth(?:entication)? code|\bpasscode\b/i;
+
+function isVerificationCode(m: UnifiedMessage): boolean {
+  return VERIFICATION_CODE_PATTERN.test(`${m.subject} ${m.snippet}`);
+}
+
+// Shared by both the ongoing scheduler scan and the onboarding scan below.
+function isImportantEmailCandidate(m: UnifiedMessage): boolean {
+  return !!m.from && AUTOMATED_SENDER_PATTERN.test(m.from) && !mentionsOwnApp(m) && !isVerificationCode(m);
+}
+
+// The onboarding scan (see scanAndCurateImportantEmailsForOnboarding below) only ever flags mail
+// that actually arrived in the 24 hours before connecting — a user's own feedback: surfacing a
+// whole backlog of older "important-looking" automated mail the moment someone signs up reads as
+// Marlowe spamming them with old mail, not as a useful finding. Older backlog is still baselined
+// (so it's never individually alerted on later) — it's just never classified or shown.
+const ONBOARDING_LOOKBACK_MS = 24 * 60 * 60 * 1000;
+
+function isWithinOnboardingLookback(m: UnifiedMessage): boolean {
+  return Date.now() - new Date(m.receivedAt).getTime() < ONBOARDING_LOOKBACK_MS;
+}
+
 // Namespaced so this ledger entry can never collide with alerts.ts's bare `${accountId}:${id}`
 // key on the same alerted_messages table — the two features filter for opposite sender types
 // today (real people vs. automated), but the prefix keeps that true by construction, not by
@@ -143,9 +171,7 @@ export async function checkForImportantEmails(ownerId: number): Promise<void> {
   // ledger below is the real "have we already handled this" check, independent of whether the
   // user has read it; unread was a redundant, strictly worse substitute that silently and
   // permanently dropped any message read before this scan ever saw it.
-  const candidates = messages.filter(
-    (m) => m.from && AUTOMATED_SENDER_PATTERN.test(m.from) && !mentionsOwnApp(m)
-  );
+  const candidates = messages.filter(isImportantEmailCandidate);
 
   // First-ever run: baseline the current inbox instead of alerting on everything already sitting
   // there — same precedent as alerts.ts's BASELINE_KEY, doubly important here since this feature
@@ -263,9 +289,10 @@ export interface OnboardingImportantEmailPreview {
 }
 
 // Runs once, synchronously, at the exact moment a mailbox finishes connecting
-// (postConnectSetup.ts's startPostConnectSetup) — classifies the CURRENT inbox backlog right
-// then and there, baselines every candidate found (matched or not) so checkForImportantEmails's
-// own scheduler-driven scan never re-examines or re-alerts on any of it, and returns a curated
+// (postConnectSetup.ts's startPostConnectSetup) — classifies only the mail from the 24 hours
+// before connecting (see isWithinOnboardingLookback), baselines every candidate found either way
+// (matched, non-matched, or older than the lookback) so checkForImportantEmails's own
+// scheduler-driven scan never re-examines or re-alerts on any of it, and returns a curated
 // preview (the top ONBOARDING_PREVIEW_LIMIT by ONBOARDING_PREVIEW_CATEGORY_PRIORITY, plus a count
 // of the rest) for the caller to fold into its own "Connected!" message. Never sends a WhatsApp
 // message itself — sending is entirely the caller's job.
@@ -299,14 +326,22 @@ async function scanAndCurateImportantEmailsForOnboardingInScope(
     // before this feature existed.
     return null;
   }
-  const candidates = messages.filter(
-    (m) => m.from && AUTOMATED_SENDER_PATTERN.test(m.from) && !mentionsOwnApp(m)
-  );
+  const allCandidates = messages.filter(isImportantEmailCandidate);
 
   // This scan IS the baseline, regardless of whether anything below actually matches — set it
   // now so checkForImportantEmails's own first-run branch is never reached for this owner again;
   // from here on its `unscanned` filter sees only genuinely new mail.
   setSetting(ownerId, BASELINE_KEY, "true");
+  if (allCandidates.length === 0) return null;
+
+  // Anything older than the lookback window is backlog, not a fresh finding — mark it seen right
+  // away (same as checkForImportantEmails's own first-run branch) without spending a
+  // classification call or ever surfacing it, so it can't show up in this preview OR get
+  // individually alerted on later.
+  const candidates = allCandidates.filter(isWithinOnboardingLookback);
+  for (const m of allCandidates) {
+    if (!isWithinOnboardingLookback(m)) markAlerted(ownerId, messageKey(m));
+  }
   if (candidates.length === 0) return null;
 
   let classified: Map<number, ClassifyMatch>;

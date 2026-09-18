@@ -76,6 +76,7 @@ function fakeMessage(
     snippet: string;
     from: string;
     unread: boolean;
+    receivedAt: string;
   }>
 ) {
   return {
@@ -173,6 +174,28 @@ describe("checkForImportantEmails", () => {
     } finally {
       process.env.SERVER_URL = originalServerUrl;
     }
+  });
+
+  // A one-time code is meaningless by the time a WhatsApp notification relays it (usually
+  // already expired), and forwarding one reads as Marlowe leaking a security-sensitive code out
+  // of the user's inbox — hardcoded exclusion, not left to the classifier's judgement.
+  it("never classifies or alerts on a verification/login code email", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("verification-code"));
+    registerActivePhone(user.id);
+    await baseline(user.id);
+
+    mockHubListNewMessages.mockResolvedValueOnce([
+      fakeMessage({ id: "code-1", subject: "Your verification code", snippet: "Your code is 482913." }),
+      fakeMessage({ id: "code-2", subject: "Security code", snippet: "Use 118422 to sign in." }),
+      fakeMessage({ id: "real-alert", subject: "New sign-in", snippet: "We noticed a new sign-in." }),
+    ]);
+
+    await checkForImportantEmails(user.id);
+
+    expect(mockClassify).toHaveBeenCalledTimes(1);
+    const [candidates] = mockClassify.mock.calls[0];
+    expect(candidates.map((c: { subject: string }) => c.subject)).toEqual(["New sign-in"]);
+    expect(sendWhatsAppMessage).not.toHaveBeenCalled();
   });
 
   it("sends a WhatsApp alert for a classified match, formatted with the category", async () => {
@@ -551,6 +574,45 @@ describe("scanAndCurateImportantEmailsForOnboarding", () => {
 
     expect(result).toBeNull();
     expect(mockHubListNewMessages).toHaveBeenCalledTimes(1); // only the baseline() call above — no second scan
+  });
+
+  // The whole point of the lookback: a backlog of older automated mail sitting in the inbox
+  // before the user ever connected must never be classified or shown — only genuinely recent
+  // mail (the 24 hours before connecting) is worth surfacing as a "wow moment".
+  it("only classifies and previews mail from the last 24 hours, silently baselining anything older", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("onboard-lookback"));
+    const old = new Date(Date.now() - 25 * 60 * 60 * 1000).toISOString(); // 25h ago
+    const recent = new Date(Date.now() - 1 * 60 * 60 * 1000).toISOString(); // 1h ago
+    mockHubListNewMessages.mockResolvedValueOnce([
+      fakeMessage({ id: "stale-1", subject: "Old renewal notice", receivedAt: old }),
+      fakeMessage({ id: "fresh-1", subject: "Flight changed", receivedAt: recent }),
+    ]);
+    mockClassify.mockResolvedValueOnce(
+      new Map([[0, { category: "flight_change", summary: "Gate moved to B12." }]])
+    );
+
+    const result = await scanAndCurateImportantEmailsForOnboarding(user.id);
+
+    // Only the recent message reached the classifier.
+    expect(mockClassify).toHaveBeenCalledTimes(1);
+    const [candidates] = mockClassify.mock.calls[0];
+    expect(candidates.map((c: { subject: string }) => c.subject)).toEqual(["Flight changed"]);
+    expect(result?.lines).toEqual(["✈️ Gate moved to B12."]);
+
+    // The stale message is still baselined, not left for the scheduler to pick up later.
+    expect(hasAlerted(user.id, "important-email:1:stale-1")).toBe(true);
+  });
+
+  it("never classifies or previews a verification/login code, even one from the last 24 hours", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("onboard-verification-code"));
+    mockHubListNewMessages.mockResolvedValueOnce([
+      fakeMessage({ id: "code-1", subject: "Your one-time code", snippet: "Your code is 552013." }),
+    ]);
+
+    const result = await scanAndCurateImportantEmailsForOnboarding(user.id);
+
+    expect(result).toBeNull();
+    expect(mockClassify).not.toHaveBeenCalled();
   });
 });
 
