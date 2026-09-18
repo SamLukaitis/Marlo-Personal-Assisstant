@@ -12,6 +12,13 @@ vi.mock("./hub.js", () => ({
 vi.mock("./chatDispatch.js", () => ({
   handleText: vi.fn().mockResolvedValue(undefined),
 }));
+// The real check calls a model for anything outside its fixed list; stubbed to that list alone.
+const mockWantsToContinue = vi.fn();
+vi.mock("./setupIntent.js", async (importActual) => {
+  const actual = await importActual<typeof import("./setupIntent.js")>();
+  mockWantsToContinue.mockImplementation(async (_ownerId: number, body: string) => actual.isObviousContinue(body));
+  return { ...actual, wantsToContinueSetup: (...args: unknown[]) => mockWantsToContinue(...args) };
+});
 const mockScanAndCurate = vi.fn();
 vi.mock("./importantEmailAlerts.js", () => ({
   scanAndCurateImportantEmailsForOnboarding: (...args: unknown[]) => mockScanAndCurate(...args),
@@ -399,6 +406,19 @@ describe("handleFirstTaskReply", () => {
     expect(sendWhatsAppReplyButtons).toHaveBeenCalledTimes(1);
     const [, , buttons] = vi.mocked(sendWhatsAppReplyButtons).mock.calls[0];
     expect(buttons.map((b) => b.id)).toEqual(["briefing_yes", "briefing_no"]);
+    expect(getPendingSetup(ownerId)).toBe("ask_briefing");
+  });
+
+  it("treats a natural 'carry on' phrasing the intent check recognizes as a skip, not a request", async () => {
+    const ownerId = newOwnerId();
+    await pastName(ownerId);
+    mockWantsToContinue.mockResolvedValueOnce(true);
+
+    const handled = await handleFirstTaskReply(ownerId, text("Sounds good, go ahead with the rest"));
+
+    expect(handled).toBe(true);
+    expect(mockWantsToContinue).toHaveBeenCalledWith(ownerId, "Sounds good, go ahead with the rest");
+    expect(handleText).not.toHaveBeenCalled();
     expect(getPendingSetup(ownerId)).toBe("ask_briefing");
   });
 

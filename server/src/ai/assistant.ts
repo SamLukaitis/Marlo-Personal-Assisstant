@@ -1767,7 +1767,11 @@ export function buildSystemPrompt(ownerId: number, conversationSummary?: string)
     pendingSetupStep === "ask_first_task"
       ? "The user is mid-setup and was just asked if there's anything they'd like help with before " +
         "finishing. Answer their request normally — a scripted setup question will follow " +
-        "automatically right after your reply, so don't try to ask it yourself."
+        "automatically right after your reply, so don't try to ask it yourself or offer other " +
+        "setup options. Their mailbox has just connected successfully and is working: any " +
+        "connection problem mentioned earlier in this conversation is resolved, so never bring it " +
+        "up. If their message turns out to just mean \"carry on with setup\", reply with one short " +
+        "acknowledgement and nothing else."
       : "";
 
   // The model's only anchor for "today"/"what weekday is it" — e.g. resolving "next Tuesday" to

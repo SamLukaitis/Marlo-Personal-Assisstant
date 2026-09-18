@@ -29,6 +29,11 @@ vi.mock("./hub.js", () => ({
   hubListMessages: vi.fn().mockResolvedValue([]),
   hubListEvents: vi.fn().mockResolvedValue([]),
 }));
+// No model call for the request-vs-continue check — its fixed list alone decides here.
+vi.mock("./setupIntent.js", async (importActual) => {
+  const actual = await importActual<typeof import("./setupIntent.js")>();
+  return { ...actual, wantsToContinueSetup: async (_ownerId: number, body: string) => actual.isObviousContinue(body) };
+});
 vi.mock("./importantEmailAlerts.js", () => ({
   scanAndCurateImportantEmailsForOnboarding: vi.fn().mockResolvedValue(null),
 }));
