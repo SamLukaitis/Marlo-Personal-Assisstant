@@ -19,6 +19,12 @@ import {
   recordWaitlistRequest,
   listWaitlistRequests,
   isPhoneInvited,
+  getUser,
+  findOrCreateUserByPhone,
+  resetOnboardingConnectionState,
+  getReplayParkedOwner,
+  upsertPendingRegistration,
+  getPendingRegistration,
 } from "../db/store.js";
 
 const { sendProactiveMessage } = await import("../services/outbound.js");
@@ -351,5 +357,55 @@ describe("GET /api/admin/ip-check", () => {
 
     expect(res.status).toBe(200);
     expect(res.body.trustedHops).toBe(0);
+  });
+});
+
+// Replay-onboarding unbinds the caller's numbers but records which account they came from
+// (replay_parked_phones), so re-onboarding lands back on that same account. These cover the two
+// places the first version of that mechanism read the wrong view of the data.
+describe("replay-onboarding and reset-test-phone against an unbound number", () => {
+  it("clears the half-finished registration on a REPEAT replay, when the live rows are long gone", async () => {
+    const admin = findOrCreateUserByEmail(uniqueEmail("repeat-replay"));
+    setUserAdmin(admin.id, true);
+    const app = buildTestApp(admin.id);
+    const phone = uniquePhone();
+    addPhoneNumberForUser(admin.id, phone);
+
+    const first = await request(app).post("/api/admin/replay-onboarding");
+    expect(first.body.unboundPhones).toContain(phone);
+
+    // Whoever it is got partway through re-onboarding and stopped.
+    upsertPendingRegistration(phone, { step: "awaiting_email" });
+
+    const second = await request(app).post("/api/admin/replay-onboarding");
+
+    // The number's live row was deleted by the first replay, so this is the case that used to
+    // report zero phones and silently skip the deletePendingRegistration — leaving the next
+    // inbound message to resume at "what's your email address?" instead of starting over.
+    expect(second.body.unboundPhones).toContain(phone);
+    expect(getPendingRegistration(phone)).toBeNull();
+  });
+
+  it("reset-test-phone clears the park marker instead of refusing the request", async () => {
+    const admin = findOrCreateUserByEmail(uniqueEmail("reset-parked"));
+    setUserAdmin(admin.id, true);
+    const app = buildTestApp(admin.id);
+    const phone = uniquePhone();
+    addPhoneNumberForUser(admin.id, phone);
+    resetOnboardingConnectionState(admin.id);
+
+    const res = await request(app).post("/api/admin/reset-test-phone").send({ phone });
+
+    // 200, not the 409 an earlier version returned: there is genuinely no account bound to this
+    // number, and refusing left the operator with nothing that could unstick it.
+    expect(res.status).toBe(200);
+    expect(res.body.hadAccount).toBe(false);
+    expect(res.body.clearedReplayPark).toBe(true);
+    expect(getReplayParkedOwner(phone)).toBeNull();
+    // The account that replayed is untouched — that is what separates this from a wipe.
+    expect(getUser(admin.id)).not.toBeNull();
+    // And the number is now genuinely fresh: signing up on it creates a new account rather than
+    // being handed back to the admin's.
+    expect(findOrCreateUserByPhone(phone).id).not.toBe(admin.id);
   });
 });

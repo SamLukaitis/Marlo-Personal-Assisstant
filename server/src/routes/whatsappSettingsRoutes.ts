@@ -7,6 +7,7 @@ import {
   normalizePhone,
 } from "../db/store.js";
 import type { AuthedRequest } from "../middleware/auth.js";
+import { internationalPhoneError } from "../services/phoneFormat.js";
 
 export const whatsappSettingsRoutes = Router();
 
@@ -45,12 +46,24 @@ whatsappSettingsRoutes.put("/api/whatsapp/allowed-numbers", (req, res) => {
 
   const ownerId = (req as unknown as AuthedRequest).userId;
   const desired = new Set(numbers.map(normalizePhone).filter(Boolean));
-  const current = listPhoneNumbersForUser(ownerId);
 
-  for (const row of current) {
-    if (!desired.has(row.phone)) removePhoneNumberForUser(ownerId, row.id);
+  // The same guard the invite route has always had, which this route never got. Without it a
+  // number typed in national format ("07597959648") was stored verbatim and could never equal the
+  // E.164 `from` WhatsApp delivers ("447597959648") — so the owner's own messages fell through to
+  // registration and minted a second, phone-only account beside the binding they had just made.
+  // That is exactly how one account here ended up split. See services/phoneFormat.ts.
+  for (const phone of desired) {
+    const formatError = internationalPhoneError(phone);
+    if (formatError) {
+      res.status(400).json({ error: formatError });
+      return;
+    }
   }
 
+  // Bind first, unbind second. The other order left a rejected save having already deleted the
+  // number the account was using: addPhoneNumberForUser throws for a number registered to someone
+  // else, and by then the current row was gone — a 409 on screen and an account with no number at
+  // all, which is worse than the change simply not happening.
   const errors: string[] = [];
   for (const phone of desired) {
     try {
@@ -59,10 +72,13 @@ whatsappSettingsRoutes.put("/api/whatsapp/allowed-numbers", (req, res) => {
       errors.push((err as Error).message);
     }
   }
-
   if (errors.length) {
     res.status(409).json({ error: errors.join("; ") });
     return;
+  }
+
+  for (const row of listPhoneNumbersForUser(ownerId)) {
+    if (!desired.has(row.phone)) removePhoneNumberForUser(ownerId, row.id);
   }
   res.json({ ok: true });
 });

@@ -6,6 +6,8 @@ import {
   addInvitedPhone,
   removeInvitedPhone,
   resolveOwnerByPhone,
+  clearReplayPark,
+  listReplayParkedPhonesForUser,
   deleteUserCompletely,
   deletePendingRegistration,
   normalizePhone,
@@ -21,6 +23,7 @@ import {
 import { sendProactiveMessage } from "../services/outbound.js";
 import { MARLOWE_WAITLIST_APPROVED_TEXT } from "../services/whatsappRegistration.js";
 import type { AuthedRequest } from "../middleware/auth.js";
+import { internationalPhoneError } from "../services/phoneFormat.js";
 
 export const adminRoutes = Router();
 
@@ -75,21 +78,13 @@ adminRoutes.post("/api/admin/invites", (req, res) => {
     return;
   }
   const phone = typeof req.body?.phone === "string" ? normalizePhone(req.body.phone) : "";
-  // normalizePhone only strips non-digits, so "abc1" would survive as "1" — hence the length
-  // check. The leading-zero check is the one that actually bites in practice: WhatsApp delivers
-  // `from` in E.164 (country code, no +, never a leading 0), so a number invited in national
-  // format ("07911123456") silently never matches the number that arrives ("447911123456") and
-  // the tester just gets told they aren't invited. Reject it here rather than store a row that
-  // can never match.
-  if (phone.startsWith("0")) {
-    res.status(400).json({
-      error:
-        "Use the full international number with its country code and no leading 0 — e.g. 447911123456, not 07911123456.",
-    });
-    return;
-  }
-  if (phone.length < 8 || phone.length > 15) {
-    res.status(400).json({ error: "that doesn't look like a valid phone number" });
+  // A number invited in national format can never match the E.164 `from` WhatsApp delivers, so the
+  // tester is just told they aren't invited — see services/phoneFormat.ts for the full shape of
+  // that failure. The same check now guards the Settings binding route, which lacked it and let a
+  // real account store an unmatchable number.
+  const formatError = internationalPhoneError(phone);
+  if (formatError) {
+    res.status(400).json({ error: formatError });
     return;
   }
   addInvitedPhone(phone);
@@ -169,6 +164,16 @@ adminRoutes.post("/api/admin/reset-test-phone", (req, res) => {
   deletePendingRegistration(phone);
 
   const ownerId = resolveOwnerByPhone(phone);
+  // Replay-onboarding leaves the number unbound but remembers which account it came from, so the
+  // next registration is handed back to that account rather than creating a second one (see
+  // resetOnboardingConnectionState). This endpoint's whole promise is that the same number can go
+  // through signup from a clean slate, which that marker would quietly break — so drop it.
+  //
+  // Deliberately does NOT wipe the account the marker points at: that is a live account mid-replay
+  // whose data replay exists to preserve, and following the marker here would make this a one-tap
+  // wipe of the operator's own hub. An earlier version refused the whole request with a 409
+  // instead, which removed the only escape hatch from a number nothing else could unstick.
+  const clearedReplayPark = clearReplayPark(phone);
   try {
     if (ownerId !== null) {
       const { deletedDocumentPaths } = deleteUserCompletely(ownerId);
@@ -196,7 +201,7 @@ adminRoutes.post("/api/admin/reset-test-phone", (req, res) => {
     return;
   }
 
-  res.json({ ok: true, hadAccount: ownerId !== null });
+  res.json({ ok: true, hadAccount: ownerId !== null, clearedReplayPark });
 });
 
 // For replaying the WhatsApp onboarding UX end-to-end on an account you actually want to keep —
@@ -212,12 +217,19 @@ adminRoutes.post("/api/admin/replay-onboarding", (req, res) => {
     res.status(403).json({ error: "not allowed" });
     return;
   }
-  const phones = listPhoneNumbersForUser(userId);
-  for (const p of phones) {
-    deletePendingRegistration(p.phone);
+  // Includes numbers already unbound by an EARLIER replay: the live rows are gone by then, so
+  // going by listPhoneNumbersForUser alone would clear nothing on a second replay and leave the
+  // half-finished pending_whatsapp_registrations row behind — the next WhatsApp message would
+  // resume mid-flow ("what's your email address?") instead of starting over, which reads as replay
+  // having done nothing at all.
+  const phones = [
+    ...new Set([...listPhoneNumbersForUser(userId).map((p) => p.phone), ...listReplayParkedPhonesForUser(userId)]),
+  ];
+  for (const phone of phones) {
+    deletePendingRegistration(phone);
   }
   resetOnboardingConnectionState(userId);
-  res.json({ ok: true, unboundPhones: phones.map((p) => p.phone) });
+  res.json({ ok: true, unboundPhones: phones });
 });
 
 // The conversation viewer for watching a test user's onboarding/chat play out instead of guessing

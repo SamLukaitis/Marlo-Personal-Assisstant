@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import type { NewsTopic } from "../providers/news.js";
 
 vi.mock("../providers/whatsapp.js", () => ({
   sendWhatsAppMessage: vi.fn(),
@@ -27,7 +28,7 @@ const {
 } = await import("./postConnectSetup.js");
 const { findOrCreateUserByEmail, getPendingSetup, getEnabledTools, getSetting, setSetting, upsertAccount } =
   await import("../db/store.js");
-const { getBriefingSettings } = await import("./briefing.js");
+const { getBriefingSettings, saveBriefingSettings } = await import("./briefing.js");
 const { todayKey } = await import("./dateKey.js");
 const { incrementSuppressedOnboardingAlerts, takeSuppressedOnboardingAlertCount, isOnboardingSuppressionActive } =
   await import("./onboardingAlertSuppression.js");
@@ -198,6 +199,112 @@ describe("startPostConnectSetup", () => {
 
     expect(getPendingSetup(ownerId)).toBeNull(); // chain really did finish
     expect(isOnboardingSuppressionActive(ownerId)).toBe(true); // but suppression outlives it
+  });
+});
+
+// Task 8: a mailbox linked long after the account was created (via the assistant's connect_email
+// tool) must not re-run the parts of the fresh-signup chain that no longer apply — see
+// startPostConnectSetup's linkedExistingAccount comment. askName/askFirstTask are always skipped;
+// askBriefing is skipped only when the user already has briefing settings on file, since its Yes/No
+// handler unconditionally overwrites `topics` via saveBriefingSettings (review finding #1 — the
+// guard was originally too broad and dropped the briefing offer, Teams question, and closing
+// feedback prompt for every linked-later user, not just the ones with something to protect).
+describe("startPostConnectSetup — linkedExistingAccount", () => {
+  it("always skips name/first-task, regardless of prior briefing settings", async () => {
+    const ownerId = newOwnerId();
+
+    await startPostConnectSetup(ownerId, PHONE, true);
+
+    expect(sendWhatsAppMessage).toHaveBeenCalledWith(PHONE, expect.stringContaining("Connected"));
+    expect(sendWhatsAppMessage).not.toHaveBeenCalledWith(PHONE, expect.stringContaining("what should I call you"));
+    expect(sendWhatsAppMessage).not.toHaveBeenCalledWith(PHONE, expect.stringContaining("finish setting up"));
+    expect(getPendingSetup(ownerId)).not.toBe("ask_name");
+    expect(getPendingSetup(ownerId)).not.toBe("ask_first_task");
+  });
+
+  it("still asks the briefing question when the user has no briefing settings on file yet", async () => {
+    const ownerId = newOwnerId();
+    expect(getBriefingSettings(ownerId)).toBeTruthy(); // sanity: defaults exist, but nothing was ever saved
+
+    await startPostConnectSetup(ownerId, PHONE, true);
+
+    expect(sendWhatsAppReplyButtons).toHaveBeenCalledTimes(1);
+    const [, , buttons] = vi.mocked(sendWhatsAppReplyButtons).mock.calls[0];
+    expect(buttons.map((b) => b.id)).toEqual(["briefing_yes", "briefing_no"]);
+    expect(getPendingSetup(ownerId)).toBe("ask_briefing");
+  });
+
+  it("skips the briefing question (straight to Teams/finish) once settings already exist, and does not touch topics", async () => {
+    const ownerId = newOwnerId();
+    saveBriefingSettings(ownerId, {
+      ...getBriefingSettings(ownerId),
+      proactive: true,
+      includeWeather: true,
+      weatherLocation: "Lisbon",
+      sendTime: "07:30",
+      topics: ["technology"] as NewsTopic[],
+    });
+
+    await startPostConnectSetup(ownerId, PHONE, true);
+
+    expect(sendWhatsAppReplyButtons).not.toHaveBeenCalled(); // no Microsoft account -> askTeamsOrFinish closes immediately
+    expect(getPendingSetup(ownerId)).toBeNull();
+    const settings = getBriefingSettings(ownerId);
+    expect(settings.proactive).toBe(true);
+    expect(settings.weatherLocation).toBe("Lisbon");
+    expect(settings.sendTime).toBe("07:30");
+    expect(settings.topics).toEqual(["technology"]); // the field actually at risk — left untouched
+  });
+
+  it("skipping the briefing question still reaches the Teams question for a Microsoft-linked owner", async () => {
+    const ownerId = newOwnerId();
+    upsertAccount(ownerId, {
+      provider: "microsoft",
+      email: uniqueEmail("post-connect-setup-linked-ms"),
+      accessToken: "t",
+      refreshToken: "r",
+      expiryDate: null,
+    });
+    saveBriefingSettings(ownerId, { ...getBriefingSettings(ownerId), topics: ["technology"] as NewsTopic[] });
+
+    await startPostConnectSetup(ownerId, PHONE, true);
+
+    const [, , buttons] = vi.mocked(sendWhatsAppReplyButtons).mock.calls[0];
+    expect(buttons.map((b) => b.id)).toEqual(["teams_yes", "teams_no"]);
+    expect(getPendingSetup(ownerId)).toBe("ask_teams");
+  });
+
+  // Review finding #5: proves the hazard the guard above exists for, rather than just asserting
+  // fields that were never actually at risk (saveBriefingSettings spreads `...current` first, so
+  // only `topics` is genuinely clobbered by a Yes tap — everything else survives either way).
+  it("proves the hazard: the (unguarded) fresh-signup chain overwrites topics on a Yes tap, regardless of what was already saved", async () => {
+    const ownerId = newOwnerId();
+    saveBriefingSettings(ownerId, { ...getBriefingSettings(ownerId), topics: ["technology"] as NewsTopic[] });
+
+    await startPostConnectSetup(ownerId, PHONE); // linkedExistingAccount omitted — chain always runs
+    await handleNameReply(ownerId, text("skip"));
+    await handleFirstTaskReply(ownerId, text("skip"));
+    await handlePostConnectSetupReply(ownerId, tap("briefing_yes"));
+
+    expect(getBriefingSettings(ownerId).topics).not.toEqual(["technology"]);
+  });
+
+  it("still sends the connected confirmation and first-value fact, same as a fresh signup", async () => {
+    const ownerId = newOwnerId();
+    vi.mocked(hubListMessages).mockResolvedValue([{ unread: true, subject: "Invoice due" } as never]);
+
+    await startPostConnectSetup(ownerId, PHONE, true);
+
+    const [, confirmText] = vi.mocked(sendWhatsAppMessage).mock.calls[0];
+    expect(confirmText).toContain("Invoice due");
+  });
+
+  it("defaults to the fresh-signup chain when the flag is omitted (unchanged behavior)", async () => {
+    const ownerId = newOwnerId();
+
+    await startPostConnectSetup(ownerId, PHONE);
+
+    expect(getPendingSetup(ownerId)).toBe("ask_name");
   });
 });
 

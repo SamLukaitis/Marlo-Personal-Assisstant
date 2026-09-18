@@ -28,7 +28,7 @@ import {
   getSetting,
   listAccounts,
 } from "../db/store.js";
-import { getBriefingSettings, saveBriefingSettings } from "./briefing.js";
+import { getBriefingSettings, saveBriefingSettings, hasBriefingSettings } from "./briefing.js";
 import { todayKey } from "./dateKey.js";
 import { sendWhatsAppMessage, sendWhatsAppReplyButtons } from "../providers/whatsapp.js";
 import { hubListMessages, hubListEvents } from "./hub.js";
@@ -136,7 +136,27 @@ async function askTeamsOrFinish(ownerId: number, phone: string): Promise<void> {
 // Called from the OAuth callback (via whatsappRegistration.ts) once the mailbox is actually
 // connected. Sends the "connected" confirmation + a best-effort first-value fact, then starts the
 // chain with the first-task check.
-export async function startPostConnectSetup(ownerId: number, phone: string): Promise<void> {
+//
+// linkedExistingAccount (Task 8): true when the owner's account predates this connection — a
+// phone-only user who used Marlowe for a while before connecting a mailbox via the assistant's
+// own connect_email tool, rather than someone signing up fresh. askName/askFirstTask are always
+// skipped for this case: the user is mid-conversation, already named (guarded below the same way
+// as a fresh signup), and "anything you'd like me to look at right now, or shall we finish setting
+// up?" reads as reverting to onboarding mode for someone who's been chatting with Marlowe for
+// weeks. askBriefing is narrower: it's skipped only when hasBriefingSettings(ownerId) is already
+// true, because its Yes/No handler (handlePostConnectSetupReply) unconditionally overwrites
+// `topics` via saveBriefingSettings — a real data-loss risk if the person configured it through
+// the assistant's own set_briefing_preferences tool before ever connecting a mailbox — but for the
+// majority who never touched it, running the question is still the right call: it's the
+// highest-value item in the chain (a two-button tap converts far better than being told to ask for
+// it later), and skipping it unconditionally would also drop askTeamsOrFinish's Microsoft-Teams
+// question and the closing message's feedback prompt, the only in-product feedback channel for
+// WhatsApp-only users, for every linked-later user including the ones with nothing to protect.
+export async function startPostConnectSetup(
+  ownerId: number,
+  phone: string,
+  linkedExistingAccount = false
+): Promise<void> {
   // Anchors onboardingAlertSuppression.ts's grace period to this exact moment — see its own
   // comment for why this matters independently of how fast the chain below is answered.
   markOnboardingConnected(ownerId);
@@ -200,6 +220,18 @@ export async function startPostConnectSetup(ownerId: number, phone: string): Pro
   }
 
   await reply(phone, `*Connected!* ✅ I can see your inbox and your calendar.${fact}`);
+  if (linkedExistingAccount) {
+    if (hasBriefingSettings(ownerId)) {
+      // Already answered (or deliberately left at defaults) via set_briefing_preferences — asking
+      // again would risk the topics-overwrite described above for no benefit, so go straight to
+      // the next question that's still genuinely new (Teams, for a Microsoft-linked owner) or the
+      // closing/feedback message.
+      await askTeamsOrFinish(ownerId, phone);
+    } else {
+      await askBriefing(ownerId, phone);
+    }
+    return;
+  }
   // Pre-connect registration (whatsappRegistration.ts's sendFirstValueAndBriefingPrompt) already
   // asks "what should I call you?" and, if the answer was a plausible name, persists it to
   // user_name before this chain ever starts. Asking again here is a redundant repeat of a

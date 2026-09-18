@@ -18,6 +18,10 @@ import {
   isPhoneInvited,
   findOrCreateUserByEmail,
   getUserByEmail,
+  getUser,
+  setUserEmail,
+  resolveOwnerByPhone,
+  getReplayParkedOwner,
   createSession,
   deleteSession,
   getUserIdBySessionToken,
@@ -29,6 +33,7 @@ import {
   getUserIdByIdentity,
   linkIdentity,
   hasIdentity,
+  type UserRow,
 } from "../db/store.js";
 import { sendWhatsAppMessage } from "../providers/whatsapp.js";
 import { sendFirstValueAndBriefingPrompt } from "../services/whatsappRegistration.js";
@@ -159,6 +164,52 @@ function googleMayUseExistingUser(userId: number, googleEmail: string): boolean 
   if (!hasIdentity(userId, "microsoft")) return true;
   const normalized = googleEmail.trim().toLowerCase();
   return listAccounts(userId, "google").some((a) => a.email.trim().toLowerCase() === normalized);
+}
+
+// Both OAuth callbacks need the same three-way decision once a registration completes, so it
+// lives here rather than being written twice and drifting.
+//
+// The phone-first case is the new one: when this number already owns an account (created by
+// declining email during onboarding), the address is attached to THAT row. Calling
+// findOrCreateUserByEmail instead would quietly create a second account and strand every to-do,
+// document and memory the person already has.
+export type RegistrationUserResult =
+  | { kind: "ok"; userId: number }
+  | { kind: "account_exists" };
+
+export function resolveRegistrationUser(phone: string, email: string): RegistrationUserResult {
+  const existingByEmail = getUserByEmail(email);
+  // A number unbound by replay-onboarding counts as owned for this decision, exactly like a live
+  // binding. Reading resolveOwnerByPhone alone was the hole that kept the original split bug alive
+  // on this path: for a replayed PHONE-ONLY account (users.email still NULL, nothing for
+  // getUserByEmail to find) the whole phone-first branch below was skipped, the fall-through
+  // minted a brand-new account from the address, and the addPhoneNumberForUser that followed threw
+  // "already registered to another account" — leaving an orphan account behind on every attempt
+  // and no way to connect the mailbox. findOrCreateUserByPhone (the "No" tap) got this lookup when
+  // parking was introduced; this path, the "Yes" tap, did not.
+  const phoneOwnerId = resolveOwnerByPhone(phone) ?? getReplayParkedOwner(phone);
+
+  if (phoneOwnerId !== null) {
+    // Already the same account — nothing to attach, just proceed. (Also covers the "re-link the
+    // same address" case: setUserEmail already wrote it, so this is a no-op, not a second write.)
+    if (existingByEmail && existingByEmail.id === phoneOwnerId) {
+      return { kind: "ok", userId: phoneOwnerId };
+    }
+    // Either the address belongs to somebody else, or the phone owner's row already has a
+    // DIFFERENT address of its own (a Gmail-linked account later trying to link Outlook). Refuse
+    // both rather than merge or overwrite: swapping the mailbox on an existing account isn't
+    // supported, and silently moving identity half-way is worse than refusing — the old address
+    // would stop resolving to this user (locking them out of web sign-in, and out of admin if
+    // they're the app owner) with nothing on screen to explain why.
+    const phoneOwner = getUser(phoneOwnerId);
+    if (existingByEmail || phoneOwner?.email !== null) {
+      return { kind: "account_exists" };
+    }
+    setUserEmail(phoneOwnerId, email);
+    return { kind: "ok", userId: phoneOwnerId };
+  }
+
+  return { kind: "ok", userId: existingByEmail?.id ?? findOrCreateUserByEmail(email).id };
 }
 
 const ACCOUNT_EXISTS_WHATSAPP_TEXT =
@@ -322,7 +373,17 @@ authRoutes.get("/auth/google/callback", async (req, res) => {
         sendWhatsAppMessage(reg.phone, ACCOUNT_EXISTS_WHATSAPP_TEXT).catch(() => {});
         return;
       }
-      const user = existingUser ?? findOrCreateUserByEmail(auth.email);
+      // Captured before resolveRegistrationUser runs (same phoneOwnerId check it does internally)
+      // so sendFirstValueAndBriefingPrompt below can tell a fresh signup from a mailbox linked
+      // onto an account that already existed — see that function's linkedExistingAccount comment.
+      const linkedExistingAccount = resolveOwnerByPhone(reg.phone) !== null;
+      const resolution = resolveRegistrationUser(reg.phone, auth.email);
+      if (resolution.kind === "account_exists") {
+        res.redirect(`${CLIENT_URL}/connected?error=account_exists`);
+        sendWhatsAppMessage(reg.phone, ACCOUNT_EXISTS_WHATSAPP_TEXT).catch(() => {});
+        return;
+      }
+      const user = getUser(resolution.userId) as UserRow;
       try {
         addPhoneNumberForUser(user.id, reg.phone);
       } catch {
@@ -345,7 +406,7 @@ authRoutes.get("/auth/google/callback", async (req, res) => {
       // Fire-and-forget — this is the proactive WhatsApp push confirming the connection, which
       // has to happen from here since this moment (finishing OAuth in a browser) is outside any
       // inbound webhook the conversation state machine could otherwise react to.
-      sendFirstValueAndBriefingPrompt(user.id, reg.phone).catch((err) =>
+      sendFirstValueAndBriefingPrompt(user.id, reg.phone, linkedExistingAccount).catch((err) =>
         console.error("whatsapp-register: post-connect message failed", err)
       );
       return;
@@ -447,7 +508,28 @@ authRoutes.get("/auth/microsoft/callback", async (req, res) => {
         sendWhatsAppMessage(reg.phone, ACCOUNT_EXISTS_WHATSAPP_TEXT).catch(() => {});
         return;
       }
-      const userId = resolved === "none" ? findOrCreateUserByEmail(auth.email).id : resolved;
+      // See the matching comment on the Google callback above. Computed unconditionally, before
+      // either branch below — NOT only on the resolveRegistrationUser (resolved === "none") path.
+      // resolveMicrosoftUser resolves from user_identities (authRoutes.ts above), which survives
+      // deleteAccount (accountRoutes.ts): a user who connects Outlook, later disconnects the
+      // mailbox, then asks Marlowe to connect email again reaches the `else` branch below with
+      // listAccounts(userId) empty but resolved !== "none". Reading it only inside the "none"
+      // branch left that case permanently false, which made startPostConnectSetup run the full
+      // fresh-signup chain (including the topics overwrite Task 8 exists to prevent) on an
+      // established account.
+      const linkedExistingAccount = resolveOwnerByPhone(reg.phone) !== null;
+      let userId: number;
+      if (resolved === "none") {
+        const resolution = resolveRegistrationUser(reg.phone, auth.email);
+        if (resolution.kind === "account_exists") {
+          res.redirect(`${CLIENT_URL}/connected?error=account_exists`);
+          sendWhatsAppMessage(reg.phone, ACCOUNT_EXISTS_WHATSAPP_TEXT).catch(() => {});
+          return;
+        }
+        userId = resolution.userId;
+      } else {
+        userId = resolved;
+      }
       try {
         addPhoneNumberForUser(userId, reg.phone);
       } catch {
@@ -461,7 +543,7 @@ authRoutes.get("/auth/microsoft/callback", async (req, res) => {
       saveMicrosoftAccount(userId, auth);
       setSessionCookie(res, createSession(userId));
       res.redirect(`${CLIENT_URL}/connected`);
-      sendFirstValueAndBriefingPrompt(userId, reg.phone).catch((err) =>
+      sendFirstValueAndBriefingPrompt(userId, reg.phone, linkedExistingAccount).catch((err) =>
         console.error("whatsapp-register: post-connect message failed", err)
       );
       return;
