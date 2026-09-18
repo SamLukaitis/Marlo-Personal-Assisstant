@@ -227,7 +227,7 @@ async function handleAwaitingName(row: PendingRegistrationRow, text: string): Pr
   await reply(row.phone, `${greeting} I hope to be helpful with anything you could need.`);
   await reply(
     row.phone,
-    "For the moment, people have asked me to help plan their calendar and travel plans, organise their inboxes, and remind them of important information and events."
+    "Most people ask me to help plan their calendar and travel plans, organise their inboxes, and remind them of important information and events."
   );
   await askEmailConfirm(updated);
 }
