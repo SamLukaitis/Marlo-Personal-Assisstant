@@ -259,7 +259,16 @@ async function fetchNewMessages(accounts: AccountRow[]): Promise<UnifiedMessage[
   );
   const messages = settleForAccounts(accounts, results).sort((a, b) => (a.receivedAt < b.receivedAt ? 1 : -1));
   cacheMessageMetadata(accounts, messages);
-  return messages;
+  // "New" never reaches back before the mailbox was connected (store.ts's accounts.connected_at).
+  // Without this floor, anything that gave an account a fresh id — replaying onboarding, a
+  // disconnect/reconnect, adding a second mailbox — handed its whole pre-connect backlog to the
+  // scanners as unseen mail, since their ledgers key on accountId and their owner-level baseline
+  // flags were already set. The pre-connect window is postConnectSetup's one-time preview's job.
+  const connectedAt = new Map(accounts.map((a) => [a.id, a.connectedAt]));
+  return messages.filter((m) => {
+    const floor = connectedAt.get(m.accountId);
+    return !floor || new Date(m.receivedAt).getTime() >= floor;
+  });
 }
 
 // Backs the three background "what's new" scans (alerts.ts, importantEmailAlerts.ts,
