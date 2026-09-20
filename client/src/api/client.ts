@@ -675,6 +675,15 @@ export const grantAdmin = (userId: number) =>
 export const revokeAdmin = (userId: number) =>
   mutateJson<AdminCandidate[]>(`/api/portal/admins/${userId}`, "DELETE");
 
+export interface UnmetRequestNote {
+  id: number;
+  requestId: number;
+  text: string;
+  authorId: number;
+  authorEmail: string | null;
+  createdAt: number;
+}
+
 export interface UnmetRequest {
   id: number;
   ownerId: number;
@@ -682,12 +691,19 @@ export interface UnmetRequest {
   channel: string;
   createdAt: number;
   resolvedAt: number | null;
+  notes: UnmetRequestNote[];
 }
 
 export const fetchUnmetRequests = (includeResolved = false) =>
   getJson<UnmetRequest[]>(`/api/portal/unmet-requests?includeResolved=${includeResolved}`);
 export const resolveUnmetRequest = (id: number) =>
   mutateJson<{ ok: true }>(`/api/portal/unmet-requests/${id}/resolve`, "POST");
+export const addUnmetRequestNote = (id: number, text: string, includeResolved = false) =>
+  mutateJson<UnmetRequest[]>(
+    `/api/portal/unmet-requests/${id}/notes?includeResolved=${includeResolved}`,
+    "POST",
+    { text }
+  );
 
 export interface ServerLog {
   id: number;

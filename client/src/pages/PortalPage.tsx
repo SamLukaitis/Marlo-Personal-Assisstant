@@ -6,6 +6,7 @@ import {
   revokeAdmin,
   fetchUnmetRequests,
   resolveUnmetRequest,
+  addUnmetRequestNote,
   fetchServerLogs,
   explainServerLog,
   fetchUsageSummary,
@@ -436,6 +437,76 @@ function NotesTab() {
   );
 }
 
+function RequestRow({
+  request,
+  onResolve,
+  onAddNote,
+}: {
+  request: UnmetRequest;
+  onResolve: (id: number) => void;
+  onAddNote: (id: number, text: string) => Promise<void>;
+}) {
+  const [draft, setDraft] = useState("");
+  const [sending, setSending] = useState(false);
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    const trimmed = draft.trim();
+    if (!trimmed || sending) return;
+    setSending(true);
+    try {
+      await onAddNote(request.id, trimmed);
+      setDraft("");
+    } finally {
+      setSending(false);
+    }
+  }
+
+  return (
+    <div className="data-row">
+      <div className="row" style={{ justifyContent: "space-between", alignItems: "flex-start" }}>
+        <div>
+          <p style={{ margin: 0, fontSize: 13.5 }}>{request.summary}</p>
+          <p className="muted" style={{ margin: "4px 0 0", fontSize: 12 }}>
+            <span className="badge-pill">{request.channel}</span> {timeAgo(request.createdAt)}
+            {request.resolvedAt ? " — resolved" : ""}
+          </p>
+        </div>
+        {!request.resolvedAt && (
+          <button className="btn-secondary" onClick={() => onResolve(request.id)}>
+            Mark resolved
+          </button>
+        )}
+      </div>
+
+      {request.notes.length > 0 && (
+        <div style={{ marginTop: 10 }}>
+          {request.notes.map((n) => (
+            <div key={n.id} style={{ marginBottom: 6 }}>
+              <p className="muted" style={{ margin: 0, fontSize: 12 }}>
+                {n.authorEmail ?? "No email connected"} — {timeAgo(n.createdAt)}
+              </p>
+              <p style={{ margin: "2px 0 0", fontSize: 13 }}>{n.text}</p>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <form className="row" style={{ marginTop: 8 }} onSubmit={handleSubmit}>
+        <input
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          placeholder="Leave a note for other admins…"
+          disabled={sending}
+        />
+        <button className="btn-secondary" type="submit" disabled={sending || !draft.trim()}>
+          Reply
+        </button>
+      </form>
+    </div>
+  );
+}
+
 function RequestsTab() {
   const [requests, setRequests] = useState<UnmetRequest[]>([]);
   const [loaded, setLoaded] = useState(false);
@@ -453,6 +524,10 @@ function RequestsTab() {
   async function handleResolve(id: number) {
     await resolveUnmetRequest(id);
     setRequests((prev) => (includeResolved ? prev : prev.filter((r) => r.id !== id)));
+  }
+
+  async function handleAddNote(id: number, text: string) {
+    setRequests(await addUnmetRequestNote(id, text, includeResolved));
   }
 
   return (
@@ -481,20 +556,7 @@ function RequestsTab() {
         <p className="muted">Nothing outstanding.</p>
       ) : (
         requests.map((r) => (
-          <div key={r.id} className="data-row row" style={{ justifyContent: "space-between", alignItems: "flex-start" }}>
-            <div>
-              <p style={{ margin: 0, fontSize: 13.5 }}>{r.summary}</p>
-              <p className="muted" style={{ margin: "4px 0 0", fontSize: 12 }}>
-                <span className="badge-pill">{r.channel}</span> {timeAgo(r.createdAt)}
-                {r.resolvedAt ? " — resolved" : ""}
-              </p>
-            </div>
-            {!r.resolvedAt && (
-              <button className="btn-secondary" onClick={() => handleResolve(r.id)}>
-                Mark resolved
-              </button>
-            )}
-          </div>
+          <RequestRow key={r.id} request={r} onResolve={handleResolve} onAddNote={handleAddNote} />
         ))
       )}
     </>

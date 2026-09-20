@@ -238,6 +238,17 @@ db.exec(`
     resolved_at INTEGER
   );
   CREATE INDEX IF NOT EXISTS idx_unmet_requests_created ON unmet_requests(created_at);
+  -- Internal admin-only notes on an unmet request, so one admin can leave context for the
+  -- others (e.g. "already building this") without messaging the requester — same idea as
+  -- poster_notes/admin_todo_replies, just scoped to one unmet request instead of global.
+  CREATE TABLE IF NOT EXISTS unmet_request_notes (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    request_id INTEGER NOT NULL REFERENCES unmet_requests(id),
+    author_id  INTEGER NOT NULL REFERENCES users(id),
+    text       TEXT NOT NULL,
+    created_at INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_unmet_request_notes_request ON unmet_request_notes(request_id);
   CREATE TABLE IF NOT EXISTS server_logs (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     level      TEXT NOT NULL,
@@ -2786,6 +2797,15 @@ export function setUserAdmin(userId: number, admin: boolean): void {
   db.prepare(`UPDATE users SET is_admin = ? WHERE id = ?`).run(admin ? 1 : 0, userId);
 }
 
+export interface UnmetRequestNoteRow {
+  id: number;
+  requestId: number;
+  text: string;
+  authorId: number;
+  authorEmail: string | null;
+  createdAt: number;
+}
+
 export interface UnmetRequestRow {
   id: number;
   ownerId: number;
@@ -2793,6 +2813,7 @@ export interface UnmetRequestRow {
   channel: string;
   createdAt: number;
   resolvedAt: number | null;
+  notes: UnmetRequestNoteRow[];
 }
 
 // Written by the assistant's flag_unmet_request tool (assistant.ts) whenever a user asks for
@@ -2810,11 +2831,34 @@ export function listUnmetRequests(includeResolved: boolean): UnmetRequestRow[] {
        FROM unmet_requests ORDER BY created_at DESC`
     : `SELECT id, owner_id AS ownerId, summary, channel, created_at AS createdAt, resolved_at AS resolvedAt
        FROM unmet_requests WHERE resolved_at IS NULL ORDER BY created_at DESC`;
-  return db.prepare(sql).all() as UnmetRequestRow[];
+  const rows = db.prepare(sql).all() as Omit<UnmetRequestRow, "notes">[];
+
+  const noteRows = db
+    .prepare(
+      `SELECT n.id, n.request_id AS requestId, n.text, n.author_id AS authorId, u.email AS authorEmail,
+              n.created_at AS createdAt
+       FROM unmet_request_notes n JOIN users u ON u.id = n.author_id
+       ORDER BY n.created_at ASC, n.id ASC`
+    )
+    .all() as UnmetRequestNoteRow[];
+  const notesByRequest = new Map<number, UnmetRequestNoteRow[]>();
+  for (const n of noteRows) {
+    const list = notesByRequest.get(n.requestId) ?? [];
+    list.push(n);
+    notesByRequest.set(n.requestId, list);
+  }
+
+  return rows.map((r) => ({ ...r, notes: notesByRequest.get(r.id) ?? [] }));
 }
 
 export function resolveUnmetRequest(id: number): void {
   db.prepare(`UPDATE unmet_requests SET resolved_at = ? WHERE id = ?`).run(Date.now(), id);
+}
+
+export function addUnmetRequestNote(requestId: number, authorId: number, text: string): void {
+  db.prepare(
+    `INSERT INTO unmet_request_notes (request_id, author_id, text, created_at) VALUES (?, ?, ?, ?)`
+  ).run(requestId, authorId, text, Date.now());
 }
 
 export interface ServerLogRow {
@@ -3320,6 +3364,13 @@ export function deleteUserCompletely(ownerId: number): { deletedDocumentPaths: s
     db.prepare(`DELETE FROM pending_setup WHERE owner_id = ?`).run(ownerId);
     db.prepare(`DELETE FROM onboarding_step_events WHERE owner_id = ?`).run(ownerId);
     db.prepare(`DELETE FROM pending_actions WHERE owner_id = ?`).run(ownerId);
+    // Two-directional for the same reason as admin_todo_replies below: this owner's own notes
+    // left on someone ELSE's unmet request (author_id = ownerId) AND every note anyone left on
+    // an unmet request THIS owner generated, which the DELETE FROM unmet_requests right after is
+    // about to remove as the parent row (request_id IN ... ).
+    db.prepare(
+      `DELETE FROM unmet_request_notes WHERE author_id = ? OR request_id IN (SELECT id FROM unmet_requests WHERE owner_id = ?)`
+    ).run(ownerId, ownerId);
     db.prepare(`DELETE FROM unmet_requests WHERE owner_id = ?`).run(ownerId);
     db.prepare(`DELETE FROM api_usage WHERE owner_id = ?`).run(ownerId);
     // admin_todos.created_by and poster_notes.author_id both declare NOT NULL REFERENCES

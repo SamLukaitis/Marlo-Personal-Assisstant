@@ -6,6 +6,7 @@ import {
   setUserAdmin,
   listUnmetRequests,
   resolveUnmetRequest,
+  addUnmetRequestNote,
   listRecentServerLogs,
   getServerLog,
   setServerLogExplanation,
@@ -85,6 +86,22 @@ portalRoutes.post("/unmet-requests/:id/resolve", (req, res) => {
   }
   resolveUnmetRequest(id);
   res.json({ ok: true });
+});
+
+portalRoutes.post("/unmet-requests/:id/notes", (req, res) => {
+  const id = Number(req.params.id);
+  const text = typeof req.body?.text === "string" ? req.body.text.trim() : "";
+  if (!Number.isInteger(id)) {
+    res.status(400).json({ error: "invalid id" });
+    return;
+  }
+  if (!text) {
+    res.status(400).json({ error: "text is required" });
+    return;
+  }
+  addUnmetRequestNote(id, ownerId(req), text);
+  const includeResolved = req.query.includeResolved === "true";
+  res.json(listUnmetRequests(includeResolved));
 });
 
 // --- Logs ---------------------------------------------------------------------------------------
