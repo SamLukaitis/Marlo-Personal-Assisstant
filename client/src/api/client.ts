@@ -41,6 +41,8 @@ export interface Me {
   isAppOwner: boolean;
   /** The app owner plus anyone promoted via the Portal's Admins tab — gates the Portal itself. */
   isAdmin: boolean;
+  /** Mirrors ENABLE_WHATSAPP_SIMULATOR (staging only) — gates the WhatsApp Simulator nav item. */
+  whatsappSimulatorEnabled: boolean;
 }
 
 export interface UnifiedMessage {
@@ -658,6 +660,26 @@ export const fetchAdminMessages = (phone: string) =>
   getJson<{ ownerId: number; timeline: AdminTimelineEntry[] }>(
     `/api/admin/messages?phone=${encodeURIComponent(phone)}`
   );
+
+// --- WhatsApp Simulator -------------------------------------------------------------------------
+// Sends a typed message through the real WhatsApp inbound pipeline (see whatsappSimRoutes.ts) as
+// if it arrived from a reserved fake number bound to the caller's own account. The reply isn't
+// returned here — it's debounced server-side — the caller polls fetchAdminMessages(phone) for it.
+export async function sendWhatsAppSimMessage(text: string): Promise<{ phone: string }> {
+  const res = await fetch(
+    `${API_BASE}/api/dev/whatsapp-sim/send`,
+    withCredentials({
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text }),
+    })
+  );
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.error ?? "failed to send simulated message");
+  }
+  return res.json();
+}
 
 // --- Admin Portal -----------------------------------------------------------------------------
 

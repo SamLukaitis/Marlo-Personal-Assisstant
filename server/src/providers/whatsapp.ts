@@ -14,6 +14,25 @@ export function isWhatsAppSignatureConfigured(): boolean {
   return !!process.env.WHATSAPP_APP_SECRET;
 }
 
+// --- WhatsApp Simulator support ------------------------------------------------------------
+// The in-app WhatsApp Simulator (routes/whatsappSimRoutes.ts) drives a typed message through the
+// real inbound pipeline (handleIncoming in whatsappRoutes.ts) so Sam/Jake can exercise
+// registration, debouncing, choice buttons, etc. from a browser instead of a real phone. Every
+// send function below checks for a simulated target first and returns without calling Meta's
+// Graph API — this is what stops a simulated conversation from erroring against a fake number or,
+// worse, actually texting a real one. "999" is unassigned as an ITU country code, so this prefix
+// can never collide with a genuine WhatsApp number.
+const SIMULATED_PHONE_PREFIX = "999000";
+export function simulatedPhoneForOwner(ownerId: number): string {
+  return `${SIMULATED_PHONE_PREFIX}${ownerId}`;
+}
+export function isSimulatedPhone(phone: string): boolean {
+  return phone.replace(/[^0-9]/g, "").startsWith(SIMULATED_PHONE_PREFIX);
+}
+function isSimulatedMessageId(messageId: string): boolean {
+  return messageId.startsWith("sim-");
+}
+
 export function verifyWebhookChallenge(mode: string, token: string): boolean {
   return mode === "subscribe" && token === process.env.WHATSAPP_VERIFY_TOKEN;
 }
@@ -70,6 +89,7 @@ async function extractSentWamid(res: Response): Promise<string | undefined> {
 }
 
 export async function sendWhatsAppMessage(to: string, text: string): Promise<string | undefined> {
+  if (isSimulatedPhone(to)) return `sim-wamid-${crypto.randomUUID()}`;
   const phoneNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID;
   const token = process.env.WHATSAPP_TOKEN;
   const res = await fetch(
@@ -104,6 +124,7 @@ export async function sendWhatsAppReplyButtons(
   bodyText: string,
   buttons: { id: string; title: string }[]
 ): Promise<void> {
+  if (isSimulatedPhone(to)) return;
   const phoneNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID;
   const token = process.env.WHATSAPP_TOKEN;
   const res = await fetch(
@@ -182,6 +203,7 @@ export async function sendWhatsAppListMessage(
   buttonLabel: string,
   rows: { id: string; title: string; description?: string }[]
 ): Promise<void> {
+  if (isSimulatedPhone(to)) return;
   const phoneNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID;
   const token = process.env.WHATSAPP_TOKEN;
   const res = await fetch(
@@ -421,6 +443,7 @@ export async function sendWhatsAppTemplate(
 // reaction previously sent to this message id; not used by any caller yet, but free to support
 // since it's the same Graph call shape.
 export async function sendWhatsAppReaction(to: string, messageId: string, emoji: string): Promise<void> {
+  if (isSimulatedPhone(to)) return;
   const phoneNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID;
   const token = process.env.WHATSAPP_TOKEN;
   const res = await fetch(
@@ -449,6 +472,7 @@ export async function sendWhatsAppReaction(to: string, messageId: string, emoji:
 // Best-effort by design (callers fire-and-forget this): a full assistant turn with tool calls
 // can take several seconds, and without this the user has no sign anything is happening.
 export async function sendWhatsAppTypingIndicator(messageId: string): Promise<void> {
+  if (isSimulatedMessageId(messageId)) return;
   const phoneNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID;
   const token = process.env.WHATSAPP_TOKEN;
   const res = await fetch(

@@ -7,7 +7,10 @@ import {
   sendWhatsAppMediaFromBuffer,
   sendWhatsAppReaction,
   sendWhatsAppMessage,
+  sendWhatsAppTypingIndicator,
   extractIncomingMessages,
+  simulatedPhoneForOwner,
+  isSimulatedPhone,
   WhatsAppSendError,
 } from "./whatsapp.js";
 
@@ -73,6 +76,50 @@ describe("sendWhatsAppCtaUrl", () => {
       display_text: "Connect Gmail",
       url: "https://example.com/connect",
     });
+  });
+});
+
+describe("WhatsApp Simulator guard", () => {
+  it("simulatedPhoneForOwner/isSimulatedPhone round-trip and never collide with a real number", () => {
+    expect(isSimulatedPhone(simulatedPhoneForOwner(1))).toBe(true);
+    expect(isSimulatedPhone(simulatedPhoneForOwner(42))).toBe(true);
+    expect(isSimulatedPhone("447000000001")).toBe(false);
+  });
+
+  it("sendWhatsAppMessage never calls Meta's API for a simulated number", async () => {
+    const fetchMock = mockFetchOk();
+
+    const wamid = await sendWhatsAppMessage(simulatedPhoneForOwner(7), "hi");
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(wamid).toBeDefined();
+  });
+
+  it("sendWhatsAppReplyButtons/sendWhatsAppListMessage/sendWhatsAppReaction all skip Meta for a simulated number", async () => {
+    const fetchMock = mockFetchOk();
+    const to = simulatedPhoneForOwner(7);
+
+    await sendWhatsAppReplyButtons(to, "q", [{ id: "a", title: "A" }]);
+    await sendWhatsAppListMessage(to, "q", "Choose", [{ id: "a", title: "A" }]);
+    await sendWhatsAppReaction(to, "sim-msg-1", "👍");
+
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("sendWhatsAppTypingIndicator skips Meta for a sim-prefixed message id", async () => {
+    const fetchMock = mockFetchOk();
+
+    await sendWhatsAppTypingIndicator("sim-abc123");
+
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("a real number/message id still goes through to Meta as before", async () => {
+    const fetchMock = mockFetchOk();
+
+    await sendWhatsAppMessage("447000000001", "hi");
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });
 
