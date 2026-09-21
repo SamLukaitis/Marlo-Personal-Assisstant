@@ -23,6 +23,7 @@ import {
   getPendingSetup,
   setPendingSetup,
   clearPendingSetup,
+  claimPendingSetup,
   setToolEnabled,
   setSetting,
   getSetting,
@@ -249,40 +250,73 @@ export async function startPostConnectSetup(
 }
 
 // The ask_name step — the very first question in the chain, right after the connected
-// confirmation. Unlike the free-text step below (ask_first_task), a name reply is never forwarded
-// to ordinary chat handling — it's not a request, just a name — so this doesn't use
-// advancePastFreeTextStep. Skipping (or a blank reply) leaves no name saved;
-// callers that personalize text (e.g. importantEmailAlerts.ts's alert copy) fall back to an
-// unpersonalized form rather than requiring this.
+// confirmation. A plain name is saved here and never forwarded to ordinary chat handling: it's
+// not a request, just a name. Anything else that isn't a skip is, though — this step used to
+// discard it, so someone who answered the first question with a question of their own ("what can
+// you actually do?") got no answer at all, just the next scripted question. Skipping (or a blank
+// reply) leaves no name saved; callers that personalize text (e.g. importantEmailAlerts.ts's
+// alert copy) fall back to an unpersonalized form rather than requiring this.
 export async function handleNameReply(
   ownerId: number,
   message: IncomingWhatsAppMessage
 ): Promise<boolean> {
   if (message.kind !== "text") return false;
   if (getPendingSetup(ownerId) !== "ask_name") return false;
+  if (awaitingAssistantAnswer.has(ownerId)) return false;
   const phone = message.from;
-  if (!isSkip(message.text)) {
-    const name = message.text.trim().slice(0, 60);
-    // Reject sentence-shaped replies (e.g. "I already said Sam") rather than storing them
-    // verbatim as the permanent display name — see plausibleName.ts.
-    if (name && isPlausibleName(name)) setSetting(ownerId, "user_name", name);
+  const name = message.text.trim().slice(0, 60);
+  // A blank reply is nothing to save and nothing for the assistant to answer — treat it as a skip
+  // rather than forwarding an empty message.
+  if (!name || isSkip(message.text)) {
+    await askFirstTask(ownerId, phone);
+    return true;
   }
-  await askFirstTask(ownerId, phone);
+  // Reject sentence-shaped replies (e.g. "I already said Sam") rather than storing them
+  // verbatim as the permanent display name — see plausibleName.ts.
+  if (name && isPlausibleName(name)) {
+    setSetting(ownerId, "user_name", name);
+    await askFirstTask(ownerId, phone);
+    return true;
+  }
+  // Not a name and not a skip: hand it to the real assistant and move on once it's answered,
+  // the same way ask_first_task treats a genuine request.
+  await forwardToAssistantThenAdvance(ownerId, message, askFirstTask);
   return true;
 }
 
-// Owners whose first-task request has been handed to the assistant but not answered yet. Their
-// follow-up texts in the meantime go to the assistant like any other message (folded into the same
-// reply when they arrive in time) instead of counting as another first-task reply. In memory only:
-// after a restart the step is simply still pending and the next text re-enters it.
-const awaitingFirstTaskAnswer = new Set<number>();
+// Owners whose message has been handed to the assistant but not answered yet. Their follow-up
+// texts in the meantime go to the assistant like any other message (folded into the same reply
+// when they arrive in time) instead of counting as another reply to the outstanding step. In
+// memory only: after a restart the step is simply still pending and the next text re-enters it.
+const awaitingAssistantAnswer = new Set<number>();
 
-// Shared by the free-text step below: if it's a skip, acknowledge and hand off to `next`
-// (which sends the following scripted question); otherwise forward the message to ordinary chat
-// handling (a real answer, from the real assistant) and call `next` only once that answer has been
+// Forward a real message to ordinary chat handling (a real answer, from the real assistant) and
+// call `next` — which sends the following scripted question — only once that answer has been
 // sent. handleText only queues the message behind a debounce, so calling `next` straight after it
-// used to send the next question first — and moved the pending step on before the assistant ran,
-// so it never saw its ask_first_task onboarding note.
+// used to send the next question first, and moved the pending step on before the assistant ran,
+// so it never saw its onboarding note.
+async function forwardToAssistantThenAdvance(
+  ownerId: number,
+  message: IncomingWhatsAppMessage & { kind: "text" },
+  next: (ownerId: number, phone: string) => Promise<void>
+): Promise<void> {
+  const phone = message.from;
+  awaitingAssistantAnswer.add(ownerId);
+  const advance = async () => {
+    awaitingAssistantAnswer.delete(ownerId);
+    await next(ownerId, phone);
+  };
+  try {
+    await handleText(ownerId, phone, message.text, message.messageId, undefined, undefined, advance);
+  } catch (err) {
+    // Nothing was queued, so `advance` will never be called for us — don't strand the chain.
+    console.error(`postConnectSetup: forwarding a setup-step message failed for owner ${ownerId}`, err);
+    await advance();
+  }
+}
+
+// The ask_first_task step's own version: a "carry on" reply is acknowledged and the chain moves
+// straight on, anything else is a real request and goes to the assistant first.
 async function advancePastFreeTextStep(
   ownerId: number,
   message: IncomingWhatsAppMessage & { kind: "text" },
@@ -297,18 +331,7 @@ async function advancePastFreeTextStep(
     await next(ownerId, phone);
     return;
   }
-  awaitingFirstTaskAnswer.add(ownerId);
-  const advance = async () => {
-    awaitingFirstTaskAnswer.delete(ownerId);
-    await next(ownerId, phone);
-  };
-  try {
-    await handleText(ownerId, phone, message.text, message.messageId, undefined, undefined, advance);
-  } catch (err) {
-    // Nothing was queued, so `advance` will never be called for us — don't strand the chain.
-    console.error(`postConnectSetup: forwarding first-task request failed for owner ${ownerId}`, err);
-    await advance();
-  }
+  await forwardToAssistantThenAdvance(ownerId, message, next);
 }
 
 // The ask_first_task step — see module comment. Only applies while that step is pending and the
@@ -320,7 +343,7 @@ export async function handleFirstTaskReply(
 ): Promise<boolean> {
   if (message.kind !== "text") return false;
   if (getPendingSetup(ownerId) !== "ask_first_task") return false;
-  if (awaitingFirstTaskAnswer.has(ownerId)) return false;
+  if (awaitingAssistantAnswer.has(ownerId)) return false;
   await advancePastFreeTextStep(
     ownerId,
     message,
@@ -345,6 +368,11 @@ export async function handlePostConnectSetupReply(
 
   const ids = BUTTON_IDS[step];
   if (message.buttonId !== ids.yes && message.buttonId !== ids.no) return false;
+  // Claim the step before acting on it. Two quick taps are two distinct webhook messages, so
+  // whatsappRoutes' alreadyProcessed doesn't dedupe them — both used to run the branch below,
+  // writing the preference twice and sending the closing message twice. The loser of the race is
+  // reported as unhandled, which is what a stray/late tap already gets.
+  if (!claimPendingSetup(ownerId, step)) return false;
   const yes = message.buttonId === ids.yes;
   const phone = message.from;
 
@@ -368,7 +396,7 @@ export async function handlePostConnectSetupReply(
     }
     case "ask_teams": {
       setToolEnabled(ownerId, "teams", yes);
-      clearPendingSetup(ownerId);
+      // No clearPendingSetup — claimPendingSetup above already removed the row.
       await sendClosingMessage(phone);
       return true;
     }

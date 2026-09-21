@@ -3632,6 +3632,19 @@ export function setPendingSetup(ownerId: number, step: PostConnectSetupStep): vo
   logOnboardingStepEvent(ownerId, step, "reached");
 }
 
+// Atomic "this reply is mine to handle": removes the row only if it's still on the step the
+// caller read, and says whether it was the one that removed it. Two taps on the same WhatsApp
+// button arrive as two separate messages with their own ids, so whatsappRoutes' alreadyProcessed
+// (which only dedupes Meta's retries of a single message) doesn't stop the second — without this
+// both ran the whole branch, saving the preference twice and sending the closing message twice.
+// Callers that continue the chain set the next step themselves right afterwards.
+export function claimPendingSetup(ownerId: number, step: PostConnectSetupStep): boolean {
+  const info = db.prepare(`DELETE FROM pending_setup WHERE owner_id = ? AND step = ?`).run(ownerId, step);
+  if (info.changes === 0) return false;
+  logOnboardingStepEvent(ownerId, step, "completed");
+  return true;
+}
+
 export function clearPendingSetup(ownerId: number): void {
   const step = getPendingSetup(ownerId);
   db.prepare(`DELETE FROM pending_setup WHERE owner_id = ?`).run(ownerId);
