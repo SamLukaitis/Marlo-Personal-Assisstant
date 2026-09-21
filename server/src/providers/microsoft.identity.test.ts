@@ -55,6 +55,16 @@ describe("getMicrosoftAuthUrl", () => {
     const scope = new URL(getMicrosoftAuthUrl("state")).searchParams.get("scope") ?? "";
     expect(scope.split(" ")).toContain("openid");
   });
+
+  // Microsoft only puts `oid` — half of the identity readIdTokenIdentity requires — in the id_token
+  // when `profile` is requested ("the profile scope is required to receive this claim", ID token
+  // claims reference). Asking for `openid` alone yields a token carrying `sub` and `tid` but no
+  // `oid`, so every real sign-in threw "missing the tenant/object id claims". The tests above build
+  // their own id_tokens, so only this assertion catches it.
+  it("requests the profile scope, without which Microsoft omits the oid claim", () => {
+    const scope = new URL(getMicrosoftAuthUrl("state")).searchParams.get("scope") ?? "";
+    expect(scope.split(" ")).toContain("profile");
+  });
 });
 
 describe("exchangeMicrosoftCode", () => {
