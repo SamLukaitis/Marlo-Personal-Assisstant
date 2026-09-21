@@ -6,7 +6,12 @@
 // assistant.ts doesn't need to import whatsappRegistration.ts (which itself imports assistant.ts
 // for getRegistrationAssistReply) — that would make the two modules circularly dependent on each
 // other for no reason beyond this one shared function.
-import { setPendingRegistrationToken, getPendingRegistration, type RegistrationProvider } from "../db/store.js";
+import {
+  setPendingRegistrationToken,
+  getPendingRegistration,
+  upsertPendingRegistration,
+  type RegistrationProvider,
+} from "../db/store.js";
 import { sendWhatsAppMessage, sendWhatsAppCtaUrl } from "../providers/whatsapp.js";
 import { SERVER_URL } from "../config.js";
 
@@ -62,11 +67,22 @@ export async function sendConnectLink(phone: string, provider: RegistrationProvi
   // match it against). Two real populations can reach this with no row: an admin's
   // replay-onboarding action (adminRoutes.ts) deletes it while keeping the account, and a
   // web-registered user who added this number in Settings then disconnected their mailbox never
-  // had one at all. Check first rather than send a CTA that's silently dead on arrival — the
-  // person would tap it, land on `/auth/.../register?error=expired`, and get no explanation and no
-  // way to retry into something that works.
+  // had one at all. So make sure a row exists rather than send a CTA that's silently dead on
+  // arrival — the person would tap it, land on `/auth/.../register?error=expired`, and get no
+  // explanation and no way to retry into something that works.
   if (!getPendingRegistration(phone)) {
-    return "no_pending_row";
+    // Create the row rather than refuse. Both populations that reach here are real and
+    // recoverable — an admin's replay-onboarding deleted it while keeping the account, or a
+    // web-registered user added this number in Settings and never had one — and refusing left
+    // each of them stuck: connect_email (assistant.ts) told them to find a developer, and
+    // sendProviderLink (whatsappRegistration.ts) returned without sending anything at all, so a
+    // button tap was answered with silence. A row is all the token needs to be redeemable.
+    //
+    // Created as "completed" so it can never drop a registered number back into the registration
+    // state machine (handlePendingRegistration's routing) — the concern this function's header
+    // comment already records. sendProviderLink still sets awaiting_link_tap itself afterwards.
+    upsertPendingRegistration(phone, { step: "completed" });
+    if (!getPendingRegistration(phone)) return "no_pending_row";
   }
   const token = setPendingRegistrationToken(phone);
   recordTokenIssued(phone);

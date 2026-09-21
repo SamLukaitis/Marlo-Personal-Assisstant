@@ -38,7 +38,10 @@ import { sendConnectLink } from "./connectMailboxLink.js";
 import { getRegistrationAssistReply } from "../ai/assistant.js";
 import type { IncomingWhatsAppMessage } from "../providers/whatsapp.js";
 
-const IDLE_RESET_MS = 24 * 60 * 60 * 1000; // a week-old half-finished conversation starts over
+// A half-finished registration older than this starts over from the name question rather than
+// resuming a step the person has long forgotten. (The comment here used to say "a week", which
+// this has never been.)
+const IDLE_RESET_MS = 24 * 60 * 60 * 1000;
 
 // Used as the very first message a brand-new number ever sees, and as the answer to "help"/"menu"
 // while registration is still in progress — both cases end with the name question because that's
@@ -102,6 +105,22 @@ const PROVIDER_BUTTON_IDS: Record<RegistrationProvider, string> = {
   microsoft: "register_microsoft",
 };
 
+// The third button on the provider question. Someone who has tapped their way through every step
+// so far had no tappable way to back out once they'd said Yes to email — only the two providers,
+// both of which commit them further. WhatsApp allows three reply buttons, so the exit is one.
+const PROVIDER_SKIP_BUTTON_ID = "register_skip";
+
+// Whole-message decline forms, shared by every step that can now be backed out of. Anchored and
+// short on purpose: a longer sentence that merely starts with one of these words ("no idea which
+// one I have") is real free text and must still reach the assistant-backed help reply. Kept as a
+// fixed list rather than a classifier so onboarding reads the same for everyone — the same
+// reasoning as EMAIL_CONFIRM_NO_TEXT below. "skip" is included because the prompts past the
+// confirmation step now offer it by name.
+const DECLINE_PATTERN = /^(n|no|nah|nope|not now|not right now|skip)( thanks| thx| thank you)?[.!]*$/i;
+function isDeclineText(text: string): boolean {
+  return DECLINE_PATTERN.test(text.trim());
+}
+
 // Most people's email address already says which provider they're on — asking anyway feels like
 // a redundant extra step right after they just typed it. Only the ambiguous case (a custom/work
 // domain that could be either Google Workspace or Microsoft 365) still gets the explicit question.
@@ -129,11 +148,11 @@ function currentStepPrompt(row: PendingRegistrationRow): string {
     case "awaiting_email_confirm":
       return "Want to connect your email? Tap Yes or No above, or just send me your email address.";
     case "awaiting_email":
-      return "What's your email address?";
+      return "What's your email address? Or say *skip* if you'd rather not connect one.";
     case "awaiting_provider":
-      return "Do you use Gmail or Outlook/Hotmail? Tap one of the buttons above.";
+      return "Do you use Gmail or Outlook/Hotmail? Tap one of the buttons above, or *Not now* to skip.";
     case "awaiting_link_tap":
-      return "Tap the link above to connect your email — I'll message you the moment it's done. Reply \"resend\" if it expired.";
+      return "Tap the link above to connect your email — I'll message you the moment it's done. Reply \"resend\" if it expired, or *skip* to do this later.";
     case "completed":
       return "";
   }
@@ -147,6 +166,7 @@ async function askProvider(row: PendingRegistrationRow): Promise<void> {
   await sendWhatsAppReplyButtons(row.phone, "Do you use Gmail or Outlook/Hotmail?", [
     { id: PROVIDER_BUTTON_IDS.google, title: "Gmail" },
     { id: PROVIDER_BUTTON_IDS.microsoft, title: "Outlook" },
+    { id: PROVIDER_SKIP_BUTTON_ID, title: "Not now" },
   ]);
   upsertPendingRegistration(row.phone, { step: "awaiting_provider" });
 }
@@ -160,10 +180,10 @@ async function sendProviderLink(row: PendingRegistrationRow): Promise<void> {
     return;
   }
   const result = await sendConnectLink(row.phone, provider);
-  // "no_pending_row" shouldn't happen here — this row was just read from the DB — but if a race
-  // (e.g. an admin's replay-onboarding running mid-request) ever deletes it between the read and
-  // here, don't advance the step for a link that was never actually sent. "throttled" already sent
-  // its own reply; same reasoning.
+  // "throttled" already sent its own reply. "no_pending_row" is now close to impossible —
+  // sendConnectLink creates the row itself if the one read above vanished mid-request (an admin's
+  // replay-onboarding is the realistic cause) rather than going silent on a button tap. Either
+  // way, don't advance the step for a link that never went out.
   if (result !== "sent") return;
   upsertPendingRegistration(row.phone, { step: "awaiting_link_tap" });
 }
@@ -254,35 +274,45 @@ async function handleEmailConfirmTap(row: PendingRegistrationRow, buttonId: stri
     return;
   }
   if (buttonId === EMAIL_CONFIRM_BUTTON_IDS.no) {
-    // Authoritative re-check of the same gate whatsappRegistration.ts's first-contact check
-    // already passed — re-checked here in case the invite was revoked mid-conversation, same
-    // defense-in-depth shape authRoutes.ts's OAuth callbacks use. This is a new account-creation
-    // site, so without this check a revoked number could still get a fully working account: once
-    // one exists, resolveOwnerByPhone resolves it and the invite gate is never consulted again.
-    if (!isPhoneInvited(row.phone)) {
-      const { isNewRequest } = recordWaitlistRequest(row.phone);
-      await reply(row.phone, isNewRequest ? MARLOWE_WAITLIST_TEXT : MARLOWE_WAITLIST_REMINDER_TEXT).catch(() => {});
-      return;
-    }
-    // A real choice now, not a holding pattern: create the account from the phone number alone so
-    // the promise in the reply below is one Marlowe can actually keep. Until this existed the step
-    // stayed parked here and the next message was deflected back to the email question.
-    const user = findOrCreateUserByPhone(row.phone);
-    // Same guard and key as sendFirstValueAndBriefingPrompt: a sentence-shaped reply was already
-    // rejected at the name step and must not become a permanent display name.
-    if (row.name && isPlausibleName(row.name)) {
-      setSetting(user.id, "user_name", row.name);
-    }
-    completePendingRegistration(row.phone);
-    // Fixed copy, not left to getRegistrationAssistReply's discretion — different people were
-    // getting different, sometimes off-topic replies here (the AI riffing on the earlier "I'll
-    // send that to my developers" line from handleAwaitingName) depending on exactly how they
-    // phrased "no". Onboarding should read the same for everyone.
-    await reply(row.phone, EMAIL_CONFIRM_NO_TEXT);
+    await declineEmailConnection(row);
     return;
   }
   // Stray/unexpected button id — re-show the choice rather than silently drop it.
   await askEmailConfirm(row);
+}
+
+// Backing out of connecting a mailbox. Reached from the No button/typed decline at the
+// confirmation step and, since this was pulled out of handleEmailConfirmTap, from every step
+// after it too (provider question, typed-address step, waiting on the OAuth link). Those later
+// steps used to have no decline path at all: a change of mind was answered by
+// getRegistrationAssistReply, whose prompt for each of them ends by re-asking the same question,
+// so "yes → Gmail → actually no" looped with no way out but abandoning the conversation.
+async function declineEmailConnection(row: PendingRegistrationRow): Promise<void> {
+  // Authoritative re-check of the same gate whatsappRegistration.ts's first-contact check
+  // already passed — re-checked here in case the invite was revoked mid-conversation, same
+  // defense-in-depth shape authRoutes.ts's OAuth callbacks use. This is a new account-creation
+  // site, so without this check a revoked number could still get a fully working account: once
+  // one exists, resolveOwnerByPhone resolves it and the invite gate is never consulted again.
+  if (!isPhoneInvited(row.phone)) {
+    const { isNewRequest } = recordWaitlistRequest(row.phone);
+    await reply(row.phone, isNewRequest ? MARLOWE_WAITLIST_TEXT : MARLOWE_WAITLIST_REMINDER_TEXT).catch(() => {});
+    return;
+  }
+  // A real choice now, not a holding pattern: create the account from the phone number alone so
+  // the promise in the reply below is one Marlowe can actually keep. Until this existed the step
+  // stayed parked here and the next message was deflected back to the email question.
+  const user = findOrCreateUserByPhone(row.phone);
+  // Same guard and key as sendFirstValueAndBriefingPrompt: a sentence-shaped reply was already
+  // rejected at the name step and must not become a permanent display name.
+  if (row.name && isPlausibleName(row.name)) {
+    setSetting(user.id, "user_name", row.name);
+  }
+  completePendingRegistration(row.phone);
+  // Fixed copy, not left to getRegistrationAssistReply's discretion — different people were
+  // getting different, sometimes off-topic replies here (the AI riffing on the earlier "I'll
+  // send that to my developers" line from handleAwaitingName) depending on exactly how they
+  // phrased "no". Onboarding should read the same for everyone.
+  await reply(row.phone, EMAIL_CONFIRM_NO_TEXT);
 }
 
 // Fallback for someone who types instead of tapping a button. Also lets someone skip the
@@ -298,14 +328,11 @@ async function handleAwaitingEmailConfirmText(row: PendingRegistrationRow, text:
     await handleEmailConfirmTap(row, EMAIL_CONFIRM_BUTTON_IDS.yes);
     return;
   }
-  // Anchored to short whole-word decline forms, not a general "starts with no" match — a longer
-  // sentence that happens to start with one of these words must still fall through to the
-  // assistant reply below rather than being misread as a decline. Widened beyond a bare
-  // "no"/"nope"/"nah" — Jake and Sam each replaying onboarding got different replies here because
-  // a slightly different phrasing ("not now") missed the original pattern and fell through to the
-  // free-form AI assist reply below. Still a fixed list, not a fuzzy classifier.
-  if (/^(n|no|nah|nope|not now|not right now)( thanks| thx| thank you)?\.?$/i.test(trimmed)) {
-    await handleEmailConfirmTap(row, EMAIL_CONFIRM_BUTTON_IDS.no);
+  // See isDeclineText: anchored to short whole-word decline forms, not a general "starts with no"
+  // match, so a longer sentence that happens to open with one still falls through to the
+  // assistant reply below.
+  if (isDeclineText(trimmed)) {
+    await declineEmailConnection(row);
     return;
   }
   const helpReply = await getRegistrationAssistReply(text, "email");
@@ -314,6 +341,12 @@ async function handleAwaitingEmailConfirmText(row: PendingRegistrationRow, text:
 
 async function handleAwaitingEmail(row: PendingRegistrationRow, text: string): Promise<void> {
   const email = text.trim();
+  // Checked before the address shape: "skip" isn't an email, so without this it fell through to
+  // the assist reply, which is prompted to end by asking for the address again.
+  if (isDeclineText(email)) {
+    await declineEmailConnection(row);
+    return;
+  }
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
     // Not a help trigger either (already intercepted earlier) — this is genuinely confused or
     // open-ended free text ("I have two, which one?"), so hand it to the assistant for a real
@@ -329,9 +362,14 @@ async function handleAwaitingEmail(row: PendingRegistrationRow, text: string): P
   // already been authorized and any email they connect is fine.
   const existingUser = getUserByEmail(email);
   if (existingUser && listPhoneNumbersForUser(existingUser.id).length > 0) {
+    // Ends with both ways out, because this branch deliberately leaves `step` where it is (see
+    // below) — and the address they just sent may well be their only one, so "try again" on its
+    // own replayed this identical message forever.
     await reply(
       row.phone,
-      "That email's already connected to a Marlowe account. Add this WhatsApp number from Settings on the website instead of starting again here."
+      "That email's already connected to a Marlowe account. Add this WhatsApp number from Settings " +
+        "on the website instead of starting again here — or send me a different address, or say " +
+        "*skip* and we'll carry on without email for now."
     );
     return; // deliberately stop advancing — do not silently rebind an existing account's phone
   }
@@ -353,6 +391,10 @@ async function handleAwaitingEmail(row: PendingRegistrationRow, text: string): P
 
 // buttonId comes straight from an IncomingInteractiveMessage tap on the buttons askProvider sent.
 async function handleAwaitingProviderTap(row: PendingRegistrationRow, buttonId: string): Promise<void> {
+  if (buttonId === PROVIDER_SKIP_BUTTON_ID) {
+    await declineEmailConnection(row);
+    return;
+  }
   const provider: RegistrationProvider | null =
     buttonId === PROVIDER_BUTTON_IDS.google
       ? "google"
@@ -371,6 +413,10 @@ async function handleAwaitingProviderTap(row: PendingRegistrationRow, buttonId: 
 // Fallback for someone who types "gmail"/"outlook" instead of tapping a button.
 async function handleAwaitingProviderText(row: PendingRegistrationRow, text: string): Promise<void> {
   const normalized = text.trim().toLowerCase();
+  if (isDeclineText(normalized)) {
+    await declineEmailConnection(row);
+    return;
+  }
   const provider: RegistrationProvider | null = /gmail|google/.test(normalized)
     ? "google"
     : /outlook|hotmail|microsoft/.test(normalized)
@@ -386,6 +432,10 @@ async function handleAwaitingProviderText(row: PendingRegistrationRow, text: str
 }
 
 async function handleAwaitingLinkTap(row: PendingRegistrationRow, text: string): Promise<void> {
+  if (isDeclineText(text)) {
+    await declineEmailConnection(row);
+    return;
+  }
   if (/resend|new link|link again/i.test(text)) {
     await sendProviderLink(row);
     return;
@@ -397,9 +447,19 @@ async function handleAwaitingLinkTap(row: PendingRegistrationRow, text: string):
 }
 
 // The redirect a mistimed message (a button tap or media that doesn't match the current step)
-// gets — kept as one copy since it's used from a couple of places below.
-async function redirectToSetup(phone: string): Promise<void> {
-  await reply(phone, "Let's finish setting you up first — what should I call you?").catch(() => {});
+// gets. Points at whatever step is actually outstanding rather than always asking for a name —
+// sending a photo while waiting on the OAuth link used to be answered with "what should I call
+// you?", and answering *that* with a name went to handleAwaitingLinkTap and came back as "tap the
+// link", which reads as Marlowe having lost the thread entirely.
+const REDIRECT_TO_NAME_TEXT = "Let's finish setting you up first — what should I call you?";
+
+async function redirectToSetup(phone: string, row: PendingRegistrationRow | null): Promise<void> {
+  // No row, or the name step itself: the long-standing copy, which already says both halves.
+  const prompt =
+    row && row.step !== "completed" && row.step !== "awaiting_name" ? currentStepPrompt(row) : "";
+  await reply(phone, prompt ? `Let's finish setting you up first. ${prompt}` : REDIRECT_TO_NAME_TEXT).catch(
+    () => {}
+  );
 }
 
 // The entry point whatsappRoutes.ts calls when resolveOwnerByPhone finds no owner for an
@@ -426,7 +486,7 @@ export async function handlePendingRegistration(message: IncomingWhatsAppMessage
       await handleEmailConfirmTap(row, message.buttonId);
       return;
     }
-    await redirectToSetup(phone);
+    await redirectToSetup(phone, row);
     return;
   }
 
@@ -439,7 +499,7 @@ export async function handlePendingRegistration(message: IncomingWhatsAppMessage
     message.kind === "reaction" ||
     message.kind === "location"
   ) {
-    await redirectToSetup(phone);
+    await redirectToSetup(phone, row);
     return;
   }
 

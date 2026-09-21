@@ -16,6 +16,7 @@ const {
   addInvitedPhone,
   removeInvitedPhone,
   listWaitlistRequests,
+  deletePendingRegistration,
   resolveOwnerByPhone,
   getUser,
   getSetting,
@@ -224,6 +225,7 @@ describe("handlePendingRegistration — awaiting_email provider auto-detect", ()
     expect(sendWhatsAppReplyButtons).toHaveBeenCalledWith(phone, "Do you use Gmail or Outlook/Hotmail?", [
       { id: "register_google", title: "Gmail" },
       { id: "register_microsoft", title: "Outlook" },
+      { id: "register_skip", title: "Not now" },
     ]);
     expect(getPendingRegistration(phone)?.step).toBe("awaiting_provider");
   });
@@ -241,7 +243,7 @@ describe("handlePendingRegistration — awaiting_email reconnecting an existing 
 
     expect(sendWhatsAppMessage).toHaveBeenCalledWith(
       phone,
-      "That email's already connected to a Marlowe account. Add this WhatsApp number from Settings on the website instead of starting again here."
+      expect.stringContaining("already connected to a Marlowe account")
     );
     expect(sendWhatsAppCtaUrl).not.toHaveBeenCalled();
   });
@@ -284,6 +286,7 @@ describe("handlePendingRegistration — accepting email goes straight to the pro
     expect(sendWhatsAppReplyButtons).toHaveBeenCalledWith(phone, "Do you use Gmail or Outlook/Hotmail?", [
       { id: "register_google", title: "Gmail" },
       { id: "register_microsoft", title: "Outlook" },
+      { id: "register_skip", title: "Not now" },
     ]);
     expect(sendWhatsAppMessage).not.toHaveBeenCalled();
     expect(getPendingRegistration(phone)?.step).toBe("awaiting_provider");
@@ -473,5 +476,139 @@ describe("handlePendingRegistration — typed decline recognizes common short fo
 
     expect(resolveOwnerByPhone(phone)).toBeNull();
     expect(getPendingRegistration(phone)?.step).toBe("awaiting_email_confirm");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Escaping the email flow after it has already started. Declining used to be recognized at
+// exactly one step (awaiting_email_confirm) — past it, every "actually, no thanks" fell through
+// to getRegistrationAssistReply, whose prompt for each of these steps ends by re-asking the same
+// question. Tapping Yes and then changing your mind was an unbreakable loop.
+// ---------------------------------------------------------------------------
+describe("handlePendingRegistration — declining after the email flow has started", () => {
+  it.each([
+    ["awaiting_provider", "no thanks"],
+    ["awaiting_email", "not now"],
+    ["awaiting_link_tap", "nah"],
+  ] as const)("treats a decline at %s as skipping email entirely", async (step, text) => {
+    const phone = freshPhone();
+    addInvitedPhone(phone);
+    upsertPendingRegistration(phone, { step, name: "Sam", provider: "google" });
+
+    await handlePendingRegistration({ kind: "text", from: phone, text, messageId: "m1" });
+
+    expect(resolveOwnerByPhone(phone)).not.toBeNull();
+    expect(getPendingRegistration(phone)?.step).toBe("completed");
+  });
+
+  it("recognizes 'skip' as a decline too, since the prompts now offer it by name", async () => {
+    const phone = freshPhone();
+    addInvitedPhone(phone);
+    upsertPendingRegistration(phone, { step: "awaiting_provider", name: "Sam" });
+
+    await handlePendingRegistration({ kind: "text", from: phone, text: "skip", messageId: "m1" });
+
+    expect(getPendingRegistration(phone)?.step).toBe("completed");
+  });
+
+  it("does not misread a longer sentence at awaiting_provider as a decline", async () => {
+    const phone = freshPhone();
+    addInvitedPhone(phone);
+    upsertPendingRegistration(phone, { step: "awaiting_provider", name: "Sam" });
+
+    await handlePendingRegistration({
+      kind: "text",
+      from: phone,
+      text: "no idea which one I have, how do I check?",
+      messageId: "m1",
+    });
+
+    expect(resolveOwnerByPhone(phone)).toBeNull();
+    expect(getPendingRegistration(phone)?.step).toBe("awaiting_provider");
+  });
+
+  // The tap-only path needs its own exit: someone who has tapped every button so far has no
+  // tappable way to back out of the provider question.
+  it("offers a third 'Not now' button on the provider question and honours the tap", async () => {
+    const phone = freshPhone();
+    addInvitedPhone(phone);
+    upsertPendingRegistration(phone, { step: "awaiting_email_confirm", name: "Sam" });
+
+    await handlePendingRegistration({
+      kind: "interactive",
+      from: phone,
+      messageId: "m1",
+      buttonId: "email_confirm_yes",
+    });
+
+    expect(sendWhatsAppReplyButtons).toHaveBeenCalledWith(phone, expect.any(String), [
+      { id: "register_google", title: "Gmail" },
+      { id: "register_microsoft", title: "Outlook" },
+      { id: "register_skip", title: "Not now" },
+    ]);
+
+    await handlePendingRegistration({
+      kind: "interactive",
+      from: phone,
+      messageId: "m2",
+      buttonId: "register_skip",
+    });
+
+    expect(resolveOwnerByPhone(phone)).not.toBeNull();
+    expect(getPendingRegistration(phone)?.step).toBe("completed");
+  });
+});
+
+// An address already bound to another account left the step unchanged, so retyping the same
+// address (likely — it may be their only one) replayed the identical message forever.
+describe("handlePendingRegistration — already-connected address is not a dead end", () => {
+  it("tells them how to get out as well as what went wrong", async () => {
+    const phone = freshPhone();
+    const taken = `taken+${phone}@gmail.com`;
+    addInvitedPhone(phone);
+    const other = findOrCreateUserByEmail(taken);
+    addPhoneNumberForUser(other.id, freshPhone());
+    upsertPendingRegistration(phone, { step: "awaiting_email", name: "Sam" });
+
+    await handlePendingRegistration({ kind: "text", from: phone, text: taken, messageId: "m1" });
+
+    expect(sendWhatsAppMessage).toHaveBeenCalledWith(phone, expect.stringContaining("already connected"));
+    expect(sendWhatsAppMessage).toHaveBeenCalledWith(phone, expect.stringContaining("skip"));
+  });
+});
+
+// redirectToSetup asked for a name at every step — send a photo while waiting on the OAuth link
+// and you were told to introduce yourself, then your name was answered with "tap the link".
+describe("handlePendingRegistration — mistimed media points at the actual current step", () => {
+  it("repeats the link prompt, not the name question, at awaiting_link_tap", async () => {
+    const phone = freshPhone();
+    addInvitedPhone(phone);
+    upsertPendingRegistration(phone, { step: "awaiting_link_tap", name: "Sam", provider: "google" });
+
+    await handlePendingRegistration({
+      kind: "media",
+      from: phone,
+      messageId: "m1",
+      mediaId: "media-1",
+      mimeType: "image/jpeg",
+    });
+
+    expect(sendWhatsAppMessage).toHaveBeenCalledWith(phone, expect.stringContaining("Tap the link"));
+    expect(sendWhatsAppMessage).not.toHaveBeenCalledWith(phone, expect.stringContaining("what should I call you"));
+  });
+
+  it("still asks for a name when that really is the current step", async () => {
+    const phone = freshPhone();
+    addInvitedPhone(phone);
+    upsertPendingRegistration(phone, { step: "awaiting_name" });
+
+    await handlePendingRegistration({
+      kind: "unsupported",
+      from: phone,
+      messageId: "m1",
+      type: "sticker",
+    });
+
+    expect(sendWhatsAppMessage).toHaveBeenCalledWith(phone, expect.stringContaining("what should I call you"));
   });
 });
