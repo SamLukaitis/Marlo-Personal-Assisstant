@@ -281,15 +281,27 @@ export async function googleListNewMessages(
 
   if (addedIds.size === 0) return { messages: [], historyId: latestHistoryId };
 
-  const messages = await mapWithConcurrency([...addedIds], GMAIL_GET_CONCURRENCY, async (id) => {
-    const full = await gmail.users.messages.get({
-      userId: "me",
-      id,
-      format: "metadata",
-      metadataHeaders: ["Subject", "From"],
-    });
-    return toUnified(account, full.data);
+  const fetched = await mapWithConcurrency([...addedIds], GMAIL_GET_CONCURRENCY, async (id) => {
+    try {
+      const full = await gmail.users.messages.get({
+        userId: "me",
+        id,
+        format: "metadata",
+        metadataHeaders: ["Subject", "From"],
+      });
+      return toUnified(account, full.data);
+    } catch (err) {
+      // history.list reports what was added to the inbox; anything deleted or moved out again
+      // before this fan-out runs 404s here. Unlike the quota failure the checkpoint handling above
+      // is built around, that's permanent — and rethrowing stopped hub.ts saving the checkpoint, so
+      // the next tick resumed from the same startHistoryId, rediscovered the same dead id and threw
+      // identically. That stalled the account's background scans on a 5-minute loop until the id
+      // aged out of Gmail's ~1 week history retention. Skip it; the rest of the batch is still good.
+      if (isNotFoundError(err)) return null;
+      throw err;
+    }
   });
+  const messages = fetched.filter((m): m is UnifiedMessage => m !== null);
   return { messages, historyId: latestHistoryId };
 }
 

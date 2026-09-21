@@ -13,8 +13,11 @@ const AUTH_BASE = "https://login.microsoftonline.com/common/oauth2/v2.0";
 const GRAPH = "https://graph.microsoft.com/v1.0";
 // openid makes the token endpoint return an id_token — the tenant id + object id in it are how a
 // person is identified (see exchangeMicrosoftCode), never the editable `mail` profile field.
+// profile is what puts `oid` in that id_token: Microsoft gates the claim on it ("the profile scope
+// is required to receive this claim"), so openid alone returns sub + tid but no oid and every
+// sign-in fails in readIdTokenIdentity. Don't drop it.
 const SCOPES =
-  "openid offline_access User.Read Mail.Read Mail.ReadWrite Calendars.ReadWrite Chat.Read Files.Read People.Read";
+  "openid profile offline_access User.Read Mail.Read Mail.ReadWrite Calendars.ReadWrite Chat.Read Files.Read People.Read";
 
 export function isMicrosoftConfigured(): boolean {
   return !!(process.env.MS_CLIENT_ID && process.env.MS_CLIENT_SECRET);

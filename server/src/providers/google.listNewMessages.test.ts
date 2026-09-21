@@ -98,6 +98,39 @@ describe("googleListNewMessages", () => {
     expect(mockSetAccountHistoryId).not.toHaveBeenCalled();
   });
 
+  // The flip side of the test above: a 404 means that message is gone for good, so it must NOT be
+  // treated like the quota error. Rejecting withheld the checkpoint, so the next tick resumed from
+  // the same startHistoryId, rediscovered the same dead id and failed identically — stalling the
+  // account's scans every 5 minutes until the id aged out of Gmail's ~1 week history retention.
+  it("skips a message deleted between history.list and the fetch, keeping the rest of the batch", async () => {
+    mockHistoryList.mockResolvedValue({
+      data: {
+        history: [{ messagesAdded: [{ message: { id: "gone" } }, { message: { id: "m2" } }] }],
+        historyId: "200",
+      },
+    });
+    mockMessagesGet.mockImplementation(async ({ id }: { id: string }) => {
+      if (id === "gone") throw Object.assign(new Error("Requested entity was not found."), { code: 404 });
+      return fullMessage(id);
+    });
+
+    const result = await googleListNewMessages(fakeAccount());
+
+    expect(result.messages.map((m) => m.id)).toEqual(["m2"]);
+    expect(result.historyId).toBe("200");
+  });
+
+  it("still surfaces non-404 fetch failures rather than silently dropping messages", async () => {
+    mockHistoryList.mockResolvedValue({
+      data: { history: [{ messagesAdded: [{ message: { id: "m1" } }] }], historyId: "200" },
+    });
+    mockMessagesGet.mockRejectedValue(
+      Object.assign(new Error("Quota exceeded"), { response: { status: 429 } })
+    );
+
+    await expect(googleListNewMessages(fakeAccount())).rejects.toThrow("Quota exceeded");
+  });
+
   it("returns the mailbox's current checkpoint from a baseline (no checkpoint yet) list", async () => {
     mockGetProfile.mockResolvedValue({ data: { historyId: "555" } });
     mockMessagesList.mockResolvedValue({ data: { messages: [{ id: "m9" }] } });
