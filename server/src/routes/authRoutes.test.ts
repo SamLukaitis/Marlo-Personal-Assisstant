@@ -30,6 +30,7 @@ vi.mock("../services/whatsappRegistration.js", () => ({
 
 const { authRoutes } = await import("./authRoutes.js");
 const { exchangeGoogleCode, handleGoogleCallback } = await import("../providers/google.js");
+const { sendWhatsAppMessage } = await import("../providers/whatsapp.js");
 const { exchangeMicrosoftCode, microsoftGetGraphUserId } = await import("../providers/microsoft.js");
 const { sendFirstValueAndBriefingPrompt } = await import("../services/whatsappRegistration.js");
 const {
@@ -649,5 +650,57 @@ describe("Google sign-in can't take over a Microsoft-identified user", () => {
     const callback = await googleLogin(app, email);
 
     expect(parseSetCookie(callback, "session")).toBeDefined();
+  });
+});
+
+// A WhatsApp registration that dies inside the callback used to redirect the browser and say
+// nothing in the chat — where the whole conversation is happening. The token is already spent by
+// then (consumePendingRegistrationToken runs before the code exchange), so the link they tapped
+// is dead too: without a message they are parked at awaiting_link_tap with no working link and
+// no idea anything went wrong. not_invited/account_exists/phone_taken already messaged; these are
+// the paths that didn't.
+describe("WhatsApp registration failures reach the user on WhatsApp", () => {
+  it("Google: tells them how to retry when the code exchange throws", async () => {
+    const app = buildApp();
+    const phone = freshPhone();
+    vi.mocked(sendWhatsAppMessage).mockClear();
+    vi.mocked(exchangeGoogleCode).mockRejectedValue(new Error("token endpoint exploded"));
+
+    const res = await registerViaGoogle(app, phone, uniqueEmail("google-boom"));
+
+    expect(res.headers.location).toContain("error=oauth_failed");
+    expect(sendWhatsAppMessage).toHaveBeenCalledWith(phone, expect.stringContaining("resend"));
+  });
+
+  it("Microsoft: tells them how to retry when the code exchange throws", async () => {
+    const app = buildApp();
+    const phone = freshPhone();
+    vi.mocked(sendWhatsAppMessage).mockClear();
+    vi.mocked(exchangeMicrosoftCode).mockRejectedValue(new Error("token endpoint exploded"));
+
+    const res = await registerViaMicrosoft(app, phone, uniqueEmail("ms-boom"));
+
+    expect(res.headers.location).toContain("error=oauth_failed");
+    expect(sendWhatsAppMessage).toHaveBeenCalledWith(phone, expect.stringContaining("resend"));
+  });
+
+  // Cancelling at Google's consent screen comes back with no `code` at all. The state (and so the
+  // phone) is still readable, so there is no reason for this to be silent either.
+  it("Google: tells them how to retry when they cancel at the consent screen", async () => {
+    const app = buildApp();
+    const phone = freshPhone();
+    addInvitedPhone(phone);
+    upsertPendingRegistration(phone, { step: "awaiting_link_tap", provider: "google" });
+    const token = setPendingRegistrationToken(phone);
+    const start = await request(app).get(`/auth/google/register?token=${token}`);
+    const nonceCookie = parseSetCookie(start, "oauth_nonce")!;
+    const state = new URL(start.headers.location).searchParams.get("state")!;
+    vi.mocked(sendWhatsAppMessage).mockClear();
+
+    await request(app)
+      .get(`/auth/google/callback?error=access_denied&state=${encodeURIComponent(state)}`)
+      .set("Cookie", nonceCookie);
+
+    expect(sendWhatsAppMessage).toHaveBeenCalledWith(phone, expect.stringContaining("resend"));
   });
 });

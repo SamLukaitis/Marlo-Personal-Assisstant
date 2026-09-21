@@ -215,6 +215,29 @@ export function resolveRegistrationUser(phone: string, email: string): Registrat
 const ACCOUNT_EXISTS_WHATSAPP_TEXT =
   "That email already belongs to a Marlowe account I can't confirm is yours. Sign in on the website the way you did before, then add this number from Settings.";
 
+// A whatsapp_register callback that fails part-way redirects a browser tab, but the conversation
+// it belongs to is on WhatsApp — and by the time most of these fire the one-time token has
+// already been spent (consumePendingRegistrationToken runs before the code exchange), so the link
+// they tapped is dead too. Without this the person is parked at awaiting_link_tap with no working
+// link and nothing said. "resend" is the word handleAwaitingLinkTap listens for.
+const REGISTRATION_RETRY_WHATSAPP_TEXT =
+  "That didn't go through — tap the link again, or reply *resend* and I'll send you a fresh one.";
+
+// The phone behind an in-flight registration callback, for the failure paths that need to say
+// something and don't otherwise have it in hand. Peeks rather than consumes: on the paths that
+// use it the token is either already spent or still wanted.
+function registrationPhoneFromState(state: OAuthState | null): string | null {
+  if (!state || state.intent !== "whatsapp_register" || !state.registrationToken) return null;
+  return peekPendingRegistrationByToken(state.registrationToken)?.phone ?? null;
+}
+
+// Best-effort: a failed WhatsApp send must never turn one failure into two, and the browser has
+// already been redirected by the time this runs.
+function notifyRegistrationFailure(phone: string | null): void {
+  if (!phone) return;
+  sendWhatsAppMessage(phone, REGISTRATION_RETRY_WHATSAPP_TEXT).catch(() => {});
+}
+
 function setNonceCookie(res: Response, nonce: string): void {
   res.cookie(NONCE_COOKIE, nonce, {
     httpOnly: true,
@@ -334,9 +357,20 @@ authRoutes.get("/auth/google/callback", async (req, res) => {
   const state = parseState(req.query.state as string | undefined);
 
   if (!code || !state || !cookieNonce || state.nonce !== cookieNonce) {
+    // Cancelling at the consent screen lands here with a valid state and no `code`. The token
+    // hasn't been spent (we return before consuming it), so their original link still works —
+    // say so rather than leaving the chat silent. Gated on the nonce matching, so this can only
+    // be triggered by the browser that actually started the round trip.
+    if (state && cookieNonce && state.nonce === cookieNonce) {
+      notifyRegistrationFailure(registrationPhoneFromState(state));
+    }
     res.redirect(`${CLIENT_URL}/?error=oauth_failed`);
     return;
   }
+
+  // Captured for the catch below, which otherwise can't see `reg` (scoped inside the try) and so
+  // had no way to reach the user on WhatsApp at all.
+  let registrationPhone: string | null = registrationPhoneFromState(state);
 
   try {
     if (state.intent === "connect") {
@@ -355,6 +389,7 @@ authRoutes.get("/auth/google/callback", async (req, res) => {
         res.redirect(`${CLIENT_URL}/connected?error=expired`);
         return;
       }
+      registrationPhone = reg.phone;
       const auth = await exchangeGoogleCode(code);
       // Authoritative re-check of the same gate whatsappRegistration.ts's first-contact check
       // already passed — re-checked here in case the invite was revoked mid-conversation, same
@@ -448,6 +483,9 @@ authRoutes.get("/auth/google/callback", async (req, res) => {
     res.redirect(`${CLIENT_URL}${hasAccounts ? "/assistant" : "/onboarding"}`);
   } catch (err) {
     console.error("Google OAuth callback failed", err);
+    // The token was already spent above, so their link is dead as well as their attempt —
+    // without this the conversation just stops.
+    notifyRegistrationFailure(registrationPhone);
     const errorDest =
       state.intent === "connect"
         ? `${CLIENT_URL}${connectReturnPath(state)}`
@@ -465,9 +503,15 @@ authRoutes.get("/auth/microsoft/callback", async (req, res) => {
   const state = parseState(req.query.state as string | undefined);
 
   if (!code || !state || !cookieNonce || state.nonce !== cookieNonce) {
+    // See the Google callback's copy of this — same cancel-at-consent case.
+    if (state && cookieNonce && state.nonce === cookieNonce) {
+      notifyRegistrationFailure(registrationPhoneFromState(state));
+    }
     res.redirect(`${CLIENT_URL}/?error=oauth_failed`);
     return;
   }
+
+  let registrationPhone: string | null = registrationPhoneFromState(state);
 
   try {
     if (state.intent === "connect") {
@@ -492,6 +536,7 @@ authRoutes.get("/auth/microsoft/callback", async (req, res) => {
         res.redirect(`${CLIENT_URL}/connected?error=expired`);
         return;
       }
+      registrationPhone = reg.phone;
       const auth = await exchangeMicrosoftCode(code);
       // Authoritative re-check — see the matching comment on the Google callback above.
       if (!isPhoneInvited(reg.phone)) {
@@ -569,6 +614,7 @@ authRoutes.get("/auth/microsoft/callback", async (req, res) => {
     res.redirect(`${CLIENT_URL}${hasAccounts ? "/assistant" : "/onboarding"}`);
   } catch (err) {
     console.error("Microsoft OAuth callback failed", err);
+    notifyRegistrationFailure(registrationPhone);
     const errorDest =
       state.intent === "connect"
         ? `${CLIENT_URL}${connectReturnPath(state)}`
