@@ -130,7 +130,12 @@ describe("connect_email tool", () => {
   // a web-registered user who added this number in Settings then deleted their mailbox. This test
   // mirrors the latter directly (findOrCreateUserByEmail + addPhoneNumberForUser, no registration
   // row ever created).
-  it("fails clearly instead of sending a dead link when there's no pending-registration row for this phone", async () => {
+  //
+  // That used to be reported to the user as "this needs a developer", which is a dead end for a
+  // request Marlowe can simply honour: sendConnectLink now creates the row the token needs (as
+  // "completed", so a registered number is never dropped back into the registration state
+  // machine) and sends a link that actually works.
+  it("creates the missing pending-registration row and sends a redeemable link", async () => {
     const phone = freshPhone();
     const user = findOrCreateUserByEmail(`web-registered-${phone}@example.com`);
     addPhoneNumberForUser(user.id, phone);
@@ -138,8 +143,10 @@ describe("connect_email tool", () => {
 
     const result = await runTool(user.id, "connect_email", { provider: "google" });
 
-    expect(result).toEqual({ error: expect.stringContaining("registration record is missing") });
-    expect(sendWhatsAppCtaUrl).not.toHaveBeenCalled();
+    expect(result).toEqual({ ok: true });
+    expect(sendWhatsAppCtaUrl).toHaveBeenCalled();
+    expect(getPendingRegistration(phone)?.step).toBe("completed");
+    expect(getPendingRegistration(phone)?.tokenHash).toBeTruthy();
   });
 
   // Review finding #4: sendConnectLink used to return void for both a real send and a

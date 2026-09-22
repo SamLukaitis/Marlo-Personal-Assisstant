@@ -89,3 +89,37 @@ describe("resolveRegistrationUser", () => {
     expect(getUser(phoneOnly.id)?.email).toBe(email);
   });
 });
+
+// Both refusals used to come back as the same bare "account_exists", and the WhatsApp message
+// behind it said "that email already belongs to a Marlowe account I can't confirm is yours" —
+// which is simply untrue when the address belongs to nobody and the real obstacle is the account
+// already having one of its own. It sent a real user (the app owner, replaying his own
+// onboarding with a fresh test Outlook address) hunting for the account holding that address,
+// and then reaching for the account-merge script. The two cases need to be told apart.
+describe("resolveRegistrationUser — why it refused", () => {
+  it("reports the address being taken by someone else", () => {
+    const phone = freshPhone();
+    findOrCreateUserByPhone(phone);
+    const someoneElse = `taken-${phone}@example.com`;
+    findOrCreateUserByEmail(someoneElse);
+
+    const result = resolveRegistrationUser(phone, someoneElse);
+
+    expect(result).toEqual({ kind: "account_exists", reason: "email_belongs_to_another_account" });
+  });
+
+  it("reports the account already having its own address, and says which", () => {
+    const phone = freshPhone();
+    findOrCreateUserByPhone(phone);
+    const mine = `mine-${phone}@example.com`;
+    expect(resolveRegistrationUser(phone, mine).kind).toBe("ok");
+
+    const result = resolveRegistrationUser(phone, `other-${phone}@example.com`);
+
+    expect(result).toEqual({
+      kind: "account_exists",
+      reason: "account_has_different_email",
+      currentEmail: mine,
+    });
+  });
+});

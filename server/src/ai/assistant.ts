@@ -1425,9 +1425,10 @@ export async function runTool(
           // the user a (second, different-provider) link is coming when none was actually sent.
           return { error: "A link was just sent — give it a few seconds, then ask again if it still hasn't arrived." };
         case "no_pending_row":
-          // Genuinely unexpected for a phone-only account (see sendConnectLink's own comment) —
-          // surface it plainly rather than claim success for a link nobody can ever redeem.
-          return { error: "Couldn't send a connect link — this account's registration record is missing. This needs a developer to look at; don't keep retrying." };
+          // sendConnectLink creates the row it needs, so this now only means that write itself
+          // failed — genuinely unexpected. Surface it plainly rather than claim success for a
+          // link nobody can ever redeem.
+          return { error: "Couldn't send a connect link — this account's registration record couldn't be written. This needs a developer to look at; don't keep retrying." };
       }
     }
     case "connect_xero": {

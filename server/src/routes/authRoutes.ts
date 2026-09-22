@@ -36,6 +36,7 @@ import {
   type UserRow,
 } from "../db/store.js";
 import { sendWhatsAppMessage } from "../providers/whatsapp.js";
+import { clearConnectLinkCooldown } from "../services/connectMailboxLink.js";
 import { sendFirstValueAndBriefingPrompt } from "../services/whatsappRegistration.js";
 import { requireAuth, SESSION_COOKIE_NAME, type AuthedRequest } from "../middleware/auth.js";
 
@@ -173,9 +174,15 @@ function googleMayUseExistingUser(userId: number, googleEmail: string): boolean 
 // declining email during onboarding), the address is attached to THAT row. Calling
 // findOrCreateUserByEmail instead would quietly create a second account and strand every to-do,
 // document and memory the person already has.
+// Two very different refusals, told apart because the message each one deserves is different.
+// "email_belongs_to_another_account" is what it says. "account_has_different_email" is the one
+// that used to be reported as the first: the address is unclaimed, and the obstacle is that this
+// number's own account already has one — which reads as nonsense if you're told your brand-new
+// address belongs to someone else, and sends you looking for an account that doesn't exist.
 export type RegistrationUserResult =
   | { kind: "ok"; userId: number }
-  | { kind: "account_exists" };
+  | { kind: "account_exists"; reason: "email_belongs_to_another_account" }
+  | { kind: "account_exists"; reason: "account_has_different_email"; currentEmail: string };
 
 export function resolveRegistrationUser(phone: string, email: string): RegistrationUserResult {
   const existingByEmail = getUserByEmail(email);
@@ -202,8 +209,15 @@ export function resolveRegistrationUser(phone: string, email: string): Registrat
     // would stop resolving to this user (locking them out of web sign-in, and out of admin if
     // they're the app owner) with nothing on screen to explain why.
     const phoneOwner = getUser(phoneOwnerId);
-    if (existingByEmail || phoneOwner?.email !== null) {
-      return { kind: "account_exists" };
+    if (existingByEmail) {
+      return { kind: "account_exists", reason: "email_belongs_to_another_account" };
+    }
+    if (phoneOwner?.email != null) {
+      return {
+        kind: "account_exists",
+        reason: "account_has_different_email",
+        currentEmail: phoneOwner.email,
+      };
     }
     setUserEmail(phoneOwnerId, email);
     return { kind: "ok", userId: phoneOwnerId };
@@ -214,6 +228,52 @@ export function resolveRegistrationUser(phone: string, email: string): Registrat
 
 const ACCOUNT_EXISTS_WHATSAPP_TEXT =
   "That email already belongs to a Marlowe account I can't confirm is yours. Sign in on the website the way you did before, then add this number from Settings.";
+
+// The other refusal: nobody holds the address they just connected — their own account simply
+// already has one. Naming it is the whole point, since the generic message above had them hunting
+// for an account that never existed.
+function accountHasDifferentEmailText(currentEmail: string): string {
+  return (
+    `This number is already set up with *${currentEmail}*, and I can't swap that for a different ` +
+    "address from here — it's what you sign in with on the website. To read a second mailbox as " +
+    "well, sign in there and connect it from Settings."
+  );
+}
+
+// Both WhatsApp-registration callbacks report a refusal the same way, so the wording stays in one
+// place rather than being written three times and drifting.
+function whatsappRefusalText(result: Extract<RegistrationUserResult, { kind: "account_exists" }>): string {
+  return result.reason === "account_has_different_email"
+    ? accountHasDifferentEmailText(result.currentEmail)
+    : ACCOUNT_EXISTS_WHATSAPP_TEXT;
+}
+
+// A whatsapp_register callback that fails part-way redirects a browser tab, but the conversation
+// it belongs to is on WhatsApp — and by the time most of these fire the one-time token has
+// already been spent (consumePendingRegistrationToken runs before the code exchange), so the link
+// they tapped is dead too. Without this the person is parked at awaiting_link_tap with no working
+// link and nothing said. "resend" is the word handleAwaitingLinkTap listens for.
+const REGISTRATION_RETRY_WHATSAPP_TEXT =
+  "That didn't go through — tap the link again, or reply *resend* and I'll send you a fresh one.";
+
+// The phone behind an in-flight registration callback, for the failure paths that need to say
+// something and don't otherwise have it in hand. Peeks rather than consumes: on the paths that
+// use it the token is either already spent or still wanted.
+function registrationPhoneFromState(state: OAuthState | null): string | null {
+  if (!state || state.intent !== "whatsapp_register" || !state.registrationToken) return null;
+  return peekPendingRegistrationByToken(state.registrationToken)?.phone ?? null;
+}
+
+// Best-effort: a failed WhatsApp send must never turn one failure into two, and the browser has
+// already been redirected by the time this runs.
+function notifyRegistrationFailure(phone: string | null): void {
+  if (!phone) return;
+  // The message below tells them to reply "resend", so make sure that works: without this the
+  // link issued moments ago is still inside the resend cooldown and their retry comes back as
+  // "still working on it" — about an attempt that has already failed.
+  clearConnectLinkCooldown(phone);
+  sendWhatsAppMessage(phone, REGISTRATION_RETRY_WHATSAPP_TEXT).catch(() => {});
+}
 
 function setNonceCookie(res: Response, nonce: string): void {
   res.cookie(NONCE_COOKIE, nonce, {
@@ -334,9 +394,20 @@ authRoutes.get("/auth/google/callback", async (req, res) => {
   const state = parseState(req.query.state as string | undefined);
 
   if (!code || !state || !cookieNonce || state.nonce !== cookieNonce) {
+    // Cancelling at the consent screen lands here with a valid state and no `code`. The token
+    // hasn't been spent (we return before consuming it), so their original link still works —
+    // say so rather than leaving the chat silent. Gated on the nonce matching, so this can only
+    // be triggered by the browser that actually started the round trip.
+    if (state && cookieNonce && state.nonce === cookieNonce) {
+      notifyRegistrationFailure(registrationPhoneFromState(state));
+    }
     res.redirect(`${CLIENT_URL}/?error=oauth_failed`);
     return;
   }
+
+  // Captured for the catch below, which otherwise can't see `reg` (scoped inside the try) and so
+  // had no way to reach the user on WhatsApp at all.
+  let registrationPhone: string | null = registrationPhoneFromState(state);
 
   try {
     if (state.intent === "connect") {
@@ -355,6 +426,7 @@ authRoutes.get("/auth/google/callback", async (req, res) => {
         res.redirect(`${CLIENT_URL}/connected?error=expired`);
         return;
       }
+      registrationPhone = reg.phone;
       const auth = await exchangeGoogleCode(code);
       // Authoritative re-check of the same gate whatsappRegistration.ts's first-contact check
       // already passed — re-checked here in case the invite was revoked mid-conversation, same
@@ -380,7 +452,7 @@ authRoutes.get("/auth/google/callback", async (req, res) => {
       const resolution = resolveRegistrationUser(reg.phone, auth.email);
       if (resolution.kind === "account_exists") {
         res.redirect(`${CLIENT_URL}/connected?error=account_exists`);
-        sendWhatsAppMessage(reg.phone, ACCOUNT_EXISTS_WHATSAPP_TEXT).catch(() => {});
+        sendWhatsAppMessage(reg.phone, whatsappRefusalText(resolution)).catch(() => {});
         return;
       }
       const user = getUser(resolution.userId) as UserRow;
@@ -448,6 +520,9 @@ authRoutes.get("/auth/google/callback", async (req, res) => {
     res.redirect(`${CLIENT_URL}${hasAccounts ? "/assistant" : "/onboarding"}`);
   } catch (err) {
     console.error("Google OAuth callback failed", err);
+    // The token was already spent above, so their link is dead as well as their attempt —
+    // without this the conversation just stops.
+    notifyRegistrationFailure(registrationPhone);
     const errorDest =
       state.intent === "connect"
         ? `${CLIENT_URL}${connectReturnPath(state)}`
@@ -465,9 +540,15 @@ authRoutes.get("/auth/microsoft/callback", async (req, res) => {
   const state = parseState(req.query.state as string | undefined);
 
   if (!code || !state || !cookieNonce || state.nonce !== cookieNonce) {
+    // See the Google callback's copy of this — same cancel-at-consent case.
+    if (state && cookieNonce && state.nonce === cookieNonce) {
+      notifyRegistrationFailure(registrationPhoneFromState(state));
+    }
     res.redirect(`${CLIENT_URL}/?error=oauth_failed`);
     return;
   }
+
+  let registrationPhone: string | null = registrationPhoneFromState(state);
 
   try {
     if (state.intent === "connect") {
@@ -492,6 +573,7 @@ authRoutes.get("/auth/microsoft/callback", async (req, res) => {
         res.redirect(`${CLIENT_URL}/connected?error=expired`);
         return;
       }
+      registrationPhone = reg.phone;
       const auth = await exchangeMicrosoftCode(code);
       // Authoritative re-check — see the matching comment on the Google callback above.
       if (!isPhoneInvited(reg.phone)) {
@@ -523,7 +605,7 @@ authRoutes.get("/auth/microsoft/callback", async (req, res) => {
         const resolution = resolveRegistrationUser(reg.phone, auth.email);
         if (resolution.kind === "account_exists") {
           res.redirect(`${CLIENT_URL}/connected?error=account_exists`);
-          sendWhatsAppMessage(reg.phone, ACCOUNT_EXISTS_WHATSAPP_TEXT).catch(() => {});
+          sendWhatsAppMessage(reg.phone, whatsappRefusalText(resolution)).catch(() => {});
           return;
         }
         userId = resolution.userId;
@@ -569,6 +651,7 @@ authRoutes.get("/auth/microsoft/callback", async (req, res) => {
     res.redirect(`${CLIENT_URL}${hasAccounts ? "/assistant" : "/onboarding"}`);
   } catch (err) {
     console.error("Microsoft OAuth callback failed", err);
+    notifyRegistrationFailure(registrationPhone);
     const errorDest =
       state.intent === "connect"
         ? `${CLIENT_URL}${connectReturnPath(state)}`

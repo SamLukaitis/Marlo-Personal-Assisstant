@@ -378,13 +378,21 @@ describe("handleNameReply", () => {
   // answered it during pre-connect registration), a user can reasonably reply with a sentence
   // like this instead of just their name. That whole sentence must never become the permanent
   // display name — it previously did, and leaked into every personalized proactive message.
-  it("on a sentence-shaped reply (not a real name): saves no name, still advances", async () => {
+  // It now goes to the assistant rather than being dropped (see the "isn't a name is answered"
+  // describe below), so the chain advances once that answer lands instead of immediately — but
+  // the sentence still must not be saved as a name, which is what this test has always guarded.
+  it("on a sentence-shaped reply (not a real name): saves no name, advances once it's answered", async () => {
     const ownerId = newOwnerId();
     await startPostConnectSetup(ownerId, PHONE);
+    vi.mocked(handleText).mockClear();
 
     const handled = await handleNameReply(ownerId, text("I already said Sam"));
 
     expect(handled).toBe(true);
+    expect(getSetting(ownerId, "user_name")).toBeNull();
+
+    await vi.mocked(handleText).mock.calls[0][6]!();
+
     expect(getSetting(ownerId, "user_name")).toBeNull();
     expect(getPendingSetup(ownerId)).toBe("ask_first_task");
   });
@@ -614,5 +622,105 @@ describe("handlePostConnectSetupReply", () => {
     // feature requests, not mail, and must not trip this.
     expect(closingCall?.[1]).not.toMatch(/inbox|unread|already (found|seen|spotted|noticed)/i);
     expect(takeSuppressedOnboardingAlertCount(ownerId)).toBe(3); // left untouched for the scheduler to report
+  });
+});
+
+// The name step used to discard anything that wasn't a plausible name: someone who answered the
+// very first question with a question of their own ("what can you actually do?") got no answer at
+// all, just the next scripted question. ask_first_task already forwards free text to the real
+// assistant — this step now does the same rather than swallowing it.
+describe("handleNameReply — a reply that isn't a name is answered, not dropped", () => {
+  it("forwards a question to ordinary chat handling and advances only once it's answered", async () => {
+    const ownerId = newOwnerId();
+    await startPostConnectSetup(ownerId, PHONE);
+    vi.mocked(handleText).mockClear();
+    vi.mocked(sendWhatsAppMessage).mockClear();
+
+    const handled = await handleNameReply(ownerId, text("what can you actually do?"));
+
+    expect(handled).toBe(true);
+    expect(getSetting(ownerId, "user_name")).toBeNull();
+    expect(handleText).toHaveBeenCalledWith(
+      ownerId,
+      PHONE,
+      "what can you actually do?",
+      expect.any(String),
+      undefined,
+      undefined,
+      expect.any(Function)
+    );
+    expect(getPendingSetup(ownerId)).toBe("ask_name");
+
+    const afterReply = vi.mocked(handleText).mock.calls[0][6]!;
+    await afterReply();
+
+    expect(getPendingSetup(ownerId)).toBe("ask_first_task");
+  });
+
+  it("still never forwards — or saves — a plain name", async () => {
+    const ownerId = newOwnerId();
+    await startPostConnectSetup(ownerId, PHONE);
+    vi.mocked(handleText).mockClear();
+
+    await handleNameReply(ownerId, text("Margaret"));
+
+    expect(handleText).not.toHaveBeenCalled();
+    expect(getSetting(ownerId, "user_name")).toBe("Margaret");
+    expect(getPendingSetup(ownerId)).toBe("ask_first_task");
+  });
+
+  it("does not forward a second message while the first is still being answered", async () => {
+    const ownerId = newOwnerId();
+    await startPostConnectSetup(ownerId, PHONE);
+    vi.mocked(handleText).mockClear();
+
+    await handleNameReply(ownerId, text("what can you actually do?"));
+    const handledSecond = await handleNameReply(ownerId, text("hello?"));
+
+    expect(handledSecond).toBe(false);
+    expect(handleText).toHaveBeenCalledTimes(1);
+  });
+});
+
+// Two taps on the same button are two webhook messages with their own ids, so whatsappRoutes'
+// alreadyProcessed (which only dedupes Meta's retries of one message) doesn't stop the second.
+// Both used to run the whole branch: the briefing saved twice, and two closing messages sent.
+describe("handlePostConnectSetupReply — a double tap is handled once", () => {
+  async function atBriefing(ownerId: number) {
+    await startPostConnectSetup(ownerId, PHONE);
+    await handleNameReply(ownerId, text("Sam"));
+    await handleFirstTaskReply(ownerId, text("skip"));
+    vi.mocked(sendWhatsAppMessage).mockClear();
+    vi.mocked(sendWhatsAppReplyButtons).mockClear();
+  }
+
+  it("ignores the second tap on the briefing question", async () => {
+    const ownerId = newOwnerId();
+    await atBriefing(ownerId);
+
+    const [first, second] = await Promise.all([
+      handlePostConnectSetupReply(ownerId, tap("briefing_yes")),
+      handlePostConnectSetupReply(ownerId, tap("briefing_yes")),
+    ]);
+
+    expect([first, second].filter(Boolean)).toHaveLength(1);
+    // The closing message pair ("All set!" + "Anything you need help with right now...") plus the
+    // briefing-default announcement — sent once, not twice.
+    const closings = vi
+      .mocked(sendWhatsAppMessage)
+      .mock.calls.filter(([, body]) => body.includes("All set!"));
+    expect(closings).toHaveLength(1);
+  });
+
+  it("ignores a late tap on a question the chain has already moved past", async () => {
+    const ownerId = newOwnerId();
+    await atBriefing(ownerId);
+    await handlePostConnectSetupReply(ownerId, tap("briefing_no"));
+    vi.mocked(sendWhatsAppMessage).mockClear();
+
+    const handled = await handlePostConnectSetupReply(ownerId, tap("briefing_yes"));
+
+    expect(handled).toBe(false);
+    expect(sendWhatsAppMessage).not.toHaveBeenCalled();
   });
 });
