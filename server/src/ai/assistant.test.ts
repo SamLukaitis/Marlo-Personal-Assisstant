@@ -171,6 +171,29 @@ describe("buildSystemPrompt anti-hallucination rule", () => {
     const prompt = buildSystemPrompt(user.id);
     expect(prompt).toContain("multiple times with different concrete sub-terms");
   });
+
+  // Two independent reports of the same hole, a month apart: a reservation confirmation missed on
+  // "anything else in email", and six Railway crash alerts plus a Google security notice sitting
+  // unseen while "find anything important" reported a clean inbox. Both came from
+  // list_needs_attention deliberately excluding automated senders (AUTOMATED_SENDER_PATTERN,
+  // hub.ts) with nothing telling the model so. Closed in both places the model can learn it:
+  it("tells the model list_needs_attention alone isn't enough for a broad 'anything important' ask", () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("prompt-needs-attention-fallback"));
+    const prompt = buildSystemPrompt(user.id);
+    expect(prompt).toContain("list_needs_attention only covers unread mail from real people");
+  });
+
+  // ...and on the tool's own description, which is what the model reads when deciding whether one
+  // call is enough — the system-prompt rule alone leaves the tool still describing itself as the
+  // answer to "what needs attention".
+  it("warns on the tool description itself that it is not a complete sweep", () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("tool-needs-attention-sweep"));
+    const tool = buildToolsForOwner(user.id).find(
+      (t) => "name" in t && t.name === "list_needs_attention"
+    );
+    expect(tool).toBeDefined();
+    expect((tool as { description: string }).description).toContain("NOT a complete");
+  });
 });
 
 describe("buildSystemPrompt", () => {
