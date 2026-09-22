@@ -73,6 +73,7 @@ const { sendWhatsAppMessage, sendWhatsAppReplyButtons, sendWhatsAppCtaUrl } = aw
   "../providers/whatsapp.js"
 );
 const { exchangeGoogleCode } = await import("../providers/google.js");
+const { exchangeMicrosoftCode } = await import("../providers/microsoft.js");
 const { runAssistantChat } = await import("../ai/assistant.js");
 const { authRoutes } = await import("./authRoutes.js");
 const { handleIncoming } = await import("./whatsappRoutes.js");
@@ -86,6 +87,10 @@ const {
   listAccounts,
   getSetting,
   listWaitlistRequests,
+  findOrCreateUserByEmail,
+  addPhoneNumberForUser,
+  resetOnboardingConnectionState,
+  getReplayParkedOwner,
 } = await import("../db/store.js");
 const { getBriefingSettings } = await import("../services/briefing.js");
 
@@ -387,5 +392,62 @@ describe("onboarding end to end — a failed OAuth hop", () => {
 
     expect(resolveOwnerByPhone(phone)).not.toBeNull();
     expect(getPendingSetup(resolveOwnerByPhone(phone)!)).toBe("ask_first_task");
+  });
+});
+
+// The app owner replayed his own onboarding and tried to finish it with a freshly created test
+// Outlook address. It was refused — correctly, since replay deliberately leaves users.email alone
+// and that account already has one — but the message claimed the brand-new address "already
+// belongs to a Marlowe account", so he went looking for the account holding it and then for the
+// account-merge script. Nothing held it. The refusal is right; only the explanation was wrong.
+describe("onboarding end to end — replaying onto an account that already has an address", () => {
+  it("names the address the account actually has instead of blaming the new one", async () => {
+    const phone = freshPhone();
+    const existingEmail = `owner-${phone}@gmail.com`;
+    addInvitedPhone(phone);
+
+    // An established account on this number, exactly as it looks after replay-onboarding: the
+    // phone unbound but parked, the address still on the row, no connected mailbox.
+    const owner = findOrCreateUserByEmail(existingEmail);
+    addPhoneNumberForUser(owner.id, phone);
+    resetOnboardingConnectionState(owner.id);
+    expect(resolveOwnerByPhone(phone)).toBeNull();
+    expect(getReplayParkedOwner(phone)).toBe(owner.id);
+
+    // Replay start to finish with a different provider and a brand-new address nobody holds.
+    await sendText(phone, "hi");
+    await sendText(phone, "Sam");
+    await tap(phone, "email_confirm_yes");
+    await tap(phone, "register_microsoft");
+    const testAddress = `testing-${phone}@outlook.com`;
+    expect(getUserByEmail(testAddress)).toBeFalsy();
+
+    const link = vi.mocked(sendWhatsAppCtaUrl).mock.calls.at(-1)![3];
+    const token = new URL(link).searchParams.get("token")!;
+    vi.mocked(exchangeMicrosoftCode).mockResolvedValue({
+      email: testAddress,
+      accessToken: "at",
+      refreshToken: "rt",
+      expiryDate: Date.now() + 3600_000,
+      tenantId: `tenant-${phone}`,
+      objectId: `obj-${phone}`,
+      graphUserId: `graph-${phone}`,
+    });
+    const app = buildApp();
+    const start = await request(app).get(`/auth/microsoft/register?token=${token}`);
+    const nonce = parseSetCookie(start, "oauth_nonce")!;
+    const state = new URL(start.headers.location!).searchParams.get("state")!;
+    await request(app)
+      .get(`/auth/microsoft/callback?code=realcode&state=${encodeURIComponent(state)}`)
+      .set("Cookie", nonce);
+
+    const said = messagesTo(phone).at(-1)!;
+    expect(said).toContain(existingEmail);
+    expect(said).toContain("Settings");
+    expect(said).not.toContain("already belongs to a Marlowe account");
+    // And nothing was damaged on the way past: the account keeps its address, the test address
+    // is still unclaimed, and no orphan account was minted for it.
+    expect(getUser(owner.id)?.email).toBe(existingEmail);
+    expect(getUserByEmail(testAddress)).toBeFalsy();
   });
 });

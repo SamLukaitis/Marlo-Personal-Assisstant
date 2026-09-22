@@ -174,9 +174,15 @@ function googleMayUseExistingUser(userId: number, googleEmail: string): boolean 
 // declining email during onboarding), the address is attached to THAT row. Calling
 // findOrCreateUserByEmail instead would quietly create a second account and strand every to-do,
 // document and memory the person already has.
+// Two very different refusals, told apart because the message each one deserves is different.
+// "email_belongs_to_another_account" is what it says. "account_has_different_email" is the one
+// that used to be reported as the first: the address is unclaimed, and the obstacle is that this
+// number's own account already has one — which reads as nonsense if you're told your brand-new
+// address belongs to someone else, and sends you looking for an account that doesn't exist.
 export type RegistrationUserResult =
   | { kind: "ok"; userId: number }
-  | { kind: "account_exists" };
+  | { kind: "account_exists"; reason: "email_belongs_to_another_account" }
+  | { kind: "account_exists"; reason: "account_has_different_email"; currentEmail: string };
 
 export function resolveRegistrationUser(phone: string, email: string): RegistrationUserResult {
   const existingByEmail = getUserByEmail(email);
@@ -203,8 +209,15 @@ export function resolveRegistrationUser(phone: string, email: string): Registrat
     // would stop resolving to this user (locking them out of web sign-in, and out of admin if
     // they're the app owner) with nothing on screen to explain why.
     const phoneOwner = getUser(phoneOwnerId);
-    if (existingByEmail || phoneOwner?.email !== null) {
-      return { kind: "account_exists" };
+    if (existingByEmail) {
+      return { kind: "account_exists", reason: "email_belongs_to_another_account" };
+    }
+    if (phoneOwner?.email != null) {
+      return {
+        kind: "account_exists",
+        reason: "account_has_different_email",
+        currentEmail: phoneOwner.email,
+      };
     }
     setUserEmail(phoneOwnerId, email);
     return { kind: "ok", userId: phoneOwnerId };
@@ -215,6 +228,25 @@ export function resolveRegistrationUser(phone: string, email: string): Registrat
 
 const ACCOUNT_EXISTS_WHATSAPP_TEXT =
   "That email already belongs to a Marlowe account I can't confirm is yours. Sign in on the website the way you did before, then add this number from Settings.";
+
+// The other refusal: nobody holds the address they just connected — their own account simply
+// already has one. Naming it is the whole point, since the generic message above had them hunting
+// for an account that never existed.
+function accountHasDifferentEmailText(currentEmail: string): string {
+  return (
+    `This number is already set up with *${currentEmail}*, and I can't swap that for a different ` +
+    "address from here — it's what you sign in with on the website. To read a second mailbox as " +
+    "well, sign in there and connect it from Settings."
+  );
+}
+
+// Both WhatsApp-registration callbacks report a refusal the same way, so the wording stays in one
+// place rather than being written three times and drifting.
+function whatsappRefusalText(result: Extract<RegistrationUserResult, { kind: "account_exists" }>): string {
+  return result.reason === "account_has_different_email"
+    ? accountHasDifferentEmailText(result.currentEmail)
+    : ACCOUNT_EXISTS_WHATSAPP_TEXT;
+}
 
 // A whatsapp_register callback that fails part-way redirects a browser tab, but the conversation
 // it belongs to is on WhatsApp — and by the time most of these fire the one-time token has
@@ -420,7 +452,7 @@ authRoutes.get("/auth/google/callback", async (req, res) => {
       const resolution = resolveRegistrationUser(reg.phone, auth.email);
       if (resolution.kind === "account_exists") {
         res.redirect(`${CLIENT_URL}/connected?error=account_exists`);
-        sendWhatsAppMessage(reg.phone, ACCOUNT_EXISTS_WHATSAPP_TEXT).catch(() => {});
+        sendWhatsAppMessage(reg.phone, whatsappRefusalText(resolution)).catch(() => {});
         return;
       }
       const user = getUser(resolution.userId) as UserRow;
@@ -573,7 +605,7 @@ authRoutes.get("/auth/microsoft/callback", async (req, res) => {
         const resolution = resolveRegistrationUser(reg.phone, auth.email);
         if (resolution.kind === "account_exists") {
           res.redirect(`${CLIENT_URL}/connected?error=account_exists`);
-          sendWhatsAppMessage(reg.phone, ACCOUNT_EXISTS_WHATSAPP_TEXT).catch(() => {});
+          sendWhatsAppMessage(reg.phone, whatsappRefusalText(resolution)).catch(() => {});
           return;
         }
         userId = resolution.userId;
