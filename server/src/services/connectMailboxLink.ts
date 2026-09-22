@@ -40,6 +40,16 @@ function recordTokenIssued(phone: string): void {
   lastTokenIssuedAt.set(phone, now);
 }
 
+// Drops the cooldown for one phone, so the next request sends a real link instead of the "still
+// working on it" holding reply. For the case where the previous link demonstrably did NOT work:
+// the OAuth round trip it started failed, its token is spent, and the user has just been told to
+// reply "resend". Refusing that one retry for the rest of the minute — and calling a dead attempt
+// "still working on it" — leaves them stuck at exactly the moment they were given an instruction
+// to follow. Not a way to bypass the throttle for a link that's merely slow to arrive.
+export function clearConnectLinkCooldown(phone: string): void {
+  lastTokenIssuedAt.delete(phone);
+}
+
 const PROVIDER_LABEL: Record<RegistrationProvider, string> = {
   google: "Gmail",
   microsoft: "Outlook",

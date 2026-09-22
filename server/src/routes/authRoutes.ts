@@ -36,6 +36,7 @@ import {
   type UserRow,
 } from "../db/store.js";
 import { sendWhatsAppMessage } from "../providers/whatsapp.js";
+import { clearConnectLinkCooldown } from "../services/connectMailboxLink.js";
 import { sendFirstValueAndBriefingPrompt } from "../services/whatsappRegistration.js";
 import { requireAuth, SESSION_COOKIE_NAME, type AuthedRequest } from "../middleware/auth.js";
 
@@ -235,6 +236,10 @@ function registrationPhoneFromState(state: OAuthState | null): string | null {
 // already been redirected by the time this runs.
 function notifyRegistrationFailure(phone: string | null): void {
   if (!phone) return;
+  // The message below tells them to reply "resend", so make sure that works: without this the
+  // link issued moments ago is still inside the resend cooldown and their retry comes back as
+  // "still working on it" — about an attempt that has already failed.
+  clearConnectLinkCooldown(phone);
   sendWhatsAppMessage(phone, REGISTRATION_RETRY_WHATSAPP_TEXT).catch(() => {});
 }
 
