@@ -150,6 +150,31 @@ describe("runAssistantChat — relevant-memory injection and stable-history brea
     expect(stripCache(second[2])).toEqual({ role: "user", content: [{ type: "text", text: "email Sarah" }] });
   });
 
+  it("still sends at most two cache_control blocks in messages on the second tool-loop iteration", async () => {
+    mockCreate
+      .mockResolvedValueOnce({
+        content: [{ type: "tool_use", id: "tool_1", name: "search_memory", input: { query: "Sarah" } }],
+        usage: { input_tokens: 1, output_tokens: 1 },
+      })
+      .mockResolvedValueOnce({ content: [{ type: "text", text: "done" }], usage: { input_tokens: 1, output_tokens: 1 } });
+    const user = findOrCreateUserByEmail(uniqueEmail("loop-two-bps"));
+    const sarah = findOrCreateEntity(user.id, "person", "Sarah");
+    addFact(user.id, { content: "Sarah is the user's accountant", entityId: sarah.id });
+
+    await runAssistantChat(user.id, [
+      { role: "user", content: "hello" },
+      { role: "assistant", content: "hi!" },
+      { role: "user", content: "what do you know about Sarah" },
+    ]);
+
+    expect(mockCreate).toHaveBeenCalledTimes(2);
+    const second = sentMessages(1);
+    const marked = second.flatMap((m, i) => blocksOf(m).filter((b) => b.cache_control).map(() => i));
+    expect(marked.length).toBeLessThanOrEqual(2);
+    // The stable-history breakpoint stays put and the other rides on the newest message.
+    expect(marked).toEqual([1, second.length - 1]);
+  });
+
   it("sends the system prompt without any per-message memory in it", async () => {
     mockCreate.mockResolvedValue({ content: [{ type: "text", text: "ok" }], usage: { input_tokens: 1, output_tokens: 1 } });
     const user = findOrCreateUserByEmail(uniqueEmail("system-no-retrieval"));

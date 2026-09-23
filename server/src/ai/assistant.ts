@@ -1880,8 +1880,10 @@ export function buildSystemPrompt(ownerId: number, conversationSummary?: string)
     `Local computer folders searchable by file name:\n${folderList}`,
     `What you know about the user (core profile). You may naturally bring up one of these when it's ` +
       `genuinely relevant to what's being discussed — the way someone who was actually paying ` +
-      `attention would — without forcing it. Other things you remember are shown alongside the ` +
-      `user's latest message when relevant, and search_memory reaches the rest:\n${coreList}`,
+      `attention would — without forcing it or repeating something you've already brought up this ` +
+      `conversation. Other things you remember are shown alongside the user's latest message when ` +
+      `relevant, and search_memory reaches the rest; the same rule applies equally to the things ` +
+      `shown alongside the user's latest message. The profile:\n${coreList}`,
     xeroStatus,
     pendingInvoiceStatus,
     conversationSummary
@@ -1912,7 +1914,9 @@ function withCacheControlOnLastBlock(message: Anthropic.MessageParam): Anthropic
 // - `stableIndex`: the message just before the latest user message. The latest user message
 //   carries a per-message relevant-memory block (ai/memoryRetrieval.ts) that is never stored in
 //   history, so the NEXT user turn's prefix diverges there — this breakpoint caches everything
-//   before it, which the next turn sends byte-identically.
+//   before it, which the next turn resends byte-identically only while the history is still under
+//   MAX_HISTORY_MESSAGES. Once it's full, each turn drops the oldest messages, the prefix shifts,
+//   and this breakpoint misses (the within-reply tool-loop breakpoint above still hits).
 // Rebuilt from the original `messages` each call (never mutated), so no stale breakpoint lingers.
 function withMessagesCacheBreakpoint(
   messages: Anthropic.MessageParam[],
@@ -1972,7 +1976,13 @@ export async function runAssistantChat(
     .slice(-2)
     .map((m) => m.content)
     .join("\n");
-  const relevantMemory = retrieveRelevantMemory(ownerId, retrievalText);
+  // Memory is an enhancement: a retrieval failure must never cost the user their reply.
+  let relevantMemory: string | null = null;
+  try {
+    relevantMemory = retrieveRelevantMemory(ownerId, retrievalText);
+  } catch (err) {
+    console.error("runAssistantChat: memory retrieval failed; replying without it", err);
+  }
 
   const messages: Anthropic.MessageParam[] = trimmedHistory.map((m, i) => ({
     role: m.role,

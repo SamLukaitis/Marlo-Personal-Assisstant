@@ -222,6 +222,13 @@ describe("buildSystemPrompt", () => {
     expect(prompt).not.toContain("Things you've learned about the user over past conversations");
   });
 
+  it("tells the assistant not to force or repeat remembered things, from the profile or the relevant-memory block", () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("prompt-no-repeat"));
+    const prompt = buildSystemPrompt(user.id);
+    expect(prompt).toContain("without forcing it or repeating something you've already brought up this conversation");
+    expect(prompt).toMatch(/applies equally to the things shown alongside the user's latest message/);
+  });
+
   it("renders active core facts as the profile and leaves other facts out of the system prompt", () => {
     const user = findOrCreateUserByEmail(uniqueEmail("prompt-core-profile"));
     addFact(user.id, { content: "The user's name is Sam", kind: "core" });

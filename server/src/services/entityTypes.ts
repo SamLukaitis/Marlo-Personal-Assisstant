@@ -11,8 +11,10 @@ import {
 
 // The "define a type once" registry (docs/entities-and-links-guide.md §4): each entity type
 // declares its own validator and the read tools it exposes to the assistant, in one place, so the
-// generic entities/links tables + store functions handle everything else. Foundation only for
-// now — nothing calls getEntityTypeDef yet. travel_checkin's actual assistant tools
+// generic entities/links tables + store functions handle everything else. So far getEntityTypeDef
+// is only used to tell which types are reserved (store.ts's isReservedEntityType and the memory
+// graph migration), so the remember/extraction bridge never creates a row of one of these types;
+// nothing validates through it or reads its tools yet. travel_checkin's actual assistant tools
 // (list_travel_checkins, count_travel_days in ai/assistant.ts) still go through the older
 // ToolKey/CONDITIONAL_TOOLS gate unchanged; this registry is what a genuinely new type (expense,
 // Phase C) plugs into first.
