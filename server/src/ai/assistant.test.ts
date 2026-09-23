@@ -40,6 +40,7 @@ import {
   setPendingSetup,
   listUnmetRequests,
   findEntityByName,
+  listActiveFactsForEntity,
   getRelatedEntities,
   linkRecords,
   appendWhatsAppMessage,
@@ -657,10 +658,9 @@ describe("remember tool — entity linking", () => {
     expect(result).toEqual({ ok: true });
 
     const entity = findEntityByName(user.id, "Sarah", "person");
-    expect(entity?.data.notes).toEqual([expect.objectContaining({ text: "Handles invoicing" })]);
-    // Still also writes the flat memory_notes row — remember's core behavior is unchanged.
-    const [saved] = listMemoryNotes(user.id);
-    expect(saved.content).toBe("Handles invoicing");
+    expect(listActiveFactsForEntity(user.id, entity!.id).map((f) => f.content)).toEqual(["Handles invoicing"]);
+    // One row, not two: the fact itself carries the entity.
+    expect(listMemoryNotes(user.id).map((n) => n.content)).toEqual(["Handles invoicing"]);
   });
 
   it("a second remember call for the same name appends onto the same entity", async () => {
@@ -677,9 +677,9 @@ describe("remember tool — entity linking", () => {
     });
 
     const entity = findEntityByName(user.id, "Sarah", "person");
-    expect(entity?.data.notes.map((n) => n.text)).toEqual([
-      "Handles invoicing",
+    expect(listActiveFactsForEntity(user.id, entity!.id).map((f) => f.content)).toEqual([
       "Prefers email over calls",
+      "Handles invoicing",
     ]);
   });
 
@@ -788,12 +788,13 @@ describe("recall_entity tool", () => {
     });
 
     const result = (await runTool(user.id, "recall_entity", { entity_name: "Sarah" })) as {
-      entity: { data: { name: string; notes: { text: string }[] } };
-      related: { data: { name: string } }[];
+      entity: { name: string };
+      facts: { content: string }[];
+      related: { relation: string; entity: { name: string } }[];
     };
-    expect(result.entity.data.name).toBe("Sarah");
-    expect(result.entity.data.notes.map((n) => n.text)).toEqual(["Leads Project Falcon"]);
-    expect(result.related.map((e) => e.data.name)).toEqual(["Project Falcon"]);
+    expect(result.entity.name).toBe("Sarah");
+    expect(result.facts.map((f) => f.content)).toEqual(["Leads Project Falcon"]);
+    expect(result.related.map((r) => r.entity.name)).toEqual(["Project Falcon"]);
   });
 
   it("respects an optional entity_type filter", async () => {
@@ -813,8 +814,8 @@ describe("recall_entity tool", () => {
     const rightType = (await runTool(user.id, "recall_entity", {
       entity_name: "Lisbon",
       entity_type: "place",
-    })) as { entity: { data: { name: string } } };
-    expect(rightType.entity.data.name).toBe("Lisbon");
+    })) as { entity: { name: string } };
+    expect(rightType.entity.name).toBe("Lisbon");
   });
 
   it("returns an error object (not a throw) when nothing matches", async () => {
@@ -836,10 +837,11 @@ describe("recall_entity tool", () => {
     });
 
     const hit = (await runTool(user.id, "recall_entity", { entity_name: "Sarah" })) as {
-      entity: { data: { name: string; notes: { text: string }[] } };
+      entity: { name: string };
+      facts: { content: string }[];
     };
-    expect(hit.entity.data.name).toBe("Sarah");
-    expect(hit.entity.data.notes.map((n) => n.text)).toEqual(["Handles invoicing"]);
+    expect(hit.entity.name).toBe("Sarah");
+    expect(hit.facts.map((f) => f.content)).toEqual(["Handles invoicing"]);
 
     const miss = await runTool(user.id, "recall_entity", { entity_name: "Hotel Eva" });
     expect(miss).toEqual({ error: 'no entity found matching "Hotel Eva"' });
@@ -868,15 +870,16 @@ describe("remember + recall_entity end-to-end", () => {
     });
 
     const result = (await runTool(user.id, "recall_entity", { entity_name: "Sarah" })) as {
-      entity: { data: { name: string; notes: { text: string }[] } };
-      related: { data: { name: string } }[];
+      entity: { name: string };
+      facts: { content: string }[];
+      related: { relation: string; entity: { name: string } }[];
     };
-    expect(result.entity.data.name).toBe("Sarah");
-    expect(result.entity.data.notes.map((n) => n.text)).toEqual([
-      "Handles invoicing",
+    expect(result.entity.name).toBe("Sarah");
+    expect(result.facts.map((f) => f.content)).toEqual([
       "Prefers email over calls",
+      "Handles invoicing",
     ]);
-    expect(result.related.map((e) => e.data.name)).toEqual(["Project Falcon"]);
+    expect(result.related.map((r) => r.entity.name)).toEqual(["Project Falcon"]);
   });
 });
 

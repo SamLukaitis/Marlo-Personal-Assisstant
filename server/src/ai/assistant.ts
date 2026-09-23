@@ -3,7 +3,6 @@ import {
   listAccounts,
   getSetting,
   listRecentMemoryNotes,
-  addMemoryNote,
   searchMemoryNotes,
   createReminder,
   listActiveRemindersForOwner,
@@ -20,10 +19,12 @@ import {
   deleteEntity,
   linkRecords,
   getLinksTo,
-  getLinksFrom,
   getRelatedEntities,
   findOrCreateEntity,
-  appendEntityNote,
+  addFact,
+  listActiveFactsForEntity,
+  linkEntitiesOnce,
+  listEntityRelations,
   findEntityByName,
   searchReadEmails,
   getDocument,
@@ -604,7 +605,7 @@ const ALWAYS_ON_TOOLS: Anthropic.ToolUnion[] = [
   {
     name: "recall_entity",
     description:
-      "Look up everything remembered about a specific person, place, project, or other named subject in one call — the entity's accumulated notes plus everything linked to it (via remember's relates_to). Use this instead of search_memory when the user asks about a specific named thing, e.g. 'what do you know about Sarah'.",
+      "Look up everything remembered about a specific person, place, project, or other named subject in one call — its facts (each with an id you can pass to remember's replaces_id or forget_memory) plus the other remembered people/places/things it's linked to and how. Use this instead of search_memory when the user asks about a specific named thing, e.g. 'what do you know about Sarah'.",
     input_schema: {
       type: "object",
       properties: {
@@ -1159,28 +1160,16 @@ export async function runTool(
       return { ok: true };
     case "remember": {
       const note = input.note as string;
-      addMemoryNote(ownerId, note);
-
       const entityName = (input.entity_name as string | undefined)?.trim();
       const entityType = (input.entity_type as string | undefined)?.trim();
-      if (entityName && entityType) {
-        const entity = findOrCreateEntity(ownerId, entityType, entityName);
-        appendEntityNote(ownerId, entity.id, note);
+      const entity = entityName && entityType ? findOrCreateEntity(ownerId, entityType, entityName) : null;
 
-        const relatesTo = (input.relates_to as string[] | undefined) ?? [];
-        for (const otherName of relatesTo) {
+      addFact(ownerId, { content: note, source: "told", entityId: entity?.id ?? null });
+
+      if (entity) {
+        for (const otherName of (input.relates_to as string[] | undefined) ?? []) {
           const other = findEntityByName(ownerId, otherName);
-          if (!other) continue;
-          const alreadyLinked = getLinksFrom(ownerId, "entity", entity.id).some(
-            (link) => link.relation === "relates_to" && link.toType === "entity" && link.toId === other.id
-          );
-          if (!alreadyLinked) {
-            linkRecords(ownerId, {
-              relation: "relates_to",
-              from: { type: "entity", id: entity.id },
-              to: { type: "entity", id: other.id },
-            });
-          }
+          if (other) linkEntitiesOnce(ownerId, entity.id, "relates_to", other.id);
         }
       }
       return { ok: true };
@@ -1288,7 +1277,11 @@ export async function runTool(
       const entityType = input.entity_type as string | undefined;
       const entity = findEntityByName(ownerId, entityName, entityType);
       if (!entity) return { error: `no entity found matching "${entityName}"` };
-      return { entity, related: getRelatedEntities(ownerId, { type: "entity", id: entity.id }) };
+      return {
+        entity: { id: entity.id, type: entity.type, name: entity.data.name, aliases: entity.data.aliases },
+        facts: listActiveFactsForEntity(ownerId, entity.id).map((f) => ({ id: f.id, content: f.content, kind: f.kind })),
+        related: listEntityRelations(ownerId, entity.id),
+      };
     }
     case "list_flagged_emails": {
       const category = input.category as ImportantEmailEntityData["category"] | undefined;

@@ -2599,15 +2599,50 @@ export function getRelatedEntities<T = unknown>(
 
 export interface RememberedEntityData {
   name: string;
-  notes: { text: string; at: number }[];
+  // Other names the same subject goes by ("Sarah Jones" for "Sarah") — matched by findEntityByName
+  // and retrieval so the extractor and remember converge on one entity instead of near-duplicates.
+  aliases: string[];
+}
+
+export interface RememberedEntitySummary {
+  id: number;
+  type: string;
+  name: string;
+  aliases: string[];
+  updatedAt: number;
+}
+
+export interface EntityRelation {
+  relation: string;
+  direction: "out" | "in";
+  entity: { id: number; type: string; name: string };
 }
 
 function normalizeEntityName(name: string): string {
   return name.trim().toLowerCase();
 }
 
-// Dedupes by owner+type+lowercased name so the same subject mentioned across separate
-// remember calls accumulates onto one entity instead of spawning near-duplicate rows.
+// Narrows an entity's untyped `data` down to RememberedEntityData — required because
+// listEntities(ownerId, {}) returns entities of every type, including document-extracted ones
+// (travel_checkin, trip, expense, booking) whose data shape is unrelated. A `name` string alone
+// isn't enough (booking also has one); the `aliases` array is what no document-extracted type has.
+function isRememberedEntity(data: unknown): data is RememberedEntityData {
+  return (
+    typeof data === "object" &&
+    data !== null &&
+    typeof (data as RememberedEntityData).name === "string" &&
+    Array.isArray((data as RememberedEntityData).aliases)
+  );
+}
+
+function listRememberedEntityRows(ownerId: number, type?: string): EntityRow<RememberedEntityData>[] {
+  return listEntities<unknown>(ownerId, type ? { type } : {}).filter(
+    (e): e is EntityRow<RememberedEntityData> => isRememberedEntity(e.data)
+  );
+}
+
+// Dedupes by owner+type+lowercased name-or-alias so the same subject mentioned across separate
+// remember calls or extraction batches accumulates onto one entity.
 export function findOrCreateEntity(
   ownerId: number,
   type: string,
@@ -2617,41 +2652,10 @@ export function findOrCreateEntity(
   if (existing) return existing;
   const trimmed = name.trim();
   if (!trimmed) throw new Error("findOrCreateEntity: name must not be blank");
-  return saveEntity<RememberedEntityData>(ownerId, {
-    type,
-    data: { name: trimmed, notes: [] },
-  });
+  return saveEntity<RememberedEntityData>(ownerId, { type, data: { name: trimmed, aliases: [] } });
 }
 
-export function appendEntityNote(
-  ownerId: number,
-  entityId: number,
-  text: string
-): EntityRow<RememberedEntityData> {
-  const entity = getEntity<RememberedEntityData>(ownerId, entityId);
-  if (!entity) throw new Error(`entity ${entityId} not found`);
-  const notes = [...entity.data.notes, { text, at: Date.now() }];
-  return updateEntity<RememberedEntityData>(ownerId, entityId, {
-    data: { ...entity.data, notes },
-  });
-}
-
-// Narrows an entity's untyped `data` down to RememberedEntityData shape — required because
-// listEntities(ownerId, {}) (no type filter) returns entities of every type for this owner,
-// including pre-existing document-extracted ones (travel_checkin, trip, expense, booking)
-// whose data shape is unrelated. A `name` string alone isn't enough to tell them apart
-// (booking also has one) — requiring `notes` too is what no pre-existing type has.
-function isRememberedEntity(data: unknown): data is RememberedEntityData {
-  return (
-    typeof data === "object" &&
-    data !== null &&
-    typeof (data as RememberedEntityData).name === "string" &&
-    Array.isArray((data as RememberedEntityData).notes)
-  );
-}
-
-// Case-insensitive exact-name lookup, optionally narrowed to one type — used both by
-// findOrCreateEntity's dedupe check and by remember's relates_to / recall_entity.
+// Case-insensitive exact match on name or any alias, optionally narrowed to one type.
 export function findEntityByName(
   ownerId: number,
   name: string,
@@ -2660,11 +2664,56 @@ export function findEntityByName(
   const normalized = normalizeEntityName(name);
   if (!normalized) return null;
   return (
-    listEntities<unknown>(ownerId, type ? { type } : {}).find(
-      (e): e is EntityRow<RememberedEntityData> =>
-        isRememberedEntity(e.data) && normalizeEntityName(e.data.name) === normalized
+    listRememberedEntityRows(ownerId, type).find((e) =>
+      [e.data.name, ...e.data.aliases].some((n) => normalizeEntityName(n) === normalized)
     ) ?? null
   );
+}
+
+export function addEntityAlias(ownerId: number, entityId: number, alias: string): EntityRow<RememberedEntityData> {
+  const entity = getEntity<RememberedEntityData>(ownerId, entityId);
+  if (!entity || !isRememberedEntity(entity.data)) throw new Error(`remembered entity ${entityId} not found`);
+  const trimmed = alias.trim();
+  const known = [entity.data.name, ...entity.data.aliases].map(normalizeEntityName);
+  if (!trimmed || known.includes(normalizeEntityName(trimmed))) return entity;
+  return updateEntity<RememberedEntityData>(ownerId, entityId, {
+    data: { ...entity.data, aliases: [...entity.data.aliases, trimmed] },
+  });
+}
+
+export function listRememberedEntities(ownerId: number): RememberedEntitySummary[] {
+  return listRememberedEntityRows(ownerId)
+    .map((e) => ({ id: e.id, type: e.type, name: e.data.name, aliases: e.data.aliases, updatedAt: e.updatedAt }))
+    .sort((a, b) => b.updatedAt - a.updatedAt || b.id - a.id);
+}
+
+// Entity→entity link with a free-text relation ("works_at", "sister_of"), created at most once
+// per (from, relation, to). Returns whether a new link was written.
+export function linkEntitiesOnce(ownerId: number, fromId: number, relation: string, toId: number): boolean {
+  if (fromId === toId) return false;
+  const exists = getLinksFrom(ownerId, "entity", fromId).some(
+    (l) => l.relation === relation && l.toType === "entity" && l.toId === toId
+  );
+  if (exists) return false;
+  linkRecords(ownerId, { relation, from: { type: "entity", id: fromId }, to: { type: "entity", id: toId } });
+  return true;
+}
+
+// Both directions of every link between this entity and another REMEMBERED entity — trips,
+// documents and other document-extracted entities are deliberately left out of memory output.
+export function listEntityRelations(ownerId: number, entityId: number): EntityRelation[] {
+  const toRelation = (relation: string, direction: "out" | "in", otherId: number): EntityRelation | null => {
+    const other = getEntity<unknown>(ownerId, otherId);
+    if (!other || !isRememberedEntity(other.data)) return null;
+    return { relation, direction, entity: { id: other.id, type: other.type, name: other.data.name } };
+  };
+  const out = getLinksFrom(ownerId, "entity", entityId)
+    .filter((l) => l.toType === "entity")
+    .map((l) => toRelation(l.relation, "out", l.toId));
+  const incoming = getLinksTo(ownerId, "entity", entityId)
+    .filter((l) => l.fromType === "entity")
+    .map((l) => toRelation(l.relation, "in", l.fromId));
+  return [...out, ...incoming].filter((r): r is EntityRelation => r !== null);
 }
 
 export interface ReadEmailRow {
