@@ -1,4 +1,5 @@
 import type Database from "better-sqlite3";
+import { getEntityTypeDef } from "../../services/entityTypes.js";
 
 // Brings memory_notes and the remember→entities bridge forward to the personal-memory-graph shape
 // (docs/superpowers/specs/2026-09-23-personal-memory-graph-design.md):
@@ -13,6 +14,8 @@ import type Database from "better-sqlite3";
 //   memory_notes row with entity_id set, so a correction or "forget" has exactly one copy to act
 //   on. The old remember tool wrote every entity note to BOTH places, so an identical flat row of
 //   the same owner is adopted (entity_id set on it) rather than duplicated.
+// - Remembered entities' types are lower-cased (the reserved-type check mirrors store.ts's
+//   isReservedEntityType, which can't be imported here: store.ts imports this file).
 //
 // Safe on every boot: columns/tables are guarded, and an entity is only rewritten while its data
 // still has a notes array.
@@ -70,6 +73,27 @@ export function migrateMemoryGraph(db: Database.Database): void {
 
       const { notes: _notes, ...rest } = data;
       rewrite.run(JSON.stringify({ ...rest, aliases: Array.isArray(rest.aliases) ? rest.aliases : [] }), row.id);
+    }
+
+    // Remembered entities (the rows carrying an aliases array — including the ones just rewritten
+    // above) are matched by type in lower case; older rows may have been saved as "Person". A type
+    // that lower-cases to a reserved one ("Booking") is left alone rather than moved into the
+    // pipeline that reads that type.
+    const mixedCase = db
+      .prepare(`SELECT id, type, data FROM entities WHERE type != lower(trim(type))`)
+      .all() as { id: number; type: string; data: string }[];
+    const retype = db.prepare(`UPDATE entities SET type = ? WHERE id = ?`);
+    for (const row of mixedCase) {
+      let data: unknown;
+      try {
+        data = JSON.parse(row.data);
+      } catch {
+        continue;
+      }
+      if (typeof data !== "object" || data === null || !Array.isArray((data as { aliases?: unknown }).aliases)) continue;
+      const lowered = row.type.trim().toLowerCase();
+      if (getEntityTypeDef(lowered) !== undefined || lowered === "important_email") continue;
+      retype.run(lowered, row.id);
     }
   })();
 }

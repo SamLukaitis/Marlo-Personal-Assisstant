@@ -186,11 +186,28 @@ describe("remember → entities bridge", () => {
     expect(listEntities(user.id, { type: "person" })).toHaveLength(1);
   });
 
-  it("find-or-create: same name under a different type is a different entity", () => {
+  // Supersedes the old "same name under a different type is a different entity": types are free
+  // text chosen by the model, so matching across them is what keeps one subject on one entity.
+  it("find-or-create: the same name under a different type reuses the existing entity", () => {
     const user = findOrCreateUserByEmail(uniqueEmail("findorcreate-difftype"));
-    const person = findOrCreateEntity(user.id, "person", "Lisbon");
-    const place = findOrCreateEntity(user.id, "place", "Lisbon");
-    expect(person.id).not.toBe(place.id);
+    const person = findOrCreateEntity(user.id, "person", "Sarah");
+    const colleague = findOrCreateEntity(user.id, "colleague", "sarah");
+    expect(colleague.id).toBe(person.id);
+    expect(colleague.type).toBe("person");
+    expect(listRememberedEntities(user.id)).toHaveLength(1);
+  });
+
+  it("find-or-create: an alias matches across types too", () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("findorcreate-difftype-alias"));
+    const sarah = findOrCreateEntity(user.id, "person", "Sarah");
+    addEntityAlias(user.id, sarah.id, "Sarah Jones");
+    expect(findOrCreateEntity(user.id, "contact", "Sarah Jones").id).toBe(sarah.id);
+  });
+
+  it("find-or-create: the reserved-type refusal still comes first, even when the name exists", () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("findorcreate-reserved-first"));
+    findOrCreateEntity(user.id, "person", "Hilton");
+    expect(() => findOrCreateEntity(user.id, "booking", "Hilton")).toThrow(/reserved entity type/);
   });
 
   it("find-or-create: scopes by owner — one user's entity is invisible to another", () => {
@@ -263,8 +280,9 @@ describe("remember → entities bridge", () => {
 
   it("findEntityByName: respects an optional type filter", () => {
     const user = findOrCreateUserByEmail(uniqueEmail("find-by-name-type"));
+    // Saved directly: findOrCreateEntity would reuse the person for the place (it matches across types).
     findOrCreateEntity(user.id, "person", "Lisbon");
-    const place = findOrCreateEntity(user.id, "place", "Lisbon");
+    const place = saveEntity(user.id, { type: "place", data: { name: "Lisbon", aliases: [] } });
     expect(findEntityByName(user.id, "Lisbon", "place")?.id).toBe(place.id);
     expect(findEntityByName(user.id, "Lisbon", "project")).toBeNull();
   });

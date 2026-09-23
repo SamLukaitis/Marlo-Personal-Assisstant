@@ -26,6 +26,7 @@ import {
   listEntityRelations,
   findEntityByName,
   forgetFacts,
+  forgetEntity,
   isMemoryKind,
   listCoreProfile,
   listNewestActiveFacts,
@@ -633,14 +634,21 @@ const ALWAYS_ON_TOOLS: Anthropic.ToolUnion[] = [
     name: "forget_memory",
     description:
       "Forget remembered facts the user says are wrong or asks you to forget. Pass the ids from the " +
-      "[#id] tags or search_memory/recall_entity results. Then tell the user plainly what you forgot. " +
-      "If something merely changed (they moved, changed jobs), use remember with replaces_id instead.",
+      "[#id] tags or search_memory/recall_entity results. To forget a person, place, project or other " +
+      "named subject entirely (\"forget everything about Sarah\"), pass its name in entity_names: that " +
+      "forgets all its facts and removes it and its links to other things. Give ids, entity_names or " +
+      "both. Then tell the user plainly what you forgot. If something merely changed (they moved, " +
+      "changed jobs), use remember with replaces_id instead.",
     input_schema: {
       type: "object",
       properties: {
         ids: { type: "array", items: { type: "number" }, description: "Fact ids to forget" },
+        entity_names: {
+          type: "array",
+          items: { type: "string" },
+          description: "Names of remembered people/places/projects/etc to forget entirely",
+        },
       },
-      required: ["ids"],
     },
   },
   {
@@ -1245,7 +1253,20 @@ export async function runTool(
       const ids = Array.isArray(input.ids)
         ? (input.ids as unknown[]).filter((id): id is number => typeof id === "number" && Number.isInteger(id))
         : [];
-      return { forgotten: forgetFacts(ownerId, ids) };
+      const names = Array.isArray(input.entity_names)
+        ? (input.entity_names as unknown[]).filter((n): n is string => typeof n === "string" && n.trim() !== "")
+        : [];
+      const forgotten = forgetFacts(ownerId, ids);
+      const forgottenEntities: string[] = [];
+      for (const name of names) {
+        // findEntityByName only ever returns this owner's remembered entities, never a booking,
+        // expense, trip or other document-extracted row.
+        const entity = findEntityByName(ownerId, name);
+        if (!entity) continue;
+        forgotten.push(...forgetEntity(ownerId, entity.id));
+        forgottenEntities.push(entity.data.name);
+      }
+      return { forgotten, forgotten_entities: forgottenEntities };
     }
     case "search_memory": {
       const query = ((input.query as string | undefined) ?? "").trim();

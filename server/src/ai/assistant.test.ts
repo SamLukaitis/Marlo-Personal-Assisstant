@@ -48,7 +48,10 @@ import {
   listCoreProfile,
   searchMemoryNotes,
   addFact,
+  listEntities,
+  listEntityRelations,
 } from "../db/store.js";
+import { retrieveRelevantMemory } from "./memoryRetrieval.js";
 import { IMPORTANT_EMAIL_ENTITY_TYPE } from "../services/importantEmailAlerts.js";
 import { getBriefingSettings, saveBriefingSettings, type BriefingSettings } from "../services/briefing.js";
 import { getXeroForwardingEmail } from "../services/xero.js";
@@ -1153,15 +1156,93 @@ describe("forget_memory tool", () => {
 
     const result = await runTool(owner.id, "forget_memory", { ids: [mine.id, theirs.id] });
 
-    expect(result).toEqual({ forgotten: [mine.id] });
+    expect(result).toEqual({ forgotten: [mine.id], forgotten_entities: [] });
     expect(searchMemoryNotes(owner.id, "shellfish")).toEqual([]);
     expect(listMemoryNotes(other.id)).toHaveLength(1);
   });
 
-  it("tolerates a missing or malformed ids array", async () => {
+  it("tolerates missing or malformed inputs", async () => {
     const user = findOrCreateUserByEmail(uniqueEmail("forget-tool-bad"));
-    expect(await runTool(user.id, "forget_memory", {})).toEqual({ forgotten: [] });
-    expect(await runTool(user.id, "forget_memory", { ids: ["x", 1.5] })).toEqual({ forgotten: [] });
+    const empty = { forgotten: [], forgotten_entities: [] };
+    expect(await runTool(user.id, "forget_memory", {})).toEqual(empty);
+    expect(await runTool(user.id, "forget_memory", { ids: ["x", 1.5] })).toEqual(empty);
+    expect(await runTool(user.id, "forget_memory", { entity_names: [42, "", "Nobody"] })).toEqual(empty);
+  });
+
+  it("does not require ids, now that entity_names is an alternative", () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("forget-tool-schema"));
+    const tool = buildToolsForOwner(user.id).find((t) => t.name === "forget_memory")!;
+    expect(tool.input_schema.required ?? []).not.toContain("ids");
+    expect(Object.keys(tool.input_schema.properties as object)).toEqual(expect.arrayContaining(["ids", "entity_names"]));
+  });
+
+  it("forgets a whole entity: its facts, the entity and its links, reachable nowhere afterwards", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("forget-entity"));
+    await runTool(user.id, "remember", { note: "Acme is a client", entity_name: "Acme", entity_type: "organisation" });
+    await runTool(user.id, "remember", {
+      note: "Sarah handles invoicing at Acme",
+      entity_name: "Sarah",
+      entity_type: "person",
+      relates_to: ["Acme"],
+      relation: "works_at",
+    });
+    await runTool(user.id, "remember", { note: "Sarah prefers email", entity_name: "Sarah", entity_type: "person" });
+    const sarah = findEntityByName(user.id, "Sarah")!;
+    const acme = findEntityByName(user.id, "Acme")!;
+    const sarahFactIds = listActiveFactsForEntity(user.id, sarah.id).map((f) => f.id);
+
+    const result = (await runTool(user.id, "forget_memory", { entity_names: ["sarah"] })) as {
+      forgotten: number[];
+      forgotten_entities: string[];
+    };
+
+    expect(result.forgotten.sort()).toEqual(sarahFactIds.sort());
+    expect(result.forgotten_entities).toEqual(["Sarah"]);
+    expect(await runTool(user.id, "recall_entity", { entity_name: "Sarah" })).toEqual({
+      error: 'no entity found matching "Sarah"',
+    });
+    expect(retrieveRelevantMemory(user.id, "email Sarah about invoicing") ?? "").not.toMatch(/Sarah/);
+    expect(listEntityRelations(user.id, acme.id)).toEqual([]);
+    expect(listMemoryNotes(user.id).map((f) => f.content)).toEqual(["Acme is a client"]);
+  });
+
+  it("combines ids and entity_names", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("forget-both"));
+    const loose = addFact(user.id, { content: "Likes jazz" });
+    await runTool(user.id, "remember", { note: "Bob plays tennis", entity_name: "Bob", entity_type: "person" });
+    const bobFact = listMemoryNotes(user.id).find((f) => f.content === "Bob plays tennis")!;
+
+    expect(await runTool(user.id, "forget_memory", { ids: [loose.id], entity_names: ["Bob"] })).toEqual({
+      forgotten: [loose.id, bobFact.id],
+      forgotten_entities: ["Bob"],
+    });
+  });
+
+  it("never touches another owner's entity of the same name", async () => {
+    const owner = findOrCreateUserByEmail(uniqueEmail("forget-entity-owner"));
+    const other = findOrCreateUserByEmail(uniqueEmail("forget-entity-other"));
+    await runTool(owner.id, "remember", { note: "Sarah is my sister", entity_name: "Sarah", entity_type: "person" });
+    await runTool(other.id, "remember", { note: "Sarah is my boss", entity_name: "Sarah", entity_type: "person" });
+
+    await runTool(owner.id, "forget_memory", { entity_names: ["Sarah"] });
+
+    expect(findEntityByName(owner.id, "Sarah")).toBeNull();
+    const theirs = findEntityByName(other.id, "Sarah")!;
+    expect(listActiveFactsForEntity(other.id, theirs.id).map((f) => f.content)).toEqual(["Sarah is my boss"]);
+  });
+
+  it("can never delete a document-extracted entity, which findEntityByName doesn't return", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("forget-entity-booking"));
+    saveEntity(user.id, {
+      type: "booking",
+      data: { kind: "hotel", name: "Hotel Eva", reference: "ABC", startDate: "2026-01-01", endDate: null },
+    });
+
+    expect(await runTool(user.id, "forget_memory", { entity_names: ["Hotel Eva"] })).toEqual({
+      forgotten: [],
+      forgotten_entities: [],
+    });
+    expect(listEntities(user.id, { type: "booking" })).toHaveLength(1);
   });
 });
 

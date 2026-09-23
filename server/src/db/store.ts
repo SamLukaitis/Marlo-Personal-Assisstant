@@ -1459,6 +1459,11 @@ export function addFact(
       )
       .run(ownerId, input.content, now, input.entityId ?? null, input.kind ?? "fact", input.source ?? "told");
     const id = Number(info.lastInsertRowid);
+    // Keeps an actively discussed entity among the newest, which is the order the extractor's
+    // top-50 entity candidates are taken in (listRememberedEntities).
+    if (input.entityId) {
+      db.prepare(`UPDATE entities SET updated_at = ? WHERE id = ? AND owner_id = ?`).run(now, input.entityId, ownerId);
+    }
     if (input.supersedesId) {
       db.prepare(
         `UPDATE memory_notes SET superseded_at = ?, superseded_by = ?
@@ -1477,6 +1482,22 @@ export function forgetFacts(ownerId: number, ids: number[]): number[] {
     `UPDATE memory_notes SET forgotten_at = ? WHERE id = ? AND owner_id = ? AND ${activeFact()}`
   );
   return inTransaction(() => ids.filter((id) => stmt.run(now, id, ownerId).changes > 0));
+}
+
+// forget_memory's entity_names path: forgets every active fact about a remembered entity, then
+// deletes the entity and its links (deleteEntity), in one transaction. Only ever reaches an
+// entity findEntityByName returned, i.e. a remembered one of this owner. Returns the forgotten ids.
+export function forgetEntity(ownerId: number, entityId: number): number[] {
+  return inTransaction(() => {
+    const ids = (
+      db
+        .prepare(`SELECT id FROM memory_notes WHERE owner_id = ? AND entity_id = ? AND ${activeFact()} ORDER BY id`)
+        .all(ownerId, entityId) as { id: number }[]
+    ).map((r) => r.id);
+    const forgotten = forgetFacts(ownerId, ids);
+    deleteEntity(ownerId, entityId);
+    return forgotten;
+  });
 }
 
 // Facts the user asked to forget since `sinceMs`, newest first. services/memoryExtraction.ts shows
@@ -2728,11 +2749,11 @@ function listRememberedEntityRows(ownerId: number, type?: string): EntityRow<Rem
   );
 }
 
-// Dedupes by owner+type+lowercased name-or-alias so the same subject mentioned across separate
-// remember calls or extraction batches accumulates onto one entity. type is normalised
-// (trim+lowercase) before lookup and save, so "Person"/"person " land on the same entity as
-// "person" — and rejected outright for a reserved type (isReservedEntityType above), so a
-// model-chosen type can never create a row another pipeline reads by type.
+// Dedupes by owner+lowercased name-or-alias (across all remembered types) so the same subject
+// mentioned across separate remember calls or extraction batches accumulates onto one entity. type
+// is normalised (trim+lowercase) before save, and rejected outright for a reserved type
+// (isReservedEntityType above), so a model-chosen type can never create a row another pipeline
+// reads by type.
 export function findOrCreateEntity(
   ownerId: number,
   type: string,
@@ -2742,7 +2763,10 @@ export function findOrCreateEntity(
   if (isReservedEntityType(normalizedType)) {
     throw new Error(`findOrCreateEntity: reserved entity type ${normalizedType}`);
   }
-  const existing = findEntityByName(ownerId, name, normalizedType);
+  // Matched across every remembered type, not just this one: types are free text the model picks
+  // per call ("person", then "colleague"), and matching within one type would split one subject
+  // across several entities.
+  const existing = findEntityByName(ownerId, name);
   if (existing) return existing;
   const trimmed = name.trim();
   if (!trimmed) throw new Error("findOrCreateEntity: name must not be blank");

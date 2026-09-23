@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import Database from "better-sqlite3";
 import path from "node:path";
 import {
@@ -14,6 +14,7 @@ import {
   searchMemoryNotes,
   listMemoryNotes,
   findOrCreateEntity,
+  listRememberedEntities,
 } from "./store.js";
 
 let counter = 0;
@@ -43,6 +44,41 @@ describe("addFact", () => {
     expect(listCoreProfile(user.id).map((f) => f.id)).toEqual([next.id]);
     expect(searchActiveFacts(user.id, "Paris")).toEqual([]);
     expect(listMemoryNotes(user.id).map((f) => f.id)).toEqual([next.id]);
+  });
+
+  it("bumps the entity's updated_at so actively discussed entities stay among the newest", () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("fact-bumps-entity"));
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      vi.setSystemTime(1_000_000);
+      const sarah = findOrCreateEntity(user.id, "person", "Sarah");
+      vi.setSystemTime(2_000_000);
+      findOrCreateEntity(user.id, "person", "Bob");
+      vi.setSystemTime(3_000_000);
+      addFact(user.id, { content: "Sarah prefers email", entityId: sarah.id });
+
+      expect(listRememberedEntities(user.id).map((e) => [e.name, e.updatedAt])).toEqual([
+        ["Sarah", 3_000_000],
+        ["Bob", 2_000_000],
+      ]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("never bumps another owner's entity", () => {
+    const owner = findOrCreateUserByEmail(uniqueEmail("fact-bump-owner"));
+    const intruder = findOrCreateUserByEmail(uniqueEmail("fact-bump-intruder"));
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      vi.setSystemTime(1_000_000);
+      const sarah = findOrCreateEntity(owner.id, "person", "Sarah");
+      vi.setSystemTime(2_000_000);
+      addFact(intruder.id, { content: "x", entityId: sarah.id });
+      expect(listRememberedEntities(owner.id)[0].updatedAt).toBe(1_000_000);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("ignores supersedesId pointing at another owner's fact", () => {

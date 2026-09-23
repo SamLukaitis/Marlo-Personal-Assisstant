@@ -117,6 +117,32 @@ describe("migrateMemoryGraph", () => {
     expect(data).toEqual({ kind: "hotel", name: "Hotel Eva" });
   });
 
+  it("lower-cases the type of remembered entities, including ones it just migrated, and nothing else", () => {
+    const db = buildDb();
+    const plain = insertEntity(db, 1, "Person", { name: "Sarah", aliases: [] });
+    const legacy = insertEntity(db, 1, " Place ", { name: "Lisbon", notes: [{ text: "Sunny", at: 1 }] });
+    const reserved = insertEntity(db, 1, "Booking", { name: "Hilton", aliases: [] });
+    const document = insertEntity(db, 1, "Custom_Doc", { name: "Scan" });
+    const typeOf = (id: number) => (db.prepare(`SELECT type FROM entities WHERE id = ?`).get(id) as { type: string }).type;
+
+    migrateMemoryGraph(db);
+
+    expect(typeOf(plain)).toBe("person");
+    expect(typeOf(legacy)).toBe("place");
+    // Lower-casing would move it into the booking pipeline's type, so it's left as it is.
+    expect(typeOf(reserved)).toBe("Booking");
+    // No aliases array: not a remembered entity.
+    expect(typeOf(document)).toBe("Custom_Doc");
+
+    migrateMemoryGraph(db);
+    expect([typeOf(plain), typeOf(legacy), typeOf(reserved), typeOf(document)]).toEqual([
+      "person",
+      "place",
+      "Booking",
+      "Custom_Doc",
+    ]);
+  });
+
   it("is idempotent — a second run changes nothing", () => {
     const db = buildDb();
     insertEntity(db, 1, "person", { name: "Sarah", notes: [{ text: "Prefers email", at: 42 }] });
