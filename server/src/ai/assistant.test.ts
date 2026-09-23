@@ -47,6 +47,9 @@ import {
   saveEntity,
   upsertReadEmail,
   listActiveRemindersForOwner,
+  listCoreProfile,
+  searchMemoryNotes,
+  addFact,
 } from "../db/store.js";
 import { IMPORTANT_EMAIL_ENTITY_TYPE } from "../services/importantEmailAlerts.js";
 import { getBriefingSettings, saveBriefingSettings, type BriefingSettings } from "../services/briefing.js";
@@ -1081,6 +1084,103 @@ describe("search_memory tool", () => {
 
     const results = (await runTool(user.id, "search_memory", { query: "trip", limit: 2 })) as unknown[];
     expect(results).toHaveLength(2);
+  });
+});
+
+describe("remember — kind, replaces_id, relation", () => {
+  it("files a core fact when kind is core", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("remember-kind-core"));
+    await runTool(user.id, "remember", { note: "The user's name is Sam", kind: "core" });
+    expect(listCoreProfile(user.id).map((f) => f.content)).toEqual(["The user's name is Sam"]);
+  });
+
+  it("an unknown kind falls back to fact", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("remember-kind-bad"));
+    await runTool(user.id, "remember", { note: "Something", kind: "banana" });
+    expect(listMemoryNotes(user.id)[0].kind).toBe("fact");
+  });
+
+  it("replaces_id supersedes the old fact", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("remember-replaces"));
+    const old = addFact(user.id, { content: "Lives in Paris", kind: "core" });
+    await runTool(user.id, "remember", { note: "Lives in London", kind: "core", replaces_id: old.id });
+    expect(listCoreProfile(user.id).map((f) => f.content)).toEqual(["Lives in London"]);
+  });
+
+  it("replaces_id with another owner's fact id supersedes nothing", async () => {
+    const owner = findOrCreateUserByEmail(uniqueEmail("remember-replaces-owner"));
+    const intruder = findOrCreateUserByEmail(uniqueEmail("remember-replaces-intruder"));
+    const theirs = addFact(owner.id, { content: "Owner's fact" });
+    await runTool(intruder.id, "remember", { note: "Mine", replaces_id: theirs.id });
+    expect(listMemoryNotes(owner.id).map((f) => f.id)).toEqual([theirs.id]);
+  });
+
+  it("relation labels the relates_to links", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("remember-relation"));
+    await runTool(user.id, "remember", { note: "Acme is a client", entity_name: "Acme", entity_type: "organisation" });
+    await runTool(user.id, "remember", {
+      note: "Sarah works at Acme",
+      entity_name: "Sarah",
+      entity_type: "person",
+      relates_to: ["Acme"],
+      relation: "works_at",
+    });
+    const result = (await runTool(user.id, "recall_entity", { entity_name: "Sarah" })) as {
+      related: { relation: string; entity: { name: string } }[];
+    };
+    expect(result.related).toEqual([expect.objectContaining({ relation: "works_at", entity: expect.objectContaining({ name: "Acme" }) })]);
+  });
+});
+
+describe("forget_memory tool", () => {
+  it("is always available", () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("forget-toollist"));
+    expect(buildToolsForOwner(user.id).map((t) => t.name)).toContain("forget_memory");
+  });
+
+  it("forgets this owner's facts and reports which ids", async () => {
+    const owner = findOrCreateUserByEmail(uniqueEmail("forget-tool-owner"));
+    const other = findOrCreateUserByEmail(uniqueEmail("forget-tool-other"));
+    const mine = addFact(owner.id, { content: "Allergic to shellfish" });
+    const theirs = addFact(other.id, { content: "Allergic to peanuts" });
+
+    const result = await runTool(owner.id, "forget_memory", { ids: [mine.id, theirs.id] });
+
+    expect(result).toEqual({ forgotten: [mine.id] });
+    expect(searchMemoryNotes(owner.id, "shellfish")).toEqual([]);
+    expect(listMemoryNotes(other.id)).toHaveLength(1);
+  });
+
+  it("tolerates a missing or malformed ids array", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("forget-tool-bad"));
+    expect(await runTool(user.id, "forget_memory", {})).toEqual({ forgotten: [] });
+    expect(await runTool(user.id, "forget_memory", { ids: ["x", 1.5] })).toEqual({ forgotten: [] });
+  });
+});
+
+describe("search_memory — ids, kinds, entity names, empty query", () => {
+  it("returns id, content, kind and entity name", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("search-shape"));
+    await runTool(user.id, "remember", { note: "Sarah handles invoicing", entity_name: "Sarah", entity_type: "person" });
+    const results = (await runTool(user.id, "search_memory", { query: "invoicing" })) as unknown[];
+    expect(results).toEqual([
+      { id: expect.any(Number), content: "Sarah handles invoicing", kind: "fact", entity: "Sarah" },
+    ]);
+  });
+
+  it("falls back to any-term matching when an all-terms search finds nothing", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("search-fallback"));
+    await runTool(user.id, "remember", { note: "Allergic to shellfish" });
+    const results = (await runTool(user.id, "search_memory", { query: "shellfish lobster allergy" })) as { content: string }[];
+    expect(results.map((r) => r.content)).toEqual(["Allergic to shellfish"]);
+  });
+
+  it("with no query returns the core profile plus newest other facts", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("search-empty"));
+    await runTool(user.id, "remember", { note: "Name is Sam", kind: "core" });
+    await runTool(user.id, "remember", { note: "Likes jazz", kind: "preference" });
+    const results = (await runTool(user.id, "search_memory", {})) as { content: string }[];
+    expect(results.map((r) => r.content)).toEqual(["Name is Sam", "Likes jazz"]);
   });
 });
 

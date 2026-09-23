@@ -3,7 +3,6 @@ import {
   listAccounts,
   getSetting,
   listRecentMemoryNotes,
-  searchMemoryNotes,
   createReminder,
   listActiveRemindersForOwner,
   cancelReminder,
@@ -26,6 +25,12 @@ import {
   linkEntitiesOnce,
   listEntityRelations,
   findEntityByName,
+  forgetFacts,
+  isMemoryKind,
+  listCoreProfile,
+  listNewestActiveFacts,
+  searchActiveFacts,
+  type MemoryNoteRow,
   searchReadEmails,
   getDocument,
   getEnabledTools,
@@ -451,18 +456,18 @@ const ALWAYS_ON_TOOLS: Anthropic.ToolUnion[] = [
   {
     name: "search_memory",
     description:
-      "Search everything you've ever remembered about the user via the remember tool, not just " +
-      "what's listed in 'Things you remember about the user' above — that list only shows the most " +
-      "recent notes, so an older fact (something from months ago) won't be there but is still " +
-      "searchable here. Call this when the user references something they told you before that you " +
-      "don't see in your current context, e.g. 'what did I say my allergy was'.",
+      "Search everything you remember about the user — older facts that aren't in your current " +
+      "context are still here. Call it when the user refers to something they told you before that " +
+      "you don't see, e.g. 'what did I say my allergy was'. Call it with no query for 'what do you " +
+      "know about me' — that returns their core profile plus the most recent other facts. Results " +
+      "carry ids for remember's replaces_id and forget_memory.",
     input_schema: {
       type: "object",
       properties: {
-        query: { type: "string", description: "Keyword(s) to search for" },
-        limit: { type: "number", description: "Max notes to return, default 10" },
+        query: { type: "string", description: "Keyword(s) to search for; omit to list what you know" },
+        limit: { type: "number", description: "Max facts to return, default 10" },
       },
-      required: ["query"],
+      required: [],
     },
   },
   {
@@ -598,8 +603,43 @@ const ALWAYS_ON_TOOLS: Anthropic.ToolUnion[] = [
             "Optional. Names of other entities this one relates to. Only existing entities are " +
             "linked; names that don't match anything are ignored.",
         },
+        kind: {
+          type: "string",
+          enum: ["core", "fact", "preference"],
+          description:
+            "Optional, default 'fact'. 'core' only for identity-level facts about the user that should " +
+            "always be in mind (their name, partner/children/close family, home city, job/employer, a " +
+            "strong standing preference). 'preference' for likes/dislikes/how they want things done.",
+        },
+        replaces_id: {
+          type: "number",
+          description:
+            "Optional. When this note corrects or updates something you already remember, the id of " +
+            "that old fact (from the [#id] tags or search_memory/recall_entity results) — the old fact " +
+            "is retired instead of kept alongside the new one.",
+        },
+        relation: {
+          type: "string",
+          description:
+            "Optional, default 'relates_to'. How this entity relates to the relates_to entities, in " +
+            "snake_case, e.g. 'works_at', 'sister_of', 'lives_in', 'manages'.",
+        },
       },
       required: ["note"],
+    },
+  },
+  {
+    name: "forget_memory",
+    description:
+      "Forget remembered facts the user says are wrong or asks you to forget. Pass the ids from the " +
+      "[#id] tags or search_memory/recall_entity results. Then tell the user plainly what you forgot. " +
+      "If something merely changed (they moved, changed jobs), use remember with replaces_id instead.",
+    input_schema: {
+      type: "object",
+      properties: {
+        ids: { type: "array", items: { type: "number" }, description: "Fact ids to forget" },
+      },
+      required: ["ids"],
     },
   },
   {
@@ -1011,6 +1051,18 @@ function forModel(doc: DocumentRow) {
   return rest;
 }
 
+// The shape every memory-reading tool hands the model: the id is what makes replaces_id and
+// forget_memory usable; the entity name saves a recall_entity round-trip just to learn who a fact is about.
+function factForModel(ownerId: number, fact: MemoryNoteRow) {
+  const entity = fact.entityId ? getEntity<{ name?: unknown }>(ownerId, fact.entityId) : null;
+  return {
+    id: fact.id,
+    content: fact.content,
+    kind: fact.kind,
+    ...(typeof entity?.data.name === "string" ? { entity: entity.data.name } : {}),
+  };
+}
+
 // Real Gmail/Graph attachment ids are ~200-300 character opaque tokens. Models reliably fail to
 // copy a token that long back verbatim in a later tool call — they reproduce the first several
 // characters correctly and then drift/fabricate the rest, which is exactly what was causing
@@ -1163,23 +1215,43 @@ export async function runTool(
       const entityName = (input.entity_name as string | undefined)?.trim();
       const entityType = (input.entity_type as string | undefined)?.trim();
       const entity = entityName && entityType ? findOrCreateEntity(ownerId, entityType, entityName) : null;
+      const replacesId = input.replaces_id;
 
-      addFact(ownerId, { content: note, source: "told", entityId: entity?.id ?? null });
+      addFact(ownerId, {
+        content: note,
+        kind: isMemoryKind(input.kind) ? input.kind : "fact",
+        source: "told",
+        entityId: entity?.id ?? null,
+        supersedesId: typeof replacesId === "number" && Number.isInteger(replacesId) ? replacesId : null,
+      });
 
       if (entity) {
+        const relation = (input.relation as string | undefined)?.trim() || "relates_to";
         for (const otherName of (input.relates_to as string[] | undefined) ?? []) {
           const other = findEntityByName(ownerId, otherName);
-          if (other) linkEntitiesOnce(ownerId, entity.id, "relates_to", other.id);
+          if (other) linkEntitiesOnce(ownerId, entity.id, relation, other.id);
         }
       }
       return { ok: true };
     }
-    case "search_memory":
-      return searchMemoryNotes(
-        ownerId,
-        input.query as string,
-        (input.limit as number | undefined) ?? SEARCH_MEMORY_DEFAULT_LIMIT
-      );
+    case "forget_memory": {
+      const ids = Array.isArray(input.ids)
+        ? (input.ids as unknown[]).filter((id): id is number => typeof id === "number" && Number.isInteger(id))
+        : [];
+      return { forgotten: forgetFacts(ownerId, ids) };
+    }
+    case "search_memory": {
+      const query = ((input.query as string | undefined) ?? "").trim();
+      const limit = (input.limit as number | undefined) ?? SEARCH_MEMORY_DEFAULT_LIMIT;
+      let facts: MemoryNoteRow[];
+      if (!query) {
+        facts = [...listCoreProfile(ownerId), ...listNewestActiveFacts(ownerId, { limit: 20, excludeCore: true })];
+      } else {
+        facts = searchActiveFacts(ownerId, query, { mode: "all", limit });
+        if (facts.length === 0) facts = searchActiveFacts(ownerId, query, { mode: "any", limit });
+      }
+      return facts.map((f) => factForModel(ownerId, f));
+    }
     case "get_current_time": {
       const timezone = getUserTimezone(ownerId);
       if (!timezone) {
@@ -1671,8 +1743,10 @@ function buildRules(enabled: Set<ToolKey>): string {
     '- You can archive emails and apply labels/categories directly — archiving is fully reversible (the email is just removed from the inbox, never deleted) so you don\'t need to ask permission first, but when the query is broad or ambiguous (e.g. "archive everything" with no filter), confirm first with ask_user_choice(mode="confirm", confirm_tool="archive_messages", confirm_input=<the exact call>) instead of asking in prose.',
     "- Use search_contacts to resolve a name to an email address before drafting to someone when you don't already have their address.",
     "- If search_contacts (or any lookup) returns more than one plausible match and it's not obvious which one is meant, use ask_user_choice(mode=\"resume\") with one option per candidate instead of listing them in prose and waiting for a typed reply.",
-    "- Use the remember tool proactively whenever the user shares something worth recalling later (preferences, which account is which, standing instructions) — don't wait to be asked.",
-    "- When a remember note is about a specific, nameable, recurring subject (a person, place, project, etc) the user might ask about again by name, pass entity_name + entity_type on that same remember call so it files onto a lookup-able entity instead of only a flat note — don't do this for one-off preferences with no clear subject. Use recall_entity (not search_memory) when the user later asks about that subject by name — it returns the entity's notes plus everything linked to it in one call.",
+    "- Use the remember tool proactively whenever the user shares something worth recalling later (preferences, which account is which, standing instructions, people in their life) — don't wait to be asked. Use kind 'core' only for identity-level facts (their name, partner/children/close family, home city, job/employer).",
+    "- When a remember note is about a specific, nameable, recurring subject (a person, place, organisation, project) the user might ask about again by name, pass entity_name + entity_type on that same remember call; when it relates two such subjects, pass relates_to plus a relation like 'works_at'. Use recall_entity (not search_memory) when the user asks about that subject by name.",
+    "- When the user corrects or updates something you remember (they moved, changed jobs, you had it wrong), call remember with replaces_id set to the old fact's id rather than saving a second, conflicting fact. When they say something you remember is wrong or ask you to forget it, call forget_memory and tell them what you forgot.",
+    "- For 'what do you know about me', call search_memory with no query. Otherwise don't recite remembered facts unprompted — just use them.",
     "- Use flag_unmet_request whenever you have to tell the user you can't do something — call it in the same turn as your reply, don't wait to be asked.",
     "- Use set_reminder for anything the user wants to be nudged about at a specific time or on a recurring cadence — a one-shot ('remind me in 20 minutes'), a fixed burst in a window ('every 5 minutes between 10 and 10:30'), or repeat-until-they-reply. Never compute the date/time/timezone math yourself — pass through the raw numbers/clock-times the user said and let the tool do the arithmetic (see its description). remember's triggerAt no longer exists — set_reminder is the only way to schedule a WhatsApp push.",
     "- Use get_current_time whenever the user asks what time or date it is, or you need 'now' for a time-relative answer — you have no built-in clock, so never state a time/date from your own reasoning. It also doubles as how the user can check you have their timezone right.",
