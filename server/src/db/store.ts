@@ -893,8 +893,8 @@ if (!hasMigratedReminders) {
 }
 
 // Full-text index over memory notes, backing searchMemoryNotes() below. The system prompt only
-// ever injects the most recent N notes (listRecentMemoryNotes) — this is how the assistant reaches
-// older notes on demand instead of losing them once they age out of that window. External-content
+// ever carries the small core profile (listCoreProfile) — this is how the assistant reaches
+// everything else on demand instead of losing it. External-content
 // FTS5 table (content='memory_notes') so the indexed text isn't duplicated in the DB; triggers keep
 // it in sync with inserts/deletes (no update trigger — memory_notes rows are never content-edited,
 // only inserted or removed).
@@ -1406,16 +1406,6 @@ export function listMemoryNotes(ownerId: number): MemoryNoteRow[] {
   return db
     .prepare(`SELECT ${MEMORY_NOTE_COLUMNS} FROM memory_notes WHERE owner_id = ? AND ${activeFact()} ORDER BY id DESC`)
     .all(ownerId) as MemoryNoteRow[];
-}
-
-// Used when building the assistant's system prompt (unlike listMemoryNotes, which the Setup
-// page uses to show the full vault) — caps how many notes get resent as tokens on every single
-// call so the prompt doesn't grow forever as the vault accumulates facts over months of use.
-// Anything older than this window is still reachable via searchMemoryNotes() below, on demand.
-export function listRecentMemoryNotes(ownerId: number, limit = 30): MemoryNoteRow[] {
-  return db
-    .prepare(`SELECT ${MEMORY_NOTE_COLUMNS} FROM memory_notes WHERE owner_id = ? ORDER BY id DESC LIMIT ?`)
-    .all(ownerId, limit) as MemoryNoteRow[];
 }
 
 // triggerAt comes from the model as an ISO 8601 string (see the remember tool in assistant.ts) —

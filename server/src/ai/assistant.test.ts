@@ -35,8 +35,6 @@ import {
   setToolEnabled,
   getEnabledTools,
   listMemoryNotes,
-  addMemoryNote,
-  markMemorySurfaced,
   setPendingSetup,
   listUnmetRequests,
   findEntityByName,
@@ -221,32 +219,27 @@ describe("buildSystemPrompt", () => {
     expect(prompt).not.toContain("Things you've learned about the user over past conversations");
   });
 
-  it("annotates a memory note that has an armed (not-yet-sent) trigger", () => {
-    const user = findOrCreateUserByEmail(uniqueEmail("prompt-memory-armed"));
-    addMemoryNote(user.id, "Visa renewal is due", "2026-09-12T00:00:00Z");
+  it("renders active core facts as the profile and leaves other facts out of the system prompt", () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("prompt-core-profile"));
+    addFact(user.id, { content: "The user's name is Sam", kind: "core" });
+    addFact(user.id, { content: "Likes jazz", kind: "preference" });
     const prompt = buildSystemPrompt(user.id);
-    expect(prompt).toContain("Visa renewal is due");
-    expect(prompt).toContain("reminder set for");
-    expect(prompt).not.toContain("already sent");
+    expect(prompt).toContain("What you know about the user (core profile)");
+    expect(prompt).toContain("- The user's name is Sam");
+    expect(prompt).not.toContain("Likes jazz");
   });
 
-  it("annotates a memory note whose trigger already fired as already sent", () => {
-    const user = findOrCreateUserByEmail(uniqueEmail("prompt-memory-sent"));
-    const past = new Date(Date.now() - 60_000).toISOString();
-    const note = addMemoryNote(user.id, "Overdue reminder", past);
-    markMemorySurfaced(user.id, note.id);
-    const prompt = buildSystemPrompt(user.id);
-    expect(prompt).toContain("Overdue reminder");
-    expect(prompt).toContain("reminder set for");
-    expect(prompt).toContain("already sent");
+  it("shows a placeholder when there is no core profile yet", () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("prompt-core-empty"));
+    expect(buildSystemPrompt(user.id)).toContain("(nothing known yet)");
   });
 
-  it("renders an ordinary note with no triggerAt as a plain line with no annotation", () => {
-    const user = findOrCreateUserByEmail(uniqueEmail("prompt-memory-plain"));
-    addMemoryNote(user.id, "The Acme account is my priority business");
-    const prompt = buildSystemPrompt(user.id);
-    expect(prompt).toContain("- The Acme account is my priority business");
-    expect(prompt).not.toContain("reminder set for");
+  it("is byte-identical after a non-core fact is added (system cache stays warm)", () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("prompt-core-stable"));
+    addFact(user.id, { content: "The user's name is Sam", kind: "core" });
+    const before = buildSystemPrompt(user.id);
+    addFact(user.id, { content: "Bought a new bike", kind: "fact" });
+    expect(buildSystemPrompt(user.id)).toBe(before);
   });
 
   it("includes the rolling conversation summary when one is passed", () => {

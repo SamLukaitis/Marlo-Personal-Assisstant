@@ -2,7 +2,6 @@ import Anthropic from "@anthropic-ai/sdk";
 import {
   listAccounts,
   getSetting,
-  listRecentMemoryNotes,
   createReminder,
   listActiveRemindersForOwner,
   cancelReminder,
@@ -46,6 +45,7 @@ import {
   type DocumentRow,
   type RegistrationProvider,
 } from "../db/store.js";
+import { retrieveRelevantMemory } from "./memoryRetrieval.js";
 import { sendConnectLink } from "../services/connectMailboxLink.js";
 import { validateTrip, type ExpenseData, type BookingData, type TripData } from "../services/entityValidation.js";
 import { listLocalFolders } from "../providers/local.js";
@@ -1799,21 +1799,13 @@ export function buildSystemPrompt(ownerId: number, conversationSummary?: string)
     ? folders.map((f) => `- ${f.path}`).join("\n")
     : "(none configured)";
 
-  const memories = listRecentMemoryNotes(ownerId).reverse();
-  const memoryList = memories.length
-    ? memories
-        .map(
-          (m) =>
-            `- ${m.content}${
-              m.triggerAt
-                ? ` (reminder set for ${new Date(m.triggerAt).toDateString()}${
-                    m.lastSurfacedAt ? ", already sent" : ""
-                  })`
-                : ""
-            }`
-        )
-        .join("\n")
-    : "(nothing remembered yet)";
+  // Only the small, identity-level core profile lives in the cached system block — it changes a
+  // few times a month, so this block is rarely rewritten. Everything else the assistant remembers
+  // is retrieved per message (ai/memoryRetrieval.ts) and injected outside the cached prefix.
+  const coreProfile = listCoreProfile(ownerId);
+  const coreList = coreProfile.length
+    ? coreProfile.map((f) => `- ${f.content}`).join("\n")
+    : "(nothing known yet)";
 
   const xeroEmail = getXeroForwardingEmail(ownerId);
   const xeroStatus = xeroEmail
@@ -1858,10 +1850,10 @@ export function buildSystemPrompt(ownerId: number, conversationSummary?: string)
     persona ? `The user described how they want you to behave:\n${persona}` : "",
     `Connected accounts:\n${accountList}`,
     `Local computer folders searchable by file name:\n${folderList}`,
-    `Things you remember about the user. You may naturally bring up one of these when it's ` +
+    `What you know about the user (core profile). You may naturally bring up one of these when it's ` +
       `genuinely relevant to what's being discussed — the way someone who was actually paying ` +
-      `attention would — without forcing it or repeating something you've already brought up ` +
-      `this conversation:\n${memoryList}`,
+      `attention would — without forcing it. Other things you remember are shown alongside the ` +
+      `user's latest message when relevant, and search_memory reaches the rest:\n${coreList}`,
     xeroStatus,
     pendingInvoiceStatus,
     conversationSummary
@@ -1874,24 +1866,35 @@ export function buildSystemPrompt(ownerId: number, conversationSummary?: string)
     .join("\n\n");
 }
 
-// The tools+system prefix is already cached (buildToolsForOwner / the system block below), but
-// `messages` itself is not — within one runAssistantChat's loop, every turn otherwise re-pays
-// full input price for every earlier turn's tool results, which is the real cost driver (see
-// feature-to-do/token-cost-reduction.md #2). Rebuilding from the original `messages` each call
-// (rather than mutating it) means it never carries cache_control itself, so there's never more
-// than the one breakpoint added here — no risk of exceeding Anthropic's max breakpoints per
-// request (2 already used by tools + system) as the array grows turn over turn. Because each
-// turn only APPENDS to `messages`, the prefix up to this breakpoint stays byte-identical to what
-// the previous turn cached, so it's read back at the cached (not full) rate.
-function withMessagesCacheBreakpoint(messages: Anthropic.MessageParam[]): Anthropic.MessageParam[] {
+function withCacheControlOnLastBlock(message: Anthropic.MessageParam): Anthropic.MessageParam {
+  const blocks =
+    typeof message.content === "string" ? [{ type: "text" as const, text: message.content }] : message.content;
+  if (blocks.length === 0) return message;
+  return {
+    ...message,
+    content: blocks.map((block, i) =>
+      i === blocks.length - 1 ? { ...block, cache_control: { type: "ephemeral" as const, ttl: "1h" as const } } : block
+    ),
+  };
+}
+
+// Two breakpoints inside `messages` (tools + system use the other two of Anthropic's four):
+// - the LAST block of the last message, so each tool-loop turn within one reply reads every
+//   earlier turn back at the cached rate (feature-to-do/token-cost-reduction.md #2);
+// - `stableIndex`: the message just before the latest user message. The latest user message
+//   carries a per-message relevant-memory block (ai/memoryRetrieval.ts) that is never stored in
+//   history, so the NEXT user turn's prefix diverges there — this breakpoint caches everything
+//   before it, which the next turn sends byte-identically.
+// Rebuilt from the original `messages` each call (never mutated), so no stale breakpoint lingers.
+function withMessagesCacheBreakpoint(
+  messages: Anthropic.MessageParam[],
+  stableIndex: number
+): Anthropic.MessageParam[] {
   if (messages.length === 0) return messages;
-  const last = messages[messages.length - 1];
-  const blocks = typeof last.content === "string" ? [{ type: "text" as const, text: last.content }] : last.content;
-  if (blocks.length === 0) return messages;
-  const cachedBlocks = blocks.map((block, i) =>
-    i === blocks.length - 1 ? { ...block, cache_control: { type: "ephemeral" as const, ttl: "1h" as const } } : block
+  const last = messages.length - 1;
+  return messages.map((m, i) =>
+    i === last || (i === stableIndex && stableIndex < last) ? withCacheControlOnLastBlock(m) : m
   );
-  return [...messages.slice(0, -1), { ...last, content: cachedBlocks }];
 }
 
 // A response's visible reply is every text block joined, not just the first one. Picking only the
@@ -1927,10 +1930,33 @@ export async function runAssistantChat(
   const model = chooseModel(lastUserMessage);
   const useThinking = model !== MODEL_SIMPLE; // skip extended thinking for cheap lookup turns
 
-  const messages: Anthropic.MessageParam[] = trimmedHistory.map((m) => ({
+  // The latest two user messages are the retrieval query, so a follow-up like "and what about
+  // her?" still pulls the memories the previous message did.
+  let latestUserIndex = -1;
+  for (let i = trimmedHistory.length - 1; i >= 0; i--) {
+    if (trimmedHistory[i].role === "user") {
+      latestUserIndex = i;
+      break;
+    }
+  }
+  const retrievalText = trimmedHistory
+    .filter((m) => m.role === "user")
+    .slice(-2)
+    .map((m) => m.content)
+    .join("\n");
+  const relevantMemory = retrieveRelevantMemory(ownerId, retrievalText);
+
+  const messages: Anthropic.MessageParam[] = trimmedHistory.map((m, i) => ({
     role: m.role,
-    content: m.content,
+    content:
+      i === latestUserIndex && relevantMemory
+        ? [
+            { type: "text" as const, text: relevantMemory },
+            { type: "text" as const, text: m.content },
+          ]
+        : m.content,
   }));
+  const stableHistoryIndex = latestUserIndex - 1;
 
   // Summed across every anthropic.messages.create call this invocation makes (the loop below can
   // take up to 8 turns for one user message, e.g. several tool round-trips) and recorded once,
@@ -1959,7 +1985,7 @@ export async function runAssistantChat(
       ...(useThinking ? { thinking: { type: "adaptive" as const } } : {}),
       system: [{ type: "text", text: system, cache_control: { type: "ephemeral", ttl: "1h" } }],
       tools: buildToolsForOwner(ownerId),
-      messages: withMessagesCacheBreakpoint(messages),
+      messages: withMessagesCacheBreakpoint(messages, stableHistoryIndex),
     });
     // response.usage is absent in some existing tests' mocked responses — tolerate that rather
     // than letting a usage-tracking side effect break the actual conversation flow.
