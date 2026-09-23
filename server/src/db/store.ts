@@ -1908,6 +1908,41 @@ export function getWhatsAppBacklogForSummary(
     .all(phone, afterId, windowStartId) as WhatsAppMessageRow[];
 }
 
+// How far services/memoryExtraction.ts has read this phone's transcript; null = never run.
+export function getMemoryExtractionCursor(phone: string): number | null {
+  const row = db
+    .prepare(`SELECT extracted_through_id AS id FROM memory_extraction_cursors WHERE phone = ?`)
+    .get(phone) as { id: number } | undefined;
+  return row ? row.id : null;
+}
+
+export function setMemoryExtractionCursor(phone: string, extractedThroughId: number): void {
+  db.prepare(
+    `INSERT INTO memory_extraction_cursors (phone, extracted_through_id, updated_at) VALUES (?, ?, ?)
+     ON CONFLICT(phone) DO UPDATE SET extracted_through_id = excluded.extracted_through_id,
+       updated_at = excluded.updated_at`
+  ).run(phone, extractedThroughId, Date.now());
+}
+
+export function getWhatsAppMessagesAfter(phone: string, afterId: number, limit: number): WhatsAppMessageRow[] {
+  return db
+    .prepare(
+      `SELECT id, phone, role, content, created_at AS createdAt FROM whatsapp_messages
+       WHERE phone = ? AND id > ? ORDER BY id ASC LIMIT ?`
+    )
+    .all(phone, afterId, limit) as WhatsAppMessageRow[];
+}
+
+export function getWhatsAppMessagesBefore(phone: string, beforeId: number, limit: number): WhatsAppMessageRow[] {
+  const rows = db
+    .prepare(
+      `SELECT id, phone, role, content, created_at AS createdAt FROM whatsapp_messages
+       WHERE phone = ? AND id < ? ORDER BY id DESC LIMIT ?`
+    )
+    .all(phone, beforeId, limit) as WhatsAppMessageRow[];
+  return rows.reverse();
+}
+
 export function normalizePhone(phone: string): string {
   return phone.replace(/[^0-9]/g, "");
 }
@@ -3512,6 +3547,14 @@ export function deleteUserCompletely(ownerId: number): { deletedDocumentPaths: s
     // summary in its system prompt. Must run before user_phone_numbers/whatsapp_messages go.
     db.prepare(
       `DELETE FROM whatsapp_conversation_summaries WHERE phone IN (
+         SELECT phone FROM user_phone_numbers WHERE user_id = ?
+         UNION SELECT phone FROM replay_parked_phones WHERE owner_id = ?
+         UNION SELECT phone FROM whatsapp_messages WHERE owner_id = ?)`
+    ).run(ownerId, ownerId, ownerId);
+    // Same phone-keyed shape as the summaries above — a new account on the same number must start
+    // extraction fresh, not resume the old owner's cursor.
+    db.prepare(
+      `DELETE FROM memory_extraction_cursors WHERE phone IN (
          SELECT phone FROM user_phone_numbers WHERE user_id = ?
          UNION SELECT phone FROM replay_parked_phones WHERE owner_id = ?
          UNION SELECT phone FROM whatsapp_messages WHERE owner_id = ?)`

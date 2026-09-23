@@ -25,6 +25,7 @@ import {
 } from "../services/postConnectSetup.js";
 import { handlePendingActionReply } from "../services/actionHandlers.js";
 import { maybeUpdateConversationSummary } from "../services/conversationSummary.js";
+import { maybeExtractMemory } from "../services/memoryExtraction.js";
 import { handleText, handleLocation } from "../services/chatDispatch.js";
 import { resolveQuotedMessageContext } from "../services/quotedMessage.js";
 import { queueForAssistant, looksComplete } from "../services/messageBatching.js";
@@ -139,6 +140,12 @@ export async function handleIncoming(message: IncomingWhatsAppMessage): Promise<
   // call every time (usually a no-op); never let it block or fail message handling.
   maybeUpdateConversationSummary(message.from).catch((err) =>
     console.error("whatsapp: conversation summary update failed", err)
+  );
+
+  // Fire-and-forget, same as the summary above — turns each batch of fresh messages into
+  // structured memories (services/memoryExtraction.ts). Usually a no-op; never blocks a reply.
+  maybeExtractMemory(message.from).catch((err) =>
+    console.error("whatsapp: memory extraction failed", err)
   );
 
   // The blocking free-text setup steps (ask_name, ask_first_task) — each either consumes a "skip"

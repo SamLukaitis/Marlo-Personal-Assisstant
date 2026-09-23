@@ -62,6 +62,9 @@ vi.mock("../services/actionHandlers.js", () => ({
 vi.mock("../services/conversationSummary.js", () => ({
   maybeUpdateConversationSummary: vi.fn().mockResolvedValue(undefined),
 }));
+vi.mock("../services/memoryExtraction.js", () => ({
+  maybeExtractMemory: vi.fn().mockResolvedValue(undefined),
+}));
 // messageBatching.js is deliberately NOT mocked — chatDispatch.ts/whatsappRoutes.ts now queue
 // through its real debounce logic (against the mocked db/store.js, ai/assistant.js, and
 // whatsappReply.js above), so every test that expects an assistant call needs to advance fake
