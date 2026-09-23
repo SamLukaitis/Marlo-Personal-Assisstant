@@ -842,19 +842,19 @@ if (!hasMigratedCheckins) {
 // Powers proactive memory surfacing: an optional point in time a memory becomes worth mentioning
 // unprompted (a stated deadline, a recurring commitment), and when it was last pushed so it never
 // repeats. Both nullable — an ordinary fact/preference leaves both null, unchanged from before.
-const memoryNoteColumns = (
+const existingMemoryNoteColumns = (
   db.prepare(`PRAGMA table_info(memory_notes)`).all() as { name: string }[]
 ).map((c) => c.name);
-if (!memoryNoteColumns.includes("trigger_at")) {
+if (!existingMemoryNoteColumns.includes("trigger_at")) {
   db.exec(`ALTER TABLE memory_notes ADD COLUMN trigger_at INTEGER`);
 }
-if (!memoryNoteColumns.includes("last_surfaced_at")) {
+if (!existingMemoryNoteColumns.includes("last_surfaced_at")) {
   db.exec(`ALTER TABLE memory_notes ADD COLUMN last_surfaced_at INTEGER`);
 }
 // Set once a reminder ages out of listDueMemoryReminders's 24h window without ever sending — lets
 // checkDueMemoryReminders notify the user exactly once that it gave up, and lets
 // searchReminderNotes report "failed" instead of leaving the reminder looking silently pending.
-if (!memoryNoteColumns.includes("gave_up_at")) {
+if (!existingMemoryNoteColumns.includes("gave_up_at")) {
   db.exec(`ALTER TABLE memory_notes ADD COLUMN gave_up_at INTEGER`);
 }
 db.exec(`CREATE INDEX IF NOT EXISTS idx_memory_notes_trigger ON memory_notes (owner_id, trigger_at)`);
@@ -1361,6 +1361,13 @@ export function saveBriefing(ownerId: number, date: string, content: string): Br
   return getBriefing(ownerId, date)!;
 }
 
+export type MemoryKind = "core" | "fact" | "preference";
+export type MemorySource = "told" | "extracted";
+
+export function isMemoryKind(value: unknown): value is MemoryKind {
+  return value === "core" || value === "fact" || value === "preference";
+}
+
 export interface MemoryNoteRow {
   id: number;
   content: string;
@@ -1368,13 +1375,36 @@ export interface MemoryNoteRow {
   triggerAt: number | null;
   lastSurfacedAt: number | null;
   gaveUpAt: number | null;
+  // The remembered entity this fact is about (a person, place, project...); null = about the user.
+  entityId: number | null;
+  kind: MemoryKind;
+  source: MemorySource;
 }
 
-const MEMORY_NOTE_COLUMNS = `id, content, created_at AS createdAt, trigger_at AS triggerAt, last_surfaced_at AS lastSurfacedAt, gave_up_at AS gaveUpAt`;
+// Built per table alias so the FTS joins below (which need an `m.` prefix) share one column list.
+function memoryNoteColumns(alias = ""): string {
+  const p = alias ? `${alias}.` : "";
+  return `${p}id AS id, ${p}content AS content, ${p}created_at AS createdAt, ${p}trigger_at AS triggerAt,
+    ${p}last_surfaced_at AS lastSurfacedAt, ${p}gave_up_at AS gaveUpAt, ${p}entity_id AS entityId,
+    ${p}kind AS kind, ${p}source AS source`;
+}
+const MEMORY_NOTE_COLUMNS = memoryNoteColumns();
+
+// A fact stops being "active" once a newer fact supersedes it or the user asks to forget it. Both
+// are soft markers (the row stays for auditing); every read the assistant or the Setup page sees
+// filters on this.
+function activeFact(alias = ""): string {
+  const p = alias ? `${alias}.` : "";
+  return `${p}superseded_at IS NULL AND ${p}forgotten_at IS NULL`;
+}
+
+export function inTransaction<T>(fn: () => T): T {
+  return db.transaction(fn)();
+}
 
 export function listMemoryNotes(ownerId: number): MemoryNoteRow[] {
   return db
-    .prepare(`SELECT ${MEMORY_NOTE_COLUMNS} FROM memory_notes WHERE owner_id = ? ORDER BY id DESC`)
+    .prepare(`SELECT ${MEMORY_NOTE_COLUMNS} FROM memory_notes WHERE owner_id = ? AND ${activeFact()} ORDER BY id DESC`)
     .all(ownerId) as MemoryNoteRow[];
 }
 
@@ -1409,28 +1439,126 @@ export function removeMemoryNote(ownerId: number, id: number): void {
   db.prepare(`DELETE FROM memory_notes WHERE id = ? AND owner_id = ?`).run(id, ownerId);
 }
 
-// On-demand lookup for notes outside the recency window listRecentMemoryNotes injects into every
-// prompt. Query terms are extracted and re-quoted rather than passed to MATCH raw — FTS5's query
-// syntax treats quotes/colons/NOT/OR etc. as operators, and a note-search phrase from the model
-// (or forwarded user text) containing any of those would otherwise throw instead of just matching
-// literally. Terms are ANDed: every term must appear (in any column-equivalent position) for a note
-// to match, which keeps multi-word queries from over-matching on any single common word.
-export function searchMemoryNotes(ownerId: number, query: string, limit = 10): MemoryNoteRow[] {
-  const terms = query.match(/[\p{L}\p{N}]+/gu) ?? [];
-  if (terms.length === 0) return [];
+// The structured write path — remember and services/memoryExtraction.ts both come through here.
+// supersedesId only ever retires an ACTIVE fact of the SAME owner (the WHERE clause is the guard),
+// so a stale or hallucinated id silently supersedes nothing while the new fact still saves.
+export function addFact(
+  ownerId: number,
+  input: {
+    content: string;
+    kind?: MemoryKind;
+    source?: MemorySource;
+    entityId?: number | null;
+    supersedesId?: number | null;
+  }
+): MemoryNoteRow {
+  return inTransaction(() => {
+    const now = Date.now();
+    const info = db
+      .prepare(
+        `INSERT INTO memory_notes (owner_id, content, created_at, entity_id, kind, source) VALUES (?, ?, ?, ?, ?, ?)`
+      )
+      .run(ownerId, input.content, now, input.entityId ?? null, input.kind ?? "fact", input.source ?? "told");
+    const id = Number(info.lastInsertRowid);
+    if (input.supersedesId) {
+      db.prepare(
+        `UPDATE memory_notes SET superseded_at = ?, superseded_by = ?
+         WHERE id = ? AND owner_id = ? AND ${activeFact()}`
+      ).run(now, id, input.supersedesId, ownerId);
+    }
+    return db.prepare(`SELECT ${MEMORY_NOTE_COLUMNS} FROM memory_notes WHERE id = ?`).get(id) as MemoryNoteRow;
+  });
+}
 
-  const matchQuery = terms.map((t) => `"${t.replace(/"/g, '""')}"`).join(" AND ");
+// Returns the ids that actually changed — unknown, already-forgotten, and other owners' ids are
+// skipped, so the assistant can report exactly what it forgot.
+export function forgetFacts(ownerId: number, ids: number[]): number[] {
+  const now = Date.now();
+  const stmt = db.prepare(
+    `UPDATE memory_notes SET forgotten_at = ? WHERE id = ? AND owner_id = ? AND ${activeFact()}`
+  );
+  return inTransaction(() => ids.filter((id) => stmt.run(now, id, ownerId).changes > 0));
+}
+
+// The always-in-the-prompt identity profile. Newest `limit` core facts, rendered oldest first so a
+// new core fact appends to the end — the cached system block only changes when a core fact does.
+export function listCoreProfile(ownerId: number, limit = 20): MemoryNoteRow[] {
   return db
     .prepare(
-      `SELECT m.id, m.content, m.created_at AS createdAt, m.trigger_at AS triggerAt,
-              m.last_surfaced_at AS lastSurfacedAt, m.gave_up_at AS gaveUpAt
+      `SELECT * FROM (
+         SELECT ${MEMORY_NOTE_COLUMNS} FROM memory_notes
+         WHERE owner_id = ? AND kind = 'core' AND ${activeFact()} ORDER BY id DESC LIMIT ?
+       ) ORDER BY id ASC`
+    )
+    .all(ownerId, limit) as MemoryNoteRow[];
+}
+
+export function listActiveFactsForEntity(ownerId: number, entityId: number, limit = 20): MemoryNoteRow[] {
+  return db
+    .prepare(
+      `SELECT ${MEMORY_NOTE_COLUMNS} FROM memory_notes
+       WHERE owner_id = ? AND entity_id = ? AND ${activeFact()} ORDER BY id DESC LIMIT ?`
+    )
+    .all(ownerId, entityId, limit) as MemoryNoteRow[];
+}
+
+export function listNewestActiveFacts(
+  ownerId: number,
+  opts: { limit?: number; excludeCore?: boolean } = {}
+): MemoryNoteRow[] {
+  return db
+    .prepare(
+      `SELECT ${MEMORY_NOTE_COLUMNS} FROM memory_notes
+       WHERE owner_id = ? AND ${activeFact()} ${opts.excludeCore ? "AND kind != 'core'" : ""}
+       ORDER BY id DESC LIMIT ?`
+    )
+    .all(ownerId, opts.limit ?? 20) as MemoryNoteRow[];
+}
+
+// Words too common to say anything about which fact is relevant — only dropped in "any" mode,
+// where ORing them in would match nearly every fact.
+const SEARCH_STOPWORDS = new Set(
+  ("a an and are as at be but by can do does for from had has have he her him his how i if in is it its " +
+    "me my of on or our she so that the their them they this to up us was we were what when where which " +
+    "who why will with you your about just also any tell know did get got")
+    .split(" ")
+);
+
+// FTS5 search over active facts. Terms are extracted and re-quoted rather than passed to MATCH raw —
+// FTS5's query syntax treats quotes/colons/NOT/OR etc. as operators, and a phrase from the model or
+// forwarded user text containing any of those would otherwise throw instead of matching literally.
+// mode "all" ANDs the terms (precise lookup: search_memory); "any" ORs them after dropping
+// stopwords and ranks by bm25 (relevance retrieval: memoryRetrieval.ts, memoryExtraction.ts).
+export function searchActiveFacts(
+  ownerId: number,
+  query: string,
+  opts: { mode?: "all" | "any"; limit?: number; excludeCore?: boolean } = {}
+): MemoryNoteRow[] {
+  const mode = opts.mode ?? "all";
+  let terms: string[] = query.match(/[\p{L}\p{N}]+/gu) ?? [];
+  if (mode === "any") {
+    terms = [...new Set(terms.map((t) => t.toLowerCase()))].filter(
+      (t) => t.length >= 2 && !SEARCH_STOPWORDS.has(t)
+    );
+  }
+  if (terms.length === 0) return [];
+
+  const matchQuery = terms.map((t) => `"${t.replace(/"/g, '""')}"`).join(mode === "all" ? " AND " : " OR ");
+  return db
+    .prepare(
+      `SELECT ${memoryNoteColumns("m")}
        FROM memory_notes_fts f
        JOIN memory_notes m ON m.id = f.rowid
-       WHERE f.memory_notes_fts MATCH ? AND m.owner_id = ?
+       WHERE f.memory_notes_fts MATCH ? AND m.owner_id = ? AND ${activeFact("m")}
+         ${opts.excludeCore ? "AND m.kind != 'core'" : ""}
        ORDER BY rank
        LIMIT ?`
     )
-    .all(matchQuery, ownerId, limit) as MemoryNoteRow[];
+    .all(matchQuery, ownerId, opts.limit ?? 10) as MemoryNoteRow[];
+}
+
+export function searchMemoryNotes(ownerId: number, query: string, limit = 10): MemoryNoteRow[] {
+  return searchActiveFacts(ownerId, query, { mode: "all", limit });
 }
 
 // Same FTS approach as searchMemoryNotes, restricted to notes that are actually reminders
@@ -1444,8 +1572,7 @@ export function searchReminderNotes(ownerId: number, query: string, limit = 10):
   const matchQuery = terms.map((t) => `"${t.replace(/"/g, '""')}"`).join(" AND ");
   return db
     .prepare(
-      `SELECT m.id, m.content, m.created_at AS createdAt, m.trigger_at AS triggerAt,
-              m.last_surfaced_at AS lastSurfacedAt, m.gave_up_at AS gaveUpAt
+      `SELECT ${memoryNoteColumns("m")}
        FROM memory_notes_fts f
        JOIN memory_notes m ON m.id = f.rowid
        WHERE f.memory_notes_fts MATCH ? AND m.owner_id = ? AND m.trigger_at IS NOT NULL
