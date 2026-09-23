@@ -5,6 +5,7 @@ import crypto from "node:crypto";
 import { encryptField, decryptField } from "../services/crypto.js";
 import { migrateUsersEmailNullable } from "./migrations/usersEmailNullable.js";
 import { migrateReplayParkMarker } from "./migrations/replayParkMarker.js";
+import { migrateMemoryGraph } from "./migrations/memoryGraph.js";
 
 // DATA_DIR lets tests (see server/src/test/setup.ts) point this at an isolated temp directory
 // instead of the real server/data — unset in normal dev/production, where this falls back to
@@ -914,6 +915,11 @@ db.exec(`
 if (!ftsExistedBefore) {
   db.exec(`INSERT INTO memory_notes_fts(rowid, content) SELECT id, content FROM memory_notes`);
 }
+
+// Structured-fact columns, the extraction cursor table, and moving remembered entities' inline
+// notes into memory_notes — see the migration's own comment. Runs after the FTS triggers exist so
+// any note it inserts is indexed like every other insert.
+migrateMemoryGraph(db);
 
 // Full-text index over the raw WhatsApp transcript, backing searchWhatsAppHistory() below — the
 // system prompt only ever includes the most recent MAX_HISTORY_MESSAGES messages plus a rolling
