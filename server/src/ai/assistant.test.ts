@@ -760,6 +760,20 @@ describe("remember tool — entity linking", () => {
     expect(result).toEqual({ ok: true });
     expect(findEntityByName(user.id, "Sarah")).toBeNull();
   });
+
+  it("a reserved entity_type (owned by another pipeline) saves the note with no entity, instead of creating one", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("remember-reserved-type"));
+    const result = await runTool(user.id, "remember", {
+      note: "Booked the Hilton for next week",
+      entity_name: "Hilton",
+      entity_type: "expense",
+    });
+    expect(result).toEqual({ ok: true });
+    expect(findEntityByName(user.id, "Hilton")).toBeNull();
+    const [saved] = listMemoryNotes(user.id);
+    expect(saved.content).toBe("Booked the Hilton for next week");
+    expect(saved.entityId).toBeNull();
+  });
 });
 
 describe("recall_entity tool", () => {

@@ -19,6 +19,7 @@ import {
   getLinksTo,
   getRelatedEntities,
   findOrCreateEntity,
+  isReservedEntityType,
   addFact,
   listActiveFactsForEntity,
   linkEntitiesOnce,
@@ -1214,7 +1215,13 @@ export async function runTool(
       const note = input.note as string;
       const entityName = (input.entity_name as string | undefined)?.trim();
       const entityType = (input.entity_type as string | undefined)?.trim();
-      const entity = entityName && entityType ? findOrCreateEntity(ownerId, entityType, entityName) : null;
+      // A reserved type (booking, expense, travel_checkin, trip, important_email) is never turned
+      // into an entity here — the note still saves, just with no entity attached, rather than
+      // injecting a bare {name, aliases} row into a table another pipeline reads by type.
+      const entity =
+        entityName && entityType && !isReservedEntityType(entityType)
+          ? findOrCreateEntity(ownerId, entityType, entityName)
+          : null;
       const replacesId = input.replaces_id;
 
       addFact(ownerId, {

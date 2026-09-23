@@ -27,6 +27,7 @@ import {
   linkEntitiesOnce,
   inTransaction,
   isMemoryKind,
+  isReservedEntityType,
   type MemoryNoteRow,
   type RememberedEntitySummary,
   type WhatsAppMessageRow,
@@ -165,7 +166,14 @@ export function applyMemoryOperations(
         const entityInput = valid(op.entity) ? op.entity : null;
         const entityName = nonEmptyString(entityInput?.name);
         const entityType = nonEmptyString(entityInput?.type);
-        const entity = entityName && entityType ? findOrCreateEntity(ownerId, entityType, entityName) : null;
+        // A reserved type (booking, expense, travel_checkin, trip, important_email) is never
+        // turned into an entity — the fact still counts as applied, just with no entity attached,
+        // rather than injecting a bare {name, aliases} row into a table another pipeline reads by
+        // type (list_bookings, the spending digest, trip prep).
+        const entity =
+          entityName && entityType && !isReservedEntityType(entityType)
+            ? findOrCreateEntity(ownerId, entityType, entityName)
+            : null;
         const supersedes = typeof op.supersedes_id === "number" && candidateIds.has(op.supersedes_id) ? op.supersedes_id : null;
         addFact(ownerId, { content, kind: op.kind, source: "extracted", entityId: entity?.id ?? null, supersedesId: supersedes });
         applied += 1;

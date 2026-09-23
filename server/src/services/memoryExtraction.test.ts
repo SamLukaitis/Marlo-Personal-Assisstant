@@ -27,6 +27,7 @@ import {
   listEntityRelations,
   getMemoryExtractionCursor,
   listRecentApiUsage,
+  listEntities,
 } from "../db/store.js";
 
 let counter = 0;
@@ -187,6 +188,21 @@ describe("applyMemoryOperations", () => {
     expect(findEntityByName(user.id, "Nobody")).toBeNull();
     expect(findEntityByName(user.id, "Ghost")).toBeNull();
     expect(findEntityByName(user.id, "Acme Ltd")?.data.name).toBe("Acme");
+  });
+
+  it("adds the fact with no entity for a reserved entity type, instead of polluting the typed entities table", () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("apply-reserved-type"));
+
+    const result = applyMemoryOperations(
+      user.id,
+      [{ op: "add_fact", content: "Booked the Hilton for the trip", kind: "fact", entity: { name: "Hilton", type: "booking" } }],
+      new Set()
+    );
+
+    expect(result).toEqual({ applied: 1, skipped: 0 });
+    const fact = listMemoryNotes(user.id).find((f) => f.content === "Booked the Hilton for the trip");
+    expect(fact?.entityId).toBeNull();
+    expect(listEntities(user.id, { type: "booking" })).toEqual([]);
   });
 });
 

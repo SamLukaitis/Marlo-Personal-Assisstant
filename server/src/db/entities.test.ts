@@ -15,6 +15,7 @@ import {
   listRememberedEntities,
   linkEntitiesOnce,
   listEntityRelations,
+  isReservedEntityType,
 } from "./store.js";
 
 let counter = 0;
@@ -308,5 +309,28 @@ describe("remember → entities bridge", () => {
     findOrCreateEntity(user.id, "person", "Sarah");
     expect(findEntityByName(user.id, "")).toBeNull();
     expect(findEntityByName(user.id, "   ")).toBeNull();
+  });
+
+  it("find-or-create: normalises type (trim+lowercase) so 'Person' and 'person ' resolve to the same entity", () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("findorcreate-type-normalise"));
+    const first = findOrCreateEntity(user.id, "Person", "Sarah");
+    const second = findOrCreateEntity(user.id, "person ", "Sarah");
+    expect(second.id).toBe(first.id);
+    expect(first.type).toBe("person");
+    expect(listEntities(user.id, { type: "person" })).toHaveLength(1);
+  });
+
+  it("isReservedEntityType: true (case/whitespace-insensitive) for types owned by other pipelines", () => {
+    expect(isReservedEntityType("Booking")).toBe(true);
+    expect(isReservedEntityType(" expense ")).toBe(true);
+    expect(isReservedEntityType("travel_checkin")).toBe(true);
+    expect(isReservedEntityType("trip")).toBe(true);
+    expect(isReservedEntityType("important_email")).toBe(true);
+    expect(isReservedEntityType("person")).toBe(false);
+  });
+
+  it("find-or-create: throws for a reserved entity type", () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("findorcreate-reserved"));
+    expect(() => findOrCreateEntity(user.id, "booking", "Hilton")).toThrow(/reserved entity type/);
   });
 });

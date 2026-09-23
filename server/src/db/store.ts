@@ -3,6 +3,7 @@ import path from "node:path";
 import fs from "node:fs";
 import crypto from "node:crypto";
 import { encryptField, decryptField } from "../services/crypto.js";
+import { getEntityTypeDef } from "../services/entityTypes.js";
 import { migrateUsersEmailNullable } from "./migrations/usersEmailNullable.js";
 import { migrateReplayParkMarker } from "./migrations/replayParkMarker.js";
 import { migrateMemoryGraph } from "./migrations/memoryGraph.js";
@@ -2647,6 +2648,21 @@ function normalizeEntityName(name: string): string {
   return name.trim().toLowerCase();
 }
 
+function normalizeEntityType(type: string): string {
+  return type.trim().toLowerCase();
+}
+
+// Entity types owned by other document-extraction pipelines: the registry in
+// services/entityTypes.ts (travel_checkin, expense, booking, trip) plus important_email, which
+// predates that registry and isn't in it. The remember/extraction bridge (findOrCreateEntity)
+// must refuse to create or match an entity under one of these — otherwise a model-chosen type like
+// "booking" would inject a bare {name, aliases} row that list_bookings, the spending digest, and
+// trip prep read as BookingData/ExpenseData/etc. instead.
+export function isReservedEntityType(type: string): boolean {
+  const normalized = normalizeEntityType(type);
+  return getEntityTypeDef(normalized) !== undefined || normalized === "important_email";
+}
+
 // Narrows an entity's untyped `data` down to RememberedEntityData — required because
 // listEntities(ownerId, {}) returns entities of every type, including document-extracted ones
 // (travel_checkin, trip, expense, booking) whose data shape is unrelated. A `name` string alone
@@ -2667,20 +2683,28 @@ function listRememberedEntityRows(ownerId: number, type?: string): EntityRow<Rem
 }
 
 // Dedupes by owner+type+lowercased name-or-alias so the same subject mentioned across separate
-// remember calls or extraction batches accumulates onto one entity.
+// remember calls or extraction batches accumulates onto one entity. type is normalised
+// (trim+lowercase) before lookup and save, so "Person"/"person " land on the same entity as
+// "person" — and rejected outright for a reserved type (isReservedEntityType above), so a
+// model-chosen type can never create a row another pipeline reads by type.
 export function findOrCreateEntity(
   ownerId: number,
   type: string,
   name: string
 ): EntityRow<RememberedEntityData> {
-  const existing = findEntityByName(ownerId, name, type);
+  const normalizedType = normalizeEntityType(type);
+  if (isReservedEntityType(normalizedType)) {
+    throw new Error(`findOrCreateEntity: reserved entity type ${normalizedType}`);
+  }
+  const existing = findEntityByName(ownerId, name, normalizedType);
   if (existing) return existing;
   const trimmed = name.trim();
   if (!trimmed) throw new Error("findOrCreateEntity: name must not be blank");
-  return saveEntity<RememberedEntityData>(ownerId, { type, data: { name: trimmed, aliases: [] } });
+  return saveEntity<RememberedEntityData>(ownerId, { type: normalizedType, data: { name: trimmed, aliases: [] } });
 }
 
-// Case-insensitive exact match on name or any alias, optionally narrowed to one type.
+// Case-insensitive exact match on name or any alias, optionally narrowed to one type (also
+// normalised, so a caller passing "Person" still matches rows saved as "person").
 export function findEntityByName(
   ownerId: number,
   name: string,
@@ -2688,8 +2712,9 @@ export function findEntityByName(
 ): EntityRow<RememberedEntityData> | null {
   const normalized = normalizeEntityName(name);
   if (!normalized) return null;
+  const normalizedType = type ? normalizeEntityType(type) : undefined;
   return (
-    listRememberedEntityRows(ownerId, type).find((e) =>
+    listRememberedEntityRows(ownerId, normalizedType).find((e) =>
       [e.data.name, ...e.data.aliases].some((n) => normalizeEntityName(n) === normalized)
     ) ?? null
   );
