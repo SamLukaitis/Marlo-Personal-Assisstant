@@ -4,6 +4,7 @@ import {
   addFact,
   addMemoryNote,
   forgetFacts,
+  listRecentlyForgottenFacts,
   listCoreProfile,
   listActiveFactsForEntity,
   listNewestActiveFacts,
@@ -65,6 +66,24 @@ describe("forgetFacts", () => {
     expect(listMemoryNotes(other.id).map((f) => f.id)).toEqual([theirs.id]);
     // Forgetting twice is a no-op, not an error.
     expect(forgetFacts(owner.id, [mine.id])).toEqual([]);
+  });
+});
+
+describe("listRecentlyForgottenFacts", () => {
+  it("lists this owner's forgotten facts since a time, newest first", () => {
+    const owner = findOrCreateUserByEmail(uniqueEmail("forgotten-list"));
+    const other = findOrCreateUserByEmail(uniqueEmail("forgotten-list-other"));
+    const a = addFact(owner.id, { content: "A" });
+    const b = addFact(owner.id, { content: "B" });
+    addFact(owner.id, { content: "Still active" });
+    const theirs = addFact(other.id, { content: "Theirs" });
+    forgetFacts(owner.id, [a.id]);
+    forgetFacts(owner.id, [b.id]);
+    forgetFacts(other.id, [theirs.id]);
+
+    expect(listRecentlyForgottenFacts(owner.id, 0).map((f) => f.id)).toEqual([b.id, a.id]);
+    expect(listRecentlyForgottenFacts(owner.id, 0, 1).map((f) => f.id)).toEqual([b.id]);
+    expect(listRecentlyForgottenFacts(owner.id, Date.now() + 60_000)).toEqual([]);
   });
 });
 

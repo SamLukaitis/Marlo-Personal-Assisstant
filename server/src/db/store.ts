@@ -1471,6 +1471,19 @@ export function forgetFacts(ownerId: number, ids: number[]): number[] {
   return inTransaction(() => ids.filter((id) => stmt.run(now, id, ownerId).changes > 0));
 }
 
+// Facts the user asked to forget since `sinceMs`, newest first. services/memoryExtraction.ts shows
+// these to the model and refuses to re-add them, since extraction runs behind the chat and would
+// otherwise bring a just-forgotten fact back. limit null = every one.
+export function listRecentlyForgottenFacts(ownerId: number, sinceMs: number, limit: number | null = 50): MemoryNoteRow[] {
+  return db
+    .prepare(
+      `SELECT ${MEMORY_NOTE_COLUMNS} FROM memory_notes
+       WHERE owner_id = ? AND forgotten_at IS NOT NULL AND forgotten_at >= ?
+       ORDER BY forgotten_at DESC, id DESC LIMIT ?`
+    )
+    .all(ownerId, sinceMs, limit ?? -1) as MemoryNoteRow[];
+}
+
 // The always-in-the-prompt identity profile. Newest `limit` core facts, rendered oldest first so a
 // new core fact appends to the end — the cached system block only changes when a core fact does.
 export function listCoreProfile(ownerId: number, limit = 20): MemoryNoteRow[] {
@@ -1925,22 +1938,46 @@ export function setMemoryExtractionCursor(phone: string, extractedThroughId: num
   ).run(phone, extractedThroughId, Date.now());
 }
 
-export function getWhatsAppMessagesAfter(phone: string, afterId: number, limit: number): WhatsAppMessageRow[] {
+// The three transcript reads below back services/memoryExtraction.ts and are scoped by owner as
+// well as phone: a number can be unbound and re-bound to another account, and the new owner's
+// extraction must never read (and turn into permanent facts) the previous owner's messages.
+export function getWhatsAppMessagesAfter(
+  ownerId: number,
+  phone: string,
+  afterId: number,
+  limit: number
+): WhatsAppMessageRow[] {
   return db
     .prepare(
       `SELECT id, phone, role, content, created_at AS createdAt FROM whatsapp_messages
-       WHERE phone = ? AND id > ? ORDER BY id ASC LIMIT ?`
+       WHERE phone = ? AND owner_id = ? AND id > ? ORDER BY id ASC LIMIT ?`
     )
-    .all(phone, afterId, limit) as WhatsAppMessageRow[];
+    .all(phone, ownerId, afterId, limit) as WhatsAppMessageRow[];
 }
 
-export function getWhatsAppMessagesBefore(phone: string, beforeId: number, limit: number): WhatsAppMessageRow[] {
+export function getWhatsAppMessagesBefore(
+  ownerId: number,
+  phone: string,
+  beforeId: number,
+  limit: number
+): WhatsAppMessageRow[] {
   const rows = db
     .prepare(
       `SELECT id, phone, role, content, created_at AS createdAt FROM whatsapp_messages
-       WHERE phone = ? AND id < ? ORDER BY id DESC LIMIT ?`
+       WHERE phone = ? AND owner_id = ? AND id < ? ORDER BY id DESC LIMIT ?`
     )
-    .all(phone, beforeId, limit) as WhatsAppMessageRow[];
+    .all(phone, ownerId, beforeId, limit) as WhatsAppMessageRow[];
+  return rows.reverse();
+}
+
+// The newest `limit` rows of this owner's thread on this phone, oldest first.
+export function getRecentWhatsAppMessagesForOwner(ownerId: number, phone: string, limit: number): WhatsAppMessageRow[] {
+  const rows = db
+    .prepare(
+      `SELECT id, phone, role, content, created_at AS createdAt FROM whatsapp_messages
+       WHERE phone = ? AND owner_id = ? ORDER BY id DESC LIMIT ?`
+    )
+    .all(phone, ownerId, limit) as WhatsAppMessageRow[];
   return rows.reverse();
 }
 
