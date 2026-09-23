@@ -5,8 +5,10 @@ import {
   findOrCreateEntity,
   addEntityAlias,
   addFact,
+  addMemoryNote,
   forgetFacts,
   linkEntitiesOnce,
+  listCoreProfile,
 } from "../db/store.js";
 
 let counter = 0;
@@ -86,6 +88,23 @@ describe("retrieveRelevantMemory", () => {
     for (let i = 0; i < 20; i++) addFact(user.id, { content: `Bob fact number ${i} about tennis`, entityId: bob.id });
     const block = retrieveRelevantMemory(user.id, "tennis with Bob")!;
     expect(block.split("\n").filter((l) => l.startsWith("- [#")).length).toBeLessThanOrEqual(12);
+  });
+
+  it("returns a core fact that has aged out of the 20-fact core profile when it's mentioned", () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("retrieve-old-core"));
+    const oldest = addFact(user.id, { content: "Grew up in Tbilisi", kind: "core" });
+    for (let i = 0; i < 20; i++) addFact(user.id, { content: `Core fact number ${i}`, kind: "core" });
+    expect(listCoreProfile(user.id).some((f) => f.id === oldest.id)).toBe(false);
+
+    expect(retrieveRelevantMemory(user.id, "what was Tbilisi like?")).toContain(`[#${oldest.id}] Grew up in Tbilisi`);
+    // The ones already in the profile still aren't repeated here.
+    expect(retrieveRelevantMemory(user.id, "core fact number")).toBeNull();
+  });
+
+  it("never returns a legacy reminder note", () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("retrieve-reminder"));
+    addMemoryNote(user.id, "Call the dentist about the crown", new Date(Date.now() + 86_400_000).toISOString());
+    expect(retrieveRelevantMemory(user.id, "dentist")).toBeNull();
   });
 
   it("returns null for blank text", () => {

@@ -1399,6 +1399,14 @@ function activeFact(alias = ""): string {
   return `${p}superseded_at IS NULL AND ${p}forgotten_at IS NULL`;
 }
 
+// The assistant-facing fact reads (profile, entity facts, newest, search) also skip legacy reminder
+// rows — memory_notes with a trigger_at from before reminders moved to their own table. Those are
+// still listed on the Setup page (listMemoryNotes) and by check_reminder_status (searchReminderNotes).
+function assistantFact(alias = ""): string {
+  const p = alias ? `${alias}.` : "";
+  return `${activeFact(alias)} AND ${p}trigger_at IS NULL`;
+}
+
 export function inTransaction<T>(fn: () => T): T {
   return db.transaction(fn)();
 }
@@ -1491,7 +1499,7 @@ export function listCoreProfile(ownerId: number, limit = 20): MemoryNoteRow[] {
     .prepare(
       `SELECT * FROM (
          SELECT ${MEMORY_NOTE_COLUMNS} FROM memory_notes
-         WHERE owner_id = ? AND kind = 'core' AND ${activeFact()} ORDER BY id DESC LIMIT ?
+         WHERE owner_id = ? AND kind = 'core' AND ${assistantFact()} ORDER BY id DESC LIMIT ?
        ) ORDER BY id ASC`
     )
     .all(ownerId, limit) as MemoryNoteRow[];
@@ -1501,7 +1509,7 @@ export function listActiveFactsForEntity(ownerId: number, entityId: number, limi
   return db
     .prepare(
       `SELECT ${MEMORY_NOTE_COLUMNS} FROM memory_notes
-       WHERE owner_id = ? AND entity_id = ? AND ${activeFact()} ORDER BY id DESC LIMIT ?`
+       WHERE owner_id = ? AND entity_id = ? AND ${assistantFact()} ORDER BY id DESC LIMIT ?`
     )
     .all(ownerId, entityId, limit) as MemoryNoteRow[];
 }
@@ -1513,7 +1521,7 @@ export function listNewestActiveFacts(
   return db
     .prepare(
       `SELECT ${MEMORY_NOTE_COLUMNS} FROM memory_notes
-       WHERE owner_id = ? AND ${activeFact()} ${opts.excludeCore ? "AND kind != 'core'" : ""}
+       WHERE owner_id = ? AND ${assistantFact()} ${opts.excludeCore ? "AND kind != 'core'" : ""}
        ORDER BY id DESC LIMIT ?`
     )
     .all(ownerId, opts.limit ?? 20) as MemoryNoteRow[];
@@ -1536,9 +1544,10 @@ const SEARCH_STOPWORDS = new Set(
 export function searchActiveFacts(
   ownerId: number,
   query: string,
-  opts: { mode?: "all" | "any"; limit?: number; excludeCore?: boolean } = {}
+  opts: { mode?: "all" | "any"; limit?: number; excludeIds?: number[] } = {}
 ): MemoryNoteRow[] {
   const mode = opts.mode ?? "all";
+  const excludeIds = opts.excludeIds ?? [];
   let terms: string[] = query.match(/[\p{L}\p{N}]+/gu) ?? [];
   if (mode === "any") {
     terms = [...new Set(terms.map((t) => t.toLowerCase()))].filter(
@@ -1553,12 +1562,12 @@ export function searchActiveFacts(
       `SELECT ${memoryNoteColumns("m")}
        FROM memory_notes_fts f
        JOIN memory_notes m ON m.id = f.rowid
-       WHERE f.memory_notes_fts MATCH ? AND m.owner_id = ? AND ${activeFact("m")}
-         ${opts.excludeCore ? "AND m.kind != 'core'" : ""}
+       WHERE f.memory_notes_fts MATCH ? AND m.owner_id = ? AND ${assistantFact("m")}
+         ${excludeIds.length ? `AND m.id NOT IN (${excludeIds.map(() => "?").join(", ")})` : ""}
        ORDER BY rank
        LIMIT ?`
     )
-    .all(matchQuery, ownerId, opts.limit ?? 10) as MemoryNoteRow[];
+    .all(matchQuery, ownerId, ...excludeIds, opts.limit ?? 10) as MemoryNoteRow[];
 }
 
 export function searchMemoryNotes(ownerId: number, query: string, limit = 10): MemoryNoteRow[] {

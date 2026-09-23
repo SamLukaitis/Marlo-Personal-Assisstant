@@ -1,4 +1,6 @@
 import { describe, it, expect } from "vitest";
+import Database from "better-sqlite3";
+import path from "node:path";
 import {
   findOrCreateUserByEmail,
   addFact,
@@ -133,11 +135,33 @@ describe("searchActiveFacts", () => {
     ).toEqual([shell.id, seats.id].sort());
   });
 
-  it("excludeCore drops core facts; a query of only stopwords returns nothing", () => {
-    const user = findOrCreateUserByEmail(uniqueEmail("search-core"));
-    addFact(user.id, { content: "Lives in Lisbon", kind: "core" });
-    expect(searchActiveFacts(user.id, "Lisbon", { mode: "any", excludeCore: true })).toEqual([]);
+  it("excludeIds drops exactly those facts; a query of only stopwords returns nothing", () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("search-exclude"));
+    const shown = addFact(user.id, { content: "Lives in Lisbon", kind: "core" });
+    const older = addFact(user.id, { content: "Born in Lisbon", kind: "core" });
+    expect(searchActiveFacts(user.id, "Lisbon", { mode: "any", excludeIds: [shown.id] }).map((f) => f.id)).toEqual([
+      older.id,
+    ]);
     expect(searchActiveFacts(user.id, "the and of", { mode: "any" })).toEqual([]);
+  });
+});
+
+describe("legacy reminder rows stay out of the assistant-facing fact reads", () => {
+  it("a note with a trigger is not a fact", () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("reminder-rows"));
+    const reminder = addMemoryNote(user.id, "Dentist crown appointment", new Date(Date.now() + 86_400_000).toISOString());
+    const sarah = findOrCreateEntity(user.id, "person", "Sarah");
+    // No write path sets kind/entity on a reminder row; force them so every read's filter is exercised.
+    const raw = new Database(path.join(process.env.DATA_DIR!, "app.db"));
+    raw.prepare(`UPDATE memory_notes SET kind = 'core', entity_id = ? WHERE id = ?`).run(sarah.id, reminder.id);
+    raw.close();
+
+    expect(listCoreProfile(user.id)).toEqual([]);
+    expect(listActiveFactsForEntity(user.id, sarah.id)).toEqual([]);
+    expect(listNewestActiveFacts(user.id)).toEqual([]);
+    expect(searchActiveFacts(user.id, "dentist", { mode: "any" })).toEqual([]);
+    // The Setup page still lists it.
+    expect(listMemoryNotes(user.id).map((f) => f.id)).toEqual([reminder.id]);
   });
 
   it("never returns another owner's facts", () => {

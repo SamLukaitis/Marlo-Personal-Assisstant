@@ -2,8 +2,11 @@
 // latest user message by runAssistantChat (never the cached system block — see the spec
 // docs/superpowers/specs/2026-09-23-personal-memory-graph-design.md §3). Pure SQLite, no LLM call:
 // remembered entities mentioned by name/alias pull their facts and relations; everything else comes
-// from an OR/bm25 full-text search. Core facts are skipped — they're already in the system prompt.
+// from an OR/bm25 full-text search. Facts in the core profile (listCoreProfile — the newest 20 core
+// facts) are skipped because they're already in the system prompt; an older core fact that has aged
+// out of the profile is retrieved like any other.
 import {
+  listCoreProfile,
   listRememberedEntities,
   listActiveFactsForEntity,
   listEntityRelations,
@@ -36,7 +39,8 @@ export function retrieveRelevantMemory(ownerId: number, text: string): string | 
   if (!text.trim()) return null;
 
   const lines: string[] = [];
-  const seenFacts = new Set<number>();
+  const profileIds = listCoreProfile(ownerId).map((f) => f.id);
+  const seenFacts = new Set<number>(profileIds);
   let chars = 0;
   let factCount = 0;
 
@@ -47,7 +51,7 @@ export function retrieveRelevantMemory(ownerId: number, text: string): string | 
     return true;
   };
   const pushFact = (fact: MemoryNoteRow) => {
-    if (fact.kind === "core" || seenFacts.has(fact.id) || factCount >= MAX_FACTS) return;
+    if (seenFacts.has(fact.id) || factCount >= MAX_FACTS) return;
     if (pushLine(`- [#${fact.id}] ${fact.content}`)) {
       seenFacts.add(fact.id);
       factCount += 1;
@@ -74,7 +78,7 @@ export function retrieveRelevantMemory(ownerId: number, text: string): string | 
     }
   }
 
-  for (const fact of searchActiveFacts(ownerId, text, { mode: "any", limit: FTS_LIMIT, excludeCore: true })) {
+  for (const fact of searchActiveFacts(ownerId, text, { mode: "any", limit: FTS_LIMIT, excludeIds: profileIds })) {
     pushFact(fact);
   }
 
