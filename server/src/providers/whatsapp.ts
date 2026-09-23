@@ -377,7 +377,7 @@ export async function sendWhatsAppTemplate(
   to: string,
   templateName: WhatsAppTemplateName,
   bodyParam: string
-): Promise<void> {
+): Promise<string | undefined> {
   const phoneNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID;
   const token = process.env.WHATSAPP_TOKEN;
   const res = await fetch(
@@ -414,6 +414,7 @@ export async function sendWhatsAppTemplate(
   if (!res.ok) {
     throw await buildSendError("WhatsApp template send failed", res);
   }
+  return extractSentWamid(res);
 }
 
 // Reacts to a message with a single emoji instead of sending a text reply — used when a full

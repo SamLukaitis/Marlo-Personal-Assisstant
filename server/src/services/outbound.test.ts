@@ -11,19 +11,24 @@ vi.mock("../providers/whatsapp.js", async (importOriginal) => {
 
 vi.mock("../db/store.js", () => ({
   getLastInboundAt: vi.fn(),
+  resolveOwnerByPhone: vi.fn(),
+  appendWhatsAppMessage: vi.fn(),
 }));
 
 const { sendWhatsAppMessage, sendWhatsAppTemplate, WhatsAppSendError } = await import("../providers/whatsapp.js");
-const { getLastInboundAt } = await import("../db/store.js");
+const { getLastInboundAt, resolveOwnerByPhone, appendWhatsAppMessage } = await import("../db/store.js");
 const { sendProactiveMessage, truncateForTemplate } = await import("./outbound.js");
 
 const PHONE = "447000000001";
 const DAY_MS = 24 * 60 * 60 * 1000;
+const OWNER_ID = 7;
 
 beforeEach(() => {
-  vi.mocked(sendWhatsAppMessage).mockReset().mockResolvedValue(undefined);
-  vi.mocked(sendWhatsAppTemplate).mockReset().mockResolvedValue(undefined);
+  vi.mocked(sendWhatsAppMessage).mockReset().mockResolvedValue("wamid.freeform");
+  vi.mocked(sendWhatsAppTemplate).mockReset().mockResolvedValue("wamid.template");
   vi.mocked(getLastInboundAt).mockReset();
+  vi.mocked(resolveOwnerByPhone).mockReset().mockReturnValue(OWNER_ID);
+  vi.mocked(appendWhatsAppMessage).mockReset();
 });
 
 describe("sendProactiveMessage", () => {
@@ -99,6 +104,50 @@ describe("sendProactiveMessage", () => {
     const [, , param] = vi.mocked(sendWhatsAppTemplate).mock.calls[0];
     expect(param.length).toBeLessThanOrEqual(1000);
     expect(param).toBe("y".repeat(1000));
+  });
+
+  it("records a free-form send into whatsapp history with its wamid, so a later swipe-reply resolves", async () => {
+    vi.mocked(getLastInboundAt).mockReturnValue(Date.now() - 60_000);
+
+    await sendProactiveMessage(PHONE, "hello", "alert");
+
+    expect(appendWhatsAppMessage).toHaveBeenCalledWith(OWNER_ID, PHONE, "assistant", "hello", ["wamid.freeform"]);
+  });
+
+  it("records a template send with the full original text, not the truncated template param", async () => {
+    vi.mocked(getLastInboundAt).mockReturnValue(null);
+    const longText = "x".repeat(2000);
+
+    await sendProactiveMessage(PHONE, longText, "digest");
+
+    expect(appendWhatsAppMessage).toHaveBeenCalledWith(OWNER_ID, PHONE, "assistant", longText, ["wamid.template"]);
+  });
+
+  it("records the template retry (not the failed free-form attempt) when the window-closed self-heal fires", async () => {
+    vi.mocked(getLastInboundAt).mockReturnValue(Date.now() - 60_000);
+    vi.mocked(sendWhatsAppMessage).mockRejectedValueOnce(new WhatsAppSendError("closed", 131047));
+
+    await sendProactiveMessage(PHONE, "hello", "alert");
+
+    expect(appendWhatsAppMessage).toHaveBeenCalledTimes(1);
+    expect(appendWhatsAppMessage).toHaveBeenCalledWith(OWNER_ID, PHONE, "assistant", "hello", ["wamid.template"]);
+  });
+
+  it("skips recording when the phone can't be resolved to an owner (e.g. a pre-account waitlist message)", async () => {
+    vi.mocked(getLastInboundAt).mockReturnValue(null);
+    vi.mocked(resolveOwnerByPhone).mockReturnValue(null);
+
+    await sendProactiveMessage(PHONE, "hello", "alert");
+
+    expect(appendWhatsAppMessage).not.toHaveBeenCalled();
+  });
+
+  it("does not record anything when the send fails outright", async () => {
+    vi.mocked(getLastInboundAt).mockReturnValue(Date.now() - 60_000);
+    vi.mocked(sendWhatsAppMessage).mockRejectedValueOnce(new Error("network down"));
+
+    await expect(sendProactiveMessage(PHONE, "hello", "alert")).rejects.toThrow("network down");
+    expect(appendWhatsAppMessage).not.toHaveBeenCalled();
   });
 });
 

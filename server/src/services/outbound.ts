@@ -9,7 +9,7 @@ import {
   WhatsAppSendError,
   type WhatsAppTemplateName,
 } from "../providers/whatsapp.js";
-import { getLastInboundAt } from "../db/store.js";
+import { getLastInboundAt, resolveOwnerByPhone, appendWhatsAppMessage } from "../db/store.js";
 
 const CUSTOMER_SERVICE_WINDOW_MS = 24 * 60 * 60 * 1000;
 const WINDOW_CLOSED_ERROR_CODE = 131047;
@@ -58,6 +58,19 @@ function isWithinCustomerServiceWindow(phone: string): boolean {
   return lastInboundAt !== null && Date.now() - lastInboundAt < CUSTOMER_SERVICE_WINDOW_MS;
 }
 
+// Records a proactive send into the same whatsapp_messages/whatsapp_message_wamids history a
+// direct reply gets (see whatsappReply.ts) — without this, a later swipe-to-reply to a briefing
+// or alert can't be resolved by quotedMessage.ts, and the assistant has no memory of ever having
+// sent it. Stores the full original text (not the truncated/sanitized template param), so an
+// alert delivered via template still resolves to its complete content later. Skipped silently if
+// the phone can't be resolved to an owner (e.g. a pre-account waitlist approval) — there's no
+// conversation to attach it to yet.
+function recordSentMessage(phone: string, text: string, wamid: string | undefined): void {
+  const ownerId = resolveOwnerByPhone(phone);
+  if (ownerId === null) return;
+  appendWhatsAppMessage(ownerId, phone, "assistant", text, wamid ? [wamid] : undefined);
+}
+
 // Drop-in replacement for providers/whatsapp.ts's sendWhatsAppMessage at every proactive push
 // site — same (to, text) shape those call sites already use, plus which template to fall back to
 // if free-form isn't available. Still throws on failure, so each caller's existing try/catch (and
@@ -75,18 +88,21 @@ export async function sendProactiveMessage(
 
   if (isWithinCustomerServiceWindow(phone)) {
     try {
-      await sendWhatsAppMessage(phone, text);
+      const wamid = await sendWhatsAppMessage(phone, text);
+      recordSentMessage(phone, text, wamid);
       return;
     } catch (err) {
       // Self-heals clock drift or a stale last_inbound_at: our own bookkeeping said the window
       // was open, Meta disagrees — retry once as a template rather than surfacing the failure.
       if (err instanceof WhatsAppSendError && err.code === WINDOW_CLOSED_ERROR_CODE) {
-        await sendWhatsAppTemplate(phone, templateName, templateParam);
+        const wamid = await sendWhatsAppTemplate(phone, templateName, templateParam);
+        recordSentMessage(phone, text, wamid);
         return;
       }
       throw err;
     }
   }
 
-  await sendWhatsAppTemplate(phone, templateName, templateParam);
+  const wamid = await sendWhatsAppTemplate(phone, templateName, templateParam);
+  recordSentMessage(phone, text, wamid);
 }

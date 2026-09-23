@@ -5,8 +5,6 @@ import {
   getSetting,
   setSetting,
   recordApiUsage,
-  listCheckins,
-  type TravelCheckinRow,
 } from "../db/store.js";
 import { hubListMessages, hubListEvents, hubFlaggedMessages } from "./hub.js";
 import { fetchHeadlines, type NewsTopic } from "../providers/news.js";
@@ -117,24 +115,6 @@ export function selectUnreadSinceMidnight(messages: UnifiedMessage[], now: Date)
   return messages.filter((m) => m.unread && new Date(m.receivedAt).getTime() >= midnight);
 }
 
-// Gives the briefing continuity about where the user has been, instead of leaving the model to
-// guess from whatever calendar/document text happens to be in context — which is how "arrived in
-// Rio" mentions kept resurfacing days after the actual arrival. checkin is the most recent
-// travel_checkin row (listCheckins(ownerId, 1)[0]), or undefined if none exist yet.
-export function describeLocationStreak(checkin: TravelCheckinRow | undefined, now: Date): string {
-  if (!checkin || !checkin.city) return "";
-  const place = checkin.country ? `${checkin.city}, ${checkin.country}` : checkin.city;
-  const midnight = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
-  const checkinMidnight = new Date(
-    new Date(checkin.checkedInAt).getFullYear(),
-    new Date(checkin.checkedInAt).getMonth(),
-    new Date(checkin.checkedInAt).getDate()
-  ).getTime();
-  const daysSince = Math.round((midnight - checkinMidnight) / (24 * 60 * 60 * 1000));
-  if (daysSince <= 0) return `Currently in ${place} — arrived today.`;
-  return `Currently in ${place} — arrived ${daysSince} day${daysSince === 1 ? "" : "s"} ago, been there ${daysSince} day${daysSince === 1 ? "" : "s"}.`;
-}
-
 // Timed events keep their zoned ISO string (unambiguous for the model); an all-day event's plain
 // date would otherwise read as a midnight start.
 export function describeEventTime(e: CalendarEvent): string {
@@ -160,11 +140,9 @@ async function buildBriefingText(ownerId: number): Promise<string> {
   // By calendar day, not the string prefix — a UTC "Z" time near midnight is a different local day.
   const todayEvents = events.filter((e) => eventLocalDateKey(e.start) === todayKeyStr);
   const upcomingEvents = events.filter((e) => eventLocalDateKey(e.start) !== todayKeyStr);
-  const location = describeLocationStreak(listCheckins(ownerId, 1)[0], now);
   const { headlines: news, quotes, weather } = await getBriefingFeed(ownerId);
 
   const facts = [
-    location,
     weather
       ? `Weather in ${weather.place}: ${weather.condition}, currently ${weather.tempC}°C, high ${weather.highC}°C, low ${weather.lowC}°C`
       : "",
@@ -207,7 +185,6 @@ async function buildBriefingText(ownerId: number): Promise<string> {
     } Write a terse, scannable briefing using ONLY the facts given below — never supplement them with your own general knowledge, training data, or plausible-sounding guesses, even for things like current events or news. This is a hard rule: fabricating a headline, email, or event is a serious error.
 
 Structure, in this order:
-- Location: ONLY if a "Currently in ..." fact line is present below. One short clause, e.g. mention in passing if it's relevant to the day (don't say "just arrived" or "welcome to" unless the fact itself says arrived today).
 - Weather: ONLY if a "Weather in ..." fact line is present below. One short clause.
 - Inbox: one line based on the "Unread emails today" fact — the count plus at most 2-3 senders/subjects worth calling out, not a full list.
 - Calendar: based on the "Today's calendar events" fact. Only add a note from "Calendar events in the next 3 days" if it's something the user should prep for now (a flight, checking out of where they're staying) — otherwise leave it out entirely.
