@@ -13,14 +13,15 @@ export async function sendToAllNumbers(
   numbers: string[],
   text: string,
   kind: ProactiveMessageKind,
-  logPrefix: string
+  logPrefix: string,
+  historyNote?: string
 ): Promise<boolean> {
   const alreadyDelivered = new Set(listProactiveDeliveryPhones(ownerId, itemKey));
   let allSucceeded = true;
   for (const number of numbers) {
     if (alreadyDelivered.has(number)) continue;
     try {
-      await sendProactiveMessage(number, text, kind);
+      await sendProactiveMessage(number, text, kind, historyNote);
       recordProactiveDelivery(ownerId, itemKey, number);
     } catch (err) {
       console.error(`${logPrefix}: failed to send`, err);

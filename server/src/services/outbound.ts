@@ -9,7 +9,7 @@ import {
   WhatsAppSendError,
   type WhatsAppTemplateName,
 } from "../providers/whatsapp.js";
-import { getLastInboundAt } from "../db/store.js";
+import { getLastInboundAt, resolveOwnerByPhone, appendWhatsAppMessage } from "../db/store.js";
 
 const CUSTOMER_SERVICE_WINDOW_MS = 24 * 60 * 60 * 1000;
 const WINDOW_CLOSED_ERROR_CODE = 131047;
@@ -65,8 +65,34 @@ function isWithinCustomerServiceWindow(phone: string): boolean {
 export async function sendProactiveMessage(
   phone: string,
   text: string,
-  kind: ProactiveMessageKind
+  kind: ProactiveMessageKind,
+  // Stored with the message in chat history but never sent — e.g. the ids of the email an alert
+  // is about, so a later "reply yes" can act on it.
+  historyNote?: string
 ): Promise<void> {
+  const wamid = await sendProactive(phone, text, kind);
+  recordProactiveInHistory(phone, historyNote ? `${text}\n\n${historyNote}` : text, wamid);
+}
+
+// A proactive push goes into chat history and its wamid is recorded, exactly like a normal reply
+// (whatsappReply.ts) — otherwise a swipe-reply to an alert can't be resolved and a bare "reply
+// yes" has no idea an alert was just sent. Never throws: the message has already been delivered,
+// and callers treat a throw as "not delivered" and retry, which would send the alert twice.
+function recordProactiveInHistory(phone: string, text: string, wamid: string | undefined): void {
+  try {
+    const ownerId = resolveOwnerByPhone(phone);
+    if (ownerId === null) return;
+    appendWhatsAppMessage(ownerId, phone, "assistant", text, wamid ? [wamid] : undefined);
+  } catch (err) {
+    console.error("outbound: failed to record proactive message in history", err);
+  }
+}
+
+async function sendProactive(
+  phone: string,
+  text: string,
+  kind: ProactiveMessageKind
+): Promise<string | undefined> {
   const templateName = TEMPLATE_BY_KIND[kind];
   // Only the digest is routinely long enough to actually get truncated — the alert template's
   // {{1}} is already a short line in practice, so it never needs the "open the app" pointer.
@@ -75,18 +101,16 @@ export async function sendProactiveMessage(
 
   if (isWithinCustomerServiceWindow(phone)) {
     try {
-      await sendWhatsAppMessage(phone, text);
-      return;
+      return await sendWhatsAppMessage(phone, text);
     } catch (err) {
       // Self-heals clock drift or a stale last_inbound_at: our own bookkeeping said the window
       // was open, Meta disagrees — retry once as a template rather than surfacing the failure.
       if (err instanceof WhatsAppSendError && err.code === WINDOW_CLOSED_ERROR_CODE) {
-        await sendWhatsAppTemplate(phone, templateName, templateParam);
-        return;
+        return sendWhatsAppTemplate(phone, templateName, templateParam);
       }
       throw err;
     }
   }
 
-  await sendWhatsAppTemplate(phone, templateName, templateParam);
+  return sendWhatsAppTemplate(phone, templateName, templateParam);
 }

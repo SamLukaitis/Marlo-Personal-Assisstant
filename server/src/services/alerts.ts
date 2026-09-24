@@ -2,6 +2,7 @@ import { hubListNewMessages, isAutomatedMail, senderDisplayName } from "./hub.js
 import { hasAlerted, markAlerted, getSetting, setSetting, listPhoneNumbersForUser } from "../db/store.js";
 import { isWhatsAppConfigured } from "../providers/whatsapp.js";
 import { sendProactiveMessage } from "./outbound.js";
+import { emailReferenceNote } from "./emailReference.js";
 import { realPersonAlertsEnabledSince } from "./emailAlertSettings.js";
 import {
   isOnboardingSuppressionActive,
@@ -16,10 +17,10 @@ function messageKey(m: UnifiedMessage): string {
   return `${m.accountId}:${m.id}`;
 }
 
-async function notify(numbers: string[], text: string): Promise<void> {
+async function notify(numbers: string[], text: string, historyNote?: string): Promise<void> {
   for (const number of numbers) {
     try {
-      await sendProactiveMessage(number, text, "alert");
+      await sendProactiveMessage(number, text, "alert", historyNote);
     } catch (err) {
       console.error("alerts: failed to send", err);
     }
@@ -78,7 +79,8 @@ export async function checkForNewImportantMessages(ownerId: number): Promise<voi
     // emailed, not a log line.
     await notify(
       numbers,
-      `📬 ${greeting}${senderDisplayName(m.from)} emailed you: "${m.subject}"\n${m.snippet}`
+      `📬 ${greeting}${senderDisplayName(m.from)} emailed you: "${m.subject}"\n${m.snippet}`,
+      emailReferenceNote(m)
     );
     markAlerted(ownerId, messageKey(m));
   }
