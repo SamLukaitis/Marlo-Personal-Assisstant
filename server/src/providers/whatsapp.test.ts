@@ -9,10 +9,14 @@ import {
   sendWhatsAppMessage,
   sendWhatsAppTypingIndicator,
   extractIncomingMessages,
+  sendWhatsAppTemplate,
   simulatedPhoneForOwner,
+  newSimulatedTestUserPhone,
   isSimulatedPhone,
+  isSimulatedTestUserPhone,
   WhatsAppSendError,
 } from "./whatsapp.js";
+import { getSimTranscript } from "./whatsappSimTranscript.js";
 
 const originalFetch = global.fetch;
 const originalEnv = { ...process.env };
@@ -120,6 +124,68 @@ describe("WhatsApp Simulator guard", () => {
     await sendWhatsAppMessage("447000000001", "hi");
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("new test-user numbers are simulated and distinct from any owner's own sim number", () => {
+    const a = newSimulatedTestUserPhone();
+    const b = newSimulatedTestUserPhone();
+    expect(isSimulatedPhone(a)).toBe(true);
+    expect(isSimulatedTestUserPhone(a)).toBe(true);
+    expect(isSimulatedTestUserPhone(simulatedPhoneForOwner(100123))).toBe(false);
+    expect(a).not.toBe(b);
+  });
+
+  it("sendWhatsAppCtaUrl/sendWhatsAppMediaFromBuffer/sendWhatsAppTemplate also skip Meta for a simulated number", async () => {
+    const fetchMock = mockFetchOk();
+    const to = newSimulatedTestUserPhone();
+
+    await sendWhatsAppCtaUrl(to, "Tap to connect", "Connect Gmail", "https://example.com/connect");
+    await sendWhatsAppMediaFromBuffer(to, Buffer.from("x"), "application/pdf", "invoice.pdf");
+    await sendWhatsAppTemplate(to, "marlowe_digest", "Your day");
+
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("records every intercepted send in the simulator transcript, with buttons and links as data", async () => {
+    mockFetchOk();
+    const to = newSimulatedTestUserPhone();
+
+    await sendWhatsAppMessage(to, "hello");
+    await sendWhatsAppReplyButtons(to, "Gmail or Outlook?", [
+      { id: "gmail", title: "Gmail" },
+      { id: "outlook", title: "Outlook" },
+    ]);
+    await sendWhatsAppListMessage(to, "Pick one", "Choose", [{ id: "r1", title: "Row 1", description: "d" }]);
+    await sendWhatsAppCtaUrl(to, "Tap to connect", "Connect Gmail", "https://example.com/connect");
+    await sendWhatsAppMediaFromBuffer(to, Buffer.from("x"), "application/pdf", "invoice.pdf");
+    await sendWhatsAppTemplate(to, "marlowe_alert", "Flight moved");
+    await sendWhatsAppReaction(to, "sim-1", "👍");
+
+    const t = getSimTranscript(to);
+    expect(t.every((e) => e.role === "assistant")).toBe(true);
+    expect(t.map((e) => e.text)).toEqual([
+      "hello",
+      "Gmail or Outlook?",
+      "Pick one",
+      "Tap to connect",
+      "[document: invoice.pdf]",
+      "[template marlowe_alert] Flight moved",
+      "[reacted 👍]",
+    ]);
+    expect(t[1].choices).toEqual([
+      { id: "gmail", title: "Gmail" },
+      { id: "outlook", title: "Outlook" },
+    ]);
+    expect(t[2].choices).toEqual([{ id: "r1", title: "Row 1" }]);
+    expect(t[3].link).toEqual({ label: "Connect Gmail", url: "https://example.com/connect" });
+  });
+
+  it("never records a real number's sends", async () => {
+    mockFetchOk();
+
+    await sendWhatsAppMessage("447000000001", "hi");
+
+    expect(getSimTranscript("447000000001")).toEqual([]);
   });
 });
 

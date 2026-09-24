@@ -662,24 +662,45 @@ export const fetchAdminMessages = (phone: string) =>
   );
 
 // --- WhatsApp Simulator -------------------------------------------------------------------------
-// Sends a typed message through the real WhatsApp inbound pipeline (see whatsappSimRoutes.ts) as
-// if it arrived from a reserved fake number bound to the caller's own account. The reply isn't
-// returned here — it's debounced server-side — the caller polls fetchAdminMessages(phone) for it.
-export async function sendWhatsAppSimMessage(text: string): Promise<{ phone: string }> {
-  const res = await fetch(
-    `${API_BASE}/api/dev/whatsapp-sim/send`,
-    withCredentials({
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text }),
-    })
-  );
-  if (!res.ok) {
-    const body = await res.json().catch(() => ({}));
-    throw new Error(body.error ?? "failed to send simulated message");
-  }
-  return res.json();
+// Drives the real WhatsApp inbound pipeline (see whatsappSimRoutes.ts) from a reserved fake
+// number — the caller's own (phone omitted) or a throwaway test user that signs up from scratch.
+// Replies aren't returned by the send — they're debounced server-side — the caller polls
+// fetchWhatsAppSimTranscript for them.
+export interface WhatsAppSimEntry {
+  id: number;
+  at: number;
+  role: "user" | "assistant";
+  text: string;
+  choices?: { id: string; title: string }[];
+  link?: { label: string; url: string };
 }
+
+export interface WhatsAppSimTestUser {
+  phone: string;
+  createdAt: number;
+  hasAccount: boolean;
+}
+
+export type WhatsAppSimInput = { text: string } | { buttonId: string; label: string };
+
+export const sendWhatsAppSimMessage = (input: WhatsAppSimInput, phone?: string) =>
+  mutateJson<{ phone: string }>("/api/dev/whatsapp-sim/send", "POST", { ...input, ...(phone ? { phone } : {}) });
+
+export const fetchWhatsAppSimTranscript = (phone?: string) =>
+  getJson<{ phone: string; entries: WhatsAppSimEntry[] }>(
+    `/api/dev/whatsapp-sim/transcript${phone ? `?phone=${encodeURIComponent(phone)}` : ""}`
+  );
+
+export const fetchWhatsAppSimTestUsers = () => getJson<WhatsAppSimTestUser[]>("/api/dev/whatsapp-sim/test-users");
+
+export const createWhatsAppSimTestUser = () =>
+  mutateJson<{ phone: string }>("/api/dev/whatsapp-sim/test-users", "POST");
+
+export const deleteWhatsAppSimTestUser = (phone: string) =>
+  mutateJson<{ ok: true; hadAccount: boolean }>(
+    `/api/dev/whatsapp-sim/test-users/${encodeURIComponent(phone)}`,
+    "DELETE"
+  );
 
 // --- Admin Portal -----------------------------------------------------------------------------
 

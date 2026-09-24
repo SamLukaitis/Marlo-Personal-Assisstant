@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import { recordSimMessage } from "./whatsappSimTranscript.js";
 
 const GRAPH_VERSION = "v21.0";
 
@@ -20,14 +21,30 @@ export function isWhatsAppSignatureConfigured(): boolean {
 // registration, debouncing, choice buttons, etc. from a browser instead of a real phone. Every
 // send function below checks for a simulated target first and returns without calling Meta's
 // Graph API — this is what stops a simulated conversation from erroring against a fake number or,
-// worse, actually texting a real one. "999" is unassigned as an ITU country code, so this prefix
-// can never collide with a genuine WhatsApp number.
-const SIMULATED_PHONE_PREFIX = "999000";
+// worse, actually texting a real one — and records what it would have sent in the simulator's
+// transcript (whatsappSimTranscript.ts) so the page can show it. "999" is unassigned as an ITU
+// country code, so nothing under it can collide with a genuine WhatsApp number.
+//
+// Two ranges under it: 999000<ownerId> is an admin's own account ("chat as me"), and
+// 999100<6 random digits> is a throwaway test user that goes through signup from scratch.
+const SIMULATED_PHONE_PREFIX = "999";
+const SIMULATED_OWNER_PREFIX = "999000";
+const SIMULATED_TEST_USER_PREFIX = "999100";
+function digitsOf(phone: string): string {
+  return phone.replace(/[^0-9]/g, "");
+}
 export function simulatedPhoneForOwner(ownerId: number): string {
-  return `${SIMULATED_PHONE_PREFIX}${ownerId}`;
+  return `${SIMULATED_OWNER_PREFIX}${ownerId}`;
+}
+export function newSimulatedTestUserPhone(): string {
+  return `${SIMULATED_TEST_USER_PREFIX}${crypto.randomInt(0, 1_000_000).toString().padStart(6, "0")}`;
 }
 export function isSimulatedPhone(phone: string): boolean {
-  return phone.replace(/[^0-9]/g, "").startsWith(SIMULATED_PHONE_PREFIX);
+  return digitsOf(phone).startsWith(SIMULATED_PHONE_PREFIX);
+}
+export function isSimulatedTestUserPhone(phone: string): boolean {
+  const digits = digitsOf(phone);
+  return digits.startsWith(SIMULATED_TEST_USER_PREFIX) && digits.length === SIMULATED_TEST_USER_PREFIX.length + 6;
 }
 function isSimulatedMessageId(messageId: string): boolean {
   return messageId.startsWith("sim-");
@@ -89,7 +106,10 @@ async function extractSentWamid(res: Response): Promise<string | undefined> {
 }
 
 export async function sendWhatsAppMessage(to: string, text: string): Promise<string | undefined> {
-  if (isSimulatedPhone(to)) return `sim-wamid-${crypto.randomUUID()}`;
+  if (isSimulatedPhone(to)) {
+    recordSimMessage(to, { role: "assistant", text });
+    return `sim-wamid-${crypto.randomUUID()}`;
+  }
   const phoneNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID;
   const token = process.env.WHATSAPP_TOKEN;
   const res = await fetch(
@@ -124,7 +144,10 @@ export async function sendWhatsAppReplyButtons(
   bodyText: string,
   buttons: { id: string; title: string }[]
 ): Promise<void> {
-  if (isSimulatedPhone(to)) return;
+  if (isSimulatedPhone(to)) {
+    recordSimMessage(to, { role: "assistant", text: bodyText, choices: buttons.map(({ id, title }) => ({ id, title })) });
+    return;
+  }
   const phoneNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID;
   const token = process.env.WHATSAPP_TOKEN;
   const res = await fetch(
@@ -163,6 +186,10 @@ export async function sendWhatsAppCtaUrl(
   buttonText: string,
   url: string
 ): Promise<void> {
+  if (isSimulatedPhone(to)) {
+    recordSimMessage(to, { role: "assistant", text: bodyText, link: { label: buttonText, url } });
+    return;
+  }
   const phoneNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID;
   const token = process.env.WHATSAPP_TOKEN;
   const res = await fetch(
@@ -203,7 +230,10 @@ export async function sendWhatsAppListMessage(
   buttonLabel: string,
   rows: { id: string; title: string; description?: string }[]
 ): Promise<void> {
-  if (isSimulatedPhone(to)) return;
+  if (isSimulatedPhone(to)) {
+    recordSimMessage(to, { role: "assistant", text: bodyText, choices: rows.map(({ id, title }) => ({ id, title })) });
+    return;
+  }
   const phoneNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID;
   const token = process.env.WHATSAPP_TOKEN;
   const res = await fetch(
@@ -345,10 +375,14 @@ export async function sendWhatsAppMediaFromBuffer(
   mimeType: string,
   filename: string
 ): Promise<void> {
+  const asImage = mimeType === "image/jpeg" || mimeType === "image/png";
+  if (isSimulatedPhone(to)) {
+    recordSimMessage(to, { role: "assistant", text: `[${asImage ? "photo" : "document"}: ${filename}]` });
+    return;
+  }
   const mediaId = await uploadWhatsAppMedia(buffer, mimeType, filename);
   const phoneNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID;
   const token = process.env.WHATSAPP_TOKEN;
-  const asImage = mimeType === "image/jpeg" || mimeType === "image/png";
   const res = await fetch(
     `https://graph.facebook.com/${GRAPH_VERSION}/${phoneNumberId}/messages`,
     {
@@ -400,6 +434,10 @@ export async function sendWhatsAppTemplate(
   templateName: WhatsAppTemplateName,
   bodyParam: string
 ): Promise<void> {
+  if (isSimulatedPhone(to)) {
+    recordSimMessage(to, { role: "assistant", text: `[template ${templateName}] ${bodyParam}` });
+    return;
+  }
   const phoneNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID;
   const token = process.env.WHATSAPP_TOKEN;
   const res = await fetch(
@@ -443,7 +481,10 @@ export async function sendWhatsAppTemplate(
 // reaction previously sent to this message id; not used by any caller yet, but free to support
 // since it's the same Graph call shape.
 export async function sendWhatsAppReaction(to: string, messageId: string, emoji: string): Promise<void> {
-  if (isSimulatedPhone(to)) return;
+  if (isSimulatedPhone(to)) {
+    recordSimMessage(to, { role: "assistant", text: emoji ? `[reacted ${emoji}]` : "[removed reaction]" });
+    return;
+  }
   const phoneNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID;
   const token = process.env.WHATSAPP_TOKEN;
   const res = await fetch(
