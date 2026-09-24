@@ -530,6 +530,18 @@ describe("sendWhatsAppMediaFromBuffer", () => {
   });
 });
 
+describe("sendWhatsAppTemplate wamid", () => {
+  it("returns the sent template's wamid so a swipe-reply to it can be resolved", async () => {
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({ messages: [{ id: "wamid.TPL" }] }),
+    }) as unknown as typeof fetch;
+
+    await expect(sendWhatsAppTemplate("447000000001", "marlowe_alert", "hi")).resolves.toBe("wamid.TPL");
+  });
+});
+
 describe("sendWhatsAppReaction", () => {
   it("posts a reaction message targeting the given message id", async () => {
     const fetchMock = mockFetchOk();
