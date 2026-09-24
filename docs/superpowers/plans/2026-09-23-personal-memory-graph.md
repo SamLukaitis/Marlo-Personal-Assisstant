@@ -18,7 +18,7 @@
 - Active fact = `superseded_at IS NULL AND forgotten_at IS NULL`.
 - `kind` ∈ `core | fact | preference`; `source` ∈ `told | extracted`.
 - `memory_notes.entity_id` has **no** `REFERENCES` clause.
-- Core profile cap 20; retrieval caps: 3 entities, 5 facts/entity, 8 FTS hits, 12 facts total, 1,500 chars.
+- Core profile cap 40 (raised from 20 after review); retrieval caps: 3 entities, 5 facts/entity, 8 FTS hits, 12 facts total, 1,500 chars.
 - Extraction: batch size 8, 2 context messages, 30 candidate facts, 50 candidate entities, fact content ≤ 500 chars, model `process.env.ASSISTANT_MODEL_SIMPLE ?? "claude-haiku-4-5"`, usage purpose `"memory_extraction"`.
 - Cache breakpoints: at most 4 per request (tools, system, stable-history message, last message).
 - Code style: match surrounding code — explanatory `//` comments on non-obvious decisions, no new dependencies.

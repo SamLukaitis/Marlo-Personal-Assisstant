@@ -68,7 +68,7 @@ Existing rows migrate with defaults (`kind='fact'`, `source='told'`). Reminder c
 New store functions: `addFact(ownerId, { content, kind, source, entityId?, supersedesId? })`
 (inserts, and if `supersedesId` is an active fact of this owner, sets its
 `superseded_at`/`superseded_by` in the same transaction); `forgetFacts(ownerId, ids)`;
-`listCoreProfile(ownerId, limit = 20)`; `listActiveFactsForEntity(ownerId, entityId, limit)`.
+`listCoreProfile(ownerId, limit = 40)`; `listActiveFactsForEntity(ownerId, entityId, limit)`.
 `addMemoryNote` stays as a thin wrapper (`kind='fact'`, `source='told'`) for existing callers.
 
 ### Remembered entities
@@ -180,7 +180,7 @@ messages arrive quickly.
 ```
 What you know about the user (core profile). You may bring one of these up naturally when
 genuinely relevant, without forcing it:
-- <active core facts, oldest first, max 20>
+- <active core facts, oldest first, max 40>
 ```
 
 Oldest-first ordering means a new core fact appends and the block only changes when a core

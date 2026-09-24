@@ -1515,7 +1515,10 @@ export function listRecentlyForgottenFacts(ownerId: number, sinceMs: number, lim
 
 // The always-in-the-prompt identity profile. Newest `limit` core facts, rendered oldest first so a
 // new core fact appends to the end — the cached system block only changes when a core fact does.
-export function listCoreProfile(ownerId: number, limit = 20): MemoryNoteRow[] {
+// 40 × ~20 tokens ≈ 800 cached tokens: room for a busy person's family, work and standing
+// preferences at negligible cost, since the block is read back at the cached rate on most calls.
+export const CORE_PROFILE_LIMIT = 40;
+export function listCoreProfile(ownerId: number, limit = CORE_PROFILE_LIMIT): MemoryNoteRow[] {
   return db
     .prepare(
       `SELECT * FROM (

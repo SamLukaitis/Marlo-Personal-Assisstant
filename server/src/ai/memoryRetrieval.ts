@@ -2,8 +2,8 @@
 // latest user message by runAssistantChat (never the cached system block — see the spec
 // docs/superpowers/specs/2026-09-23-personal-memory-graph-design.md §3). Pure SQLite, no LLM call:
 // remembered entities mentioned by name/alias pull their facts and relations; everything else comes
-// from an OR/bm25 full-text search. Facts in the core profile (listCoreProfile — the newest 20 core
-// facts) are skipped because they're already in the system prompt; an older core fact that has aged
+// from an OR/bm25 full-text search. Facts in the core profile (listCoreProfile — the newest
+// CORE_PROFILE_LIMIT core facts) are skipped because they're already in the system prompt; an older core fact that has aged
 // out of the profile is retrieved like any other.
 import {
   listCoreProfile,
