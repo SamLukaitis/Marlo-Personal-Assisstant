@@ -10,8 +10,12 @@ import {
   linkRecords,
   getRelatedEntities,
   findOrCreateEntity,
-  appendEntityNote,
+  addEntityAlias,
   findEntityByName,
+  listRememberedEntities,
+  linkEntitiesOnce,
+  listEntityRelations,
+  isReservedEntityType,
 } from "./store.js";
 
 let counter = 0;
@@ -171,7 +175,7 @@ describe("remember → entities bridge", () => {
     const user = findOrCreateUserByEmail(uniqueEmail("findorcreate-new"));
     const entity = findOrCreateEntity(user.id, "person", "Sarah");
     expect(entity.type).toBe("person");
-    expect(entity.data).toEqual({ name: "Sarah", notes: [] });
+    expect(entity.data).toEqual({ name: "Sarah", aliases: [] });
   });
 
   it("find-or-create: dedupes by owner+type+lowercased name, ignoring case/whitespace", () => {
@@ -182,11 +186,28 @@ describe("remember → entities bridge", () => {
     expect(listEntities(user.id, { type: "person" })).toHaveLength(1);
   });
 
-  it("find-or-create: same name under a different type is a different entity", () => {
+  // Supersedes the old "same name under a different type is a different entity": types are free
+  // text chosen by the model, so matching across them is what keeps one subject on one entity.
+  it("find-or-create: the same name under a different type reuses the existing entity", () => {
     const user = findOrCreateUserByEmail(uniqueEmail("findorcreate-difftype"));
-    const person = findOrCreateEntity(user.id, "person", "Lisbon");
-    const place = findOrCreateEntity(user.id, "place", "Lisbon");
-    expect(person.id).not.toBe(place.id);
+    const person = findOrCreateEntity(user.id, "person", "Sarah");
+    const colleague = findOrCreateEntity(user.id, "colleague", "sarah");
+    expect(colleague.id).toBe(person.id);
+    expect(colleague.type).toBe("person");
+    expect(listRememberedEntities(user.id)).toHaveLength(1);
+  });
+
+  it("find-or-create: an alias matches across types too", () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("findorcreate-difftype-alias"));
+    const sarah = findOrCreateEntity(user.id, "person", "Sarah");
+    addEntityAlias(user.id, sarah.id, "Sarah Jones");
+    expect(findOrCreateEntity(user.id, "contact", "Sarah Jones").id).toBe(sarah.id);
+  });
+
+  it("find-or-create: the reserved-type refusal still comes first, even when the name exists", () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("findorcreate-reserved-first"));
+    findOrCreateEntity(user.id, "person", "Hilton");
+    expect(() => findOrCreateEntity(user.id, "booking", "Hilton")).toThrow(/reserved entity type/);
   });
 
   it("find-or-create: scopes by owner — one user's entity is invisible to another", () => {
@@ -197,18 +218,57 @@ describe("remember → entities bridge", () => {
     expect(b.id).not.toBe(a.id);
   });
 
-  it("appendEntityNote: appends a timestamped note without clobbering prior ones", () => {
-    const user = findOrCreateUserByEmail(uniqueEmail("append-note"));
+  it("addEntityAlias: adds a trimmed alias once, ignoring the name itself and duplicates", () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("alias-add"));
     const entity = findOrCreateEntity(user.id, "person", "Sarah");
-    const afterFirst = appendEntityNote(user.id, entity.id, "Handles invoicing");
-    expect(afterFirst.data.notes).toHaveLength(1);
-    expect(afterFirst.data.notes[0].text).toBe("Handles invoicing");
-    expect(typeof afterFirst.data.notes[0].at).toBe("number");
+    addEntityAlias(user.id, entity.id, "  Sarah Jones ");
+    addEntityAlias(user.id, entity.id, "sarah jones");
+    const after = addEntityAlias(user.id, entity.id, "SARAH");
+    expect(after.data.aliases).toEqual(["Sarah Jones"]);
+  });
 
-    const afterSecond = appendEntityNote(user.id, entity.id, "Prefers email over calls");
-    expect(afterSecond.data.notes).toHaveLength(2);
-    expect(afterSecond.data.notes[0].text).toBe("Handles invoicing");
-    expect(afterSecond.data.notes[1].text).toBe("Prefers email over calls");
+  it("findEntityByName: matches an alias, and findOrCreateEntity reuses the aliased entity", () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("alias-find"));
+    const entity = findOrCreateEntity(user.id, "person", "Sarah");
+    addEntityAlias(user.id, entity.id, "Sarah Jones");
+    expect(findEntityByName(user.id, "sarah jones")?.id).toBe(entity.id);
+    expect(findOrCreateEntity(user.id, "person", "Sarah Jones").id).toBe(entity.id);
+  });
+
+  it("listRememberedEntities: lists only remembered entities with name and aliases", () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("list-remembered"));
+    saveEntity(user.id, {
+      type: "booking",
+      data: { kind: "hotel", name: "Hotel Eva", reference: "ABC", startDate: "2026-01-01", endDate: null },
+    });
+    const sarah = findOrCreateEntity(user.id, "person", "Sarah");
+    expect(listRememberedEntities(user.id)).toEqual([
+      { id: sarah.id, type: "person", name: "Sarah", aliases: [], updatedAt: sarah.updatedAt },
+    ]);
+  });
+
+  it("linkEntitiesOnce: creates a labelled link once and never a self-link", () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("link-once"));
+    const sarah = findOrCreateEntity(user.id, "person", "Sarah");
+    const acme = findOrCreateEntity(user.id, "organisation", "Acme");
+    expect(linkEntitiesOnce(user.id, sarah.id, "works_at", acme.id)).toBe(true);
+    expect(linkEntitiesOnce(user.id, sarah.id, "works_at", acme.id)).toBe(false);
+    expect(linkEntitiesOnce(user.id, sarah.id, "works_at", sarah.id)).toBe(false);
+
+    expect(listEntityRelations(user.id, sarah.id)).toEqual([
+      { relation: "works_at", direction: "out", entity: { id: acme.id, type: "organisation", name: "Acme" } },
+    ]);
+    expect(listEntityRelations(user.id, acme.id)).toEqual([
+      { relation: "works_at", direction: "in", entity: { id: sarah.id, type: "person", name: "Sarah" } },
+    ]);
+  });
+
+  it("listEntityRelations: skips links to non-remembered entities", () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("relations-skip"));
+    const sarah = findOrCreateEntity(user.id, "person", "Sarah");
+    const trip = saveEntity(user.id, { type: "trip", data: { name: "Lisbon trip" } });
+    linkRecords(user.id, { relation: "belongs_to", from: { type: "entity", id: sarah.id }, to: { type: "entity", id: trip.id } });
+    expect(listEntityRelations(user.id, sarah.id)).toEqual([]);
   });
 
   it("findEntityByName: matches case-insensitively and trims whitespace", () => {
@@ -220,8 +280,9 @@ describe("remember → entities bridge", () => {
 
   it("findEntityByName: respects an optional type filter", () => {
     const user = findOrCreateUserByEmail(uniqueEmail("find-by-name-type"));
+    // Saved directly: findOrCreateEntity would reuse the person for the place (it matches across types).
     findOrCreateEntity(user.id, "person", "Lisbon");
-    const place = findOrCreateEntity(user.id, "place", "Lisbon");
+    const place = saveEntity(user.id, { type: "place", data: { name: "Lisbon", aliases: [] } });
     expect(findEntityByName(user.id, "Lisbon", "place")?.id).toBe(place.id);
     expect(findEntityByName(user.id, "Lisbon", "project")).toBeNull();
   });
@@ -266,5 +327,28 @@ describe("remember → entities bridge", () => {
     findOrCreateEntity(user.id, "person", "Sarah");
     expect(findEntityByName(user.id, "")).toBeNull();
     expect(findEntityByName(user.id, "   ")).toBeNull();
+  });
+
+  it("find-or-create: normalises type (trim+lowercase) so 'Person' and 'person ' resolve to the same entity", () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("findorcreate-type-normalise"));
+    const first = findOrCreateEntity(user.id, "Person", "Sarah");
+    const second = findOrCreateEntity(user.id, "person ", "Sarah");
+    expect(second.id).toBe(first.id);
+    expect(first.type).toBe("person");
+    expect(listEntities(user.id, { type: "person" })).toHaveLength(1);
+  });
+
+  it("isReservedEntityType: true (case/whitespace-insensitive) for types owned by other pipelines", () => {
+    expect(isReservedEntityType("Booking")).toBe(true);
+    expect(isReservedEntityType(" expense ")).toBe(true);
+    expect(isReservedEntityType("travel_checkin")).toBe(true);
+    expect(isReservedEntityType("trip")).toBe(true);
+    expect(isReservedEntityType("important_email")).toBe(true);
+    expect(isReservedEntityType("person")).toBe(false);
+  });
+
+  it("find-or-create: throws for a reserved entity type", () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("findorcreate-reserved"));
+    expect(() => findOrCreateEntity(user.id, "booking", "Hilton")).toThrow(/reserved entity type/);
   });
 });

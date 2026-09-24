@@ -2,9 +2,6 @@ import Anthropic from "@anthropic-ai/sdk";
 import {
   listAccounts,
   getSetting,
-  listRecentMemoryNotes,
-  addMemoryNote,
-  searchMemoryNotes,
   createReminder,
   listActiveRemindersForOwner,
   cancelReminder,
@@ -20,11 +17,21 @@ import {
   deleteEntity,
   linkRecords,
   getLinksTo,
-  getLinksFrom,
   getRelatedEntities,
   findOrCreateEntity,
-  appendEntityNote,
+  isReservedEntityType,
+  addFact,
+  listActiveFactsForEntity,
+  linkEntitiesOnce,
+  listEntityRelations,
   findEntityByName,
+  forgetFacts,
+  forgetEntity,
+  isMemoryKind,
+  listCoreProfile,
+  listNewestActiveFacts,
+  searchActiveFacts,
+  type MemoryNoteRow,
   searchReadEmails,
   getDocument,
   getEnabledTools,
@@ -40,6 +47,7 @@ import {
   type DocumentRow,
   type RegistrationProvider,
 } from "../db/store.js";
+import { retrieveRelevantMemory } from "./memoryRetrieval.js";
 import { sendConnectLink } from "../services/connectMailboxLink.js";
 import { validateTrip, type ExpenseData, type BookingData, type TripData } from "../services/entityValidation.js";
 import { listLocalFolders } from "../providers/local.js";
@@ -450,18 +458,18 @@ const ALWAYS_ON_TOOLS: Anthropic.ToolUnion[] = [
   {
     name: "search_memory",
     description:
-      "Search everything you've ever remembered about the user via the remember tool, not just " +
-      "what's listed in 'Things you remember about the user' above — that list only shows the most " +
-      "recent notes, so an older fact (something from months ago) won't be there but is still " +
-      "searchable here. Call this when the user references something they told you before that you " +
-      "don't see in your current context, e.g. 'what did I say my allergy was'.",
+      "Search everything you remember about the user — older facts that aren't in your current " +
+      "context are still here. Call it when the user refers to something they told you before that " +
+      "you don't see, e.g. 'what did I say my allergy was'. Call it with no query for 'what do you " +
+      "know about me' — that returns their core profile plus the most recent other facts. Results " +
+      "carry ids for remember's replaces_id and forget_memory.",
     input_schema: {
       type: "object",
       properties: {
-        query: { type: "string", description: "Keyword(s) to search for" },
-        limit: { type: "number", description: "Max notes to return, default 10" },
+        query: { type: "string", description: "Keyword(s) to search for; omit to list what you know" },
+        limit: { type: "number", description: "Max facts to return, default 10" },
       },
-      required: ["query"],
+      required: [],
     },
   },
   {
@@ -597,14 +605,56 @@ const ALWAYS_ON_TOOLS: Anthropic.ToolUnion[] = [
             "Optional. Names of other entities this one relates to. Only existing entities are " +
             "linked; names that don't match anything are ignored.",
         },
+        kind: {
+          type: "string",
+          enum: ["core", "fact", "preference"],
+          description:
+            "Optional, default 'fact'. 'core' only for identity-level facts about the user that should " +
+            "always be in mind (their name, partner/children/close family, home city, job/employer, a " +
+            "strong standing preference). 'preference' for likes/dislikes/how they want things done.",
+        },
+        replaces_id: {
+          type: "number",
+          description:
+            "Optional. When this note corrects or updates something you already remember, the id of " +
+            "that old fact (from the [#id] tags or search_memory/recall_entity results) — the old fact " +
+            "is retired instead of kept alongside the new one.",
+        },
+        relation: {
+          type: "string",
+          description:
+            "Optional, default 'relates_to'. How this entity relates to the relates_to entities, in " +
+            "snake_case, e.g. 'works_at', 'sister_of', 'lives_in', 'manages'.",
+        },
       },
       required: ["note"],
     },
   },
   {
+    name: "forget_memory",
+    description:
+      "Forget remembered facts the user says are wrong or asks you to forget. Pass the ids from the " +
+      "[#id] tags or search_memory/recall_entity results. To forget a person, place, project or other " +
+      "named subject entirely (\"forget everything about Sarah\"), pass its name in entity_names: that " +
+      "forgets all its facts and removes it and its links to other things. Give ids, entity_names or " +
+      "both. Then tell the user plainly what you forgot. If something merely changed (they moved, " +
+      "changed jobs), use remember with replaces_id instead.",
+    input_schema: {
+      type: "object",
+      properties: {
+        ids: { type: "array", items: { type: "number" }, description: "Fact ids to forget" },
+        entity_names: {
+          type: "array",
+          items: { type: "string" },
+          description: "Names of remembered people/places/projects/etc to forget entirely",
+        },
+      },
+    },
+  },
+  {
     name: "recall_entity",
     description:
-      "Look up everything remembered about a specific person, place, project, or other named subject in one call — the entity's accumulated notes plus everything linked to it (via remember's relates_to). Use this instead of search_memory when the user asks about a specific named thing, e.g. 'what do you know about Sarah'.",
+      "Look up everything remembered about a specific person, place, project, or other named subject in one call — its facts (each with an id you can pass to remember's replaces_id or forget_memory) plus the other remembered people/places/things it's linked to and how. Use this instead of search_memory when the user asks about a specific named thing, e.g. 'what do you know about Sarah'.",
     input_schema: {
       type: "object",
       properties: {
@@ -1010,6 +1060,18 @@ function forModel(doc: DocumentRow) {
   return rest;
 }
 
+// The shape every memory-reading tool hands the model: the id is what makes replaces_id and
+// forget_memory usable; the entity name saves a recall_entity round-trip just to learn who a fact is about.
+function factForModel(ownerId: number, fact: MemoryNoteRow) {
+  const entity = fact.entityId ? getEntity<{ name?: unknown }>(ownerId, fact.entityId) : null;
+  return {
+    id: fact.id,
+    content: fact.content,
+    kind: fact.kind,
+    ...(typeof entity?.data.name === "string" ? { entity: entity.data.name } : {}),
+  };
+}
+
 // Real Gmail/Graph attachment ids are ~200-300 character opaque tokens. Models reliably fail to
 // copy a token that long back verbatim in a later tool call — they reproduce the first several
 // characters correctly and then drift/fabricate the rest, which is exactly what was causing
@@ -1159,38 +1221,65 @@ export async function runTool(
       return { ok: true };
     case "remember": {
       const note = input.note as string;
-      addMemoryNote(ownerId, note);
-
       const entityName = (input.entity_name as string | undefined)?.trim();
       const entityType = (input.entity_type as string | undefined)?.trim();
-      if (entityName && entityType) {
-        const entity = findOrCreateEntity(ownerId, entityType, entityName);
-        appendEntityNote(ownerId, entity.id, note);
+      // A reserved type (booking, expense, travel_checkin, trip, important_email) is never turned
+      // into an entity here — the note still saves, just with no entity attached, rather than
+      // injecting a bare {name, aliases} row into a table another pipeline reads by type.
+      const entity =
+        entityName && entityType && !isReservedEntityType(entityType)
+          ? findOrCreateEntity(ownerId, entityType, entityName)
+          : null;
+      const replacesId = input.replaces_id;
 
-        const relatesTo = (input.relates_to as string[] | undefined) ?? [];
-        for (const otherName of relatesTo) {
+      addFact(ownerId, {
+        content: note,
+        kind: isMemoryKind(input.kind) ? input.kind : "fact",
+        source: "told",
+        entityId: entity?.id ?? null,
+        supersedesId: typeof replacesId === "number" && Number.isInteger(replacesId) ? replacesId : null,
+      });
+
+      if (entity) {
+        const relation = (input.relation as string | undefined)?.trim() || "relates_to";
+        for (const otherName of (input.relates_to as string[] | undefined) ?? []) {
           const other = findEntityByName(ownerId, otherName);
-          if (!other) continue;
-          const alreadyLinked = getLinksFrom(ownerId, "entity", entity.id).some(
-            (link) => link.relation === "relates_to" && link.toType === "entity" && link.toId === other.id
-          );
-          if (!alreadyLinked) {
-            linkRecords(ownerId, {
-              relation: "relates_to",
-              from: { type: "entity", id: entity.id },
-              to: { type: "entity", id: other.id },
-            });
-          }
+          if (other) linkEntitiesOnce(ownerId, entity.id, relation, other.id);
         }
       }
       return { ok: true };
     }
-    case "search_memory":
-      return searchMemoryNotes(
-        ownerId,
-        input.query as string,
-        (input.limit as number | undefined) ?? SEARCH_MEMORY_DEFAULT_LIMIT
-      );
+    case "forget_memory": {
+      const ids = Array.isArray(input.ids)
+        ? (input.ids as unknown[]).filter((id): id is number => typeof id === "number" && Number.isInteger(id))
+        : [];
+      const names = Array.isArray(input.entity_names)
+        ? (input.entity_names as unknown[]).filter((n): n is string => typeof n === "string" && n.trim() !== "")
+        : [];
+      const forgotten = forgetFacts(ownerId, ids);
+      const forgottenEntities: string[] = [];
+      for (const name of names) {
+        // findEntityByName only ever returns this owner's remembered entities, never a booking,
+        // expense, trip or other document-extracted row.
+        const entity = findEntityByName(ownerId, name);
+        if (!entity) continue;
+        forgotten.push(...forgetEntity(ownerId, entity.id));
+        forgottenEntities.push(entity.data.name);
+      }
+      return { forgotten, forgotten_entities: forgottenEntities };
+    }
+    case "search_memory": {
+      const query = ((input.query as string | undefined) ?? "").trim();
+      const limit = (input.limit as number | undefined) ?? SEARCH_MEMORY_DEFAULT_LIMIT;
+      let facts: MemoryNoteRow[];
+      if (!query) {
+        facts = [...listCoreProfile(ownerId), ...listNewestActiveFacts(ownerId, { limit: 20, excludeCore: true })];
+      } else {
+        facts = searchActiveFacts(ownerId, query, { mode: "all", limit });
+        if (facts.length === 0) facts = searchActiveFacts(ownerId, query, { mode: "any", limit });
+      }
+      return facts.map((f) => factForModel(ownerId, f));
+    }
     case "get_current_time": {
       const timezone = getUserTimezone(ownerId);
       if (!timezone) {
@@ -1288,7 +1377,11 @@ export async function runTool(
       const entityType = input.entity_type as string | undefined;
       const entity = findEntityByName(ownerId, entityName, entityType);
       if (!entity) return { error: `no entity found matching "${entityName}"` };
-      return { entity, related: getRelatedEntities(ownerId, { type: "entity", id: entity.id }) };
+      return {
+        entity: { id: entity.id, type: entity.type, name: entity.data.name, aliases: entity.data.aliases },
+        facts: listActiveFactsForEntity(ownerId, entity.id).map((f) => ({ id: f.id, content: f.content, kind: f.kind })),
+        related: listEntityRelations(ownerId, entity.id),
+      };
     }
     case "list_flagged_emails": {
       const category = input.category as ImportantEmailEntityData["category"] | undefined;
@@ -1678,8 +1771,10 @@ function buildRules(enabled: Set<ToolKey>): string {
     '- You can archive emails and apply labels/categories directly — archiving is fully reversible (the email is just removed from the inbox, never deleted) so you don\'t need to ask permission first, but when the query is broad or ambiguous (e.g. "archive everything" with no filter), confirm first with ask_user_choice(mode="confirm", confirm_tool="archive_messages", confirm_input=<the exact call>) instead of asking in prose.',
     "- Use search_contacts to resolve a name to an email address before drafting to someone when you don't already have their address.",
     "- If search_contacts (or any lookup) returns more than one plausible match and it's not obvious which one is meant, use ask_user_choice(mode=\"resume\") with one option per candidate instead of listing them in prose and waiting for a typed reply.",
-    "- Use the remember tool proactively whenever the user shares something worth recalling later (preferences, which account is which, standing instructions) — don't wait to be asked.",
-    "- When a remember note is about a specific, nameable, recurring subject (a person, place, project, etc) the user might ask about again by name, pass entity_name + entity_type on that same remember call so it files onto a lookup-able entity instead of only a flat note — don't do this for one-off preferences with no clear subject. Use recall_entity (not search_memory) when the user later asks about that subject by name — it returns the entity's notes plus everything linked to it in one call.",
+    "- Use the remember tool proactively whenever the user shares something worth recalling later (preferences, which account is which, standing instructions, people in their life) — don't wait to be asked. Use kind 'core' only for identity-level facts (their name, partner/children/close family, home city, job/employer).",
+    "- When a remember note is about a specific, nameable, recurring subject (a person, place, organisation, project) the user might ask about again by name, pass entity_name + entity_type on that same remember call; when it relates two such subjects, pass relates_to plus a relation like 'works_at'. Use recall_entity (not search_memory) when the user asks about that subject by name.",
+    "- When the user corrects or updates something you remember (they moved, changed jobs, you had it wrong), call remember with replaces_id set to the old fact's id rather than saving a second, conflicting fact. When they say something you remember is wrong or ask you to forget it, call forget_memory and tell them what you forgot.",
+    "- For 'what do you know about me', call search_memory with no query. Otherwise don't recite remembered facts unprompted — just use them.",
     "- Use flag_unmet_request whenever you have to tell the user you can't do something — call it in the same turn as your reply, don't wait to be asked.",
     "- Use set_reminder for anything the user wants to be nudged about at a specific time or on a recurring cadence — a one-shot ('remind me in 20 minutes'), a fixed burst in a window ('every 5 minutes between 10 and 10:30'), or repeat-until-they-reply. Never compute the date/time/timezone math yourself — pass through the raw numbers/clock-times the user said and let the tool do the arithmetic (see its description). remember's triggerAt no longer exists — set_reminder is the only way to schedule a WhatsApp push.",
     "- Use get_current_time whenever the user asks what time or date it is, or you need 'now' for a time-relative answer — you have no built-in clock, so never state a time/date from your own reasoning. It also doubles as how the user can check you have their timezone right.",
@@ -1732,21 +1827,13 @@ export function buildSystemPrompt(ownerId: number, conversationSummary?: string)
     ? folders.map((f) => `- ${f.path}`).join("\n")
     : "(none configured)";
 
-  const memories = listRecentMemoryNotes(ownerId).reverse();
-  const memoryList = memories.length
-    ? memories
-        .map(
-          (m) =>
-            `- ${m.content}${
-              m.triggerAt
-                ? ` (reminder set for ${new Date(m.triggerAt).toDateString()}${
-                    m.lastSurfacedAt ? ", already sent" : ""
-                  })`
-                : ""
-            }`
-        )
-        .join("\n")
-    : "(nothing remembered yet)";
+  // Only the small, identity-level core profile lives in the cached system block — it changes a
+  // few times a month, so this block is rarely rewritten. Everything else the assistant remembers
+  // is retrieved per message (ai/memoryRetrieval.ts) and injected outside the cached prefix.
+  const coreProfile = listCoreProfile(ownerId);
+  const coreList = coreProfile.length
+    ? coreProfile.map((f) => `- ${f.content}`).join("\n")
+    : "(nothing known yet)";
 
   const xeroEmail = getXeroForwardingEmail(ownerId);
   const xeroStatus = xeroEmail
@@ -1791,10 +1878,12 @@ export function buildSystemPrompt(ownerId: number, conversationSummary?: string)
     persona ? `The user described how they want you to behave:\n${persona}` : "",
     `Connected accounts:\n${accountList}`,
     `Local computer folders searchable by file name:\n${folderList}`,
-    `Things you remember about the user. You may naturally bring up one of these when it's ` +
+    `What you know about the user (core profile). You may naturally bring up one of these when it's ` +
       `genuinely relevant to what's being discussed — the way someone who was actually paying ` +
-      `attention would — without forcing it or repeating something you've already brought up ` +
-      `this conversation:\n${memoryList}`,
+      `attention would — without forcing it or repeating something you've already brought up this ` +
+      `conversation. Other things you remember are shown alongside the user's latest message when ` +
+      `relevant, and search_memory reaches the rest; the same rule applies equally to the things ` +
+      `shown alongside the user's latest message. The profile:\n${coreList}`,
     xeroStatus,
     pendingInvoiceStatus,
     conversationSummary
@@ -1807,24 +1896,37 @@ export function buildSystemPrompt(ownerId: number, conversationSummary?: string)
     .join("\n\n");
 }
 
-// The tools+system prefix is already cached (buildToolsForOwner / the system block below), but
-// `messages` itself is not — within one runAssistantChat's loop, every turn otherwise re-pays
-// full input price for every earlier turn's tool results, which is the real cost driver (see
-// feature-to-do/token-cost-reduction.md #2). Rebuilding from the original `messages` each call
-// (rather than mutating it) means it never carries cache_control itself, so there's never more
-// than the one breakpoint added here — no risk of exceeding Anthropic's max breakpoints per
-// request (2 already used by tools + system) as the array grows turn over turn. Because each
-// turn only APPENDS to `messages`, the prefix up to this breakpoint stays byte-identical to what
-// the previous turn cached, so it's read back at the cached (not full) rate.
-function withMessagesCacheBreakpoint(messages: Anthropic.MessageParam[]): Anthropic.MessageParam[] {
+function withCacheControlOnLastBlock(message: Anthropic.MessageParam): Anthropic.MessageParam {
+  const blocks =
+    typeof message.content === "string" ? [{ type: "text" as const, text: message.content }] : message.content;
+  if (blocks.length === 0) return message;
+  return {
+    ...message,
+    content: blocks.map((block, i) =>
+      i === blocks.length - 1 ? { ...block, cache_control: { type: "ephemeral" as const, ttl: "1h" as const } } : block
+    ),
+  };
+}
+
+// Two breakpoints inside `messages` (tools + system use the other two of Anthropic's four):
+// - the LAST block of the last message, so each tool-loop turn within one reply reads every
+//   earlier turn back at the cached rate (feature-to-do/token-cost-reduction.md #2);
+// - `stableIndex`: the message just before the latest user message. The latest user message
+//   carries a per-message relevant-memory block (ai/memoryRetrieval.ts) that is never stored in
+//   history, so the NEXT user turn's prefix diverges there — this breakpoint caches everything
+//   before it, which the next turn resends byte-identically only while the history is still under
+//   MAX_HISTORY_MESSAGES. Once it's full, each turn drops the oldest messages, the prefix shifts,
+//   and this breakpoint misses (the within-reply tool-loop breakpoint above still hits).
+// Rebuilt from the original `messages` each call (never mutated), so no stale breakpoint lingers.
+function withMessagesCacheBreakpoint(
+  messages: Anthropic.MessageParam[],
+  stableIndex: number
+): Anthropic.MessageParam[] {
   if (messages.length === 0) return messages;
-  const last = messages[messages.length - 1];
-  const blocks = typeof last.content === "string" ? [{ type: "text" as const, text: last.content }] : last.content;
-  if (blocks.length === 0) return messages;
-  const cachedBlocks = blocks.map((block, i) =>
-    i === blocks.length - 1 ? { ...block, cache_control: { type: "ephemeral" as const, ttl: "1h" as const } } : block
+  const last = messages.length - 1;
+  return messages.map((m, i) =>
+    i === last || (i === stableIndex && stableIndex < last) ? withCacheControlOnLastBlock(m) : m
   );
-  return [...messages.slice(0, -1), { ...last, content: cachedBlocks }];
 }
 
 // A response's visible reply is every text block joined, not just the first one. Picking only the
@@ -1860,10 +1962,39 @@ export async function runAssistantChat(
   const model = chooseModel(lastUserMessage);
   const useThinking = model !== MODEL_SIMPLE; // skip extended thinking for cheap lookup turns
 
-  const messages: Anthropic.MessageParam[] = trimmedHistory.map((m) => ({
+  // The latest two user messages are the retrieval query, so a follow-up like "and what about
+  // her?" still pulls the memories the previous message did.
+  let latestUserIndex = -1;
+  for (let i = trimmedHistory.length - 1; i >= 0; i--) {
+    if (trimmedHistory[i].role === "user") {
+      latestUserIndex = i;
+      break;
+    }
+  }
+  const retrievalText = trimmedHistory
+    .filter((m) => m.role === "user")
+    .slice(-2)
+    .map((m) => m.content)
+    .join("\n");
+  // Memory is an enhancement: a retrieval failure must never cost the user their reply.
+  let relevantMemory: string | null = null;
+  try {
+    relevantMemory = retrieveRelevantMemory(ownerId, retrievalText);
+  } catch (err) {
+    console.error("runAssistantChat: memory retrieval failed; replying without it", err);
+  }
+
+  const messages: Anthropic.MessageParam[] = trimmedHistory.map((m, i) => ({
     role: m.role,
-    content: m.content,
+    content:
+      i === latestUserIndex && relevantMemory
+        ? [
+            { type: "text" as const, text: relevantMemory },
+            { type: "text" as const, text: m.content },
+          ]
+        : m.content,
   }));
+  const stableHistoryIndex = latestUserIndex - 1;
 
   // Summed across every anthropic.messages.create call this invocation makes (the loop below can
   // take up to 8 turns for one user message, e.g. several tool round-trips) and recorded once,
@@ -1892,7 +2023,7 @@ export async function runAssistantChat(
       ...(useThinking ? { thinking: { type: "adaptive" as const } } : {}),
       system: [{ type: "text", text: system, cache_control: { type: "ephemeral", ttl: "1h" } }],
       tools: buildToolsForOwner(ownerId),
-      messages: withMessagesCacheBreakpoint(messages),
+      messages: withMessagesCacheBreakpoint(messages, stableHistoryIndex),
     });
     // response.usage is absent in some existing tests' mocked responses — tolerate that rather
     // than letting a usage-tracking side effect break the actual conversation flow.

@@ -27,6 +27,8 @@ import {
   saveConversationSummary,
   getConversationSummary,
   appendWhatsAppMessage,
+  setMemoryExtractionCursor,
+  getMemoryExtractionCursor,
 } from "./store.js";
 
 let counter = 0;
@@ -190,6 +192,17 @@ describe("deleteUserCompletely", () => {
     deleteUserCompletely(user.id);
 
     expect(getConversationSummary(otherPhone)?.summary).toBe("someone else's summary");
+  });
+
+  it("removes the memory extraction cursor for the owner's phone", () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("cursor-bound"));
+    const phone = `4476${Date.now().toString().slice(-8)}`;
+    addPhoneNumberForUser(user.id, phone);
+    setMemoryExtractionCursor(phone, 5);
+
+    deleteUserCompletely(user.id);
+
+    expect(getMemoryExtractionCursor(phone)).toBeNull();
   });
 });
 

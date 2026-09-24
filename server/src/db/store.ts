@@ -3,8 +3,10 @@ import path from "node:path";
 import fs from "node:fs";
 import crypto from "node:crypto";
 import { encryptField, decryptField } from "../services/crypto.js";
+import { getEntityTypeDef } from "../services/entityTypes.js";
 import { migrateUsersEmailNullable } from "./migrations/usersEmailNullable.js";
 import { migrateReplayParkMarker } from "./migrations/replayParkMarker.js";
+import { migrateMemoryGraph } from "./migrations/memoryGraph.js";
 
 // DATA_DIR lets tests (see server/src/test/setup.ts) point this at an isolated temp directory
 // instead of the real server/data — unset in normal dev/production, where this falls back to
@@ -841,19 +843,19 @@ if (!hasMigratedCheckins) {
 // Powers proactive memory surfacing: an optional point in time a memory becomes worth mentioning
 // unprompted (a stated deadline, a recurring commitment), and when it was last pushed so it never
 // repeats. Both nullable — an ordinary fact/preference leaves both null, unchanged from before.
-const memoryNoteColumns = (
+const existingMemoryNoteColumns = (
   db.prepare(`PRAGMA table_info(memory_notes)`).all() as { name: string }[]
 ).map((c) => c.name);
-if (!memoryNoteColumns.includes("trigger_at")) {
+if (!existingMemoryNoteColumns.includes("trigger_at")) {
   db.exec(`ALTER TABLE memory_notes ADD COLUMN trigger_at INTEGER`);
 }
-if (!memoryNoteColumns.includes("last_surfaced_at")) {
+if (!existingMemoryNoteColumns.includes("last_surfaced_at")) {
   db.exec(`ALTER TABLE memory_notes ADD COLUMN last_surfaced_at INTEGER`);
 }
 // Set once a reminder ages out of listDueMemoryReminders's 24h window without ever sending — lets
 // checkDueMemoryReminders notify the user exactly once that it gave up, and lets
 // searchReminderNotes report "failed" instead of leaving the reminder looking silently pending.
-if (!memoryNoteColumns.includes("gave_up_at")) {
+if (!existingMemoryNoteColumns.includes("gave_up_at")) {
   db.exec(`ALTER TABLE memory_notes ADD COLUMN gave_up_at INTEGER`);
 }
 db.exec(`CREATE INDEX IF NOT EXISTS idx_memory_notes_trigger ON memory_notes (owner_id, trigger_at)`);
@@ -892,8 +894,8 @@ if (!hasMigratedReminders) {
 }
 
 // Full-text index over memory notes, backing searchMemoryNotes() below. The system prompt only
-// ever injects the most recent N notes (listRecentMemoryNotes) — this is how the assistant reaches
-// older notes on demand instead of losing them once they age out of that window. External-content
+// ever carries the small core profile (listCoreProfile) — this is how the assistant reaches
+// everything else on demand instead of losing it. External-content
 // FTS5 table (content='memory_notes') so the indexed text isn't duplicated in the DB; triggers keep
 // it in sync with inserts/deletes (no update trigger — memory_notes rows are never content-edited,
 // only inserted or removed).
@@ -914,6 +916,11 @@ db.exec(`
 if (!ftsExistedBefore) {
   db.exec(`INSERT INTO memory_notes_fts(rowid, content) SELECT id, content FROM memory_notes`);
 }
+
+// Structured-fact columns, the extraction cursor table, and moving remembered entities' inline
+// notes into memory_notes — see the migration's own comment. Runs after the FTS triggers exist so
+// any note it inserts is indexed like every other insert.
+migrateMemoryGraph(db);
 
 // Full-text index over the raw WhatsApp transcript, backing searchWhatsAppHistory() below — the
 // system prompt only ever includes the most recent MAX_HISTORY_MESSAGES messages plus a rolling
@@ -1355,6 +1362,13 @@ export function saveBriefing(ownerId: number, date: string, content: string): Br
   return getBriefing(ownerId, date)!;
 }
 
+export type MemoryKind = "core" | "fact" | "preference";
+export type MemorySource = "told" | "extracted";
+
+export function isMemoryKind(value: unknown): value is MemoryKind {
+  return value === "core" || value === "fact" || value === "preference";
+}
+
 export interface MemoryNoteRow {
   id: number;
   content: string;
@@ -1362,24 +1376,45 @@ export interface MemoryNoteRow {
   triggerAt: number | null;
   lastSurfacedAt: number | null;
   gaveUpAt: number | null;
+  // The remembered entity this fact is about (a person, place, project...); null = about the user.
+  entityId: number | null;
+  kind: MemoryKind;
+  source: MemorySource;
 }
 
-const MEMORY_NOTE_COLUMNS = `id, content, created_at AS createdAt, trigger_at AS triggerAt, last_surfaced_at AS lastSurfacedAt, gave_up_at AS gaveUpAt`;
+// Built per table alias so the FTS joins below (which need an `m.` prefix) share one column list.
+function memoryNoteColumns(alias = ""): string {
+  const p = alias ? `${alias}.` : "";
+  return `${p}id AS id, ${p}content AS content, ${p}created_at AS createdAt, ${p}trigger_at AS triggerAt,
+    ${p}last_surfaced_at AS lastSurfacedAt, ${p}gave_up_at AS gaveUpAt, ${p}entity_id AS entityId,
+    ${p}kind AS kind, ${p}source AS source`;
+}
+const MEMORY_NOTE_COLUMNS = memoryNoteColumns();
+
+// A fact stops being "active" once a newer fact supersedes it or the user asks to forget it. Both
+// are soft markers (the row stays for auditing); every read the assistant or the Setup page sees
+// filters on this.
+function activeFact(alias = ""): string {
+  const p = alias ? `${alias}.` : "";
+  return `${p}superseded_at IS NULL AND ${p}forgotten_at IS NULL`;
+}
+
+// The assistant-facing fact reads (profile, entity facts, newest, search) also skip legacy reminder
+// rows — memory_notes with a trigger_at from before reminders moved to their own table. Those are
+// still listed on the Setup page (listMemoryNotes) and by check_reminder_status (searchReminderNotes).
+function assistantFact(alias = ""): string {
+  const p = alias ? `${alias}.` : "";
+  return `${activeFact(alias)} AND ${p}trigger_at IS NULL`;
+}
+
+export function inTransaction<T>(fn: () => T): T {
+  return db.transaction(fn)();
+}
 
 export function listMemoryNotes(ownerId: number): MemoryNoteRow[] {
   return db
-    .prepare(`SELECT ${MEMORY_NOTE_COLUMNS} FROM memory_notes WHERE owner_id = ? ORDER BY id DESC`)
+    .prepare(`SELECT ${MEMORY_NOTE_COLUMNS} FROM memory_notes WHERE owner_id = ? AND ${activeFact()} ORDER BY id DESC`)
     .all(ownerId) as MemoryNoteRow[];
-}
-
-// Used when building the assistant's system prompt (unlike listMemoryNotes, which the Setup
-// page uses to show the full vault) — caps how many notes get resent as tokens on every single
-// call so the prompt doesn't grow forever as the vault accumulates facts over months of use.
-// Anything older than this window is still reachable via searchMemoryNotes() below, on demand.
-export function listRecentMemoryNotes(ownerId: number, limit = 30): MemoryNoteRow[] {
-  return db
-    .prepare(`SELECT ${MEMORY_NOTE_COLUMNS} FROM memory_notes WHERE owner_id = ? ORDER BY id DESC LIMIT ?`)
-    .all(ownerId, limit) as MemoryNoteRow[];
 }
 
 // triggerAt comes from the model as an ISO 8601 string (see the remember tool in assistant.ts) —
@@ -1403,28 +1438,164 @@ export function removeMemoryNote(ownerId: number, id: number): void {
   db.prepare(`DELETE FROM memory_notes WHERE id = ? AND owner_id = ?`).run(id, ownerId);
 }
 
-// On-demand lookup for notes outside the recency window listRecentMemoryNotes injects into every
-// prompt. Query terms are extracted and re-quoted rather than passed to MATCH raw — FTS5's query
-// syntax treats quotes/colons/NOT/OR etc. as operators, and a note-search phrase from the model
-// (or forwarded user text) containing any of those would otherwise throw instead of just matching
-// literally. Terms are ANDed: every term must appear (in any column-equivalent position) for a note
-// to match, which keeps multi-word queries from over-matching on any single common word.
-export function searchMemoryNotes(ownerId: number, query: string, limit = 10): MemoryNoteRow[] {
-  const terms = query.match(/[\p{L}\p{N}]+/gu) ?? [];
-  if (terms.length === 0) return [];
+// The structured write path — remember and services/memoryExtraction.ts both come through here.
+// supersedesId only ever retires an ACTIVE fact of the SAME owner (the WHERE clause is the guard),
+// so a stale or hallucinated id silently supersedes nothing while the new fact still saves.
+export function addFact(
+  ownerId: number,
+  input: {
+    content: string;
+    kind?: MemoryKind;
+    source?: MemorySource;
+    entityId?: number | null;
+    supersedesId?: number | null;
+  }
+): MemoryNoteRow {
+  return inTransaction(() => {
+    const now = Date.now();
+    const info = db
+      .prepare(
+        `INSERT INTO memory_notes (owner_id, content, created_at, entity_id, kind, source) VALUES (?, ?, ?, ?, ?, ?)`
+      )
+      .run(ownerId, input.content, now, input.entityId ?? null, input.kind ?? "fact", input.source ?? "told");
+    const id = Number(info.lastInsertRowid);
+    // Keeps an actively discussed entity among the newest, which is the order the extractor's
+    // top-50 entity candidates are taken in (listRememberedEntities).
+    if (input.entityId) {
+      db.prepare(`UPDATE entities SET updated_at = ? WHERE id = ? AND owner_id = ?`).run(now, input.entityId, ownerId);
+    }
+    if (input.supersedesId) {
+      db.prepare(
+        `UPDATE memory_notes SET superseded_at = ?, superseded_by = ?
+         WHERE id = ? AND owner_id = ? AND ${activeFact()}`
+      ).run(now, id, input.supersedesId, ownerId);
+    }
+    return db.prepare(`SELECT ${MEMORY_NOTE_COLUMNS} FROM memory_notes WHERE id = ?`).get(id) as MemoryNoteRow;
+  });
+}
 
-  const matchQuery = terms.map((t) => `"${t.replace(/"/g, '""')}"`).join(" AND ");
+// Returns the ids that actually changed — unknown, already-forgotten, and other owners' ids are
+// skipped, so the assistant can report exactly what it forgot.
+export function forgetFacts(ownerId: number, ids: number[]): number[] {
+  const now = Date.now();
+  const stmt = db.prepare(
+    `UPDATE memory_notes SET forgotten_at = ? WHERE id = ? AND owner_id = ? AND ${activeFact()}`
+  );
+  return inTransaction(() => ids.filter((id) => stmt.run(now, id, ownerId).changes > 0));
+}
+
+// forget_memory's entity_names path: forgets every active fact about a remembered entity, then
+// deletes the entity and its links (deleteEntity), in one transaction. Only ever reaches an
+// entity findEntityByName returned, i.e. a remembered one of this owner. Returns the forgotten ids.
+export function forgetEntity(ownerId: number, entityId: number): number[] {
+  return inTransaction(() => {
+    const ids = (
+      db
+        .prepare(`SELECT id FROM memory_notes WHERE owner_id = ? AND entity_id = ? AND ${activeFact()} ORDER BY id`)
+        .all(ownerId, entityId) as { id: number }[]
+    ).map((r) => r.id);
+    const forgotten = forgetFacts(ownerId, ids);
+    deleteEntity(ownerId, entityId);
+    return forgotten;
+  });
+}
+
+// Facts the user asked to forget since `sinceMs`, newest first. services/memoryExtraction.ts shows
+// these to the model and refuses to re-add them, since extraction runs behind the chat and would
+// otherwise bring a just-forgotten fact back. limit null = every one.
+export function listRecentlyForgottenFacts(ownerId: number, sinceMs: number, limit: number | null = 50): MemoryNoteRow[] {
   return db
     .prepare(
-      `SELECT m.id, m.content, m.created_at AS createdAt, m.trigger_at AS triggerAt,
-              m.last_surfaced_at AS lastSurfacedAt, m.gave_up_at AS gaveUpAt
+      `SELECT ${MEMORY_NOTE_COLUMNS} FROM memory_notes
+       WHERE owner_id = ? AND forgotten_at IS NOT NULL AND forgotten_at >= ?
+       ORDER BY forgotten_at DESC, id DESC LIMIT ?`
+    )
+    .all(ownerId, sinceMs, limit ?? -1) as MemoryNoteRow[];
+}
+
+// The always-in-the-prompt identity profile. Newest `limit` core facts, rendered oldest first so a
+// new core fact appends to the end — the cached system block only changes when a core fact does.
+// 40 × ~20 tokens ≈ 800 cached tokens: room for a busy person's family, work and standing
+// preferences at negligible cost, since the block is read back at the cached rate on most calls.
+export const CORE_PROFILE_LIMIT = 40;
+export function listCoreProfile(ownerId: number, limit = CORE_PROFILE_LIMIT): MemoryNoteRow[] {
+  return db
+    .prepare(
+      `SELECT * FROM (
+         SELECT ${MEMORY_NOTE_COLUMNS} FROM memory_notes
+         WHERE owner_id = ? AND kind = 'core' AND ${assistantFact()} ORDER BY id DESC LIMIT ?
+       ) ORDER BY id ASC`
+    )
+    .all(ownerId, limit) as MemoryNoteRow[];
+}
+
+export function listActiveFactsForEntity(ownerId: number, entityId: number, limit = 20): MemoryNoteRow[] {
+  return db
+    .prepare(
+      `SELECT ${MEMORY_NOTE_COLUMNS} FROM memory_notes
+       WHERE owner_id = ? AND entity_id = ? AND ${assistantFact()} ORDER BY id DESC LIMIT ?`
+    )
+    .all(ownerId, entityId, limit) as MemoryNoteRow[];
+}
+
+export function listNewestActiveFacts(
+  ownerId: number,
+  opts: { limit?: number; excludeCore?: boolean } = {}
+): MemoryNoteRow[] {
+  return db
+    .prepare(
+      `SELECT ${MEMORY_NOTE_COLUMNS} FROM memory_notes
+       WHERE owner_id = ? AND ${assistantFact()} ${opts.excludeCore ? "AND kind != 'core'" : ""}
+       ORDER BY id DESC LIMIT ?`
+    )
+    .all(ownerId, opts.limit ?? 20) as MemoryNoteRow[];
+}
+
+// Words too common to say anything about which fact is relevant — only dropped in "any" mode,
+// where ORing them in would match nearly every fact.
+const SEARCH_STOPWORDS = new Set(
+  ("a an and are as at be but by can do does for from had has have he her him his how i if in is it its " +
+    "me my of on or our she so that the their them they this to up us was we were what when where which " +
+    "who why will with you your about just also any tell know did get got")
+    .split(" ")
+);
+
+// FTS5 search over active facts. Terms are extracted and re-quoted rather than passed to MATCH raw —
+// FTS5's query syntax treats quotes/colons/NOT/OR etc. as operators, and a phrase from the model or
+// forwarded user text containing any of those would otherwise throw instead of matching literally.
+// mode "all" ANDs the terms (precise lookup: search_memory); "any" ORs them after dropping
+// stopwords and ranks by bm25 (relevance retrieval: memoryRetrieval.ts, memoryExtraction.ts).
+export function searchActiveFacts(
+  ownerId: number,
+  query: string,
+  opts: { mode?: "all" | "any"; limit?: number; excludeIds?: number[] } = {}
+): MemoryNoteRow[] {
+  const mode = opts.mode ?? "all";
+  const excludeIds = opts.excludeIds ?? [];
+  let terms: string[] = query.match(/[\p{L}\p{N}]+/gu) ?? [];
+  if (mode === "any") {
+    terms = [...new Set(terms.map((t) => t.toLowerCase()))].filter(
+      (t) => t.length >= 2 && !SEARCH_STOPWORDS.has(t)
+    );
+  }
+  if (terms.length === 0) return [];
+
+  const matchQuery = terms.map((t) => `"${t.replace(/"/g, '""')}"`).join(mode === "all" ? " AND " : " OR ");
+  return db
+    .prepare(
+      `SELECT ${memoryNoteColumns("m")}
        FROM memory_notes_fts f
        JOIN memory_notes m ON m.id = f.rowid
-       WHERE f.memory_notes_fts MATCH ? AND m.owner_id = ?
+       WHERE f.memory_notes_fts MATCH ? AND m.owner_id = ? AND ${assistantFact("m")}
+         ${excludeIds.length ? `AND m.id NOT IN (${excludeIds.map(() => "?").join(", ")})` : ""}
        ORDER BY rank
        LIMIT ?`
     )
-    .all(matchQuery, ownerId, limit) as MemoryNoteRow[];
+    .all(matchQuery, ownerId, ...excludeIds, opts.limit ?? 10) as MemoryNoteRow[];
+}
+
+export function searchMemoryNotes(ownerId: number, query: string, limit = 10): MemoryNoteRow[] {
+  return searchActiveFacts(ownerId, query, { mode: "all", limit });
 }
 
 // Same FTS approach as searchMemoryNotes, restricted to notes that are actually reminders
@@ -1438,8 +1609,7 @@ export function searchReminderNotes(ownerId: number, query: string, limit = 10):
   const matchQuery = terms.map((t) => `"${t.replace(/"/g, '""')}"`).join(" AND ");
   return db
     .prepare(
-      `SELECT m.id, m.content, m.created_at AS createdAt, m.trigger_at AS triggerAt,
-              m.last_surfaced_at AS lastSurfacedAt, m.gave_up_at AS gaveUpAt
+      `SELECT ${memoryNoteColumns("m")}
        FROM memory_notes_fts f
        JOIN memory_notes m ON m.id = f.rowid
        WHERE f.memory_notes_fts MATCH ? AND m.owner_id = ? AND m.trigger_at IS NOT NULL
@@ -1783,6 +1953,65 @@ export function getWhatsAppBacklogForSummary(
        WHERE phone = ? AND id > ? AND id < ? ORDER BY id ASC`
     )
     .all(phone, afterId, windowStartId) as WhatsAppMessageRow[];
+}
+
+// How far services/memoryExtraction.ts has read this phone's transcript; null = never run.
+export function getMemoryExtractionCursor(phone: string): number | null {
+  const row = db
+    .prepare(`SELECT extracted_through_id AS id FROM memory_extraction_cursors WHERE phone = ?`)
+    .get(phone) as { id: number } | undefined;
+  return row ? row.id : null;
+}
+
+export function setMemoryExtractionCursor(phone: string, extractedThroughId: number): void {
+  db.prepare(
+    `INSERT INTO memory_extraction_cursors (phone, extracted_through_id, updated_at) VALUES (?, ?, ?)
+     ON CONFLICT(phone) DO UPDATE SET extracted_through_id = excluded.extracted_through_id,
+       updated_at = excluded.updated_at`
+  ).run(phone, extractedThroughId, Date.now());
+}
+
+// The three transcript reads below back services/memoryExtraction.ts and are scoped by owner as
+// well as phone: a number can be unbound and re-bound to another account, and the new owner's
+// extraction must never read (and turn into permanent facts) the previous owner's messages.
+export function getWhatsAppMessagesAfter(
+  ownerId: number,
+  phone: string,
+  afterId: number,
+  limit: number
+): WhatsAppMessageRow[] {
+  return db
+    .prepare(
+      `SELECT id, phone, role, content, created_at AS createdAt FROM whatsapp_messages
+       WHERE phone = ? AND owner_id = ? AND id > ? ORDER BY id ASC LIMIT ?`
+    )
+    .all(phone, ownerId, afterId, limit) as WhatsAppMessageRow[];
+}
+
+export function getWhatsAppMessagesBefore(
+  ownerId: number,
+  phone: string,
+  beforeId: number,
+  limit: number
+): WhatsAppMessageRow[] {
+  const rows = db
+    .prepare(
+      `SELECT id, phone, role, content, created_at AS createdAt FROM whatsapp_messages
+       WHERE phone = ? AND owner_id = ? AND id < ? ORDER BY id DESC LIMIT ?`
+    )
+    .all(phone, ownerId, beforeId, limit) as WhatsAppMessageRow[];
+  return rows.reverse();
+}
+
+// The newest `limit` rows of this owner's thread on this phone, oldest first.
+export function getRecentWhatsAppMessagesForOwner(ownerId: number, phone: string, limit: number): WhatsAppMessageRow[] {
+  const rows = db
+    .prepare(
+      `SELECT id, phone, role, content, created_at AS createdAt FROM whatsapp_messages
+       WHERE phone = ? AND owner_id = ? ORDER BY id DESC LIMIT ?`
+    )
+    .all(phone, ownerId, limit) as WhatsAppMessageRow[];
+  return rows.reverse();
 }
 
 export function normalizePhone(phone: string): string {
@@ -2466,59 +2695,89 @@ export function getRelatedEntities<T = unknown>(
 
 export interface RememberedEntityData {
   name: string;
-  notes: { text: string; at: number }[];
+  // Other names the same subject goes by ("Sarah Jones" for "Sarah") — matched by findEntityByName
+  // and retrieval so the extractor and remember converge on one entity instead of near-duplicates.
+  aliases: string[];
+}
+
+export interface RememberedEntitySummary {
+  id: number;
+  type: string;
+  name: string;
+  aliases: string[];
+  updatedAt: number;
+}
+
+export interface EntityRelation {
+  relation: string;
+  direction: "out" | "in";
+  entity: { id: number; type: string; name: string };
 }
 
 function normalizeEntityName(name: string): string {
   return name.trim().toLowerCase();
 }
 
-// Dedupes by owner+type+lowercased name so the same subject mentioned across separate
-// remember calls accumulates onto one entity instead of spawning near-duplicate rows.
-export function findOrCreateEntity(
-  ownerId: number,
-  type: string,
-  name: string
-): EntityRow<RememberedEntityData> {
-  const existing = findEntityByName(ownerId, name, type);
-  if (existing) return existing;
-  const trimmed = name.trim();
-  if (!trimmed) throw new Error("findOrCreateEntity: name must not be blank");
-  return saveEntity<RememberedEntityData>(ownerId, {
-    type,
-    data: { name: trimmed, notes: [] },
-  });
+function normalizeEntityType(type: string): string {
+  return type.trim().toLowerCase();
 }
 
-export function appendEntityNote(
-  ownerId: number,
-  entityId: number,
-  text: string
-): EntityRow<RememberedEntityData> {
-  const entity = getEntity<RememberedEntityData>(ownerId, entityId);
-  if (!entity) throw new Error(`entity ${entityId} not found`);
-  const notes = [...entity.data.notes, { text, at: Date.now() }];
-  return updateEntity<RememberedEntityData>(ownerId, entityId, {
-    data: { ...entity.data, notes },
-  });
+// Entity types owned by other document-extraction pipelines: the registry in
+// services/entityTypes.ts (travel_checkin, expense, booking, trip) plus important_email, which
+// predates that registry and isn't in it. The remember/extraction bridge (findOrCreateEntity)
+// must refuse to create or match an entity under one of these — otherwise a model-chosen type like
+// "booking" would inject a bare {name, aliases} row that list_bookings, the spending digest, and
+// trip prep read as BookingData/ExpenseData/etc. instead.
+export function isReservedEntityType(type: string): boolean {
+  const normalized = normalizeEntityType(type);
+  return getEntityTypeDef(normalized) !== undefined || normalized === "important_email";
 }
 
-// Narrows an entity's untyped `data` down to RememberedEntityData shape — required because
-// listEntities(ownerId, {}) (no type filter) returns entities of every type for this owner,
-// including pre-existing document-extracted ones (travel_checkin, trip, expense, booking)
-// whose data shape is unrelated. A `name` string alone isn't enough to tell them apart
-// (booking also has one) — requiring `notes` too is what no pre-existing type has.
+// Narrows an entity's untyped `data` down to RememberedEntityData — required because
+// listEntities(ownerId, {}) returns entities of every type, including document-extracted ones
+// (travel_checkin, trip, expense, booking) whose data shape is unrelated. A `name` string alone
+// isn't enough (booking also has one); the `aliases` array is what no document-extracted type has.
 function isRememberedEntity(data: unknown): data is RememberedEntityData {
   return (
     typeof data === "object" &&
     data !== null &&
     typeof (data as RememberedEntityData).name === "string" &&
-    Array.isArray((data as RememberedEntityData).notes)
+    Array.isArray((data as RememberedEntityData).aliases)
   );
 }
 
-// Case-insensitive exact-name lookup, optionally narrowed to one type — used both by
-// findOrCreateEntity's dedupe check and by remember's relates_to / recall_entity.
+function listRememberedEntityRows(ownerId: number, type?: string): EntityRow<RememberedEntityData>[] {
+  return listEntities<unknown>(ownerId, type ? { type } : {}).filter(
+    (e): e is EntityRow<RememberedEntityData> => isRememberedEntity(e.data)
+  );
+}
+
+// Dedupes by owner+lowercased name-or-alias (across all remembered types) so the same subject
+// mentioned across separate remember calls or extraction batches accumulates onto one entity. type
+// is normalised (trim+lowercase) before save, and rejected outright for a reserved type
+// (isReservedEntityType above), so a model-chosen type can never create a row another pipeline
+// reads by type.
+export function findOrCreateEntity(
+  ownerId: number,
+  type: string,
+  name: string
+): EntityRow<RememberedEntityData> {
+  const normalizedType = normalizeEntityType(type);
+  if (isReservedEntityType(normalizedType)) {
+    throw new Error(`findOrCreateEntity: reserved entity type ${normalizedType}`);
+  }
+  // Matched across every remembered type, not just this one: types are free text the model picks
+  // per call ("person", then "colleague"), and matching within one type would split one subject
+  // across several entities.
+  const existing = findEntityByName(ownerId, name);
+  if (existing) return existing;
+  const trimmed = name.trim();
+  if (!trimmed) throw new Error("findOrCreateEntity: name must not be blank");
+  return saveEntity<RememberedEntityData>(ownerId, { type: normalizedType, data: { name: trimmed, aliases: [] } });
+}
+
+// Case-insensitive exact match on name or any alias, optionally narrowed to one type (also
+// normalised, so a caller passing "Person" still matches rows saved as "person").
 export function findEntityByName(
   ownerId: number,
   name: string,
@@ -2526,12 +2785,58 @@ export function findEntityByName(
 ): EntityRow<RememberedEntityData> | null {
   const normalized = normalizeEntityName(name);
   if (!normalized) return null;
+  const normalizedType = type ? normalizeEntityType(type) : undefined;
   return (
-    listEntities<unknown>(ownerId, type ? { type } : {}).find(
-      (e): e is EntityRow<RememberedEntityData> =>
-        isRememberedEntity(e.data) && normalizeEntityName(e.data.name) === normalized
+    listRememberedEntityRows(ownerId, normalizedType).find((e) =>
+      [e.data.name, ...e.data.aliases].some((n) => normalizeEntityName(n) === normalized)
     ) ?? null
   );
+}
+
+export function addEntityAlias(ownerId: number, entityId: number, alias: string): EntityRow<RememberedEntityData> {
+  const entity = getEntity<RememberedEntityData>(ownerId, entityId);
+  if (!entity || !isRememberedEntity(entity.data)) throw new Error(`remembered entity ${entityId} not found`);
+  const trimmed = alias.trim();
+  const known = [entity.data.name, ...entity.data.aliases].map(normalizeEntityName);
+  if (!trimmed || known.includes(normalizeEntityName(trimmed))) return entity;
+  return updateEntity<RememberedEntityData>(ownerId, entityId, {
+    data: { ...entity.data, aliases: [...entity.data.aliases, trimmed] },
+  });
+}
+
+export function listRememberedEntities(ownerId: number): RememberedEntitySummary[] {
+  return listRememberedEntityRows(ownerId)
+    .map((e) => ({ id: e.id, type: e.type, name: e.data.name, aliases: e.data.aliases, updatedAt: e.updatedAt }))
+    .sort((a, b) => b.updatedAt - a.updatedAt || b.id - a.id);
+}
+
+// Entity→entity link with a free-text relation ("works_at", "sister_of"), created at most once
+// per (from, relation, to). Returns whether a new link was written.
+export function linkEntitiesOnce(ownerId: number, fromId: number, relation: string, toId: number): boolean {
+  if (fromId === toId) return false;
+  const exists = getLinksFrom(ownerId, "entity", fromId).some(
+    (l) => l.relation === relation && l.toType === "entity" && l.toId === toId
+  );
+  if (exists) return false;
+  linkRecords(ownerId, { relation, from: { type: "entity", id: fromId }, to: { type: "entity", id: toId } });
+  return true;
+}
+
+// Both directions of every link between this entity and another REMEMBERED entity — trips,
+// documents and other document-extracted entities are deliberately left out of memory output.
+export function listEntityRelations(ownerId: number, entityId: number): EntityRelation[] {
+  const toRelation = (relation: string, direction: "out" | "in", otherId: number): EntityRelation | null => {
+    const other = getEntity<unknown>(ownerId, otherId);
+    if (!other || !isRememberedEntity(other.data)) return null;
+    return { relation, direction, entity: { id: other.id, type: other.type, name: other.data.name } };
+  };
+  const out = getLinksFrom(ownerId, "entity", entityId)
+    .filter((l) => l.toType === "entity")
+    .map((l) => toRelation(l.relation, "out", l.toId));
+  const incoming = getLinksTo(ownerId, "entity", entityId)
+    .filter((l) => l.fromType === "entity")
+    .map((l) => toRelation(l.relation, "in", l.fromId));
+  return [...out, ...incoming].filter((r): r is EntityRelation => r !== null);
 }
 
 export interface ReadEmailRow {
@@ -3340,6 +3645,14 @@ export function deleteUserCompletely(ownerId: number): { deletedDocumentPaths: s
     // summary in its system prompt. Must run before user_phone_numbers/whatsapp_messages go.
     db.prepare(
       `DELETE FROM whatsapp_conversation_summaries WHERE phone IN (
+         SELECT phone FROM user_phone_numbers WHERE user_id = ?
+         UNION SELECT phone FROM replay_parked_phones WHERE owner_id = ?
+         UNION SELECT phone FROM whatsapp_messages WHERE owner_id = ?)`
+    ).run(ownerId, ownerId, ownerId);
+    // Same phone-keyed shape as the summaries above — a new account on the same number must start
+    // extraction fresh, not resume the old owner's cursor.
+    db.prepare(
+      `DELETE FROM memory_extraction_cursors WHERE phone IN (
          SELECT phone FROM user_phone_numbers WHERE user_id = ?
          UNION SELECT phone FROM replay_parked_phones WHERE owner_id = ?
          UNION SELECT phone FROM whatsapp_messages WHERE owner_id = ?)`

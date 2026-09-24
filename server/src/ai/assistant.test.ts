@@ -35,18 +35,23 @@ import {
   setToolEnabled,
   getEnabledTools,
   listMemoryNotes,
-  addMemoryNote,
-  markMemorySurfaced,
   setPendingSetup,
   listUnmetRequests,
   findEntityByName,
+  listActiveFactsForEntity,
   getRelatedEntities,
   linkRecords,
   appendWhatsAppMessage,
   saveEntity,
   upsertReadEmail,
   listActiveRemindersForOwner,
+  listCoreProfile,
+  searchMemoryNotes,
+  addFact,
+  listEntities,
+  listEntityRelations,
 } from "../db/store.js";
+import { retrieveRelevantMemory } from "./memoryRetrieval.js";
 import { IMPORTANT_EMAIL_ENTITY_TYPE } from "../services/importantEmailAlerts.js";
 import { getBriefingSettings, saveBriefingSettings, type BriefingSettings } from "../services/briefing.js";
 import { getXeroForwardingEmail } from "../services/xero.js";
@@ -217,32 +222,34 @@ describe("buildSystemPrompt", () => {
     expect(prompt).not.toContain("Things you've learned about the user over past conversations");
   });
 
-  it("annotates a memory note that has an armed (not-yet-sent) trigger", () => {
-    const user = findOrCreateUserByEmail(uniqueEmail("prompt-memory-armed"));
-    addMemoryNote(user.id, "Visa renewal is due", "2026-09-12T00:00:00Z");
+  it("tells the assistant not to force or repeat remembered things, from the profile or the relevant-memory block", () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("prompt-no-repeat"));
     const prompt = buildSystemPrompt(user.id);
-    expect(prompt).toContain("Visa renewal is due");
-    expect(prompt).toContain("reminder set for");
-    expect(prompt).not.toContain("already sent");
+    expect(prompt).toContain("without forcing it or repeating something you've already brought up this conversation");
+    expect(prompt).toMatch(/applies equally to the things shown alongside the user's latest message/);
   });
 
-  it("annotates a memory note whose trigger already fired as already sent", () => {
-    const user = findOrCreateUserByEmail(uniqueEmail("prompt-memory-sent"));
-    const past = new Date(Date.now() - 60_000).toISOString();
-    const note = addMemoryNote(user.id, "Overdue reminder", past);
-    markMemorySurfaced(user.id, note.id);
+  it("renders active core facts as the profile and leaves other facts out of the system prompt", () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("prompt-core-profile"));
+    addFact(user.id, { content: "The user's name is Sam", kind: "core" });
+    addFact(user.id, { content: "Likes jazz", kind: "preference" });
     const prompt = buildSystemPrompt(user.id);
-    expect(prompt).toContain("Overdue reminder");
-    expect(prompt).toContain("reminder set for");
-    expect(prompt).toContain("already sent");
+    expect(prompt).toContain("What you know about the user (core profile)");
+    expect(prompt).toContain("- The user's name is Sam");
+    expect(prompt).not.toContain("Likes jazz");
   });
 
-  it("renders an ordinary note with no triggerAt as a plain line with no annotation", () => {
-    const user = findOrCreateUserByEmail(uniqueEmail("prompt-memory-plain"));
-    addMemoryNote(user.id, "The Acme account is my priority business");
-    const prompt = buildSystemPrompt(user.id);
-    expect(prompt).toContain("- The Acme account is my priority business");
-    expect(prompt).not.toContain("reminder set for");
+  it("shows a placeholder when there is no core profile yet", () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("prompt-core-empty"));
+    expect(buildSystemPrompt(user.id)).toContain("(nothing known yet)");
+  });
+
+  it("is byte-identical after a non-core fact is added (system cache stays warm)", () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("prompt-core-stable"));
+    addFact(user.id, { content: "The user's name is Sam", kind: "core" });
+    const before = buildSystemPrompt(user.id);
+    addFact(user.id, { content: "Bought a new bike", kind: "fact" });
+    expect(buildSystemPrompt(user.id)).toBe(before);
   });
 
   it("includes the rolling conversation summary when one is passed", () => {
@@ -657,10 +664,9 @@ describe("remember tool — entity linking", () => {
     expect(result).toEqual({ ok: true });
 
     const entity = findEntityByName(user.id, "Sarah", "person");
-    expect(entity?.data.notes).toEqual([expect.objectContaining({ text: "Handles invoicing" })]);
-    // Still also writes the flat memory_notes row — remember's core behavior is unchanged.
-    const [saved] = listMemoryNotes(user.id);
-    expect(saved.content).toBe("Handles invoicing");
+    expect(listActiveFactsForEntity(user.id, entity!.id).map((f) => f.content)).toEqual(["Handles invoicing"]);
+    // One row, not two: the fact itself carries the entity.
+    expect(listMemoryNotes(user.id).map((n) => n.content)).toEqual(["Handles invoicing"]);
   });
 
   it("a second remember call for the same name appends onto the same entity", async () => {
@@ -677,9 +683,9 @@ describe("remember tool — entity linking", () => {
     });
 
     const entity = findEntityByName(user.id, "Sarah", "person");
-    expect(entity?.data.notes.map((n) => n.text)).toEqual([
-      "Handles invoicing",
+    expect(listActiveFactsForEntity(user.id, entity!.id).map((f) => f.content)).toEqual([
       "Prefers email over calls",
+      "Handles invoicing",
     ]);
   });
 
@@ -764,6 +770,20 @@ describe("remember tool — entity linking", () => {
     expect(result).toEqual({ ok: true });
     expect(findEntityByName(user.id, "Sarah")).toBeNull();
   });
+
+  it("a reserved entity_type (owned by another pipeline) saves the note with no entity, instead of creating one", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("remember-reserved-type"));
+    const result = await runTool(user.id, "remember", {
+      note: "Booked the Hilton for next week",
+      entity_name: "Hilton",
+      entity_type: "expense",
+    });
+    expect(result).toEqual({ ok: true });
+    expect(findEntityByName(user.id, "Hilton")).toBeNull();
+    const [saved] = listMemoryNotes(user.id);
+    expect(saved.content).toBe("Booked the Hilton for next week");
+    expect(saved.entityId).toBeNull();
+  });
 });
 
 describe("recall_entity tool", () => {
@@ -788,12 +808,13 @@ describe("recall_entity tool", () => {
     });
 
     const result = (await runTool(user.id, "recall_entity", { entity_name: "Sarah" })) as {
-      entity: { data: { name: string; notes: { text: string }[] } };
-      related: { data: { name: string } }[];
+      entity: { name: string };
+      facts: { content: string }[];
+      related: { relation: string; entity: { name: string } }[];
     };
-    expect(result.entity.data.name).toBe("Sarah");
-    expect(result.entity.data.notes.map((n) => n.text)).toEqual(["Leads Project Falcon"]);
-    expect(result.related.map((e) => e.data.name)).toEqual(["Project Falcon"]);
+    expect(result.entity.name).toBe("Sarah");
+    expect(result.facts.map((f) => f.content)).toEqual(["Leads Project Falcon"]);
+    expect(result.related.map((r) => r.entity.name)).toEqual(["Project Falcon"]);
   });
 
   it("respects an optional entity_type filter", async () => {
@@ -813,8 +834,8 @@ describe("recall_entity tool", () => {
     const rightType = (await runTool(user.id, "recall_entity", {
       entity_name: "Lisbon",
       entity_type: "place",
-    })) as { entity: { data: { name: string } } };
-    expect(rightType.entity.data.name).toBe("Lisbon");
+    })) as { entity: { name: string } };
+    expect(rightType.entity.name).toBe("Lisbon");
   });
 
   it("returns an error object (not a throw) when nothing matches", async () => {
@@ -836,10 +857,11 @@ describe("recall_entity tool", () => {
     });
 
     const hit = (await runTool(user.id, "recall_entity", { entity_name: "Sarah" })) as {
-      entity: { data: { name: string; notes: { text: string }[] } };
+      entity: { name: string };
+      facts: { content: string }[];
     };
-    expect(hit.entity.data.name).toBe("Sarah");
-    expect(hit.entity.data.notes.map((n) => n.text)).toEqual(["Handles invoicing"]);
+    expect(hit.entity.name).toBe("Sarah");
+    expect(hit.facts.map((f) => f.content)).toEqual(["Handles invoicing"]);
 
     const miss = await runTool(user.id, "recall_entity", { entity_name: "Hotel Eva" });
     expect(miss).toEqual({ error: 'no entity found matching "Hotel Eva"' });
@@ -868,15 +890,16 @@ describe("remember + recall_entity end-to-end", () => {
     });
 
     const result = (await runTool(user.id, "recall_entity", { entity_name: "Sarah" })) as {
-      entity: { data: { name: string; notes: { text: string }[] } };
-      related: { data: { name: string } }[];
+      entity: { name: string };
+      facts: { content: string }[];
+      related: { relation: string; entity: { name: string } }[];
     };
-    expect(result.entity.data.name).toBe("Sarah");
-    expect(result.entity.data.notes.map((n) => n.text)).toEqual([
-      "Handles invoicing",
+    expect(result.entity.name).toBe("Sarah");
+    expect(result.facts.map((f) => f.content)).toEqual([
       "Prefers email over calls",
+      "Handles invoicing",
     ]);
-    expect(result.related.map((e) => e.data.name)).toEqual(["Project Falcon"]);
+    expect(result.related.map((r) => r.entity.name)).toEqual(["Project Falcon"]);
   });
 });
 
@@ -1078,6 +1101,181 @@ describe("search_memory tool", () => {
 
     const results = (await runTool(user.id, "search_memory", { query: "trip", limit: 2 })) as unknown[];
     expect(results).toHaveLength(2);
+  });
+});
+
+describe("remember — kind, replaces_id, relation", () => {
+  it("files a core fact when kind is core", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("remember-kind-core"));
+    await runTool(user.id, "remember", { note: "The user's name is Sam", kind: "core" });
+    expect(listCoreProfile(user.id).map((f) => f.content)).toEqual(["The user's name is Sam"]);
+  });
+
+  it("an unknown kind falls back to fact", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("remember-kind-bad"));
+    await runTool(user.id, "remember", { note: "Something", kind: "banana" });
+    expect(listMemoryNotes(user.id)[0].kind).toBe("fact");
+  });
+
+  it("replaces_id supersedes the old fact", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("remember-replaces"));
+    const old = addFact(user.id, { content: "Lives in Paris", kind: "core" });
+    await runTool(user.id, "remember", { note: "Lives in London", kind: "core", replaces_id: old.id });
+    expect(listCoreProfile(user.id).map((f) => f.content)).toEqual(["Lives in London"]);
+  });
+
+  it("replaces_id with another owner's fact id supersedes nothing", async () => {
+    const owner = findOrCreateUserByEmail(uniqueEmail("remember-replaces-owner"));
+    const intruder = findOrCreateUserByEmail(uniqueEmail("remember-replaces-intruder"));
+    const theirs = addFact(owner.id, { content: "Owner's fact" });
+    await runTool(intruder.id, "remember", { note: "Mine", replaces_id: theirs.id });
+    expect(listMemoryNotes(owner.id).map((f) => f.id)).toEqual([theirs.id]);
+  });
+
+  it("relation labels the relates_to links", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("remember-relation"));
+    await runTool(user.id, "remember", { note: "Acme is a client", entity_name: "Acme", entity_type: "organisation" });
+    await runTool(user.id, "remember", {
+      note: "Sarah works at Acme",
+      entity_name: "Sarah",
+      entity_type: "person",
+      relates_to: ["Acme"],
+      relation: "works_at",
+    });
+    const result = (await runTool(user.id, "recall_entity", { entity_name: "Sarah" })) as {
+      related: { relation: string; entity: { name: string } }[];
+    };
+    expect(result.related).toEqual([expect.objectContaining({ relation: "works_at", entity: expect.objectContaining({ name: "Acme" }) })]);
+  });
+});
+
+describe("forget_memory tool", () => {
+  it("is always available", () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("forget-toollist"));
+    expect(buildToolsForOwner(user.id).map((t) => t.name)).toContain("forget_memory");
+  });
+
+  it("forgets this owner's facts and reports which ids", async () => {
+    const owner = findOrCreateUserByEmail(uniqueEmail("forget-tool-owner"));
+    const other = findOrCreateUserByEmail(uniqueEmail("forget-tool-other"));
+    const mine = addFact(owner.id, { content: "Allergic to shellfish" });
+    const theirs = addFact(other.id, { content: "Allergic to peanuts" });
+
+    const result = await runTool(owner.id, "forget_memory", { ids: [mine.id, theirs.id] });
+
+    expect(result).toEqual({ forgotten: [mine.id], forgotten_entities: [] });
+    expect(searchMemoryNotes(owner.id, "shellfish")).toEqual([]);
+    expect(listMemoryNotes(other.id)).toHaveLength(1);
+  });
+
+  it("tolerates missing or malformed inputs", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("forget-tool-bad"));
+    const empty = { forgotten: [], forgotten_entities: [] };
+    expect(await runTool(user.id, "forget_memory", {})).toEqual(empty);
+    expect(await runTool(user.id, "forget_memory", { ids: ["x", 1.5] })).toEqual(empty);
+    expect(await runTool(user.id, "forget_memory", { entity_names: [42, "", "Nobody"] })).toEqual(empty);
+  });
+
+  it("does not require ids, now that entity_names is an alternative", () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("forget-tool-schema"));
+    const tool = buildToolsForOwner(user.id).find((t) => t.name === "forget_memory")!;
+    expect(tool.input_schema.required ?? []).not.toContain("ids");
+    expect(Object.keys(tool.input_schema.properties as object)).toEqual(expect.arrayContaining(["ids", "entity_names"]));
+  });
+
+  it("forgets a whole entity: its facts, the entity and its links, reachable nowhere afterwards", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("forget-entity"));
+    await runTool(user.id, "remember", { note: "Acme is a client", entity_name: "Acme", entity_type: "organisation" });
+    await runTool(user.id, "remember", {
+      note: "Sarah handles invoicing at Acme",
+      entity_name: "Sarah",
+      entity_type: "person",
+      relates_to: ["Acme"],
+      relation: "works_at",
+    });
+    await runTool(user.id, "remember", { note: "Sarah prefers email", entity_name: "Sarah", entity_type: "person" });
+    const sarah = findEntityByName(user.id, "Sarah")!;
+    const acme = findEntityByName(user.id, "Acme")!;
+    const sarahFactIds = listActiveFactsForEntity(user.id, sarah.id).map((f) => f.id);
+
+    const result = (await runTool(user.id, "forget_memory", { entity_names: ["sarah"] })) as {
+      forgotten: number[];
+      forgotten_entities: string[];
+    };
+
+    expect(result.forgotten.sort()).toEqual(sarahFactIds.sort());
+    expect(result.forgotten_entities).toEqual(["Sarah"]);
+    expect(await runTool(user.id, "recall_entity", { entity_name: "Sarah" })).toEqual({
+      error: 'no entity found matching "Sarah"',
+    });
+    expect(retrieveRelevantMemory(user.id, "email Sarah about invoicing") ?? "").not.toMatch(/Sarah/);
+    expect(listEntityRelations(user.id, acme.id)).toEqual([]);
+    expect(listMemoryNotes(user.id).map((f) => f.content)).toEqual(["Acme is a client"]);
+  });
+
+  it("combines ids and entity_names", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("forget-both"));
+    const loose = addFact(user.id, { content: "Likes jazz" });
+    await runTool(user.id, "remember", { note: "Bob plays tennis", entity_name: "Bob", entity_type: "person" });
+    const bobFact = listMemoryNotes(user.id).find((f) => f.content === "Bob plays tennis")!;
+
+    expect(await runTool(user.id, "forget_memory", { ids: [loose.id], entity_names: ["Bob"] })).toEqual({
+      forgotten: [loose.id, bobFact.id],
+      forgotten_entities: ["Bob"],
+    });
+  });
+
+  it("never touches another owner's entity of the same name", async () => {
+    const owner = findOrCreateUserByEmail(uniqueEmail("forget-entity-owner"));
+    const other = findOrCreateUserByEmail(uniqueEmail("forget-entity-other"));
+    await runTool(owner.id, "remember", { note: "Sarah is my sister", entity_name: "Sarah", entity_type: "person" });
+    await runTool(other.id, "remember", { note: "Sarah is my boss", entity_name: "Sarah", entity_type: "person" });
+
+    await runTool(owner.id, "forget_memory", { entity_names: ["Sarah"] });
+
+    expect(findEntityByName(owner.id, "Sarah")).toBeNull();
+    const theirs = findEntityByName(other.id, "Sarah")!;
+    expect(listActiveFactsForEntity(other.id, theirs.id).map((f) => f.content)).toEqual(["Sarah is my boss"]);
+  });
+
+  it("can never delete a document-extracted entity, which findEntityByName doesn't return", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("forget-entity-booking"));
+    saveEntity(user.id, {
+      type: "booking",
+      data: { kind: "hotel", name: "Hotel Eva", reference: "ABC", startDate: "2026-01-01", endDate: null },
+    });
+
+    expect(await runTool(user.id, "forget_memory", { entity_names: ["Hotel Eva"] })).toEqual({
+      forgotten: [],
+      forgotten_entities: [],
+    });
+    expect(listEntities(user.id, { type: "booking" })).toHaveLength(1);
+  });
+});
+
+describe("search_memory — ids, kinds, entity names, empty query", () => {
+  it("returns id, content, kind and entity name", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("search-shape"));
+    await runTool(user.id, "remember", { note: "Sarah handles invoicing", entity_name: "Sarah", entity_type: "person" });
+    const results = (await runTool(user.id, "search_memory", { query: "invoicing" })) as unknown[];
+    expect(results).toEqual([
+      { id: expect.any(Number), content: "Sarah handles invoicing", kind: "fact", entity: "Sarah" },
+    ]);
+  });
+
+  it("falls back to any-term matching when an all-terms search finds nothing", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("search-fallback"));
+    await runTool(user.id, "remember", { note: "Allergic to shellfish" });
+    const results = (await runTool(user.id, "search_memory", { query: "shellfish lobster allergy" })) as { content: string }[];
+    expect(results.map((r) => r.content)).toEqual(["Allergic to shellfish"]);
+  });
+
+  it("with no query returns the core profile plus newest other facts", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("search-empty"));
+    await runTool(user.id, "remember", { note: "Name is Sam", kind: "core" });
+    await runTool(user.id, "remember", { note: "Likes jazz", kind: "preference" });
+    const results = (await runTool(user.id, "search_memory", {})) as { content: string }[];
+    expect(results.map((r) => r.content)).toEqual(["Name is Sam", "Likes jazz"]);
   });
 });
 

@@ -60,6 +60,9 @@ vi.mock("../services/importantEmailAlerts.js", () => ({
 vi.mock("../services/conversationSummary.js", () => ({
   maybeUpdateConversationSummary: vi.fn().mockResolvedValue(undefined),
 }));
+vi.mock("../services/memoryExtraction.js", () => ({
+  maybeExtractMemory: vi.fn().mockResolvedValue(undefined),
+}));
 // The fixed "carry on with setup" list alone decides here — no model call.
 vi.mock("../services/setupIntent.js", async (importActual) => {
   const actual = await importActual<typeof import("../services/setupIntent.js")>();
