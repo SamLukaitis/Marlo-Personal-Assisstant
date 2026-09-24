@@ -2,7 +2,26 @@
 
 ## Status
 
-- [ ] Not started — investigated 2026-09-19, root cause confirmed, no fix applied yet.
+**✅ Done (2026-09-24)** — went with a variant of option 3, with no AI cost:
+
+- Gmail messages now carry a `bulk` flag (`server/src/providers/google.ts`), set when Gmail itself
+  filed the mail under Promotions/Social/Updates/Forums, or when it has a `List-Unsubscribe` header.
+  Both were free: the tab labels were already being fetched and thrown away, and the header is one
+  more name in a metadata request already being made.
+- One shared check, `isAutomatedMail` in `server/src/services/hub.ts` (bulk flag OR the old address
+  pattern), now drives all three features that split mail this way: real-person alerts, the
+  important-automated-mail classifier, and list_needs_attention. Marketing mail leaves the
+  real-person bucket and lands in the classifier's, so the two alert features are complementary
+  again: a delivery notice from an ordinary-looking address still gets through.
+- **Why not option 2:** the existing classifier only says yes to its 8 automated categories, so
+  routing real-person mail through it would have silenced genuine personal email ("dinner
+  Saturday?") too. Doing it properly needs a separate "did a person write this?" prompt, which can
+  be layered on later if testers still see marketing pings.
+- **Outlook is unchanged** (address pattern only): Graph only documents `internetMessageHeaders` on
+  single-message fetches, and Focused/Other would hide real first-time senders. Revisit if an
+  Outlook tester hits this.
+- Trade-off accepted: a real person writing through a bulk tool (e.g. a recruiter's sequencing
+  tool) no longer pings.
 
 ## Background (why this exists)
 

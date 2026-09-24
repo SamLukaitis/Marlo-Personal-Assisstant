@@ -467,6 +467,17 @@ export async function hubSearchContacts(ownerId: number, query: string, limit = 
 export const AUTOMATED_SENDER_PATTERN =
   /no-?reply|notifications?@|newsletter|updates?@|do-?not-?reply|automated|mailer-daemon/i;
 
+// The one "is this automated mail rather than a person writing?" check, shared by every feature
+// that splits mail that way: the real-person alerts (alerts.ts), the important-automated-mail
+// scan (importantEmailAlerts.ts) and list_needs_attention (hubFlaggedMessages below). The address
+// pattern alone missed modern marketing senders (Pinterest, Babbel, ...) whose From addresses look
+// ordinary, so they pinged as "X emailed you" — the provider's own bulk signal catches those.
+// Sharing it keeps the two alert features complementary: whatever leaves the real-person bucket
+// lands in the classifier's, so a useful delivery notice from such a sender still gets through.
+export function isAutomatedMail(m: Pick<UnifiedMessage, "from" | "bulk">): boolean {
+  return m.bulk === true || AUTOMATED_SENDER_PATTERN.test(m.from);
+}
+
 // Extracts a human-readable name from a raw From header — "Jane Doe <jane@x.com>",
 // "jane@x.com", or a bare display name with no address at all. Alert text sent to the user
 // should read like a person wrote it, never show a raw email address.
@@ -486,6 +497,6 @@ export async function hubFlaggedMessages(ownerId: number, daysThreshold = 3): Pr
     if (!m.unread || !m.receivedAt) return false;
     const receivedTime = new Date(m.receivedAt).getTime();
     if (Number.isNaN(receivedTime) || receivedTime > cutoff) return false;
-    return !AUTOMATED_SENDER_PATTERN.test(m.from);
+    return !isAutomatedMail(m);
   });
 }

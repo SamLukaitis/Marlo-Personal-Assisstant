@@ -10,7 +10,7 @@ import {
   hubListMessages,
   hubGetMessage,
   holdNewMessageCheckpoint,
-  AUTOMATED_SENDER_PATTERN,
+  isAutomatedMail,
 } from "./hub.js";
 import {
   hasAlerted,
@@ -111,7 +111,7 @@ function isVerificationCode(m: UnifiedMessage): boolean {
 
 // Shared by both the ongoing scheduler scan and the onboarding scan below.
 function isImportantEmailCandidate(m: UnifiedMessage): boolean {
-  return !!m.from && AUTOMATED_SENDER_PATTERN.test(m.from) && !mentionsOwnApp(m) && !isVerificationCode(m);
+  return !!m.from && isAutomatedMail(m) && !mentionsOwnApp(m) && !isVerificationCode(m);
 }
 
 // The onboarding scan (see scanAndCurateImportantEmailsForOnboarding below) only ever flags mail
