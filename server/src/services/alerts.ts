@@ -1,7 +1,9 @@
-import { hubListNewMessages, AUTOMATED_SENDER_PATTERN, senderDisplayName } from "./hub.js";
+import { hubListNewMessages, isAutomatedMail, senderDisplayName } from "./hub.js";
 import { hasAlerted, markAlerted, getSetting, setSetting, listPhoneNumbersForUser } from "../db/store.js";
 import { isWhatsAppConfigured } from "../providers/whatsapp.js";
 import { sendProactiveMessage } from "./outbound.js";
+import { emailReferenceNote } from "./emailReference.js";
+import { realPersonAlertsEnabledSince } from "./emailAlertSettings.js";
 import {
   isOnboardingSuppressionActive,
   incrementSuppressedOnboardingAlerts,
@@ -15,10 +17,10 @@ function messageKey(m: UnifiedMessage): string {
   return `${m.accountId}:${m.id}`;
 }
 
-async function notify(numbers: string[], text: string): Promise<void> {
+async function notify(numbers: string[], text: string, historyNote?: string): Promise<void> {
   for (const number of numbers) {
     try {
-      await sendProactiveMessage(number, text, "alert");
+      await sendProactiveMessage(number, text, "alert", historyNote);
     } catch (err) {
       console.error("alerts: failed to send", err);
     }
@@ -31,27 +33,57 @@ async function notify(numbers: string[], text: string): Promise<void> {
 // scheduler.ts loops over every user and calls this once per owner.
 export async function checkForNewImportantMessages(ownerId: number): Promise<void> {
   const messages = await hubListNewMessages(ownerId);
+  // One line per scan that saw any mail, naming the gate that decided its fate — "I emailed it and
+  // got no alert" was undiagnosable while every gate below dropped mail without a trace. Counts
+  // only, never subject/sender/snippet. Silent when nothing was fetched (the common quiet tick).
+  const logScan = (outcome: string, unseen = 0): void => {
+    if (messages.length === 0) return;
+    console.log(
+      `alerts: owner ${ownerId} ${outcome} (fetched ${messages.length}, real-person ${candidates.length}, unseen ${unseen})`
+    );
+  };
   // Deliberately NOT gated on m.unread — a user who opens a real person's message the moment it
   // arrives (completely normal) must not lose the alert. hasAlerted's per-message ledger below is
   // the real "have we already handled this" check, independent of whether the user has read it;
   // unread was a redundant, strictly worse substitute that silently and permanently dropped any
   // message read before this scan ever saw it.
-  const candidates = messages.filter((m) => m.from && !AUTOMATED_SENDER_PATTERN.test(m.from));
+  const candidates = messages.filter((m) => m.from && !isAutomatedMail(m));
 
   // First-ever run: record the current inbox as a baseline instead of alerting on everything
   // that was already sitting there unread before this feature existed.
   if (getSetting(ownerId, BASELINE_KEY) !== "true") {
-    for (const m of candidates) markAlerted(ownerId, messageKey(m));
+    // Only mail from before the user switched alerts on is "already sitting there" — mail that
+    // arrived after it (turning alerts on and immediately testing them) must fall through and
+    // alert, not get swallowed as backlog. No timestamp (never switched on from off) baselines
+    // everything, as before.
+    const enabledAt = realPersonAlertsEnabledSince(ownerId);
+    let baselined = 0;
+    for (const m of candidates) {
+      if (enabledAt === 0 || new Date(m.receivedAt).getTime() < enabledAt) {
+        markAlerted(ownerId, messageKey(m));
+        baselined++;
+      }
+    }
     setSetting(ownerId, BASELINE_KEY, "true");
-    return;
+    logScan(`first scan: baselined ${baselined} as existing mail`);
   }
 
   const unseen = candidates.filter((m) => !hasAlerted(ownerId, messageKey(m)));
-  if (unseen.length === 0) return;
-  if (!isWhatsAppConfigured()) return;
+  if (unseen.length === 0) {
+    if (candidates.length === 0) logScan("no real-person mail (all automated or no sender)");
+    else logScan("nothing new (already handled)");
+    return;
+  }
+  if (!isWhatsAppConfigured()) {
+    logScan("skipped: WhatsApp is not configured", unseen.length);
+    return;
+  }
 
   const numbers = listPhoneNumbersForUser(ownerId).map((r) => r.phone);
-  if (numbers.length === 0) return;
+  if (numbers.length === 0) {
+    logScan("skipped: no registered phone number", unseen.length);
+    return;
+  }
 
   // See importantEmailAlerts.ts's identical check for the full rationale: don't interleave
   // individual proactive alerts into the onboarding conversation itself. Still mark everything
@@ -59,6 +91,7 @@ export async function checkForNewImportantMessages(ownerId: number): Promise<voi
   if (isOnboardingSuppressionActive(ownerId)) {
     for (const m of unseen) markAlerted(ownerId, messageKey(m));
     incrementSuppressedOnboardingAlerts(ownerId, unseen.length);
+    logScan(`suppressed by onboarding (${unseen.length} held for the summary, not sent)`, unseen.length);
     return;
   }
 
@@ -71,7 +104,8 @@ export async function checkForNewImportantMessages(ownerId: number): Promise<voi
     // emailed, not a log line.
     await notify(
       numbers,
-      `📬 ${greeting}${senderDisplayName(m.from)} emailed you: "${m.subject}"\n${m.snippet}`
+      `📬 ${greeting}${senderDisplayName(m.from)} emailed you: "${m.subject}"\n${m.snippet}`,
+      emailReferenceNote(m)
     );
     markAlerted(ownerId, messageKey(m));
   }
@@ -85,4 +119,5 @@ export async function checkForNewImportantMessages(ownerId: number): Promise<voi
       `...and ${rest.length} more new message${rest.length === 1 ? "" : "s"} that might need attention — check your inbox.`
     );
   }
+  logScan(`sent ${toSend.length}${rest.length ? ` + overflow summary for ${rest.length}` : ""}`, unseen.length);
 }

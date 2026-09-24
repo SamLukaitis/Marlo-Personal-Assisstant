@@ -10,6 +10,10 @@ export interface UnifiedMessage {
   snippet: string;
   receivedAt: string; // ISO date
   unread: boolean;
+  // Set when the provider itself says this is bulk/marketing mail (Gmail's Promotions/Social/
+  // Updates/Forums tabs, or a List-Unsubscribe header) — see hub.ts's isAutomatedMail. Absent
+  // where the provider gives no such signal (Microsoft, for now).
+  bulk?: boolean;
   link?: string;
   body?: string; // only populated by getMessage
   attachments?: EmailAttachmentMeta[]; // only populated by getMessage

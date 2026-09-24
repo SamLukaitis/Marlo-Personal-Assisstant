@@ -15,6 +15,7 @@ import { isWhatsAppConfigured } from "../providers/whatsapp.js";
 import { sendToAllNumbers } from "./proactiveDelivery.js";
 import { countTravelDays } from "./travelDays.js";
 import { checkForNewImportantMessages } from "./alerts.js";
+import { importantEmailAlertsEnabled, realPersonAlertsEnabled } from "./emailAlertSettings.js";
 import { checkNewEmailsAgainstRecentDocuments } from "./reconciliation.js";
 import { checkForImportantEmails } from "./importantEmailAlerts.js";
 import { flushOnboardingAlertSummaryIfDue } from "./onboardingAlertSuppression.js";
@@ -87,7 +88,7 @@ async function runDailyCheckForUser(ownerId: number): Promise<void> {
 }
 
 async function runAlertsCheckForUser(ownerId: number): Promise<void> {
-  if (getSetting(ownerId, "realtime_alerts_enabled") !== "true") return;
+  if (!realPersonAlertsEnabled(ownerId)) return;
   try {
     await checkForNewImportantMessages(ownerId);
   } catch (err) {
@@ -115,7 +116,7 @@ async function runTripPrepCheckForUser(ownerId: number): Promise<void> {
 }
 
 async function runImportantEmailAlertsCheckForUser(ownerId: number): Promise<void> {
-  if (getSetting(ownerId, "important_email_alerts_enabled") === "false") return;
+  if (!importantEmailAlertsEnabled(ownerId)) return;
   try {
     await checkForImportantEmails(ownerId);
   } catch (err) {
@@ -146,7 +147,11 @@ async function tick(): Promise<void> {
   deleteExpiredPendingActions();
   deleteExpiredSeenWamids();
   pruneOldServerLogs(SERVER_LOG_RETENTION_MS);
-  for (const ownerId of listAllUserIds()) {
+  const startedAt = Date.now();
+  const ownerIds = listAllUserIds();
+  let realPersonAlertsOff = 0;
+  for (const ownerId of ownerIds) {
+    if (!realPersonAlertsEnabled(ownerId)) realPersonAlertsOff++;
     await runDailyCheckForUser(ownerId).catch((err) =>
       console.error(`scheduler: daily check failed for user ${ownerId}`, err)
     );
@@ -172,6 +177,10 @@ async function tick(): Promise<void> {
       );
     });
   }
+  console.log(
+    `scheduler: tick finished — ${ownerIds.length} user${ownerIds.length === 1 ? "" : "s"}, ` +
+      `real-person alerts off for ${realPersonAlertsOff}, ${Date.now() - startedAt}ms`
+  );
 }
 
 // setInterval fires on a fixed clock regardless of how long the previous tick() took. At

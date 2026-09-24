@@ -42,6 +42,7 @@ const {
   setSetting,
   setPendingSetup,
   clearPendingSetup,
+  getWhatsAppHistory,
 } = await import("../db/store.js");
 const { markOnboardingConnected } = await import("./onboardingAlertSuppression.js");
 const {
@@ -88,6 +89,7 @@ function fakeMessage(
     from: string;
     unread: boolean;
     receivedAt: string;
+    bulk: boolean;
   }>
 ) {
   return {
@@ -154,6 +156,25 @@ describe("checkForImportantEmails", () => {
     expect(candidates.map((c: { subject: string }) => c.subject)).toEqual(["Already read", "Flight change"]);
   });
 
+  // The other half of the "real person" alert fix: marketing mail flagged as bulk leaves the
+  // real-person bucket, so it has to land here instead — otherwise a genuinely useful delivery
+  // notice from an ordinary-looking address would fall between the two features.
+  it("classifies mail the provider flagged as bulk, even from an ordinary-looking address", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("filter-bulk"));
+    registerActivePhone(user.id);
+    await baseline(user.id);
+
+    mockHubListNewMessages.mockResolvedValueOnce([
+      fakeMessage({ id: "bulk", from: "DHL <tracking@dhl.com>", subject: "Out for delivery", bulk: true }),
+      fakeMessage({ id: "person", from: "jane@example.com", subject: "Dinner?" }),
+    ]);
+
+    await checkForImportantEmails(user.id);
+
+    const [candidates] = mockClassify.mock.calls[0];
+    expect(candidates.map((c: { subject: string }) => c.subject)).toEqual(["Out for delivery"]);
+  });
+
   // Google/Microsoft's "an app was granted access" notification fires for Marlowe's own OAuth
   // connect/reconnect too — expected and self-caused, not a security event — but the classifier
   // can't tell that apart from a real new-sign-in alert from subject/snippet alone.
@@ -208,6 +229,24 @@ describe("checkForImportantEmails", () => {
     const [candidates] = mockClassify.mock.calls[0];
     expect(candidates.map((c: { subject: string }) => c.subject)).toEqual(["New sign-in"]);
     expect(sendWhatsAppMessage).not.toHaveBeenCalled();
+  });
+
+  it("records the alert in history with the email's ids so it can be replied to", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("match-ref"));
+    const phone = registerActivePhone(user.id);
+    await baseline(user.id);
+    mockHubListNewMessages.mockResolvedValueOnce([
+      fakeMessage({ id: "flight-ref-1", accountId: 9, subject: "Your flight changed" }),
+    ]);
+    mockClassify.mockResolvedValueOnce(new Map([[0, { category: "flight_change", summary: "Gate moved." }]]));
+
+    await checkForImportantEmails(user.id);
+
+    const [, sentText] = vi.mocked(sendWhatsAppMessage).mock.calls[0];
+    expect(sentText).not.toContain("flight-ref-1");
+    const last = getWhatsAppHistory(phone).at(-1)!;
+    expect(last.content).toContain("account_id=9");
+    expect(last.content).toContain("message_id=flight-ref-1");
   });
 
   it("sends a WhatsApp alert for a classified match, formatted with the category", async () => {

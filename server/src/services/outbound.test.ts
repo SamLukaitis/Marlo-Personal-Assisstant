@@ -11,10 +11,12 @@ vi.mock("../providers/whatsapp.js", async (importOriginal) => {
 
 vi.mock("../db/store.js", () => ({
   getLastInboundAt: vi.fn(),
+  resolveOwnerByPhone: vi.fn(),
+  appendWhatsAppMessage: vi.fn(),
 }));
 
 const { sendWhatsAppMessage, sendWhatsAppTemplate, WhatsAppSendError } = await import("../providers/whatsapp.js");
-const { getLastInboundAt } = await import("../db/store.js");
+const { getLastInboundAt, resolveOwnerByPhone, appendWhatsAppMessage } = await import("../db/store.js");
 const { sendProactiveMessage, truncateForTemplate } = await import("./outbound.js");
 
 const PHONE = "447000000001";
@@ -24,6 +26,8 @@ beforeEach(() => {
   vi.mocked(sendWhatsAppMessage).mockReset().mockResolvedValue(undefined);
   vi.mocked(sendWhatsAppTemplate).mockReset().mockResolvedValue(undefined);
   vi.mocked(getLastInboundAt).mockReset();
+  vi.mocked(resolveOwnerByPhone).mockReset().mockReturnValue(null);
+  vi.mocked(appendWhatsAppMessage).mockReset();
 });
 
 describe("sendProactiveMessage", () => {
@@ -99,6 +103,110 @@ describe("sendProactiveMessage", () => {
     const [, , param] = vi.mocked(sendWhatsAppTemplate).mock.calls[0];
     expect(param.length).toBeLessThanOrEqual(1000);
     expect(param).toBe("y".repeat(1000));
+  });
+});
+
+// Reported: swipe-replying to an alert ("Sam, X emailed you: Testing") got "I can't see which
+// message you replied to", and a plain "reply yes" had no idea an alert had just been sent — the
+// alert was never in chat history and its wamid was never recorded, unlike a normal chat reply.
+describe("sendProactiveMessage — making the push quotable", () => {
+  const OWNER = 42;
+
+  it("records a free-form alert in chat history against the wamid Meta returned", async () => {
+    vi.mocked(getLastInboundAt).mockReturnValue(Date.now() - 60_000);
+    vi.mocked(resolveOwnerByPhone).mockReturnValue(OWNER);
+    vi.mocked(sendWhatsAppMessage).mockResolvedValue("wamid.FREEFORM");
+
+    await sendProactiveMessage(PHONE, "Sam, Jane emailed you", "alert");
+
+    expect(appendWhatsAppMessage).toHaveBeenCalledWith(OWNER, PHONE, "assistant", "Sam, Jane emailed you", [
+      "wamid.FREEFORM",
+    ]);
+  });
+
+  it("records a template alert with its full original text and the template's wamid", async () => {
+    vi.mocked(getLastInboundAt).mockReturnValue(null);
+    vi.mocked(resolveOwnerByPhone).mockReturnValue(OWNER);
+    vi.mocked(sendWhatsAppTemplate).mockResolvedValue("wamid.TEMPLATE");
+
+    const text = "line one\n\nline two";
+
+    await sendProactiveMessage(PHONE, text, "alert");
+
+    expect(appendWhatsAppMessage).toHaveBeenCalledWith(OWNER, PHONE, "assistant", text, ["wamid.TEMPLATE"]);
+  });
+
+  it("records the template's wamid, not a rejected free-form send, after a 131047 self-heal", async () => {
+    vi.mocked(getLastInboundAt).mockReturnValue(Date.now() - 60_000);
+    vi.mocked(resolveOwnerByPhone).mockReturnValue(OWNER);
+    vi.mocked(sendWhatsAppMessage).mockRejectedValueOnce(new WhatsAppSendError("closed", 131047));
+    vi.mocked(sendWhatsAppTemplate).mockResolvedValue("wamid.HEALED");
+
+    await sendProactiveMessage(PHONE, "hello", "alert");
+
+    expect(appendWhatsAppMessage).toHaveBeenCalledTimes(1);
+    expect(appendWhatsAppMessage).toHaveBeenCalledWith(OWNER, PHONE, "assistant", "hello", ["wamid.HEALED"]);
+  });
+
+  it("still records the message in history when Meta returned no wamid", async () => {
+    vi.mocked(getLastInboundAt).mockReturnValue(null);
+    vi.mocked(resolveOwnerByPhone).mockReturnValue(OWNER);
+    vi.mocked(sendWhatsAppTemplate).mockResolvedValue(undefined);
+
+    await sendProactiveMessage(PHONE, "hello", "alert");
+
+    expect(appendWhatsAppMessage).toHaveBeenCalledWith(OWNER, PHONE, "assistant", "hello", undefined);
+  });
+
+  // What the model needs to reply to the email an alert is about lives only in history, never in
+  // what the user sees.
+  it("stores an optional history note with the message but never sends it", async () => {
+    vi.mocked(getLastInboundAt).mockReturnValue(Date.now() - 60_000);
+    vi.mocked(resolveOwnerByPhone).mockReturnValue(OWNER);
+    vi.mocked(sendWhatsAppMessage).mockResolvedValue("wamid.NOTE");
+
+    await sendProactiveMessage(PHONE, "Sam, Jane emailed you", "alert", "[Email ref: account_id=1]");
+
+    expect(sendWhatsAppMessage).toHaveBeenCalledWith(PHONE, "Sam, Jane emailed you");
+    expect(appendWhatsAppMessage).toHaveBeenCalledWith(
+      OWNER,
+      PHONE,
+      "assistant",
+      "Sam, Jane emailed you\n\n[Email ref: account_id=1]",
+      ["wamid.NOTE"]
+    );
+  });
+
+  it("records nothing for a number that belongs to no account", async () => {
+    vi.mocked(getLastInboundAt).mockReturnValue(null);
+    vi.mocked(resolveOwnerByPhone).mockReturnValue(null);
+    vi.mocked(sendWhatsAppTemplate).mockResolvedValue("wamid.X");
+
+    await sendProactiveMessage(PHONE, "hello", "alert");
+
+    expect(appendWhatsAppMessage).not.toHaveBeenCalled();
+  });
+
+  it("records nothing when the send itself fails", async () => {
+    vi.mocked(getLastInboundAt).mockReturnValue(Date.now() - 60_000);
+    vi.mocked(resolveOwnerByPhone).mockReturnValue(OWNER);
+    vi.mocked(sendWhatsAppMessage).mockRejectedValueOnce(new Error("network down"));
+
+    await expect(sendProactiveMessage(PHONE, "hello", "alert")).rejects.toThrow("network down");
+    expect(appendWhatsAppMessage).not.toHaveBeenCalled();
+  });
+
+  // A history-write failure after a successful send must not surface as a send failure — callers
+  // treat a throw as "not delivered" and retry, which would re-send the same alert.
+  it("does not turn a delivered message into a failure when recording it fails", async () => {
+    vi.mocked(getLastInboundAt).mockReturnValue(null);
+    vi.mocked(resolveOwnerByPhone).mockReturnValue(OWNER);
+    vi.mocked(sendWhatsAppTemplate).mockResolvedValue("wamid.OK");
+    vi.mocked(appendWhatsAppMessage).mockImplementation(() => {
+      throw new Error("db locked");
+    });
+
+    await expect(sendProactiveMessage(PHONE, "hello", "alert")).resolves.toBeUndefined();
   });
 });
 

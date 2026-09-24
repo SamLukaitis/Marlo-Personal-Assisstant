@@ -10,7 +10,7 @@ import {
   hubListMessages,
   hubGetMessage,
   holdNewMessageCheckpoint,
-  AUTOMATED_SENDER_PATTERN,
+  isAutomatedMail,
 } from "./hub.js";
 import {
   hasAlerted,
@@ -30,6 +30,7 @@ import {
   type ClassifyMatch,
   type ImportantEmailCategory,
 } from "./importantEmailClassifier.js";
+import { emailReferenceNote } from "./emailReference.js";
 import { getXeroForwardingEmail } from "./xero.js";
 import { setPendingInvoiceForward } from "./xeroInvoiceConfirmation.js";
 import type { UnifiedMessage } from "../providers/types.js";
@@ -111,7 +112,7 @@ function isVerificationCode(m: UnifiedMessage): boolean {
 
 // Shared by both the ongoing scheduler scan and the onboarding scan below.
 function isImportantEmailCandidate(m: UnifiedMessage): boolean {
-  return !!m.from && AUTOMATED_SENDER_PATTERN.test(m.from) && !mentionsOwnApp(m) && !isVerificationCode(m);
+  return !!m.from && isAutomatedMail(m) && !mentionsOwnApp(m) && !isVerificationCode(m);
 }
 
 // The onboarding scan (see scanAndCurateImportantEmailsForOnboarding below) only ever flags mail
@@ -157,8 +158,14 @@ export function formatImportantEmailAlert(
 // fails to deliver must stay retriable, unlike alerts.ts's fire-and-forget notify() (acceptable
 // there only because "another email will come"; not acceptable for a flight-cancellation alert).
 // A retry skips numbers that already got this `itemKey` (see proactiveDelivery.ts).
-function notifyAll(ownerId: number, itemKey: string, numbers: string[], text: string): Promise<boolean> {
-  return sendToAllNumbers(ownerId, itemKey, numbers, text, "alert", "importantEmailAlerts");
+function notifyAll(
+  ownerId: number,
+  itemKey: string,
+  numbers: string[],
+  text: string,
+  historyNote?: string
+): Promise<boolean> {
+  return sendToAllNumbers(ownerId, itemKey, numbers, text, "alert", "importantEmailAlerts", historyNote);
 }
 
 // Runs on the existing 5-minute scheduler tick, sibling to checkForNewImportantMessages and
@@ -252,7 +259,7 @@ export async function checkForImportantEmails(ownerId: number): Promise<void> {
       }
     }
 
-    const delivered = await notifyAll(ownerId, messageKey(m), numbers, text);
+    const delivered = await notifyAll(ownerId, messageKey(m), numbers, text, emailReferenceNote(m));
     if (delivered) {
       markAlerted(ownerId, messageKey(m));
       saveFlaggedEmail(ownerId, m, match);

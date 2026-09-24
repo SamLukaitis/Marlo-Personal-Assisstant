@@ -59,6 +59,7 @@ vi.mock("./onboardingAlertSuppression.js", () => ({
 const { listAllUserIds } = await import("../db/store.js");
 const { checkNewEmailsAgainstRecentDocuments } = await import("./reconciliation.js");
 const { flushOnboardingAlertSummaryIfDue } = await import("./onboardingAlertSuppression.js");
+const { checkForNewImportantMessages } = await import("./alerts.js");
 const { tickGuarded } = await import("./scheduler.js");
 
 beforeEach(() => {
@@ -95,6 +96,24 @@ describe("tickGuarded", () => {
     await second;
   });
 
+  // Alert scans log nothing on a quiet tick, so without this line "is the scheduler even running,
+  // and is this user's real-person toggle on" can't be answered from the logs.
+  it("logs one summary line per tick with how many tenants it covered and how many have real-person alerts off", async () => {
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    try {
+      const first = tickGuarded();
+      await vi.waitFor(() => expect(checkNewEmailsAgainstRecentDocuments).toHaveBeenCalledTimes(1));
+      releaseReconciliationCheck();
+      await first;
+
+      const lines = logSpy.mock.calls.map((c) => c.join(" ")).filter((l) => l.startsWith("scheduler: tick"));
+      expect(lines).toHaveLength(1);
+      expect(lines[0]).toMatch(/1 user.*real-person alerts off for 0/);
+    } finally {
+      logSpy.mockRestore();
+    }
+  });
+
   // Regression coverage: the onboarding alert flood fix depends on this actually running every
   // tick for every tenant — see onboardingAlertSuppression.ts's own tests for the suppression
   // logic itself, this just proves the scheduler wires it in at all.
@@ -105,5 +124,17 @@ describe("tickGuarded", () => {
     await first;
 
     expect(flushOnboardingAlertSummaryIfDue).toHaveBeenCalledWith(1);
+  });
+
+  // Real-person alerts are on by default now — a tenant who never touched the setting (the mocked
+  // getSetting returns undefined for it) must still be checked.
+  it("runs the real-person alert check for a tenant who never set it", async () => {
+    vi.mocked(checkForNewImportantMessages).mockClear();
+    const first = tickGuarded();
+    await vi.waitFor(() => expect(checkNewEmailsAgainstRecentDocuments).toHaveBeenCalledTimes(1));
+    releaseReconciliationCheck();
+    await first;
+
+    expect(checkForNewImportantMessages).toHaveBeenCalledWith(1);
   });
 });

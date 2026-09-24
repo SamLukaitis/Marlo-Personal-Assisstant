@@ -143,3 +143,46 @@ describe("googleListNewMessages", () => {
     expect(mockSetAccountHistoryId).not.toHaveBeenCalled();
   });
 });
+
+// Marketing mail from ordinary-looking addresses (Pinterest, Babbel, ...) slipped past
+// AUTOMATED_SENDER_PATTERN into the "a real person emailed you" alerts. Gmail already sorts that
+// mail into its Promotions/Social/Updates/Forums tabs, and bulk senders set List-Unsubscribe —
+// both are surfaced as `bulk` so hub.ts's isAutomatedMail can use them.
+describe("googleListNewMessages — bulk-mail signals", () => {
+  function messageWith(id: string, labelIds: string[], headers: { name: string; value: string }[] = []) {
+    return { data: { id, internalDate: String(Date.now()), payload: { headers }, labelIds } };
+  }
+
+  async function listOne(message: ReturnType<typeof messageWith>) {
+    mockHistoryList.mockResolvedValue({
+      data: { history: [{ messagesAdded: [{ message: { id: message.data.id } }] }], historyId: "200" },
+    });
+    mockMessagesGet.mockResolvedValue(message);
+    const result = await googleListNewMessages(fakeAccount());
+    return result.messages[0];
+  }
+
+  it.each(["CATEGORY_PROMOTIONS", "CATEGORY_SOCIAL", "CATEGORY_UPDATES", "CATEGORY_FORUMS"])(
+    "marks a message in Gmail's %s tab as bulk",
+    async (label) => {
+      expect((await listOne(messageWith("m1", ["INBOX", label]))).bulk).toBe(true);
+    }
+  );
+
+  it("marks a message carrying a List-Unsubscribe header as bulk, even in the Primary tab", async () => {
+    const m = await listOne(
+      messageWith("m1", ["INBOX", "CATEGORY_PERSONAL"], [{ name: "List-Unsubscribe", value: "<mailto:u@x.com>" }])
+    );
+    expect(m.bulk).toBe(true);
+  });
+
+  it("leaves a Primary-tab message with no unsubscribe header unmarked", async () => {
+    const m = await listOne(messageWith("m1", ["INBOX", "CATEGORY_PERSONAL"], [{ name: "From", value: "Jane <j@x.com>" }]));
+    expect(m.bulk).toBe(false);
+  });
+
+  it("asks Gmail for the List-Unsubscribe header", async () => {
+    await listOne(messageWith("m1", ["INBOX"]));
+    expect(mockMessagesGet.mock.calls[0][0].metadataHeaders).toContain("List-Unsubscribe");
+  });
+});

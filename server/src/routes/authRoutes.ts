@@ -35,7 +35,7 @@ import {
   hasIdentity,
   type UserRow,
 } from "../db/store.js";
-import { sendWhatsAppMessage } from "../providers/whatsapp.js";
+import { isSimulatedPhone, sendWhatsAppMessage } from "../providers/whatsapp.js";
 import { clearConnectLinkCooldown } from "../services/connectMailboxLink.js";
 import { sendFirstValueAndBriefingPrompt } from "../services/whatsappRegistration.js";
 import { requireAuth, SESSION_COOKIE_NAME, type AuthedRequest } from "../middleware/auth.js";
@@ -472,8 +472,10 @@ authRoutes.get("/auth/google/callback", async (req, res) => {
         refreshToken: auth.refreshToken,
         expiryDate: auth.expiryDate,
       });
-      // Nice-to-have: the same phone's browser is now also logged into the website.
-      setSessionCookie(res, createSession(user.id));
+      // Nice-to-have: the same phone's browser is now also logged into the website — except for
+      // the WhatsApp Simulator, whose "phone" is the operator's own admin browser (see
+      // isSimulatedPhone): switching that session would demote them mid-test.
+      if (!isSimulatedPhone(reg.phone)) setSessionCookie(res, createSession(user.id));
       res.redirect(`${CLIENT_URL}/connected`);
       // Fire-and-forget — this is the proactive WhatsApp push confirming the connection, which
       // has to happen from here since this moment (finishing OAuth in a browser) is outside any
@@ -623,7 +625,8 @@ authRoutes.get("/auth/microsoft/callback", async (req, res) => {
       }
       linkIdentity(userId, "microsoft", microsoftIdentitySubject(auth));
       saveMicrosoftAccount(userId, auth);
-      setSessionCookie(res, createSession(userId));
+      // Same simulator carve-out as the Google callback above.
+      if (!isSimulatedPhone(reg.phone)) setSessionCookie(res, createSession(userId));
       res.redirect(`${CLIENT_URL}/connected`);
       sendFirstValueAndBriefingPrompt(userId, reg.phone, linkedExistingAccount).catch((err) =>
         console.error("whatsapp-register: post-connect message failed", err)

@@ -21,16 +21,22 @@ vi.mock("../providers/microsoft.js", () => ({
   microsoftGetGraphUserId: vi.fn(),
   microsoftIdentitySubject: (auth: { tenantId: string; objectId: string }) => `${auth.tenantId}:${auth.objectId}`,
 }));
-vi.mock("../providers/whatsapp.js", () => ({
-  sendWhatsAppMessage: vi.fn().mockResolvedValue(undefined),
-}));
+vi.mock("../providers/whatsapp.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../providers/whatsapp.js")>();
+  return {
+    // The simulated-number helpers are pure — kept real so the callbacks' simulator check runs.
+    isSimulatedPhone: actual.isSimulatedPhone,
+    newSimulatedTestUserPhone: actual.newSimulatedTestUserPhone,
+    sendWhatsAppMessage: vi.fn().mockResolvedValue(undefined),
+  };
+});
 vi.mock("../services/whatsappRegistration.js", () => ({
   sendFirstValueAndBriefingPrompt: vi.fn().mockResolvedValue(undefined),
 }));
 
 const { authRoutes } = await import("./authRoutes.js");
 const { exchangeGoogleCode, handleGoogleCallback } = await import("../providers/google.js");
-const { sendWhatsAppMessage } = await import("../providers/whatsapp.js");
+const { sendWhatsAppMessage, newSimulatedTestUserPhone } = await import("../providers/whatsapp.js");
 const { exchangeMicrosoftCode, microsoftGetGraphUserId } = await import("../providers/microsoft.js");
 const { sendFirstValueAndBriefingPrompt } = await import("../services/whatsappRegistration.js");
 const {
@@ -702,5 +708,55 @@ describe("WhatsApp registration failures reach the user on WhatsApp", () => {
       .set("Cookie", nonceCookie);
 
     expect(sendWhatsAppMessage).toHaveBeenCalledWith(phone, expect.stringContaining("resend"));
+  });
+});
+
+// The WhatsApp Simulator's "Connect Gmail/Outlook" link is opened in the operator's own browser,
+// already signed in as an admin. Logging that browser into the new test user (the "same phone's
+// browser is now logged in too" nicety real signups get) silently demoted the operator mid-test:
+// every simulator request then failed requireAdmin with "not allowed".
+describe("WhatsApp registration from a simulated number", () => {
+  const googleAuth = (email: string) => ({
+    email,
+    accessToken: "at",
+    refreshToken: "rt",
+    expiryDate: Date.now() + 3600_000,
+  });
+
+  it("Google: completes the signup but leaves the browser's existing session alone", async () => {
+    const app = buildApp();
+    const phone = newSimulatedTestUserPhone();
+    const email = uniqueEmail("sim-google");
+    vi.mocked(exchangeGoogleCode).mockResolvedValue(googleAuth(email));
+
+    const callback = await registerViaGoogle(app, phone, email);
+
+    expect(callback.headers.location).toBe("http://localhost:5173/connected");
+    expect(resolveOwnerByPhone(phone)).toBe(getUserByEmail(email)!.id);
+    expect(parseSetCookie(callback, "session")).toBeUndefined();
+  });
+
+  it("Microsoft: completes the signup but leaves the browser's existing session alone", async () => {
+    const app = buildApp();
+    const phone = newSimulatedTestUserPhone();
+    const email = uniqueEmail("sim-ms");
+    vi.mocked(exchangeMicrosoftCode).mockResolvedValue(msAuth(email, "tenant-sim", "obj-sim", "graph-sim"));
+
+    const callback = await registerViaMicrosoft(app, phone, email);
+
+    expect(callback.headers.location).toBe("http://localhost:5173/connected");
+    expect(resolveOwnerByPhone(phone)).toBe(getUserByEmail(email)!.id);
+    expect(parseSetCookie(callback, "session")).toBeUndefined();
+  });
+
+  it("a real phone's signup still logs its browser in", async () => {
+    const app = buildApp();
+    const phone = freshPhone();
+    const email = uniqueEmail("real-google");
+    vi.mocked(exchangeGoogleCode).mockResolvedValue(googleAuth(email));
+
+    const callback = await registerViaGoogle(app, phone, email);
+
+    expect(parseSetCookie(callback, "session")).toBeDefined();
   });
 });
