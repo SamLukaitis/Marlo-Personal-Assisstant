@@ -28,6 +28,7 @@ vi.mock("../providers/whatsapp.js", () => ({
   sendChoiceMessage: vi.fn(async () => undefined),
   isWhatsAppConfigured: () => true,
   isWhatsAppSignatureConfigured: () => true,
+  isSimulatedPhone: () => false,
   verifyWebhookChallenge: vi.fn(),
   verifyWebhookSignature: vi.fn(() => true),
   extractIncomingMessages: vi.fn(() => []),
