@@ -94,6 +94,31 @@ export async function handleLocation(
   queueForAssistant(ownerId, from, messageId, rowId, null, true);
 }
 
+// A voice note that's already been transcribed (whatsappRoutes.ts's transcribeVoiceNote). Stored
+// as the transcript itself, not a placeholder, so memory extraction, summaries and later "what did
+// I say about X" all see what was actually said. Deliberately skips handleText's help/version/link
+// short-circuits: those match exact typed forms, and a spoken "help" is better answered by the
+// model than by a keyword match on a transcript.
+export async function handleVoiceNote(
+  ownerId: number,
+  from: string,
+  transcript: string,
+  messageId: string,
+  quotedMessageId?: string,
+  forwarded?: boolean
+): Promise<void> {
+  const rowId = appendWhatsAppMessage(ownerId, from, "user", `[voice note] ${transcript}`);
+
+  const quotedContext = resolveQuotedMessageContext(ownerId, quotedMessageId, forwarded);
+  const override =
+    (quotedContext ? `${quotedContext}\n\n` : "") +
+    `[The user sent this as a WhatsApp voice note. Below is an automatic transcript, which may ` +
+    `contain speech-recognition errors — if a name, time, number or address looks wrong or ` +
+    `ambiguous, check with them rather than guessing.]\n${transcript}`;
+  // A voice note is almost always a complete thought on its own, so it takes the short debounce.
+  queueForAssistant(ownerId, from, messageId, rowId, override, true);
+}
+
 // afterReply, if given, runs once this message has actually been answered — the assistant reply is
 // debounced (messageBatching.ts), so it usually hasn't been sent yet when this returns.
 export async function handleText(

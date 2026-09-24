@@ -551,6 +551,9 @@ export interface IncomingTextMessage {
   messageId: string;
   quotedMessageId?: string;
   forwarded?: boolean;
+  // Set when this "text" is really a transcribed voice note (whatsappRoutes.ts's
+  // transcribeVoiceNote) — never set by extractIncomingMessages itself.
+  voiceNote?: true;
 }
 
 export interface IncomingMediaMessage {
@@ -561,6 +564,19 @@ export interface IncomingMediaMessage {
   mimeType: string;
   filename?: string;
   caption?: string;
+  quotedMessageId?: string;
+  forwarded?: boolean;
+}
+
+// A voice note (or other audio file) — transcribed and handled as text, see
+// services/transcription.ts and whatsappRoutes.ts's handleAudio. Kept separate from
+// IncomingMediaMessage because audio never goes through document ingestion.
+export interface IncomingAudioMessage {
+  kind: "audio";
+  from: string;
+  messageId: string;
+  mediaId: string;
+  mimeType: string;
   quotedMessageId?: string;
   forwarded?: boolean;
 }
@@ -600,7 +616,7 @@ export interface IncomingLocationMessage {
   address?: string;
 }
 
-// Any inbound message type we don't have a real handler for yet (audio/voice, sticker, contacts,
+// Any inbound message type we don't have a real handler for yet (sticker, contacts,
 // video, ...). `type` is Meta's raw type string, kept so the caller can log what actually came in
 // rather than a generic "something unsupported".
 export interface IncomingUnsupportedMessage {
@@ -613,6 +629,7 @@ export interface IncomingUnsupportedMessage {
 export type IncomingWhatsAppMessage =
   | IncomingTextMessage
   | IncomingMediaMessage
+  | IncomingAudioMessage
   | IncomingInteractiveMessage
   | IncomingReactionMessage
   | IncomingLocationMessage
@@ -629,6 +646,7 @@ interface WebhookPayload {
           text?: { body?: string };
           image?: { id?: string; mime_type?: string; caption?: string };
           document?: { id?: string; mime_type?: string; filename?: string; caption?: string };
+          audio?: { id?: string; mime_type?: string; voice?: boolean };
           reaction?: { message_id?: string; emoji?: string };
           location?: { latitude?: number; longitude?: number; name?: string; address?: string };
           context?: { id?: string; forwarded?: boolean };
@@ -643,7 +661,7 @@ interface WebhookPayload {
   }>;
 }
 
-const HANDLED_TYPES = new Set(["text", "image", "document", "interactive", "reaction", "location"]);
+const HANDLED_TYPES = new Set(["text", "image", "document", "audio", "interactive", "reaction", "location"]);
 
 export function extractIncomingMessages(payload: WebhookPayload): IncomingWhatsAppMessage[] {
   const messages: IncomingWhatsAppMessage[] = [];
@@ -679,6 +697,15 @@ export function extractIncomingMessages(payload: WebhookPayload): IncomingWhatsA
             mimeType: m.document.mime_type,
             filename: m.document.filename,
             caption: m.document.caption,
+            ...quoteFields,
+          });
+        } else if (m.type === "audio" && m.from && m.id && m.audio?.id && m.audio.mime_type) {
+          messages.push({
+            kind: "audio",
+            from: m.from,
+            messageId: m.id,
+            mediaId: m.audio.id,
+            mimeType: m.audio.mime_type,
             ...quoteFields,
           });
         } else if (
@@ -741,8 +768,8 @@ export function extractIncomingMessages(payload: WebhookPayload): IncomingWhatsA
             emoji: m.reaction.emoji,
           });
         } else if (m.from && m.id && !HANDLED_TYPES.has(m.type ?? "")) {
-          // A genuinely different message type we don't have a real handler for (audio/voice,
-          // sticker, contacts, video, ...) — routed somewhere rather than silently dropped, as
+          // A genuinely different message type we don't have a real handler for (sticker,
+          // contacts, video, ...) — routed somewhere rather than silently dropped, as
           // long as we at least know who to reply to. See handleIncoming's "unsupported" branch.
           // Deliberately excludes text/image/document/interactive: a
           // malformed payload of a type we DO handle (missing a required nested field) stays

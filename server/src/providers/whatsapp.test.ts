@@ -245,6 +245,51 @@ describe("extractIncomingMessages — interactive button replies", () => {
   });
 });
 
+describe("extractIncomingMessages — audio / voice notes", () => {
+  function audioPayload(message: Record<string, unknown>) {
+    return { entry: [{ changes: [{ value: { messages: [message] } }] }] };
+  }
+
+  it("parses a voice note into an IncomingAudioMessage", () => {
+    const payload = audioPayload({
+      from: "447000000001",
+      id: "wamid.voice1",
+      type: "audio",
+      audio: { id: "media-voice-1", mime_type: "audio/ogg; codecs=opus", voice: true },
+    });
+
+    expect(extractIncomingMessages(payload)).toEqual([
+      {
+        kind: "audio",
+        from: "447000000001",
+        messageId: "wamid.voice1",
+        mediaId: "media-voice-1",
+        mimeType: "audio/ogg; codecs=opus",
+      },
+    ]);
+  });
+
+  it("carries swipe-reply context on a voice note", () => {
+    const payload = audioPayload({
+      from: "447000000001",
+      id: "wamid.voice2",
+      type: "audio",
+      audio: { id: "media-voice-2", mime_type: "audio/ogg; codecs=opus" },
+      context: { id: "wamid.earlier" },
+    });
+
+    expect(extractIncomingMessages(payload)).toEqual([
+      expect.objectContaining({ kind: "audio", quotedMessageId: "wamid.earlier" }),
+    ]);
+  });
+
+  it("drops a malformed audio payload rather than falling back to unsupported", () => {
+    const payload = audioPayload({ from: "447000000001", id: "wamid.voice3", type: "audio" });
+
+    expect(extractIncomingMessages(payload)).toEqual([]);
+  });
+});
+
 describe("extractIncomingMessages — unsupported message types", () => {
   it("parses a sticker message into an IncomingUnsupportedMessage carrying its raw type", () => {
     const payload = {

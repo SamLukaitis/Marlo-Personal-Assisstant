@@ -490,11 +490,13 @@ export async function handlePendingRegistration(message: IncomingWhatsAppMessage
     return;
   }
 
-  // Media, location pins, unsupported types (voice, sticker, ...), and reactions all get the
-  // same redirect — there's no registration state to advance from any of these, and nobody's
-  // registered yet for a reaction to even mean anything.
+  // Media, voice notes, location pins, unsupported types (sticker, ...), and reactions all get
+  // the same redirect — there's no registration state to advance from any of these, and nobody's
+  // registered yet for a reaction to even mean anything. (Voice notes are only transcribed once
+  // there's an account to attribute the transcription cost to.)
   if (
     message.kind === "media" ||
+    message.kind === "audio" ||
     message.kind === "unsupported" ||
     message.kind === "reaction" ||
     message.kind === "location"

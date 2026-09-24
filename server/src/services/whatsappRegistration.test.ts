@@ -597,6 +597,22 @@ describe("handlePendingRegistration — mistimed media points at the actual curr
     expect(sendWhatsAppMessage).not.toHaveBeenCalledWith(phone, expect.stringContaining("what should I call you"));
   });
 
+  it("redirects a voice note back to the current step, same as any other media", async () => {
+    const phone = freshPhone();
+    addInvitedPhone(phone);
+    upsertPendingRegistration(phone, { step: "awaiting_link_tap", name: "Sam", provider: "google" });
+
+    await handlePendingRegistration({
+      kind: "audio",
+      from: phone,
+      messageId: "m1",
+      mediaId: "media-1",
+      mimeType: "audio/ogg; codecs=opus",
+    });
+
+    expect(sendWhatsAppMessage).toHaveBeenCalledWith(phone, expect.stringContaining("Tap the link"));
+  });
+
   it("still asks for a name when that really is the current step", async () => {
     const phone = freshPhone();
     addInvitedPhone(phone);
