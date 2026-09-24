@@ -15,6 +15,7 @@ import { isWhatsAppConfigured } from "../providers/whatsapp.js";
 import { sendToAllNumbers } from "./proactiveDelivery.js";
 import { countTravelDays } from "./travelDays.js";
 import { checkForNewImportantMessages } from "./alerts.js";
+import { importantEmailAlertsEnabled, realPersonAlertsEnabled } from "./emailAlertSettings.js";
 import { checkNewEmailsAgainstRecentDocuments } from "./reconciliation.js";
 import { checkForImportantEmails } from "./importantEmailAlerts.js";
 import { flushOnboardingAlertSummaryIfDue } from "./onboardingAlertSuppression.js";
@@ -87,7 +88,7 @@ async function runDailyCheckForUser(ownerId: number): Promise<void> {
 }
 
 async function runAlertsCheckForUser(ownerId: number): Promise<void> {
-  if (getSetting(ownerId, "realtime_alerts_enabled") !== "true") return;
+  if (!realPersonAlertsEnabled(ownerId)) return;
   try {
     await checkForNewImportantMessages(ownerId);
   } catch (err) {
@@ -115,7 +116,7 @@ async function runTripPrepCheckForUser(ownerId: number): Promise<void> {
 }
 
 async function runImportantEmailAlertsCheckForUser(ownerId: number): Promise<void> {
-  if (getSetting(ownerId, "important_email_alerts_enabled") === "false") return;
+  if (!importantEmailAlertsEnabled(ownerId)) return;
   try {
     await checkForImportantEmails(ownerId);
   } catch (err) {

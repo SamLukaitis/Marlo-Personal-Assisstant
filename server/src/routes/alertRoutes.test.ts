@@ -24,6 +24,22 @@ function uniqueEmail(prefix: string): string {
   return `${prefix}-${Date.now()}-${counter}@example.com`;
 }
 
+describe("real-person alert settings", () => {
+  it("defaults to enabled:true for a user who has never touched the setting", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("person-default-on"));
+    const res = await request(buildTestApp(user.id)).get("/api/alerts/settings");
+    expect(res.body).toEqual({ enabled: true });
+  });
+
+  it("persists an explicit opt-out and reports it back", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("person-opt-out"));
+    const app = buildTestApp(user.id);
+    await request(app).put("/api/alerts/settings").send({ enabled: false });
+    expect(getSetting(user.id, "realtime_alerts_enabled")).toBe("false");
+    expect((await request(app).get("/api/alerts/settings")).body).toEqual({ enabled: false });
+  });
+});
+
 describe("GET /api/important-email-alerts/settings", () => {
   it("defaults to enabled:true for a user who has never touched the setting", async () => {
     const user = findOrCreateUserByEmail(uniqueEmail("default-on"));

@@ -55,6 +55,7 @@ import { retrieveRelevantMemory } from "./memoryRetrieval.js";
 import { IMPORTANT_EMAIL_ENTITY_TYPE } from "../services/importantEmailAlerts.js";
 import { getBriefingSettings, saveBriefingSettings, type BriefingSettings } from "../services/briefing.js";
 import { getXeroForwardingEmail } from "../services/xero.js";
+import { importantEmailAlertsEnabled, realPersonAlertsEnabled } from "../services/emailAlertSettings.js";
 import { setPendingInvoiceForward, getPendingInvoiceForward } from "../services/xeroInvoiceConfirmation.js";
 import { setUserTimezone } from "../services/userTimezone.js";
 
@@ -417,6 +418,35 @@ describe("set_briefing_preferences tool", () => {
     });
     expect(result).toEqual({ ok: true });
     expect(getBriefingSettings(user.id).topics).toEqual(["technology"]);
+  });
+});
+
+describe("set_email_alerts tool", () => {
+  it("turns off only real-person alerts when that's all the user asked", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("email-alerts-people"));
+    const result = await runTool(user.id, "set_email_alerts", { people: false });
+    expect(result).toEqual({ ok: true, people: false, important: true });
+    expect(realPersonAlertsEnabled(user.id)).toBe(false);
+    expect(importantEmailAlertsEnabled(user.id)).toBe(true);
+  });
+
+  it("turns off both when the user wants no email pings at all, and back on again", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("email-alerts-all"));
+    expect(await runTool(user.id, "set_email_alerts", { people: false, important: false })).toEqual({
+      ok: true,
+      people: false,
+      important: false,
+    });
+    expect(await runTool(user.id, "set_email_alerts", { people: true })).toEqual({
+      ok: true,
+      people: true,
+      important: false,
+    });
+  });
+
+  it("refuses a call that changes nothing", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("email-alerts-empty"));
+    expect(await runTool(user.id, "set_email_alerts", {})).toHaveProperty("error");
   });
 });
 
