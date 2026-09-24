@@ -3,6 +3,7 @@ import { findOrCreateUserByEmail, setSetting } from "../db/store.js";
 import {
   importantEmailAlertsEnabled,
   realPersonAlertsEnabled,
+  realPersonAlertsEnabledSince,
   setImportantEmailAlertsEnabled,
   setRealPersonAlertsEnabled,
 } from "./emailAlertSettings.js";
@@ -36,5 +37,18 @@ describe("email alert settings", () => {
     setRealPersonAlertsEnabled(user.id, true);
     expect(realPersonAlertsEnabled(user.id)).toBe(true);
     expect(importantEmailAlertsEnabled(user.id)).toBe(false);
+  });
+
+  it("records when real-person alerts were switched on from off, not on a no-op re-enable", () => {
+    const user = newUser("alerts-enabled-at");
+    expect(realPersonAlertsEnabledSince(user.id)).toBe(0);
+
+    setRealPersonAlertsEnabled(user.id, true); // already on by default — nothing to record
+    expect(realPersonAlertsEnabledSince(user.id)).toBe(0);
+
+    setRealPersonAlertsEnabled(user.id, false);
+    const before = Date.now();
+    setRealPersonAlertsEnabled(user.id, true);
+    expect(realPersonAlertsEnabledSince(user.id)).toBeGreaterThanOrEqual(before);
   });
 });
