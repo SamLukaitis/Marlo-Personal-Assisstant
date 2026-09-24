@@ -1,31 +1,30 @@
 import { Router } from "express";
-import { getSetting, setSetting } from "../db/store.js";
+import {
+  importantEmailAlertsEnabled,
+  realPersonAlertsEnabled,
+  setImportantEmailAlertsEnabled,
+  setRealPersonAlertsEnabled,
+} from "../services/emailAlertSettings.js";
 import type { AuthedRequest } from "../middleware/auth.js";
 
 export const alertRoutes = Router();
 
 alertRoutes.get("/api/alerts/settings", (req, res) => {
-  res.json({ enabled: getSetting((req as unknown as AuthedRequest).userId, "realtime_alerts_enabled") === "true" });
+  res.json({ enabled: realPersonAlertsEnabled((req as unknown as AuthedRequest).userId) });
 });
 
 alertRoutes.put("/api/alerts/settings", (req, res) => {
   const { enabled } = req.body ?? {};
-  setSetting((req as unknown as AuthedRequest).userId, "realtime_alerts_enabled", enabled ? "true" : "false");
+  setRealPersonAlertsEnabled((req as unknown as AuthedRequest).userId, !!enabled);
   res.json({ ok: true });
 });
 
 alertRoutes.get("/api/important-email-alerts/settings", (req, res) => {
-  res.json({
-    enabled: getSetting((req as unknown as AuthedRequest).userId, "important_email_alerts_enabled") !== "false",
-  });
+  res.json({ enabled: importantEmailAlertsEnabled((req as unknown as AuthedRequest).userId) });
 });
 
 alertRoutes.put("/api/important-email-alerts/settings", (req, res) => {
   const { enabled } = req.body ?? {};
-  setSetting(
-    (req as unknown as AuthedRequest).userId,
-    "important_email_alerts_enabled",
-    enabled ? "true" : "false"
-  );
+  setImportantEmailAlertsEnabled((req as unknown as AuthedRequest).userId, !!enabled);
   res.json({ ok: true });
 });

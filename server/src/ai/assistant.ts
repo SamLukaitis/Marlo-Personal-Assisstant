@@ -49,6 +49,12 @@ import {
 } from "../db/store.js";
 import { retrieveRelevantMemory } from "./memoryRetrieval.js";
 import { sendConnectLink } from "../services/connectMailboxLink.js";
+import {
+  importantEmailAlertsEnabled,
+  realPersonAlertsEnabled,
+  setImportantEmailAlertsEnabled,
+  setRealPersonAlertsEnabled,
+} from "../services/emailAlertSettings.js";
 import { validateTrip, type ExpenseData, type BookingData, type TripData } from "../services/entityValidation.js";
 import { listLocalFolders } from "../providers/local.js";
 import { fetchHeadlines, NEWS_TOPICS, type NewsTopic } from "../providers/news.js";
@@ -857,6 +863,18 @@ const ALWAYS_ON_TOOLS: Anthropic.ToolUnion[] = [
     },
   },
   {
+    name: "set_email_alerts",
+    description:
+      "Turn the user's email pings on or off. There are two independent kinds: `people` — a ping whenever a real person (not a newsletter or notification) emails them; `important` — pings about genuinely important automated mail (flight changes, deliveries, invoices due, security alerts, etc.). Both are on by default. Pass only what the user asked to change: \"stop telling me when people email me\" is people:false alone; \"stop all pings about emails\" / \"no more email alerts\" is both false. If it's unclear which they mean, ask rather than guessing.",
+    input_schema: {
+      type: "object",
+      properties: {
+        people: { type: "boolean", description: "Pings when a real person emails." },
+        important: { type: "boolean", description: "Pings about important automated mail." },
+      },
+    },
+  },
+  {
     name: "set_tool_enabled",
     description:
       "Turn an optional tool on or off for the user — currently Microsoft Teams chat search and the travel/Schengen day tracker. Call this when the user asks to use, enable, disable, or stop using one of these.",
@@ -1481,6 +1499,15 @@ export async function runTool(
         ...(input.send_time !== undefined ? { sendTime: input.send_time as string } : {}),
       });
       return { ok: true };
+    }
+    case "set_email_alerts": {
+      if (typeof input.people !== "boolean" && typeof input.important !== "boolean") {
+        return { error: "pass people and/or important" };
+      }
+      if (typeof input.people === "boolean") setRealPersonAlertsEnabled(ownerId, input.people);
+      if (typeof input.important === "boolean") setImportantEmailAlertsEnabled(ownerId, input.important);
+      // Both states come back so the reply can say what's still on, not just what changed.
+      return { ok: true, people: realPersonAlertsEnabled(ownerId), important: importantEmailAlertsEnabled(ownerId) };
     }
     case "set_tool_enabled": {
       const tool = input.tool as string;

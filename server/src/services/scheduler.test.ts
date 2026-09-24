@@ -59,6 +59,7 @@ vi.mock("./onboardingAlertSuppression.js", () => ({
 const { listAllUserIds } = await import("../db/store.js");
 const { checkNewEmailsAgainstRecentDocuments } = await import("./reconciliation.js");
 const { flushOnboardingAlertSummaryIfDue } = await import("./onboardingAlertSuppression.js");
+const { checkForNewImportantMessages } = await import("./alerts.js");
 const { tickGuarded } = await import("./scheduler.js");
 
 beforeEach(() => {
@@ -105,5 +106,17 @@ describe("tickGuarded", () => {
     await first;
 
     expect(flushOnboardingAlertSummaryIfDue).toHaveBeenCalledWith(1);
+  });
+
+  // Real-person alerts are on by default now — a tenant who never touched the setting (the mocked
+  // getSetting returns undefined for it) must still be checked.
+  it("runs the real-person alert check for a tenant who never set it", async () => {
+    vi.mocked(checkForNewImportantMessages).mockClear();
+    const first = tickGuarded();
+    await vi.waitFor(() => expect(checkNewEmailsAgainstRecentDocuments).toHaveBeenCalledTimes(1));
+    releaseReconciliationCheck();
+    await first;
+
+    expect(checkForNewImportantMessages).toHaveBeenCalledWith(1);
   });
 });
