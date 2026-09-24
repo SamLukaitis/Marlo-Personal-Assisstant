@@ -65,10 +65,13 @@ function isWithinCustomerServiceWindow(phone: string): boolean {
 export async function sendProactiveMessage(
   phone: string,
   text: string,
-  kind: ProactiveMessageKind
+  kind: ProactiveMessageKind,
+  // Stored with the message in chat history but never sent — e.g. the ids of the email an alert
+  // is about, so a later "reply yes" can act on it.
+  historyNote?: string
 ): Promise<void> {
   const wamid = await sendProactive(phone, text, kind);
-  recordProactiveInHistory(phone, text, wamid);
+  recordProactiveInHistory(phone, historyNote ? `${text}\n\n${historyNote}` : text, wamid);
 }
 
 // A proactive push goes into chat history and its wamid is recorded, exactly like a normal reply

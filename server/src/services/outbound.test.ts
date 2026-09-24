@@ -158,6 +158,25 @@ describe("sendProactiveMessage — making the push quotable", () => {
     expect(appendWhatsAppMessage).toHaveBeenCalledWith(OWNER, PHONE, "assistant", "hello", undefined);
   });
 
+  // What the model needs to reply to the email an alert is about lives only in history, never in
+  // what the user sees.
+  it("stores an optional history note with the message but never sends it", async () => {
+    vi.mocked(getLastInboundAt).mockReturnValue(Date.now() - 60_000);
+    vi.mocked(resolveOwnerByPhone).mockReturnValue(OWNER);
+    vi.mocked(sendWhatsAppMessage).mockResolvedValue("wamid.NOTE");
+
+    await sendProactiveMessage(PHONE, "Sam, Jane emailed you", "alert", "[Email ref: account_id=1]");
+
+    expect(sendWhatsAppMessage).toHaveBeenCalledWith(PHONE, "Sam, Jane emailed you");
+    expect(appendWhatsAppMessage).toHaveBeenCalledWith(
+      OWNER,
+      PHONE,
+      "assistant",
+      "Sam, Jane emailed you\n\n[Email ref: account_id=1]",
+      ["wamid.NOTE"]
+    );
+  });
+
   it("records nothing for a number that belongs to no account", async () => {
     vi.mocked(getLastInboundAt).mockReturnValue(null);
     vi.mocked(resolveOwnerByPhone).mockReturnValue(null);

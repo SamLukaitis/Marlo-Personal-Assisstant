@@ -25,7 +25,9 @@ const {
   hasAlerted,
   setSetting,
   setPendingSetup,
+  getWhatsAppHistory,
 } = await import("../db/store.js");
+const { resolveQuotedMessageContext } = await import("./quotedMessage.js");
 const { checkForNewImportantMessages } = await import("./alerts.js");
 const { takeSuppressedOnboardingAlertCount } = await import("./onboardingAlertSuppression.js");
 
@@ -115,6 +117,32 @@ describe("checkForNewImportantMessages", () => {
     const [sentTo, text] = vi.mocked(sendWhatsAppMessage).mock.calls[0];
     expect(sentTo).toBe(phone);
     expect(text).toContain("Already read");
+  });
+
+  // Reported: replying "yes" (or swipe-replying) to an alert got "I don't see a pending question" —
+  // the alert wasn't in history and had no wamid. The ids are in history only, never in the text sent.
+  it("records the alert in history with the email's ids, and a swipe-reply to it resolves to that", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("alerts-quotable"));
+    const phone = registerActivePhone(user.id);
+    await baseline(user.id);
+    vi.mocked(sendWhatsAppMessage).mockResolvedValue("wamid.ALERT1");
+    mockHubListNewMessages.mockResolvedValueOnce([
+      fakeMessage({ id: "gmail-77", accountId: 5, subject: "Testing", from: "Sam <sam@example.com>" }),
+    ]);
+
+    await checkForNewImportantMessages(user.id);
+
+    const [, sentText] = vi.mocked(sendWhatsAppMessage).mock.calls[0];
+    expect(sentText).not.toContain("gmail-77");
+    const last = getWhatsAppHistory(phone).at(-1)!;
+    expect(last.role).toBe("assistant");
+    expect(last.content).toContain("Testing");
+    expect(last.content).toContain("account_id=5");
+    expect(last.content).toContain("message_id=gmail-77");
+    expect(last.content).toContain("sam@example.com");
+    const quoted = resolveQuotedMessageContext(user.id, "wamid.ALERT1", false);
+    expect(quoted).toContain("message_id=gmail-77");
+    expect(quoted).not.toContain("can't see");
   });
 
   it("ignores automated-sender mail regardless of read status", async () => {

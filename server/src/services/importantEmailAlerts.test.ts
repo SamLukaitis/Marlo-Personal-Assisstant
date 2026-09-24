@@ -42,6 +42,7 @@ const {
   setSetting,
   setPendingSetup,
   clearPendingSetup,
+  getWhatsAppHistory,
 } = await import("../db/store.js");
 const { markOnboardingConnected } = await import("./onboardingAlertSuppression.js");
 const {
@@ -228,6 +229,24 @@ describe("checkForImportantEmails", () => {
     const [candidates] = mockClassify.mock.calls[0];
     expect(candidates.map((c: { subject: string }) => c.subject)).toEqual(["New sign-in"]);
     expect(sendWhatsAppMessage).not.toHaveBeenCalled();
+  });
+
+  it("records the alert in history with the email's ids so it can be replied to", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("match-ref"));
+    const phone = registerActivePhone(user.id);
+    await baseline(user.id);
+    mockHubListNewMessages.mockResolvedValueOnce([
+      fakeMessage({ id: "flight-ref-1", accountId: 9, subject: "Your flight changed" }),
+    ]);
+    mockClassify.mockResolvedValueOnce(new Map([[0, { category: "flight_change", summary: "Gate moved." }]]));
+
+    await checkForImportantEmails(user.id);
+
+    const [, sentText] = vi.mocked(sendWhatsAppMessage).mock.calls[0];
+    expect(sentText).not.toContain("flight-ref-1");
+    const last = getWhatsAppHistory(phone).at(-1)!;
+    expect(last.content).toContain("account_id=9");
+    expect(last.content).toContain("message_id=flight-ref-1");
   });
 
   it("sends a WhatsApp alert for a classified match, formatted with the category", async () => {
