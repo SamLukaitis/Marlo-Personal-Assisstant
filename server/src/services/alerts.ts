@@ -3,6 +3,7 @@ import { hasAlerted, markAlerted, getSetting, setSetting, listPhoneNumbersForUse
 import { isWhatsAppConfigured } from "../providers/whatsapp.js";
 import { sendProactiveMessage } from "./outbound.js";
 import { emailReferenceNote } from "./emailReference.js";
+import { realPersonAlertsEnabledSince } from "./emailAlertSettings.js";
 import {
   isOnboardingSuppressionActive,
   incrementSuppressedOnboardingAlerts,
@@ -42,9 +43,15 @@ export async function checkForNewImportantMessages(ownerId: number): Promise<voi
   // First-ever run: record the current inbox as a baseline instead of alerting on everything
   // that was already sitting there unread before this feature existed.
   if (getSetting(ownerId, BASELINE_KEY) !== "true") {
-    for (const m of candidates) markAlerted(ownerId, messageKey(m));
+    // Only mail from before the user switched alerts on is "already sitting there" — mail that
+    // arrived after it (turning alerts on and immediately testing them) must fall through and
+    // alert, not get swallowed as backlog. No timestamp (never switched on from off) baselines
+    // everything, as before.
+    const enabledAt = realPersonAlertsEnabledSince(ownerId);
+    for (const m of candidates) {
+      if (enabledAt === 0 || new Date(m.receivedAt).getTime() < enabledAt) markAlerted(ownerId, messageKey(m));
+    }
     setSetting(ownerId, BASELINE_KEY, "true");
-    return;
   }
 
   const unseen = candidates.filter((m) => !hasAlerted(ownerId, messageKey(m)));

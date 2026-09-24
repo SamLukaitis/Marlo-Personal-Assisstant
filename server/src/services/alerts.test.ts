@@ -29,6 +29,7 @@ const {
 } = await import("../db/store.js");
 const { resolveQuotedMessageContext } = await import("./quotedMessage.js");
 const { checkForNewImportantMessages } = await import("./alerts.js");
+const { setRealPersonAlertsEnabled, realPersonAlertsEnabledSince } = await import("./emailAlertSettings.js");
 const { takeSuppressedOnboardingAlertCount } = await import("./onboardingAlertSuppression.js");
 
 let counter = 0;
@@ -88,6 +89,28 @@ beforeEach(() => {
 });
 
 describe("checkForNewImportantMessages", () => {
+  // Reported: turned real-person alerts on, emailed immediately, never got a ping — the first
+  // tick after enabling treated that email as pre-existing inbox and swallowed it.
+  it("alerts on mail that arrived after the user switched alerts on, even on the baseline run", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("alerts-baseline-after-enable"));
+    const phone = registerActivePhone(user.id);
+    setRealPersonAlertsEnabled(user.id, false);
+    setRealPersonAlertsEnabled(user.id, true);
+    const enabledAt = realPersonAlertsEnabledSince(user.id);
+    mockHubListNewMessages.mockResolvedValueOnce([
+      fakeMessage({ id: "before", receivedAt: new Date(enabledAt - 3_600_000).toISOString() }),
+      fakeMessage({ id: "after", subject: "Sent after enabling", receivedAt: new Date(enabledAt + 30_000).toISOString() }),
+    ]);
+
+    await checkForNewImportantMessages(user.id);
+
+    expect(sendWhatsAppMessage).toHaveBeenCalledTimes(1);
+    const [sentTo, text] = vi.mocked(sendWhatsAppMessage).mock.calls[0];
+    expect(sentTo).toBe(phone);
+    expect(text).toContain("Sent after enabling");
+    expect(hasAlerted(user.id, "1:before")).toBe(true);
+  });
+
   it("baselines the existing inbox on first run without notifying", async () => {
     const user = findOrCreateUserByEmail(uniqueEmail("alerts-baseline"));
     mockHubListNewMessages.mockResolvedValueOnce([fakeMessage({ id: "old-1" })]);

@@ -9,6 +9,7 @@ import { getSetting, setSetting } from "../db/store.js";
 //   etc. picked out of automated mail. Always defaulted on.
 const REAL_PERSON_KEY = "realtime_alerts_enabled";
 const IMPORTANT_KEY = "important_email_alerts_enabled";
+const REAL_PERSON_ENABLED_AT_KEY = "realtime_alerts_enabled_at";
 
 export function realPersonAlertsEnabled(ownerId: number): boolean {
   return getSetting(ownerId, REAL_PERSON_KEY) !== "false";
@@ -18,7 +19,17 @@ export function importantEmailAlertsEnabled(ownerId: number): boolean {
   return getSetting(ownerId, IMPORTANT_KEY) !== "false";
 }
 
+// When the user last switched real-person alerts on from off, or 0 if they never did (a user still
+// on the default has no such moment). alerts.ts's first scan uses it so mail that arrives after
+// switching on isn't swallowed as "already sitting in the inbox".
+export function realPersonAlertsEnabledSince(ownerId: number): number {
+  return Number(getSetting(ownerId, REAL_PERSON_ENABLED_AT_KEY) ?? "0") || 0;
+}
+
 export function setRealPersonAlertsEnabled(ownerId: number, enabled: boolean): void {
+  if (enabled && !realPersonAlertsEnabled(ownerId)) {
+    setSetting(ownerId, REAL_PERSON_ENABLED_AT_KEY, String(Date.now()));
+  }
   setSetting(ownerId, REAL_PERSON_KEY, enabled ? "true" : "false");
 }
 
