@@ -176,6 +176,9 @@ const MODEL_PRICE_PER_MTOK: Record<
 > = {
   "claude-haiku-4-5": { input: 1, output: 5, cacheRead: 0.1, cacheWrite: 2 },
   "claude-sonnet-5": { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 6 },
+  // OpenAI speech-to-text for voice notes (services/transcription.ts). Input is almost entirely
+  // audio tokens, so the audio input rate is used; never cached.
+  "gpt-4o-mini-transcribe": { input: 3, output: 5, cacheRead: 0, cacheWrite: 0 },
 };
 
 // estimatedCost is null for a model not in the price table above (e.g. one added after this

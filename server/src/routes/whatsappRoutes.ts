@@ -7,7 +7,10 @@ import {
   sendWhatsAppMessage,
   sendWhatsAppTypingIndicator,
   extractIncomingMessages,
+  downloadWhatsAppMedia,
   type IncomingWhatsAppMessage,
+  type IncomingAudioMessage,
+  type IncomingTextMessage,
 } from "../providers/whatsapp.js";
 import {
   resolveOwnerByPhone,
@@ -15,7 +18,9 @@ import {
   appendWhatsAppMessage,
   markWamidSeenIfNew,
   cancelUntilReplyRemindersForOwner,
+  recordApiUsage,
 } from "../db/store.js";
+import { isTranscriptionConfigured, transcribeAudio } from "../services/transcription.js";
 import { ingestWhatsAppMedia } from "../services/documents.js";
 import { handlePendingRegistration } from "../services/whatsappRegistration.js";
 import {
@@ -26,7 +31,7 @@ import {
 import { handlePendingActionReply } from "../services/actionHandlers.js";
 import { maybeUpdateConversationSummary } from "../services/conversationSummary.js";
 import { maybeExtractMemory } from "../services/memoryExtraction.js";
-import { handleText, handleLocation } from "../services/chatDispatch.js";
+import { handleText, handleVoiceNote, handleLocation } from "../services/chatDispatch.js";
 import { resolveQuotedMessageContext } from "../services/quotedMessage.js";
 import { queueForAssistant, looksComplete } from "../services/messageBatching.js";
 
@@ -102,7 +107,56 @@ async function handleMedia(
   queueForAssistant(ownerId, from, messageId, rowId, docContext, !!caption && looksComplete(caption));
 }
 
-export async function handleIncoming(message: IncomingWhatsAppMessage): Promise<void> {
+const UNSUPPORTED_REPLY = "I can't read that message type yet — text me instead.";
+const VOICE_NOTE_FAILED_REPLY = "I couldn't make out that voice note — could you type it or try again?";
+
+// Turns a voice note into a text message (flagged voiceNote) so everything downstream — the
+// blocking setup steps as well as ordinary chat — handles it like typed text. Returns null once
+// it has already replied itself: no transcription key configured (same reply as any other
+// unsupported type), or the download/transcription failed.
+async function transcribeVoiceNote(
+  ownerId: number,
+  message: IncomingAudioMessage
+): Promise<IncomingTextMessage | null> {
+  if (!isTranscriptionConfigured()) {
+    console.log("whatsapp: unsupported message type", { ownerId, type: "audio" });
+    appendWhatsAppMessage(ownerId, message.from, "assistant", UNSUPPORTED_REPLY);
+    await sendWhatsAppMessage(message.from, UNSUPPORTED_REPLY);
+    return null;
+  }
+
+  try {
+    const { buffer } = await downloadWhatsAppMedia(message.mediaId);
+    const result = await transcribeAudio(buffer, message.mimeType);
+    recordApiUsage(
+      ownerId,
+      "whatsapp",
+      result.model,
+      "voice_transcription",
+      result.inputTokens,
+      result.outputTokens,
+      0,
+      0
+    );
+    return {
+      kind: "text",
+      from: message.from,
+      text: result.text,
+      messageId: message.messageId,
+      voiceNote: true,
+      ...(message.quotedMessageId ? { quotedMessageId: message.quotedMessageId } : {}),
+      ...(message.forwarded ? { forwarded: true as const } : {}),
+    };
+  } catch (err) {
+    console.error("whatsapp: voice note transcription failed", err);
+    appendWhatsAppMessage(ownerId, message.from, "assistant", VOICE_NOTE_FAILED_REPLY);
+    await sendWhatsAppMessage(message.from, VOICE_NOTE_FAILED_REPLY);
+    return null;
+  }
+}
+
+export async function handleIncoming(incoming: IncomingWhatsAppMessage): Promise<void> {
+  let message = incoming;
   // Fire-and-forget — shows the native "..." typing indicator while the assistant/tool-call
   // round trip below runs, so the user knows a reply is coming rather than wondering if the
   // message went through. Never let this block or fail message handling itself.
@@ -148,6 +202,14 @@ export async function handleIncoming(message: IncomingWhatsAppMessage): Promise<
     console.error("whatsapp: memory extraction failed", err)
   );
 
+  // Transcribed before the setup steps below, so a spoken answer to "what should I call you?"
+  // works the same as a typed one.
+  if (message.kind === "audio") {
+    const transcribed = await transcribeVoiceNote(ownerId, message);
+    if (!transcribed) return;
+    message = transcribed;
+  }
+
   // The blocking free-text setup steps (ask_name, ask_first_task) — each either consumes a "skip"
   // (or, for ask_name, saves the name) and advances the chain, or forwards the message to
   // ordinary chat handling and advances right after. Checked first since they're the earliest
@@ -162,7 +224,16 @@ export async function handleIncoming(message: IncomingWhatsAppMessage): Promise<
   if (await handlePendingActionReply(ownerId, message)) return;
 
   try {
-    if (message.kind === "text") {
+    if (message.kind === "text" && message.voiceNote) {
+      await handleVoiceNote(
+        ownerId,
+        message.from,
+        message.text,
+        message.messageId,
+        message.quotedMessageId,
+        message.forwarded
+      );
+    } else if (message.kind === "text") {
       await handleText(
         ownerId,
         message.from,
@@ -201,14 +272,13 @@ export async function handleIncoming(message: IncomingWhatsAppMessage): Promise<
       const label = message.emoji ? message.emoji : "(removed)";
       appendWhatsAppMessage(ownerId, message.from, "user", `[reacted ${label} to a message]`);
     } else if (message.kind === "unsupported") {
-      // Voice/audio, sticker, contacts, video, etc. — nothing reads these yet. Tell the user
-      // plainly rather than staying silent, and log the raw type so it's visible which ones are
-      // actually showing up in practice.
+      // Sticker, contacts, video, etc. — nothing reads these yet. Tell the user plainly rather
+      // than staying silent, and log the raw type so it's visible which ones are actually
+      // showing up in practice.
       console.log("whatsapp: unsupported message type", { ownerId, type: message.type });
-      const reply = "I can't read that message type yet — text me instead.";
-      appendWhatsAppMessage(ownerId, message.from, "assistant", reply);
-      await sendWhatsAppMessage(message.from, reply);
-    } else {
+      appendWhatsAppMessage(ownerId, message.from, "assistant", UNSUPPORTED_REPLY);
+      await sendWhatsAppMessage(message.from, UNSUPPORTED_REPLY);
+    } else if (message.kind === "interactive") {
       // A button tap with nothing pending for this owner — nothing sends buttons outside
       // registration/post-connect setup today, so this is always a stray/late tap. Log and ignore
       // rather than routing it into handleText/handleMedia, which don't expect this shape.

@@ -10,7 +10,18 @@ vi.mock("../providers/whatsapp.js", () => ({
   verifyWebhookChallenge: vi.fn(),
   verifyWebhookSignature: vi.fn(),
   extractIncomingMessages: vi.fn(),
+  downloadWhatsAppMedia: vi.fn(),
 }));
+vi.mock("../services/transcription.js", async () => {
+  const actual = await vi.importActual<typeof import("../services/transcription.js")>(
+    "../services/transcription.js"
+  );
+  return {
+    ...actual,
+    isTranscriptionConfigured: vi.fn().mockReturnValue(true),
+    transcribeAudio: vi.fn(),
+  };
+});
 vi.mock("../db/store.js", () => ({
   resolveOwnerByPhone: vi.fn(),
   recordInboundMessage: vi.fn(),
@@ -25,6 +36,7 @@ vi.mock("../db/store.js", () => ({
   setSetting: vi.fn(),
   getEnabledTools: vi.fn().mockReturnValue(new Set()),
   listCheckins: vi.fn().mockReturnValue([]),
+  recordApiUsage: vi.fn(),
 }));
 vi.mock("../ai/assistant.js", () => ({
   runAssistantChat: vi.fn(),
@@ -70,9 +82,16 @@ vi.mock("../services/memoryExtraction.js", () => ({
 // whatsappReply.js above), so every test that expects an assistant call needs to advance fake
 // timers past the delay before asserting. See flushBatch() below.
 
-const { sendWhatsAppMessage } = await import("../providers/whatsapp.js");
-const { resolveOwnerByPhone, appendWhatsAppMessage, getDocumentByWamid, getWhatsAppMessageByWamid } = await import(
-  "../db/store.js"
+const { sendWhatsAppMessage, downloadWhatsAppMedia } = await import("../providers/whatsapp.js");
+const {
+  resolveOwnerByPhone,
+  appendWhatsAppMessage,
+  getDocumentByWamid,
+  getWhatsAppMessageByWamid,
+  recordApiUsage,
+} = await import("../db/store.js");
+const { isTranscriptionConfigured, transcribeAudio, TranscriptionError } = await import(
+  "../services/transcription.js"
 );
 const { runAssistantChat } = await import("../ai/assistant.js");
 const { handleNameReply, handleFirstTaskReply, handlePostConnectSetupReply } = await import(
@@ -244,6 +263,122 @@ describe("handleIncoming — unsupported message types", () => {
     expect(runAssistantChat).not.toHaveBeenCalled();
     expect(sendWhatsAppMessage).toHaveBeenCalledWith(
       "447900000009",
+      "I can't read that message type yet — text me instead."
+    );
+    logSpy.mockRestore();
+  });
+});
+
+describe("handleIncoming — voice notes", () => {
+  const voiceNote = {
+    kind: "audio" as const,
+    from: "447900000030",
+    messageId: "m30",
+    mediaId: "media-30",
+    mimeType: "audio/ogg; codecs=opus",
+  };
+
+  beforeEach(() => {
+    vi.mocked(isTranscriptionConfigured).mockReset().mockReturnValue(true);
+    vi.mocked(downloadWhatsAppMedia)
+      .mockReset()
+      .mockResolvedValue({ buffer: Buffer.from("ogg"), mimeType: "audio/ogg" });
+    vi.mocked(transcribeAudio).mockReset().mockResolvedValue({
+      text: "Remind me to call mum at six",
+      model: "gpt-4o-mini-transcribe",
+      inputTokens: 100,
+      outputTokens: 8,
+    });
+    vi.mocked(recordApiUsage).mockClear();
+  });
+
+  it("transcribes the note, stores the transcript in history and runs it through the assistant", async () => {
+    vi.mocked(runAssistantChat).mockResolvedValue({ text: "Done — I'll remind you at 6pm." });
+
+    await handleIncoming(voiceNote);
+    await flushBatch();
+
+    expect(downloadWhatsAppMedia).toHaveBeenCalledWith("media-30");
+    expect(vi.mocked(appendWhatsAppMessage).mock.calls[0]).toEqual([
+      42,
+      "447900000030",
+      "user",
+      "[voice note] Remind me to call mum at six",
+    ]);
+    expect(runAssistantChat).toHaveBeenCalledTimes(1);
+    expect(sendAssistantReply).toHaveBeenCalledWith(
+      42,
+      "447900000030",
+      { text: "Done — I'll remind you at 6pm." },
+      "m30"
+    );
+  });
+
+  it("tells the model the text is a transcript that may contain recognition errors", async () => {
+    vi.mocked(runAssistantChat).mockResolvedValue({ text: "ok" });
+
+    await handleIncoming(voiceNote);
+    await flushBatch();
+
+    expect(JSON.stringify(vi.mocked(runAssistantChat).mock.calls[0])).toMatch(/transcri/i);
+  });
+
+  it("records the transcription's usage against the owner", async () => {
+    await handleIncoming(voiceNote);
+
+    expect(recordApiUsage).toHaveBeenCalledWith(
+      42,
+      "whatsapp",
+      "gpt-4o-mini-transcribe",
+      "voice_transcription",
+      100,
+      8,
+      0,
+      0
+    );
+  });
+
+  it("lets a voice note answer a blocking setup question with the plain transcript", async () => {
+    vi.mocked(handleNameReply).mockResolvedValue(true);
+    vi.mocked(transcribeAudio).mockResolvedValue({
+      text: "Sam",
+      model: "gpt-4o-mini-transcribe",
+      inputTokens: 5,
+      outputTokens: 1,
+    });
+
+    await handleIncoming(voiceNote);
+
+    expect(handleNameReply).toHaveBeenCalledWith(42, expect.objectContaining({ kind: "text", text: "Sam" }));
+    expect(runAssistantChat).not.toHaveBeenCalled();
+  });
+
+  it("replies with a plain fallback, never the assistant, when transcription fails", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.mocked(transcribeAudio).mockRejectedValue(new TranscriptionError("boom"));
+
+    await handleIncoming(voiceNote);
+    await flushBatch();
+
+    expect(runAssistantChat).not.toHaveBeenCalled();
+    expect(sendWhatsAppMessage).toHaveBeenCalledWith(
+      "447900000030",
+      "I couldn't make out that voice note — could you type it or try again?"
+    );
+    expect(errorSpy).toHaveBeenCalled();
+    errorSpy.mockRestore();
+  });
+
+  it("falls back to the unsupported reply when no transcription key is configured", async () => {
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    vi.mocked(isTranscriptionConfigured).mockReturnValue(false);
+
+    await handleIncoming(voiceNote);
+
+    expect(downloadWhatsAppMedia).not.toHaveBeenCalled();
+    expect(runAssistantChat).not.toHaveBeenCalled();
+    expect(sendWhatsAppMessage).toHaveBeenCalledWith(
+      "447900000030",
       "I can't read that message type yet — text me instead."
     );
     logSpy.mockRestore();
