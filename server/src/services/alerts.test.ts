@@ -50,7 +50,15 @@ function registerActivePhone(ownerId: number): string {
 }
 
 function fakeMessage(
-  overrides: Partial<{ id: string; accountId: number; subject: string; snippet: string; from: string; unread: boolean }>
+  overrides: Partial<{
+    id: string;
+    accountId: number;
+    subject: string;
+    snippet: string;
+    from: string;
+    unread: boolean;
+    bulk: boolean;
+  }>
 ) {
   return {
     id: "msg-1",
@@ -116,6 +124,20 @@ describe("checkForNewImportantMessages", () => {
 
     mockHubListNewMessages.mockResolvedValueOnce([
       fakeMessage({ id: "automated-1", from: "no-reply@delta.com" }),
+    ]);
+
+    await checkForNewImportantMessages(user.id);
+
+    expect(sendWhatsAppMessage).not.toHaveBeenCalled();
+  });
+
+  it("ignores marketing mail the provider flagged as bulk, even from an ordinary-looking address", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("alerts-bulk"));
+    registerActivePhone(user.id);
+    await baseline(user.id);
+
+    mockHubListNewMessages.mockResolvedValueOnce([
+      fakeMessage({ id: "bulk-1", from: "Babbel <hello@babbel.com>", bulk: true }),
     ]);
 
     await checkForNewImportantMessages(user.id);

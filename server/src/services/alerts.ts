@@ -1,4 +1,4 @@
-import { hubListNewMessages, AUTOMATED_SENDER_PATTERN, senderDisplayName } from "./hub.js";
+import { hubListNewMessages, isAutomatedMail, senderDisplayName } from "./hub.js";
 import { hasAlerted, markAlerted, getSetting, setSetting, listPhoneNumbersForUser } from "../db/store.js";
 import { isWhatsAppConfigured } from "../providers/whatsapp.js";
 import { sendProactiveMessage } from "./outbound.js";
@@ -36,7 +36,7 @@ export async function checkForNewImportantMessages(ownerId: number): Promise<voi
   // the real "have we already handled this" check, independent of whether the user has read it;
   // unread was a redundant, strictly worse substitute that silently and permanently dropped any
   // message read before this scan ever saw it.
-  const candidates = messages.filter((m) => m.from && !AUTOMATED_SENDER_PATTERN.test(m.from));
+  const candidates = messages.filter((m) => m.from && !isAutomatedMail(m));
 
   // First-ever run: record the current inbox as a baseline instead of alerting on everything
   // that was already sitting there unread before this feature existed.

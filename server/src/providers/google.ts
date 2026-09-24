@@ -113,6 +113,19 @@ function header(msg: gmail_v1.Schema$Message, name: string): string {
   );
 }
 
+// Gmail's own sort of bulk mail into tabs — anything outside Primary (CATEGORY_PERSONAL) is
+// marketing, social notifications, receipts/updates or mailing lists, never someone writing to
+// the user personally. List-Unsubscribe catches the bulk mail that still lands in Primary: every
+// marketing platform sets it regardless of how ordinary the From address looks.
+const BULK_CATEGORY_LABELS = new Set(["CATEGORY_PROMOTIONS", "CATEGORY_SOCIAL", "CATEGORY_UPDATES", "CATEGORY_FORUMS"]);
+
+function isBulk(msg: gmail_v1.Schema$Message): boolean {
+  return (msg.labelIds ?? []).some((l) => BULK_CATEGORY_LABELS.has(l)) || header(msg, "List-Unsubscribe") !== "";
+}
+
+// Every metadata-format fetch asks for these — List-Unsubscribe only for isBulk above.
+const METADATA_HEADERS = ["Subject", "From", "List-Unsubscribe"];
+
 function toUnified(account: AccountRow, msg: gmail_v1.Schema$Message): UnifiedMessage {
   return {
     id: msg.id!,
@@ -124,6 +137,7 @@ function toUnified(account: AccountRow, msg: gmail_v1.Schema$Message): UnifiedMe
     snippet: msg.snippet ?? "",
     receivedAt: new Date(Number(msg.internalDate ?? Date.now())).toISOString(),
     unread: (msg.labelIds ?? []).includes("UNREAD"),
+    bulk: isBulk(msg),
     link: `https://mail.google.com/mail/u/${account.email}/#all/${msg.id}`,
   };
 }
@@ -198,7 +212,7 @@ export async function googleListMessages(
       userId: "me",
       id: m.id!,
       format: "metadata",
-      metadataHeaders: ["Subject", "From"],
+      metadataHeaders: METADATA_HEADERS,
     });
     return toUnified(account, full.data);
   });
@@ -287,7 +301,7 @@ export async function googleListNewMessages(
         userId: "me",
         id,
         format: "metadata",
-        metadataHeaders: ["Subject", "From"],
+        metadataHeaders: METADATA_HEADERS,
       });
       return toUnified(account, full.data);
     } catch (err) {

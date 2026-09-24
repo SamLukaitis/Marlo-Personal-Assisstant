@@ -88,6 +88,7 @@ function fakeMessage(
     from: string;
     unread: boolean;
     receivedAt: string;
+    bulk: boolean;
   }>
 ) {
   return {
@@ -152,6 +153,25 @@ describe("checkForImportantEmails", () => {
     expect(mockClassify).toHaveBeenCalledTimes(1);
     const [candidates] = mockClassify.mock.calls[0];
     expect(candidates.map((c: { subject: string }) => c.subject)).toEqual(["Already read", "Flight change"]);
+  });
+
+  // The other half of the "real person" alert fix: marketing mail flagged as bulk leaves the
+  // real-person bucket, so it has to land here instead — otherwise a genuinely useful delivery
+  // notice from an ordinary-looking address would fall between the two features.
+  it("classifies mail the provider flagged as bulk, even from an ordinary-looking address", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("filter-bulk"));
+    registerActivePhone(user.id);
+    await baseline(user.id);
+
+    mockHubListNewMessages.mockResolvedValueOnce([
+      fakeMessage({ id: "bulk", from: "DHL <tracking@dhl.com>", subject: "Out for delivery", bulk: true }),
+      fakeMessage({ id: "person", from: "jane@example.com", subject: "Dinner?" }),
+    ]);
+
+    await checkForImportantEmails(user.id);
+
+    const [candidates] = mockClassify.mock.calls[0];
+    expect(candidates.map((c: { subject: string }) => c.subject)).toEqual(["Out for delivery"]);
   });
 
   // Google/Microsoft's "an app was granted access" notification fires for Marlowe's own OAuth

@@ -30,6 +30,7 @@ const {
   holdNewMessageCheckpoint,
   withMessageCache,
   senderDisplayName,
+  isAutomatedMail,
   hubListEvents,
 } = await import("./hub.js");
 
@@ -554,6 +555,23 @@ describe("senderDisplayName", () => {
 
   it("returns a bare display name with no address as-is", () => {
     expect(senderDisplayName("Jane Doe")).toBe("Jane Doe");
+  });
+});
+
+describe("isAutomatedMail", () => {
+  const base = { from: "Jane Doe <jane@example.com>" };
+
+  it("treats a known automated sender address as automated", () => {
+    expect(isAutomatedMail({ from: "no-reply@delta.com" })).toBe(true);
+  });
+
+  it("treats mail the provider flagged as bulk as automated, whatever the address looks like", () => {
+    expect(isAutomatedMail({ from: "Pinterest <recommendations@explore.pinterest.com>", bulk: true })).toBe(true);
+  });
+
+  it("treats an ordinary address with no bulk flag as a real person", () => {
+    expect(isAutomatedMail(base)).toBe(false);
+    expect(isAutomatedMail({ ...base, bulk: false })).toBe(false);
   });
 });
 
