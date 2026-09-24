@@ -41,6 +41,8 @@ export interface Me {
   isAppOwner: boolean;
   /** The app owner plus anyone promoted via the Portal's Admins tab — gates the Portal itself. */
   isAdmin: boolean;
+  /** Mirrors ENABLE_WHATSAPP_SIMULATOR (staging only) — gates the WhatsApp Simulator nav item. */
+  whatsappSimulatorEnabled: boolean;
 }
 
 export interface UnifiedMessage {
@@ -657,6 +659,47 @@ export interface AdminTimelineEntry {
 export const fetchAdminMessages = (phone: string) =>
   getJson<{ ownerId: number; timeline: AdminTimelineEntry[] }>(
     `/api/admin/messages?phone=${encodeURIComponent(phone)}`
+  );
+
+// --- WhatsApp Simulator -------------------------------------------------------------------------
+// Drives the real WhatsApp inbound pipeline (see whatsappSimRoutes.ts) from a reserved fake
+// number — the caller's own (phone omitted) or a throwaway test user that signs up from scratch.
+// Replies aren't returned by the send — they're debounced server-side — the caller polls
+// fetchWhatsAppSimTranscript for them.
+export interface WhatsAppSimEntry {
+  id: number;
+  at: number;
+  role: "user" | "assistant";
+  text: string;
+  choices?: { id: string; title: string }[];
+  link?: { label: string; url: string };
+}
+
+export interface WhatsAppSimTestUser {
+  phone: string;
+  createdAt: number;
+  hasAccount: boolean;
+}
+
+export type WhatsAppSimInput = { text: string } | { buttonId: string; label: string };
+
+export const sendWhatsAppSimMessage = (input: WhatsAppSimInput, phone?: string) =>
+  mutateJson<{ phone: string }>("/api/dev/whatsapp-sim/send", "POST", { ...input, ...(phone ? { phone } : {}) });
+
+export const fetchWhatsAppSimTranscript = (phone?: string) =>
+  getJson<{ phone: string; entries: WhatsAppSimEntry[] }>(
+    `/api/dev/whatsapp-sim/transcript${phone ? `?phone=${encodeURIComponent(phone)}` : ""}`
+  );
+
+export const fetchWhatsAppSimTestUsers = () => getJson<WhatsAppSimTestUser[]>("/api/dev/whatsapp-sim/test-users");
+
+export const createWhatsAppSimTestUser = () =>
+  mutateJson<{ phone: string }>("/api/dev/whatsapp-sim/test-users", "POST");
+
+export const deleteWhatsAppSimTestUser = (phone: string) =>
+  mutateJson<{ ok: true; hadAccount: boolean }>(
+    `/api/dev/whatsapp-sim/test-users/${encodeURIComponent(phone)}`,
+    "DELETE"
   );
 
 // --- Admin Portal -----------------------------------------------------------------------------

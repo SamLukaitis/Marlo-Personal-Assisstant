@@ -22,6 +22,8 @@ interface NavItem {
   requiresTool?: Tool["key"];
   /** When set, this item only appears for admins (see AuthContext's user.isAdmin). */
   requiresAdmin?: boolean;
+  /** When set, this item only appears when the server reports that flag on (see user.<key>). */
+  requiresFlag?: "whatsappSimulatorEnabled";
 }
 
 // The nav is a function of which tools the user picked, not a fixed list. Someone who never
@@ -35,6 +37,13 @@ const NAV_ITEMS: NavItem[] = [
   { to: "/travel", label: "Travel", Icon: IconTravel, requiresTool: "travel" },
   { to: "/settings", label: "Settings", Icon: IconSettings },
   { to: "/portal", label: "Portal", Icon: IconPortal, requiresAdmin: true },
+  {
+    to: "/whatsapp-sim",
+    label: "WhatsApp Test",
+    Icon: IconChat,
+    requiresAdmin: true,
+    requiresFlag: "whatsappSimulatorEnabled",
+  },
 ];
 
 export function Sidebar() {
@@ -60,6 +69,7 @@ export function Sidebar() {
   const items = NAV_ITEMS.filter((item) => {
     if (item.requiresAdmin && !user?.isAdmin) return false;
     if (item.requiresTool && !(loaded && isEnabled(item.requiresTool))) return false;
+    if (item.requiresFlag && !user?.[item.requiresFlag]) return false;
     return true;
   });
 

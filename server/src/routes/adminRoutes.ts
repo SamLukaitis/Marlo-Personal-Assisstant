@@ -1,17 +1,13 @@
 import { Router } from "express";
-import fs from "node:fs";
 import {
   isAdmin,
   listInvitedPhones,
   addInvitedPhone,
   removeInvitedPhone,
   resolveOwnerByPhone,
-  clearReplayPark,
   listReplayParkedPhonesForUser,
-  deleteUserCompletely,
   deletePendingRegistration,
   normalizePhone,
-  findRemainingOwnerReferences,
   listPhoneNumbersForUser,
   resetOnboardingConnectionState,
   getWhatsAppHistory,
@@ -24,6 +20,7 @@ import { sendProactiveMessage } from "../services/outbound.js";
 import { MARLOWE_WAITLIST_APPROVED_TEXT } from "../services/whatsappRegistration.js";
 import type { AuthedRequest } from "../middleware/auth.js";
 import { internationalPhoneError } from "../services/phoneFormat.js";
+import { resetTestPhone, TestPhoneResetError } from "../services/testPhoneReset.js";
 
 export const adminRoutes = Router();
 
@@ -161,47 +158,20 @@ adminRoutes.post("/api/admin/reset-test-phone", (req, res) => {
     return;
   }
 
-  deletePendingRegistration(phone);
-
-  const ownerId = resolveOwnerByPhone(phone);
-  // Replay-onboarding leaves the number unbound but remembers which account it came from, so the
-  // next registration is handed back to that account rather than creating a second one (see
-  // resetOnboardingConnectionState). This endpoint's whole promise is that the same number can go
-  // through signup from a clean slate, which that marker would quietly break — so drop it.
-  //
-  // Deliberately does NOT wipe the account the marker points at: that is a live account mid-replay
-  // whose data replay exists to preserve, and following the marker here would make this a one-tap
-  // wipe of the operator's own hub. An earlier version refused the whole request with a 409
-  // instead, which removed the only escape hatch from a number nothing else could unstick.
-  const clearedReplayPark = clearReplayPark(phone);
   try {
-    if (ownerId !== null) {
-      const { deletedDocumentPaths } = deleteUserCompletely(ownerId);
-      for (const p of deletedDocumentPaths) {
-        try {
-          fs.unlinkSync(p);
-        } catch {
-          // best-effort — a missing file on disk shouldn't block the rest of the reset
-        }
-      }
-    }
+    const { hadAccount, clearedReplayPark } = resetTestPhone(phone);
+    res.json({ ok: true, hadAccount, clearedReplayPark });
   } catch (err) {
     // Surface the real DB error (e.g. a newly-added owner_id-referencing table this purge
     // hasn't been taught to clear yet) instead of letting it fall through to Express's default
-    // HTML error page, which the client can't parse and reports as a generic failure. The
-    // transaction rolled back on throw, so ownerId's rows are all still intact here — naming
-    // exactly which table blocked it beats another guess-and-redeploy cycle (this purge list has
-    // gone stale three times already).
-    const offenders = ownerId !== null ? findRemainingOwnerReferences(ownerId) : [];
+    // HTML error page, which the client can't parse and reports as a generic failure.
+    const offenders = err instanceof TestPhoneResetError ? err.offenders : [];
     console.error("admin: reset-test-phone failed", err, { offenders });
     res.status(500).json({
       error: (err as Error).message,
       ...(offenders.length > 0 ? { offenders } : {}),
     });
-    return;
   }
-
-  res.json({ ok: true, hadAccount: ownerId !== null, clearedReplayPark });
 });
 
 // For replaying the WhatsApp onboarding UX end-to-end on an account you actually want to keep —

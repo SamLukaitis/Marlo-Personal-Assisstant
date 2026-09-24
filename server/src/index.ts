@@ -23,6 +23,7 @@ import { alertRoutes } from "./routes/alertRoutes.js";
 import { toolsRoutes } from "./routes/toolsRoutes.js";
 import { newsRoutes } from "./routes/newsRoutes.js";
 import { adminRoutes } from "./routes/adminRoutes.js";
+import { whatsappSimRoutes } from "./routes/whatsappSimRoutes.js";
 import { portalRoutes } from "./routes/portalRoutes.js";
 import { helpChatRoutes } from "./routes/helpChatRoutes.js";
 import { requireAuth, requireAdmin } from "./middleware/auth.js";
@@ -106,6 +107,12 @@ app.use(alertRoutes);
 app.use(toolsRoutes);
 app.use(newsRoutes);
 app.use(adminRoutes);
+// Dev-only WhatsApp Simulator — lets Sam/Jake exercise the real inbound-message pipeline from a
+// browser chat UI instead of a real phone. Only mounted when ENABLE_WHATSAPP_SIMULATOR is set
+// (staging), never in production, and gated to admins even there — see whatsappSimRoutes.ts.
+if (process.env.ENABLE_WHATSAPP_SIMULATOR === "true") {
+  app.use("/api/dev", requireAdmin, whatsappSimRoutes);
+}
 // The Portal has ~15 endpoints that all share the same "must be admin" predicate, unlike
 // adminRoutes.ts's routes (kept as inline isAdmin checks there) — a shared
 // middleware makes more sense at this size. Mounted after the blanket requireAuth above, so
