@@ -33,6 +33,15 @@ async function notify(numbers: string[], text: string, historyNote?: string): Pr
 // scheduler.ts loops over every user and calls this once per owner.
 export async function checkForNewImportantMessages(ownerId: number): Promise<void> {
   const messages = await hubListNewMessages(ownerId);
+  // One line per scan that saw any mail, naming the gate that decided its fate — "I emailed it and
+  // got no alert" was undiagnosable while every gate below dropped mail without a trace. Counts
+  // only, never subject/sender/snippet. Silent when nothing was fetched (the common quiet tick).
+  const logScan = (outcome: string, unseen = 0): void => {
+    if (messages.length === 0) return;
+    console.log(
+      `alerts: owner ${ownerId} ${outcome} (fetched ${messages.length}, real-person ${candidates.length}, unseen ${unseen})`
+    );
+  };
   // Deliberately NOT gated on m.unread — a user who opens a real person's message the moment it
   // arrives (completely normal) must not lose the alert. hasAlerted's per-message ledger below is
   // the real "have we already handled this" check, independent of whether the user has read it;
@@ -48,18 +57,33 @@ export async function checkForNewImportantMessages(ownerId: number): Promise<voi
     // alert, not get swallowed as backlog. No timestamp (never switched on from off) baselines
     // everything, as before.
     const enabledAt = realPersonAlertsEnabledSince(ownerId);
+    let baselined = 0;
     for (const m of candidates) {
-      if (enabledAt === 0 || new Date(m.receivedAt).getTime() < enabledAt) markAlerted(ownerId, messageKey(m));
+      if (enabledAt === 0 || new Date(m.receivedAt).getTime() < enabledAt) {
+        markAlerted(ownerId, messageKey(m));
+        baselined++;
+      }
     }
     setSetting(ownerId, BASELINE_KEY, "true");
+    logScan(`first scan: baselined ${baselined} as existing mail`);
   }
 
   const unseen = candidates.filter((m) => !hasAlerted(ownerId, messageKey(m)));
-  if (unseen.length === 0) return;
-  if (!isWhatsAppConfigured()) return;
+  if (unseen.length === 0) {
+    if (candidates.length === 0) logScan("no real-person mail (all automated or no sender)");
+    else logScan("nothing new (already handled)");
+    return;
+  }
+  if (!isWhatsAppConfigured()) {
+    logScan("skipped: WhatsApp is not configured", unseen.length);
+    return;
+  }
 
   const numbers = listPhoneNumbersForUser(ownerId).map((r) => r.phone);
-  if (numbers.length === 0) return;
+  if (numbers.length === 0) {
+    logScan("skipped: no registered phone number", unseen.length);
+    return;
+  }
 
   // See importantEmailAlerts.ts's identical check for the full rationale: don't interleave
   // individual proactive alerts into the onboarding conversation itself. Still mark everything
@@ -67,6 +91,7 @@ export async function checkForNewImportantMessages(ownerId: number): Promise<voi
   if (isOnboardingSuppressionActive(ownerId)) {
     for (const m of unseen) markAlerted(ownerId, messageKey(m));
     incrementSuppressedOnboardingAlerts(ownerId, unseen.length);
+    logScan(`suppressed by onboarding (${unseen.length} held for the summary, not sent)`, unseen.length);
     return;
   }
 
@@ -94,4 +119,5 @@ export async function checkForNewImportantMessages(ownerId: number): Promise<voi
       `...and ${rest.length} more new message${rest.length === 1 ? "" : "s"} that might need attention — check your inbox.`
     );
   }
+  logScan(`sent ${toSend.length}${rest.length ? ` + overflow summary for ${rest.length}` : ""}`, unseen.length);
 }

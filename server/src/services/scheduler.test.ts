@@ -96,6 +96,24 @@ describe("tickGuarded", () => {
     await second;
   });
 
+  // Alert scans log nothing on a quiet tick, so without this line "is the scheduler even running,
+  // and is this user's real-person toggle on" can't be answered from the logs.
+  it("logs one summary line per tick with how many tenants it covered and how many have real-person alerts off", async () => {
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    try {
+      const first = tickGuarded();
+      await vi.waitFor(() => expect(checkNewEmailsAgainstRecentDocuments).toHaveBeenCalledTimes(1));
+      releaseReconciliationCheck();
+      await first;
+
+      const lines = logSpy.mock.calls.map((c) => c.join(" ")).filter((l) => l.startsWith("scheduler: tick"));
+      expect(lines).toHaveLength(1);
+      expect(lines[0]).toMatch(/1 user.*real-person alerts off for 0/);
+    } finally {
+      logSpy.mockRestore();
+    }
+  });
+
   // Regression coverage: the onboarding alert flood fix depends on this actually running every
   // tick for every tenant — see onboardingAlertSuppression.ts's own tests for the suppression
   // logic itself, this just proves the scheduler wires it in at all.

@@ -147,7 +147,11 @@ async function tick(): Promise<void> {
   deleteExpiredPendingActions();
   deleteExpiredSeenWamids();
   pruneOldServerLogs(SERVER_LOG_RETENTION_MS);
-  for (const ownerId of listAllUserIds()) {
+  const startedAt = Date.now();
+  const ownerIds = listAllUserIds();
+  let realPersonAlertsOff = 0;
+  for (const ownerId of ownerIds) {
+    if (!realPersonAlertsEnabled(ownerId)) realPersonAlertsOff++;
     await runDailyCheckForUser(ownerId).catch((err) =>
       console.error(`scheduler: daily check failed for user ${ownerId}`, err)
     );
@@ -173,6 +177,10 @@ async function tick(): Promise<void> {
       );
     });
   }
+  console.log(
+    `scheduler: tick finished — ${ownerIds.length} user${ownerIds.length === 1 ? "" : "s"}, ` +
+      `real-person alerts off for ${realPersonAlertsOff}, ${Date.now() - startedAt}ms`
+  );
 }
 
 // setInterval fires on a fixed clock regardless of how long the previous tick() took. At

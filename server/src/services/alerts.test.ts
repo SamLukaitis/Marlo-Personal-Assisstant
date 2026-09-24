@@ -1,5 +1,5 @@
 // server/src/services/alerts.test.ts
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 vi.mock("../providers/whatsapp.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../providers/whatsapp.js")>();
@@ -268,5 +268,108 @@ describe("checkForNewImportantMessages", () => {
     expect(hasAlerted(user.id, "1:onb-1")).toBe(true);
     expect(hasAlerted(user.id, "1:onb-2")).toBe(true);
     expect(takeSuppressedOnboardingAlertCount(user.id)).toBe(2);
+  });
+});
+
+// The scan used to drop or suppress mail without leaving any trace, so "I emailed it and got no
+// alert" could not be diagnosed from the logs. These pin one line per scan that saw any mail,
+// naming the gate that decided it — and never containing the mail's content.
+describe("checkForNewImportantMessages diagnostics", () => {
+  let logSpy: ReturnType<typeof vi.spyOn>;
+  const scanLogs = () => logSpy.mock.calls.map((c) => c.join(" ")).filter((l) => l.startsWith("alerts:"));
+
+  beforeEach(() => {
+    logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+  });
+  afterEach(() => {
+    logSpy.mockRestore();
+  });
+
+  it("stays silent when the scan fetched no mail at all", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("diag-quiet"));
+    registerActivePhone(user.id);
+    await baseline(user.id);
+    logSpy.mockClear();
+    mockHubListNewMessages.mockResolvedValueOnce([]);
+
+    await checkForNewImportantMessages(user.id);
+
+    expect(scanLogs()).toEqual([]);
+  });
+
+  it("logs the baseline run with how many messages it swallowed", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("diag-baseline"));
+    mockHubListNewMessages.mockResolvedValueOnce([
+      fakeMessage({ id: "old-1", receivedAt: new Date(Date.now() - 3_600_000).toISOString() }),
+    ]);
+
+    await checkForNewImportantMessages(user.id);
+
+    expect(scanLogs().join("\n")).toMatch(new RegExp(`owner ${user.id}.*baselined 1`));
+  });
+
+  it("logs a delivered alert with counts, and never the subject, sender or snippet", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("diag-sent"));
+    registerActivePhone(user.id);
+    await baseline(user.id);
+    logSpy.mockClear();
+    mockHubListNewMessages.mockResolvedValueOnce([
+      fakeMessage({ id: "d-1", subject: "Secret subject", from: "jane@example.com", snippet: "secret snippet" }),
+    ]);
+
+    await checkForNewImportantMessages(user.id);
+
+    const out = scanLogs().join("\n");
+    expect(out).toMatch(new RegExp(`owner ${user.id}.*sent 1`));
+    expect(out).not.toMatch(/Secret subject|jane@example\.com|secret snippet/);
+  });
+
+  it("names onboarding suppression as the reason when it swallows mail", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("diag-suppressed"));
+    registerActivePhone(user.id);
+    await baseline(user.id);
+    setPendingSetup(user.id, "ask_briefing");
+    logSpy.mockClear();
+    mockHubListNewMessages.mockResolvedValueOnce([fakeMessage({ id: "s-1" })]);
+
+    await checkForNewImportantMessages(user.id);
+
+    expect(scanLogs().join("\n")).toMatch(new RegExp(`owner ${user.id}.*suppressed by onboarding.*1`));
+  });
+
+  it("names the missing registered number when there is nowhere to send", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("diag-nonumber"));
+    await baseline(user.id);
+    logSpy.mockClear();
+    mockHubListNewMessages.mockResolvedValueOnce([fakeMessage({ id: "n-1" })]);
+
+    await checkForNewImportantMessages(user.id);
+
+    expect(scanLogs().join("\n")).toMatch(new RegExp(`owner ${user.id}.*no registered phone number`));
+  });
+
+  it("names unconfigured WhatsApp when that is what stopped the alert", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("diag-noconfig"));
+    registerActivePhone(user.id);
+    await baseline(user.id);
+    vi.mocked(isWhatsAppConfigured).mockReturnValue(false);
+    logSpy.mockClear();
+    mockHubListNewMessages.mockResolvedValueOnce([fakeMessage({ id: "c-1" })]);
+
+    await checkForNewImportantMessages(user.id);
+
+    expect(scanLogs().join("\n")).toMatch(new RegExp(`owner ${user.id}.*WhatsApp is not configured`));
+  });
+
+  it("says when everything fetched was automated mail or already handled", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("diag-nocandidates"));
+    registerActivePhone(user.id);
+    await baseline(user.id);
+    logSpy.mockClear();
+    mockHubListNewMessages.mockResolvedValueOnce([fakeMessage({ id: "a-1", from: "no-reply@delta.com" })]);
+
+    await checkForNewImportantMessages(user.id);
+
+    expect(scanLogs().join("\n")).toMatch(new RegExp(`owner ${user.id}.*no real-person mail`));
   });
 });
