@@ -15,6 +15,11 @@ vi.mock("./hub.js", () => ({
   hubSendMessage: (...args: unknown[]) => mockHubSendMessage(...args),
 }));
 
+const mockSendConnectLink = vi.fn();
+vi.mock("./connectMailboxLink.js", () => ({
+  sendConnectLink: (...args: unknown[]) => mockSendConnectLink(...args),
+}));
+
 const { sendWhatsAppMessage, sendWhatsAppTemplate, isWhatsAppConfigured } = await import("../providers/whatsapp.js");
 const { findOrCreateUserByEmail, addPhoneNumberForUser, recordInboundMessage, upsertAccount, saveDocument, getDocument } =
   await import("../db/store.js");
@@ -52,6 +57,7 @@ beforeEach(() => {
   vi.mocked(sendWhatsAppTemplate).mockReset().mockResolvedValue(undefined as never);
   vi.mocked(isWhatsAppConfigured).mockReset().mockReturnValue(true);
   mockHubSendMessage.mockReset().mockResolvedValue({ messageId: "m1", provider: "google", accountEmail: "x" });
+  mockSendConnectLink.mockReset().mockResolvedValue("sent");
 });
 
 describe("forwardReceiptToXero", () => {
@@ -153,6 +159,55 @@ describe("forwardReceiptToXero", () => {
 
     const [, text] = vi.mocked(sendWhatsAppMessage).mock.calls[0];
     expect(text).toContain("failed");
+    expect(getDocument(user.id, doc.id)?.xeroForwardedAt).toBeFalsy();
+  });
+
+  it("forwards from a connected Outlook account when there's no Gmail", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("xero-fwd-outlook"));
+    const registeredPhone = freshPhone();
+    addPhoneNumberForUser(user.id, registeredPhone);
+    recordInboundMessage(registeredPhone);
+    setXeroForwardingEmail(user.id, "abc123@bills.xero.com");
+    const account = upsertAccount(user.id, {
+      provider: "microsoft",
+      email: "user@outlook.com",
+      accessToken: "tok",
+      refreshToken: "reftok",
+      expiryDate: null,
+    });
+    const doc = makeReceiptDoc(user.id);
+
+    await forwardReceiptToXero(user.id, doc, Buffer.from("pdf bytes"));
+
+    expect(mockHubSendMessage.mock.calls[0][1]).toBe(account.id);
+    expect(getDocument(user.id, doc.id)?.xeroForwardedAt).toBeTruthy();
+    expect(mockSendConnectLink).not.toHaveBeenCalled();
+  });
+
+  it("asks for the Outlook reconnect when the account predates send permission", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("xero-fwd-outlook-noscope"));
+    const registeredPhone = freshPhone();
+    addPhoneNumberForUser(user.id, registeredPhone);
+    recordInboundMessage(registeredPhone);
+    setXeroForwardingEmail(user.id, "abc123@bills.xero.com");
+    upsertAccount(user.id, {
+      provider: "microsoft",
+      email: "old@outlook.com",
+      accessToken: "tok",
+      refreshToken: "reftok",
+      expiryDate: null,
+    });
+    mockHubSendMessage.mockRejectedValue(
+      Object.assign(new Error("needs reconnecting"), { name: "OutlookSendPermissionError", accountEmail: "old@outlook.com" })
+    );
+    const doc = makeReceiptDoc(user.id);
+
+    await forwardReceiptToXero(user.id, doc, Buffer.from("pdf bytes"));
+
+    const [, text] = vi.mocked(sendWhatsAppMessage).mock.calls[0];
+    expect(text).toContain("old@outlook.com");
+    expect(text).toContain("reconnect");
+    expect(mockSendConnectLink).toHaveBeenCalledWith(registeredPhone, "microsoft", "enable_send");
     expect(getDocument(user.id, doc.id)?.xeroForwardedAt).toBeFalsy();
   });
 });

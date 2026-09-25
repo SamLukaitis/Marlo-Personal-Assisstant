@@ -199,7 +199,7 @@ const ALWAYS_ON_TOOLS: Anthropic.ToolUnion[] = [
   {
     name: "search_messages",
     description:
-      "Search emails across connected accounts with a query (sender, subject keywords, Gmail search operators like from: or has:attachment). Call this whenever the user asks to find a specific email or topic.",
+      "Search emails across connected accounts with a query (sender, subject keywords, Gmail-style search operators like from:, subject:, has:attachment, newer_than:7d, is:unread — these work on Outlook accounts too). Call this whenever the user asks to find a specific email or topic.",
     input_schema: {
       type: "object",
       properties: {
@@ -371,7 +371,7 @@ const ALWAYS_ON_TOOLS: Anthropic.ToolUnion[] = [
   {
     name: "send_email",
     description:
-      "Send an email from the user's own mailbox. This is irreversible — you can only reach it through a user-confirmed ask_user_choice(mode=\"confirm\") pending action (see the rules), never by calling it directly. Gmail accounts only for now; Outlook accounts can't send yet.",
+      "Send an email from the user's own mailbox. This is irreversible — you can only reach it through a user-confirmed ask_user_choice(mode=\"confirm\") pending action (see the rules), never by calling it directly. Works for Gmail and Outlook accounts. An Outlook account connected a while ago may need a one-time reconnect before it can send — that's handled automatically when the user taps Send (the email is saved to their Drafts and a reconnect link is sent), so don't warn about it in advance.",
     input_schema: {
       type: "object",
       properties: {
@@ -943,7 +943,7 @@ const ALWAYS_ON_TOOLS: Anthropic.ToolUnion[] = [
   {
     name: "connect_xero",
     description:
-      "Save the user's Xero forwarding email address. Once this is saved, receipts they send that get filed under the 'receipts' category and yield a recognized expense are automatically emailed to this address in the background (via their connected Gmail) — no further action needed from them or from you. Call this ONLY once the user has actually told you the address in this conversation — never guess or invent one. If they ask to 'connect Xero' / 'set up Xero' and haven't given the address yet, first explain that Xero gives every account its own unique forwarding email (in Xero: Business > Bills to pay, or Accounting > Bills, look for the 'email bills to this address' address) and ask them to paste it — then call this tool with exactly what they send.",
+      "Save the user's Xero forwarding email address. Once this is saved, receipts they send that get filed under the 'receipts' category and yield a recognized expense are automatically emailed to this address in the background (via their connected mailbox) — no further action needed from them or from you. Call this ONLY once the user has actually told you the address in this conversation — never guess or invent one. If they ask to 'connect Xero' / 'set up Xero' and haven't given the address yet, first explain that Xero gives every account its own unique forwarding email (in Xero: Business > Bills to pay, or Accounting > Bills, look for the 'email bills to this address' address) and ask them to paste it — then call this tool with exactly what they send.",
     input_schema: {
       type: "object",
       properties: {
@@ -1943,7 +1943,7 @@ export function buildSystemPrompt(ownerId: number, conversationSummary?: string)
 
   const xeroEmail = getXeroForwardingEmail(ownerId);
   const xeroStatus = xeroEmail
-    ? `Xero forwarding address on file: ${xeroEmail}. Receipts filed under 'receipts' that yield a recognized expense are already being forwarded there automatically (via connected Gmail) — this is live, not a future feature.`
+    ? `Xero forwarding address on file: ${xeroEmail}. Receipts filed under 'receipts' that yield a recognized expense are already being forwarded there automatically (via their connected mailbox) — this is live, not a future feature.`
     : "Xero: not connected — no forwarding address saved yet.";
 
   const pendingInvoice = getPendingInvoiceForward(ownerId);

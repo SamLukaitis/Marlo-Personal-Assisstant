@@ -363,10 +363,14 @@ export async function hubSearchFiles(ownerId: number, query: string): Promise<Fi
   return settleForAccounts(owners, results).sort((a, b) => (a.modifiedAt < b.modifiedAt ? 1 : -1));
 }
 
+// Teams chat only exists for work/school Microsoft accounts — a personal Outlook.com/Hotmail
+// account gets a 403 here even though its mailbox connection is perfectly healthy. So chat
+// failures are logged and dropped via settle, never attributed to the account the way
+// settleForAccounts would (which flagged the whole mailbox as needing a reconnect).
 export async function hubListChats(ownerId: number, limit = 20): Promise<ChatThread[]> {
   const accounts = listAccounts(ownerId, "microsoft");
   const results = await Promise.allSettled(accounts.map((a) => ms.microsoftListChats(a, limit)));
-  return settleForAccounts(accounts, results).sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1));
+  return settle(results).sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1));
 }
 
 export async function hubSearchChats(ownerId: number, query: string, limit = 20): Promise<ChatThread[]> {
@@ -374,7 +378,7 @@ export async function hubSearchChats(ownerId: number, query: string, limit = 20)
   const results = await Promise.allSettled(
     accounts.map((a) => ms.microsoftSearchChats(a, query, limit))
   );
-  return settleForAccounts(accounts, results).sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1));
+  return settle(results).sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1));
 }
 
 export async function hubCreateDraft(
@@ -390,9 +394,8 @@ export async function hubCreateDraft(
     : ms.microsoftCreateDraft(account, to, subject, body);
 }
 
-// Google only for now — Outlook can't send yet because the connected Microsoft accounts were
-// authorized with Mail.Read/Mail.ReadWrite only, not Mail.Send; adding that needs a scope change
-// and a one-time reconnect (tracked in feature-to-do/xero-receipt-forwarding.md step 1).
+// An Outlook account connected before Mail.Send was requested throws ms.OutlookSendPermissionError
+// here — callers that can offer a reconnect link check for it (see outlookSendReconnect.ts).
 export async function hubSendMessage(
   ownerId: number,
   accountId: number,
@@ -402,13 +405,10 @@ export async function hubSendMessage(
   attachment?: EmailAttachment
 ): Promise<SendResult> {
   const account = requireAccount(ownerId, accountId);
-  if (account.provider !== "google") {
-    throw new Error(
-      `Sending email isn't set up yet for Microsoft accounts (${account.email}) — only Gmail accounts can send right now.`
-    );
-  }
   requirePermission(account, "send");
-  return g.googleSendMessage(account, to, subject, body, attachment);
+  return account.provider === "google"
+    ? g.googleSendMessage(account, to, subject, body, attachment)
+    : ms.microsoftSendMessage(account, to, subject, body, attachment);
 }
 
 export async function hubCreateEvent(

@@ -17,7 +17,12 @@ vi.mock("../providers/google.js", () => ({
   googleListNewMessages: (...args: unknown[]) => mockGoogleListNewMessages(...args),
   googleListEvents: (...args: unknown[]) => mockGoogleListEvents(...args),
 }));
-vi.mock("../providers/microsoft.js", () => ({}));
+const mockMicrosoftSendMessage = vi.fn();
+const mockMicrosoftListChats = vi.fn();
+vi.mock("../providers/microsoft.js", () => ({
+  microsoftSendMessage: (...args: unknown[]) => mockMicrosoftSendMessage(...args),
+  microsoftListChats: (...args: unknown[]) => mockMicrosoftListChats(...args),
+}));
 
 const { findOrCreateUserByEmail, upsertAccount, updateAccountPermissions, searchReadEmails, getAccount } =
   await import("../db/store.js");
@@ -32,6 +37,7 @@ const {
   senderDisplayName,
   isAutomatedMail,
   hubListEvents,
+  hubListChats,
 } = await import("./hub.js");
 
 let counter = 0;
@@ -95,6 +101,30 @@ describe("per-account permission enforcement", () => {
       hubSendMessage(user.id, account.id, "to@example.com", "Subject", "Body")
     ).resolves.toMatchObject({ messageId: "m1" });
     expect(mockGoogleSendMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it("hubSendMessage sends from an Outlook account through the Microsoft provider", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("hub-send-ms"));
+    const account = upsertAccount(user.id, {
+      provider: "microsoft",
+      email: uniqueEmail("inbox-send-ms"),
+      accessToken: "t",
+      refreshToken: "r",
+      expiryDate: null,
+    });
+    mockMicrosoftSendMessage.mockResolvedValue({ messageId: "", provider: "microsoft", accountEmail: account.email });
+
+    await expect(
+      hubSendMessage(user.id, account.id, "to@example.com", "Subject", "Body")
+    ).resolves.toMatchObject({ provider: "microsoft" });
+    expect(mockMicrosoftSendMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ id: account.id }),
+      "to@example.com",
+      "Subject",
+      "Body",
+      undefined
+    );
+    expect(mockGoogleSendMessage).not.toHaveBeenCalled();
   });
 
   it("hubArchiveMessages throws when the account's canDelete is turned off", async () => {
@@ -590,5 +620,22 @@ describe("hubListEvents", () => {
     const events = await hubListEvents(user.id, 7);
 
     expect(events.map((e) => e.id)).toEqual(["berlin-ten", "utc-nine"]);
+  });
+});
+
+describe("Teams chats", () => {
+  it("a chat failure (e.g. a personal Outlook account with no Teams) doesn't flag the mailbox for reconnecting", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("hub-chats-403"));
+    const account = upsertAccount(user.id, {
+      provider: "microsoft",
+      email: uniqueEmail("inbox-chats-403"),
+      accessToken: "t",
+      refreshToken: "r",
+      expiryDate: null,
+    });
+    mockMicrosoftListChats.mockRejectedValue(new Error("Graph /me/chats returned 403: Forbidden"));
+
+    await expect(hubListChats(user.id)).resolves.toEqual([]);
+    expect(getAccount(user.id, account.id)?.authBroken).toBe(false);
   });
 });

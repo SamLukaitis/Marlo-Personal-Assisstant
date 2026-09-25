@@ -614,6 +614,39 @@ describe("linkedExistingAccount signal passed to sendFirstValueAndBriefingPrompt
   });
 });
 
+// The Outlook "enable sending" reconnect (connectMailboxLink.ts's enable_send) goes through this same
+// registration link. It's the same mailbox coming back with more permissions, not a signup.
+describe("Microsoft reconnect of an already-connected mailbox", () => {
+  it("refreshes the tokens and confirms, without rerunning the new-user setup chain", async () => {
+    const app = buildApp();
+    const phone = freshPhone();
+    const email = uniqueEmail("ms-enable-send");
+    const existing = findOrCreateUserByPhone(phone);
+    linkIdentity(existing.id, "microsoft", "tenant-es:obj-es");
+    upsertAccount(existing.id, {
+      provider: "microsoft",
+      email,
+      accessToken: "old-at",
+      refreshToken: "old-rt",
+      expiryDate: null,
+    });
+    vi.mocked(sendFirstValueAndBriefingPrompt).mockClear();
+    vi.mocked(sendWhatsAppMessage).mockClear();
+    vi.mocked(exchangeMicrosoftCode).mockResolvedValue(msAuth(email, "tenant-es", "obj-es", "graph-es"));
+
+    const callback = await registerViaMicrosoft(app, phone, email);
+
+    expect(callback.headers.location).toBe("http://localhost:5173/connected");
+    expect(sendFirstValueAndBriefingPrompt).not.toHaveBeenCalled();
+    const accounts = listAccounts(existing.id, "microsoft");
+    expect(accounts).toHaveLength(1);
+    expect(accounts[0].accessToken).not.toBe("old-at");
+    const [to, text] = vi.mocked(sendWhatsAppMessage).mock.calls[0];
+    expect(to).toBe(phone);
+    expect(text).toContain("Reconnected");
+  });
+});
+
 describe("Google sign-in can't take over a Microsoft-identified user", () => {
   // Closes the pre-hijack path the Microsoft fix would otherwise leave: someone creates a user via
   // Outlook registration with an unverified `mail` set to your address; your later Google sign-in
