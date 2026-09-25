@@ -35,7 +35,10 @@ const {
 } = await import("../db/store.js");
 const { resolveQuotedMessageContext } = await import("./quotedMessage.js");
 const { checkForNewImportantMessages } = await import("./alerts.js");
-const { setRealPersonAlertsEnabled, realPersonAlertsEnabledSince } = await import("./emailAlertSettings.js");
+const { setRealPersonAlertsEnabled, realPersonAlertsEnabledSince, setRealPersonAlertMode } = await import(
+  "./emailAlertSettings.js"
+);
+const { queuedEmailDigestCount } = await import("./emailDigest.js");
 const { takeSuppressedOnboardingAlertCount } = await import("./onboardingAlertSuppression.js");
 
 let counter = 0;
@@ -51,7 +54,10 @@ function freshPhone(): string {
   return `44700006${String(counter).padStart(4, "0")}`;
 }
 
+// Digest is the default mode; most tests here are about the per-email ping, so this opts the user
+// into instant. The digest tests switch back to "digest" explicitly.
 function registerActivePhone(ownerId: number): string {
+  setRealPersonAlertMode(ownerId, "instant");
   const phone = freshPhone();
   addPhoneNumberForUser(ownerId, phone);
   recordInboundMessage(phone);
@@ -147,6 +153,42 @@ describe("checkForNewImportantMessages", () => {
     const [sentTo, text] = vi.mocked(sendWhatsAppMessage).mock.calls[0];
     expect(sentTo).toBe(phone);
     expect(text).toContain("Already read");
+  });
+
+  it("in digest mode queues a real person's email for the daily summary instead of pinging", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("alerts-digest-mode"));
+    registerActivePhone(user.id);
+    await baseline(user.id);
+    setRealPersonAlertMode(user.id, "digest");
+
+    mockHubListNewMessages.mockResolvedValueOnce([
+      fakeMessage({ id: "d1", subject: "Lunch?", from: "Sarah <sarah@example.com>" }),
+      fakeMessage({ id: "d2", subject: "Results", from: "Dr Patel <patel@example.com>" }),
+    ]);
+    await checkForNewImportantMessages(user.id);
+
+    expect(sendWhatsAppMessage).not.toHaveBeenCalled();
+    expect(queuedEmailDigestCount(user.id)).toBe(2);
+    expect(hasAlerted(user.id, "1:d1")).toBe(true);
+
+    // Already handled, so a rescan can't queue it a second time.
+    mockHubListNewMessages.mockResolvedValueOnce([fakeMessage({ id: "d1", from: "Sarah <sarah@example.com>" })]);
+    await checkForNewImportantMessages(user.id);
+    expect(queuedEmailDigestCount(user.id)).toBe(2);
+  });
+
+  it("in digest mode still drops what triage says to skip, rather than queueing it", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("alerts-digest-triage"));
+    registerActivePhone(user.id);
+    await baseline(user.id);
+    setRealPersonAlertMode(user.id, "digest");
+    mockTriage.mockResolvedValueOnce(new Map([[0, "not_personal"]]));
+
+    mockHubListNewMessages.mockResolvedValueOnce([fakeMessage({ id: "promo", from: "Shop <hi@shop.com>" })]);
+    await checkForNewImportantMessages(user.id);
+
+    expect(queuedEmailDigestCount(user.id)).toBe(0);
+    expect(hasAlerted(user.id, "1:promo")).toBe(true);
   });
 
   // Reported: replying "yes" (or swipe-replying) to an alert got "I don't see a pending question" —

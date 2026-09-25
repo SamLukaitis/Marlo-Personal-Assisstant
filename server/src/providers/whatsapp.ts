@@ -143,10 +143,10 @@ export async function sendWhatsAppReplyButtons(
   to: string,
   bodyText: string,
   buttons: { id: string; title: string }[]
-): Promise<void> {
+): Promise<string | undefined> {
   if (isSimulatedPhone(to)) {
     recordSimMessage(to, { role: "assistant", text: bodyText, choices: buttons.map(({ id, title }) => ({ id, title })) });
-    return;
+    return `sim-wamid-${crypto.randomUUID()}`;
   }
   const phoneNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID;
   const token = process.env.WHATSAPP_TOKEN;
@@ -175,6 +175,7 @@ export async function sendWhatsAppReplyButtons(
   if (!res.ok) {
     throw await buildSendError("WhatsApp reply-buttons send failed", res);
   }
+  return extractSentWamid(res);
 }
 
 // A single tappable link button under a text prompt — used instead of a plain "here's a link"
@@ -314,7 +315,7 @@ export async function sendChoiceMessage(
   to: string,
   bodyText: string,
   choices: { id: string; title: string }[]
-): Promise<void> {
+): Promise<string | undefined> {
   let prompt = bodyText;
   if (bodyText.length > MAX_INTERACTIVE_BODY) {
     for (const piece of splitForTextMessages(bodyText)) {
@@ -326,8 +327,7 @@ export async function sendChoiceMessage(
 
   const labelsFitButtons = choices.every((c) => c.title.length <= MAX_BUTTON_TITLE);
   if (choices.length <= MAX_BUTTONS && labelsFitButtons) {
-    await sendWhatsAppReplyButtons(to, prompt, choices);
-    return;
+    return sendWhatsAppReplyButtons(to, prompt, choices);
   }
 
   const rows = choices.slice(0, MAX_LIST_ROWS).map((c) =>

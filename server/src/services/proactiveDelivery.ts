@@ -14,14 +14,17 @@ export async function sendToAllNumbers(
   text: string,
   kind: ProactiveMessageKind,
   logPrefix: string,
-  historyNote?: string
+  historyNote?: string,
+  // Replaces the plain text send for one number — e.g. a message with buttons under it. It still
+  // counts as delivered once it resolves, and is retried for that number if it throws.
+  send?: (phone: string) => Promise<void>
 ): Promise<boolean> {
   const alreadyDelivered = new Set(listProactiveDeliveryPhones(ownerId, itemKey));
   let allSucceeded = true;
   for (const number of numbers) {
     if (alreadyDelivered.has(number)) continue;
     try {
-      await sendProactiveMessage(number, text, kind, historyNote);
+      await (send ? send(number) : sendProactiveMessage(number, text, kind, historyNote));
       recordProactiveDelivery(ownerId, itemKey, number);
     } catch (err) {
       console.error(`${logPrefix}: failed to send`, err);

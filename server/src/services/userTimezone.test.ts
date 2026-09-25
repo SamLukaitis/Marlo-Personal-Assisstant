@@ -1,5 +1,12 @@
 import { describe, it, expect } from "vitest";
-import { findOrCreateUserByEmail, setToolEnabled, saveCheckin, setSetting } from "../db/store.js";
+import {
+  findOrCreateUserByEmail,
+  setToolEnabled,
+  saveCheckin,
+  setSetting,
+  getSetting,
+  addPhoneNumberForUser,
+} from "../db/store.js";
 import { getUserTimezone, setUserTimezone, setUserTimezoneFromLocation, isValidIanaTimezone } from "./userTimezone.js";
 
 let counter = 0;
@@ -46,21 +53,45 @@ describe("getUserTimezone", () => {
     expect(getUserTimezone(user.id)).toBe("Europe/London");
   });
 
-  it("caches the geo-derived zone into the setting so it doesn't need re-resolving", () => {
-    const user = findOrCreateUserByEmail(uniqueEmail("tz-geo-cache"));
+  // Cached into the "explicit" setting, a check-in in a new country could never change it.
+  it("doesn't store a travel-derived zone, so a later check-in can move it", () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("tz-geo-refresh"));
     setToolEnabled(user.id, "travel", true);
+    const london = { latitude: 51.5074, longitude: -0.1278, country: "United Kingdom", city: "London" };
+    const newYork = { latitude: 40.7128, longitude: -74.006, country: "United States", city: "New York" };
+    saveCheckin(user.id, { ...london, checkedInAt: Date.now() - 86_400_000 });
+    expect(getUserTimezone(user.id)).toBe("Europe/London");
+    expect(getSetting(user.id, "timezone")).toBeNull();
+
+    saveCheckin(user.id, { ...newYork, checkedInAt: Date.now() });
+    expect(getUserTimezone(user.id)).toBe("America/New_York");
+  });
+
+  it("a shared location and a check-in: whichever is more recent wins", () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("tz-location-vs-checkin"));
+    setToolEnabled(user.id, "travel", true);
+    setUserTimezoneFromLocation(user.id, 35.6762, 139.6503); // Tokyo, shared just now
+    const london = { latitude: 51.5074, longitude: -0.1278, country: "United Kingdom", city: "London" };
+
+    saveCheckin(user.id, { ...london, checkedInAt: Date.now() - 3_600_000 });
+    expect(getUserTimezone(user.id)).toBe("Asia/Tokyo");
+
+    saveCheckin(user.id, { ...london, checkedInAt: Date.now() + 3_600_000 });
+    expect(getUserTimezone(user.id)).toBe("Europe/London");
+  });
+
+  it("a zone picked in Settings is never overridden by a check-in", () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("tz-picker-sticky"));
+    setToolEnabled(user.id, "travel", true);
+    setUserTimezone(user.id, "Asia/Tokyo");
     saveCheckin(user.id, {
       latitude: 51.5074,
       longitude: -0.1278,
       country: "United Kingdom",
       city: "London",
-      checkedInAt: Date.now(),
+      checkedInAt: Date.now() + 3_600_000,
     });
-
-    getUserTimezone(user.id);
-
-    const user2 = findOrCreateUserByEmail(uniqueEmail("tz-unused"));
-    expect(getUserTimezone(user2.id)).toBeNull(); // sanity: caching is per-owner, not global
+    expect(getUserTimezone(user.id)).toBe("Asia/Tokyo");
   });
 
   it("ignores check-ins when the travel tool isn't enabled for this user", () => {
@@ -74,6 +105,81 @@ describe("getUserTimezone", () => {
     });
 
     expect(getUserTimezone(user.id)).toBeNull();
+  });
+});
+
+describe("getUserTimezone from the phone number's country", () => {
+  // A realistic national prefix plus random digits — the test database keeps phone numbers between
+  // runs, and a number can belong to only one account.
+  function phoneWith(prefix: string, totalDigits: number): string {
+    let digits = prefix;
+    while (digits.length < totalDigits) digits += Math.floor(Math.random() * 10);
+    return digits;
+  }
+
+  function userWithPhone(prefix: string, phone: string) {
+    const user = findOrCreateUserByEmail(uniqueEmail(prefix));
+    addPhoneNumberForUser(user.id, phone);
+    return user;
+  }
+
+  it("uses the country's zone when the country has just one", () => {
+    expect(getUserTimezone(userWithPhone("tz-phone-gb", phoneWith("447912", 12)).id)).toBe("Europe/London");
+    expect(getUserTimezone(userWithPhone("tz-phone-ie", phoneWith("35385", 12)).id)).toBe("Europe/Dublin");
+    expect(getUserTimezone(userWithPhone("tz-phone-fr", phoneWith("336", 11)).id)).toBe("Europe/Paris");
+    expect(getUserTimezone(userWithPhone("tz-phone-in", phoneWith("919", 12)).id)).toBe("Asia/Kolkata");
+  });
+
+  it("treats zones that keep identical time all year as one", () => {
+    // The tz database lists Zurich under Germany too; both are on Central European time.
+    expect(getUserTimezone(userWithPhone("tz-phone-de", phoneWith("49151", 13)).id)).toBe("Europe/Berlin");
+  });
+
+  it("makes an educated guess for a country that spans several timezones", () => {
+    // Detail is in phoneTimezoneGuess.test.ts: the US and Canada go by area code (202 is DC).
+    expect(getUserTimezone(userWithPhone("tz-phone-us", phoneWith("1202555", 11)).id)).toBe("America/New_York");
+    expect(getUserTimezone(userWithPhone("tz-phone-us-west", phoneWith("1415555", 11)).id)).toBe(
+      "America/Los_Angeles"
+    );
+    expect(getUserTimezone(userWithPhone("tz-phone-au", phoneWith("61412", 11)).id)).toBe("Australia/Melbourne");
+    expect(getUserTimezone(userWithPhone("tz-phone-br", phoneWith("55119", 13)).id)).toBe("America/Sao_Paulo");
+  });
+
+  it("stays unknown for a number that doesn't parse to a country", () => {
+    expect(getUserTimezone(userWithPhone("tz-phone-junk", phoneWith("9990", 12)).id)).toBeNull();
+  });
+
+  it("is only a fallback: a check-in, a shared location or a picked zone all beat it", () => {
+    const withCheckin = userWithPhone("tz-phone-vs-checkin", phoneWith("447912", 12));
+    setToolEnabled(withCheckin.id, "travel", true);
+    saveCheckin(withCheckin.id, {
+      latitude: 40.7128,
+      longitude: -74.006,
+      country: "United States",
+      city: "New York",
+      checkedInAt: Date.now(),
+    });
+    expect(getUserTimezone(withCheckin.id)).toBe("America/New_York");
+
+    const withLocation = userWithPhone("tz-phone-vs-location", phoneWith("447912", 12));
+    setUserTimezoneFromLocation(withLocation.id, 40.7128, -74.006);
+    expect(getUserTimezone(withLocation.id)).toBe("America/New_York");
+
+    const withPicker = userWithPhone("tz-phone-vs-picker", phoneWith("447912", 12));
+    setUserTimezone(withPicker.id, "Asia/Tokyo");
+    expect(getUserTimezone(withPicker.id)).toBe("Asia/Tokyo");
+  });
+
+  it("isn't stored, so it doesn't show in Settings as a chosen zone or block a later signal", () => {
+    const user = userWithPhone("tz-phone-not-stored", phoneWith("447912", 12));
+    expect(getUserTimezone(user.id)).toBe("Europe/London");
+    expect(getSetting(user.id, "timezone")).toBeNull();
+  });
+
+  it("uses any of the user's numbers", () => {
+    const user = userWithPhone("tz-phone-second", phoneWith("9990", 12)); // no recognisable country
+    addPhoneNumberForUser(user.id, phoneWith("35385", 12));
+    expect(getUserTimezone(user.id)).toBe("Europe/Dublin");
   });
 });
 

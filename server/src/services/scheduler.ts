@@ -18,18 +18,14 @@ import { checkForNewImportantMessages } from "./alerts.js";
 import { importantEmailAlertsEnabled, realPersonAlertsEnabled } from "./emailAlertSettings.js";
 import { checkNewEmailsAgainstRecentDocuments } from "./reconciliation.js";
 import { checkForImportantEmails } from "./importantEmailAlerts.js";
+import { flushEmailDigestIfDue } from "./emailDigest.js";
 import { flushOnboardingAlertSummaryIfDue } from "./onboardingAlertSuppression.js";
 import { checkTripPrepNudges } from "./tripPrep.js";
-import { todayKey } from "./dateKey.js";
+import { userLocalClock } from "./userTimezone.js";
 
 const CHECK_INTERVAL_MS = 5 * 60 * 1000;
 const SCHENGEN_WARN_AT = 80;
 const SCHENGEN_LIMIT = 90;
-
-function currentHHMM(): string {
-  const now = new Date();
-  return `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
-}
 
 function schengenAlertLine(ownerId: number): string | null {
   const now = Date.now();
@@ -44,20 +40,21 @@ function schengenAlertLine(ownerId: number): string | null {
   return null;
 }
 
-// Runs every few minutes and fires at most once per calendar day, once local time has passed
-// the configured send time — not a precise cron, but good enough for a personal daily nudge,
+// Runs every few minutes and fires at most once per calendar day, once the user's own local time
+// (userTimezone.ts; the server's clock if theirs isn't known yet) has passed the configured send time — not a precise cron, but good enough for a personal daily nudge,
 // and it still catches up later in the day if the server was off right at the target time.
-async function runDailyCheckForUser(ownerId: number): Promise<void> {
+export async function runDailyCheckForUser(ownerId: number): Promise<void> {
   const settings = getBriefingSettings(ownerId);
   if (!settings.proactive) return;
-  if (getSetting(ownerId, "last_proactive_send_date") === todayKey()) return;
-  if (currentHHMM() < settings.sendTime) return;
+  const { dateKey, hhmm } = userLocalClock(ownerId);
+  if (getSetting(ownerId, "last_proactive_send_date") === dateKey) return;
+  if (hhmm < settings.sendTime) return;
 
   if (!isWhatsAppConfigured()) {
     console.warn(
       "scheduler: proactive briefing is enabled but WhatsApp isn't configured — skipping"
     );
-    setSetting(ownerId, "last_proactive_send_date", todayKey());
+    setSetting(ownerId, "last_proactive_send_date", dateKey);
     return;
   }
 
@@ -66,7 +63,7 @@ async function runDailyCheckForUser(ownerId: number): Promise<void> {
     console.warn(
       `scheduler: proactive briefing is enabled for user ${ownerId} but they have no WhatsApp numbers registered — skipping`
     );
-    setSetting(ownerId, "last_proactive_send_date", todayKey());
+    setSetting(ownerId, "last_proactive_send_date", dateKey);
     return;
   }
 
@@ -78,9 +75,9 @@ async function runDailyCheckForUser(ownerId: number): Promise<void> {
     const message = alert ? `${briefing.content}\n\n${alert}` : briefing.content;
     // Only stamp the day done once every number has it; a retry next tick skips numbers that
     // already got today's briefing (see proactiveDelivery.ts).
-    const itemKey = `daily-briefing:${todayKey()}`;
+    const itemKey = `daily-briefing:${dateKey}`;
     if (await sendToAllNumbers(ownerId, itemKey, numbers, message, "digest", "scheduler")) {
-      setSetting(ownerId, "last_proactive_send_date", todayKey());
+      setSetting(ownerId, "last_proactive_send_date", dateKey);
     }
   } catch (err) {
     console.error(`scheduler: failed to send proactive briefing for user ${ownerId}`, err);
@@ -178,6 +175,11 @@ async function tick(): Promise<void> {
         console.error(`scheduler: onboarding alert summary flush failed for user ${ownerId}`, err)
       );
     });
+    // After the alert scan so mail that arrived just before the digest time is in it. Not gated on
+    // the digest mode: a user who switches back to instant with mail still queued still gets it.
+    await flushEmailDigestIfDue(ownerId).catch((err) =>
+      console.error(`scheduler: email digest failed for user ${ownerId}`, err)
+    );
   }
   console.log(
     `scheduler: tick finished — ${ownerIds.length} user${ownerIds.length === 1 ? "" : "s"}, ` +

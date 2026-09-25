@@ -4036,7 +4036,9 @@ export function getOnboardingStepEvents(ownerId: number): OnboardingStepEvent[] 
 // Pending actions — ask_user_choice's backing store (see assistant.ts / actionHandlers.ts)
 // ---------------------------------------------------------------------------
 
-export type PendingActionMode = "confirm" | "resume";
+// "email_digest" is the first-digest check-in's keep / instant / different-time buttons
+// (services/emailDigest.ts), handled directly by actionHandlers.ts with no model call.
+export type PendingActionMode = "confirm" | "resume" | "email_digest";
 
 export interface PendingActionRow {
   id: string;
@@ -4052,15 +4054,24 @@ export function createPendingAction(
   ownerId: number,
   mode: PendingActionMode,
   question: string,
-  contextJson: string
+  contextJson: string,
+  ttlMs: number = PENDING_ACTION_TTL_MS
 ): string {
   const id = crypto.randomUUID();
   const now = Date.now();
   db.prepare(
     `INSERT INTO pending_actions (id, owner_id, mode, question, context_json, created_at, expires_at)
      VALUES (?, ?, ?, ?, ?, ?, ?)`
-  ).run(id, ownerId, mode, question, contextJson, now, now + PENDING_ACTION_TTL_MS);
+  ).run(id, ownerId, mode, question, contextJson, now, now + ttlMs);
   return id;
+}
+
+// Retires every still-open question of one mode for an owner — used when the user answers a
+// question some other way (e.g. by typing), so a later tap on the old buttons can't undo that.
+export function consumePendingActionsByMode(ownerId: number, mode: PendingActionMode): void {
+  db.prepare(
+    `UPDATE pending_actions SET consumed_at = ? WHERE owner_id = ? AND mode = ? AND consumed_at IS NULL`
+  ).run(Date.now(), ownerId, mode);
 }
 
 // Atomically marks the row consumed and returns it. Returns null if the id doesn't exist,

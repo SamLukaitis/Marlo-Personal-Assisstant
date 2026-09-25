@@ -38,6 +38,7 @@ import {
   setToolEnabled,
   TOOL_KEYS,
   createPendingAction,
+  consumePendingActionsByMode,
   getConversationSummary,
   getPendingSetup,
   addUnmetRequest,
@@ -50,9 +51,14 @@ import {
 import { retrieveRelevantMemory } from "./memoryRetrieval.js";
 import { sendConnectLink } from "../services/connectMailboxLink.js";
 import {
+  emailDigestTime,
   importantEmailAlertsEnabled,
+  isValidDigestTime,
+  realPersonAlertMode,
   realPersonAlertsEnabled,
+  setEmailDigestTime,
   setImportantEmailAlertsEnabled,
+  setRealPersonAlertMode,
   setRealPersonAlertsEnabled,
 } from "../services/emailAlertSettings.js";
 import { validateTrip, type ExpenseData, type BookingData, type TripData } from "../services/entityValidation.js";
@@ -858,19 +864,25 @@ const ALWAYS_ON_TOOLS: Anthropic.ToolUnion[] = [
           description: "Ticker symbols to include in the briefing. Omit for the major indices.",
         },
         proactive: { type: "boolean", description: "Whether to push the briefing automatically each day." },
-        send_time: { type: "string", description: '24h "HH:MM", server-local time.' },
+        send_time: { type: "string", description: `24h "HH:MM" in the user's own local time.` },
       },
     },
   },
   {
     name: "set_email_alerts",
     description:
-      "Turn the user's email pings on or off. There are two independent kinds: `people` — a ping whenever a real person (not a newsletter or notification) emails them; `important` — pings about genuinely important automated mail (flight changes, deliveries, invoices due, security alerts, etc.). Both are on by default. Pass only what the user asked to change: \"stop telling me when people email me\" is people:false alone; \"stop all pings about emails\" / \"no more email alerts\" is both false. If it's unclear which they mean, ask rather than guessing.",
+      "Turn the user's email pings on or off, or batch them into a daily digest. There are two independent kinds: `people` — a ping whenever a real person (not a newsletter or notification) emails them; `important` — pings about genuinely important automated mail (flight changes, reservations, deliveries, invoices due, security alerts, etc.), always instant. Both are on by default, and real people's emails are by default held for one summary message a day (people_mode \"digest\", sent at digest_time, default 21:00) while important mail comes through instantly; the morning briefing is separate and unaffected. Pass only what the user asked to change: \"stop telling me when people email me\" is people:false alone; \"stop all pings about emails\" / \"no more email alerts\" is both false. \"Ping me the moment someone emails me\" / \"I want every email straight away\" is people_mode:\"instant\"; \"go back to the daily summary\" is people_mode:\"digest\"; \"send the summary at 6pm\" is digest_time:\"18:00\". If it's unclear which they mean, ask rather than guessing.",
     input_schema: {
       type: "object",
       properties: {
         people: { type: "boolean", description: "Pings when a real person emails." },
         important: { type: "boolean", description: "Pings about important automated mail." },
+        people_mode: {
+          type: "string",
+          enum: ["instant", "digest"],
+          description: "How real people's emails reach them: one summary a day (digest, the default) or a ping each (instant).",
+        },
+        digest_time: { type: "string", description: `24h "HH:MM" in the user's own local time: when the daily digest is sent.` },
       },
     },
   },
@@ -1501,13 +1513,42 @@ export async function runTool(
       return { ok: true };
     }
     case "set_email_alerts": {
-      if (typeof input.people !== "boolean" && typeof input.important !== "boolean") {
-        return { error: "pass people and/or important" };
+      const mode = input.people_mode;
+      const digestTime = input.digest_time;
+      if (
+        typeof input.people !== "boolean" &&
+        typeof input.important !== "boolean" &&
+        mode === undefined &&
+        digestTime === undefined
+      ) {
+        return { error: "pass people, important, people_mode and/or digest_time" };
+      }
+      if (mode !== undefined && mode !== "instant" && mode !== "digest") {
+        return { error: 'people_mode must be "instant" or "digest"' };
+      }
+      if (digestTime !== undefined && !(typeof digestTime === "string" && isValidDigestTime(digestTime))) {
+        return { error: 'digest_time must be 24h "HH:MM"' };
       }
       if (typeof input.people === "boolean") setRealPersonAlertsEnabled(ownerId, input.people);
       if (typeof input.important === "boolean") setImportantEmailAlertsEnabled(ownerId, input.important);
-      // Both states come back so the reply can say what's still on, not just what changed.
-      return { ok: true, people: realPersonAlertsEnabled(ownerId), important: importantEmailAlertsEnabled(ownerId) };
+      if (mode !== undefined || digestTime !== undefined) {
+        // They've answered the first-digest check-in in words, so its buttons must not undo that later.
+        consumePendingActionsByMode(ownerId, "email_digest");
+      }
+      if (mode !== undefined) {
+        setRealPersonAlertMode(ownerId, mode);
+        // Asking for a digest of people's emails means they want them, so an earlier "off" is undone.
+        if (mode === "digest" && typeof input.people !== "boolean") setRealPersonAlertsEnabled(ownerId, true);
+      }
+      if (typeof digestTime === "string") setEmailDigestTime(ownerId, digestTime);
+      // Every state comes back so the reply can say what's still on, not just what changed.
+      return {
+        ok: true,
+        people: realPersonAlertsEnabled(ownerId),
+        important: importantEmailAlertsEnabled(ownerId),
+        people_mode: realPersonAlertMode(ownerId),
+        digest_time: emailDigestTime(ownerId),
+      };
     }
     case "set_tool_enabled": {
       const tool = input.tool as string;
