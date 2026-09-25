@@ -31,6 +31,7 @@ import {
   type ImportantEmailCategory,
 } from "./importantEmailClassifier.js";
 import { emailReferenceNote } from "./emailReference.js";
+import { tidySnippet } from "./htmlToText.js";
 import { getXeroForwardingEmail } from "./xero.js";
 import { setPendingInvoiceForward } from "./xeroInvoiceConfirmation.js";
 import type { UnifiedMessage } from "../providers/types.js";
@@ -148,7 +149,7 @@ export function formatImportantEmailAlert(
   const { emoji } = CATEGORY_INFO[category];
   // Prefer the model's plain-English summary over the raw snippet — the snippet is
   // HTML-entity-encoded and truncated mid-sentence straight from the Gmail/Graph API.
-  const body = summary?.trim() || m.snippet;
+  const body = summary?.trim() || tidySnippet(m.snippet);
   const greeting = userName ? `${userName}, ` : "";
   return `${emoji} ${greeting}${body}`;
 }
