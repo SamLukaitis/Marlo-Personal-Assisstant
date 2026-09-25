@@ -57,6 +57,14 @@ describe("sendWhatsAppReplyButtons", () => {
     ]);
   });
 
+  it("returns the sent message's wamid so a later swipe-reply to it can be resolved", async () => {
+    global.fetch = vi
+      .fn()
+      .mockResolvedValue({ ok: true, text: async () => '{"messages":[{"id":"wamid.ABC"}]}' }) as unknown as typeof fetch;
+
+    await expect(sendWhatsAppReplyButtons("447000000001", "hi", [{ id: "a", title: "A" }])).resolves.toBe("wamid.ABC");
+  });
+
   it("throws a WhatsAppSendError on a non-ok response", async () => {
     global.fetch = vi
       .fn()

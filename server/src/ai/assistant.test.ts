@@ -32,6 +32,9 @@ import {
 import type { UnifiedMessage } from "../providers/types.js";
 import {
   findOrCreateUserByEmail,
+  addPhoneNumberForUser,
+  createPendingAction,
+  consumePendingAction,
   setToolEnabled,
   getEnabledTools,
   listMemoryNotes,
@@ -55,7 +58,12 @@ import { retrieveRelevantMemory } from "./memoryRetrieval.js";
 import { IMPORTANT_EMAIL_ENTITY_TYPE } from "../services/importantEmailAlerts.js";
 import { getBriefingSettings, saveBriefingSettings, type BriefingSettings } from "../services/briefing.js";
 import { getXeroForwardingEmail } from "../services/xero.js";
-import { importantEmailAlertsEnabled, realPersonAlertsEnabled } from "../services/emailAlertSettings.js";
+import {
+  emailDigestTime,
+  importantEmailAlertsEnabled,
+  realPersonAlertMode,
+  realPersonAlertsEnabled,
+} from "../services/emailAlertSettings.js";
 import { setPendingInvoiceForward, getPendingInvoiceForward } from "../services/xeroInvoiceConfirmation.js";
 import { setUserTimezone } from "../services/userTimezone.js";
 
@@ -425,19 +433,86 @@ describe("set_email_alerts tool", () => {
   it("turns off only real-person alerts when that's all the user asked", async () => {
     const user = findOrCreateUserByEmail(uniqueEmail("email-alerts-people"));
     const result = await runTool(user.id, "set_email_alerts", { people: false });
-    expect(result).toEqual({ ok: true, people: false, important: true });
+    expect(result).toEqual({
+      ok: true,
+      people: false,
+      important: true,
+      people_mode: "digest",
+      digest_time: "21:00",
+    });
     expect(realPersonAlertsEnabled(user.id)).toBe(false);
     expect(importantEmailAlertsEnabled(user.id)).toBe(true);
   });
 
+  it("opts into an instant ping per email, without touching important-email pings", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("email-alerts-instant"));
+    const result = await runTool(user.id, "set_email_alerts", { people_mode: "instant" });
+    expect(result).toEqual({
+      ok: true,
+      people: true,
+      important: true,
+      people_mode: "instant",
+      digest_time: "21:00",
+    });
+    expect(realPersonAlertMode(user.id)).toBe("instant");
+  });
+
+  it("answering the first-digest check-in in words retires its buttons, so a later tap can't undo it", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("email-alerts-answer-retires-buttons"));
+    const actionId = createPendingAction(user.id, "email_digest", "Keep the daily email summary?", "{}");
+    await runTool(user.id, "set_email_alerts", { people_mode: "instant" });
+    expect(consumePendingAction(actionId, user.id)).toBeNull();
+  });
+
+  it("changing something unrelated leaves an open check-in alone", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("email-alerts-unrelated-keeps-buttons"));
+    const actionId = createPendingAction(user.id, "email_digest", "Keep the daily email summary?", "{}");
+    await runTool(user.id, "set_email_alerts", { important: false });
+    expect(consumePendingAction(actionId, user.id)).not.toBeNull();
+  });
+
+  it("sets the digest time", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("email-alerts-digest"));
+    const result = await runTool(user.id, "set_email_alerts", { people_mode: "digest", digest_time: "20:30" });
+    expect(result).toMatchObject({ people_mode: "digest", digest_time: "20:30" });
+    expect(emailDigestTime(user.id)).toBe("20:30");
+  });
+
+  it("asking for a digest switches real-person emails back on if they were off", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("email-alerts-digest-reenable"));
+    await runTool(user.id, "set_email_alerts", { people: false });
+    const result = await runTool(user.id, "set_email_alerts", { people_mode: "digest" });
+    expect(result).toMatchObject({ people: true, people_mode: "digest" });
+  });
+
+  it("can change just the digest time, and go back to instant", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("email-alerts-digest-time"));
+    expect(await runTool(user.id, "set_email_alerts", { digest_time: "19:00" })).toMatchObject({
+      people_mode: "digest",
+      digest_time: "19:00",
+    });
+    await runTool(user.id, "set_email_alerts", { people_mode: "instant" });
+    expect(await runTool(user.id, "set_email_alerts", { people_mode: "digest" })).toMatchObject({
+      people_mode: "digest",
+    });
+  });
+
+  it("rejects an unknown mode or a malformed digest time without changing anything", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("email-alerts-digest-bad"));
+    expect(await runTool(user.id, "set_email_alerts", { people_mode: "hourly" })).toHaveProperty("error");
+    expect(await runTool(user.id, "set_email_alerts", { digest_time: "9pm" })).toHaveProperty("error");
+    expect(realPersonAlertMode(user.id)).toBe("digest");
+    expect(emailDigestTime(user.id)).toBe("21:00");
+  });
+
   it("turns off both when the user wants no email pings at all, and back on again", async () => {
     const user = findOrCreateUserByEmail(uniqueEmail("email-alerts-all"));
-    expect(await runTool(user.id, "set_email_alerts", { people: false, important: false })).toEqual({
+    expect(await runTool(user.id, "set_email_alerts", { people: false, important: false })).toMatchObject({
       ok: true,
       people: false,
       important: false,
     });
-    expect(await runTool(user.id, "set_email_alerts", { people: true })).toEqual({
+    expect(await runTool(user.id, "set_email_alerts", { people: true })).toMatchObject({
       ok: true,
       people: true,
       important: false,
@@ -535,6 +610,11 @@ describe("remember tool — no longer schedules anything", () => {
   });
 });
 
+// The test database keeps phone numbers between runs, and a number belongs to one account only.
+function randomUkMobile(): string {
+  return `447911${String(Math.floor(Math.random() * 1_000_000)).padStart(6, "0")}`;
+}
+
 describe("set_reminder tool", () => {
   it("is always available, same as remember", () => {
     const user = findOrCreateUserByEmail(uniqueEmail("reminder-available"));
@@ -581,6 +661,33 @@ describe("set_reminder tool", () => {
 
     expect(result.ok).toBe(true);
     expect(listActiveRemindersForOwner(user.id)).toHaveLength(1);
+  });
+
+  it("uses a timezone guessed from the phone number, and says which zone it assumed", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("reminder-guessed-tz"));
+    addPhoneNumberForUser(user.id, randomUkMobile());
+    const result = (await runTool(user.id, "set_reminder", {
+      message: "Call the bank",
+      mode: "once",
+      local_time: "15:00",
+    })) as { ok: true; timezone_note?: string };
+
+    expect(result.ok, JSON.stringify(result)).toBe(true);
+    expect(result, JSON.stringify(result)).toHaveProperty("timezone_note");
+    expect(result.timezone_note).toContain("Europe/London");
+    expect(result.timezone_note).toMatch(/share their location/);
+  });
+
+  it("adds no timezone note once the zone is confirmed", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("reminder-confirmed-tz"));
+    addPhoneNumberForUser(user.id, randomUkMobile());
+    setUserTimezone(user.id, "Europe/London");
+    const result = (await runTool(user.id, "set_reminder", {
+      message: "Call the bank",
+      mode: "once",
+      local_time: "15:00",
+    })) as { ok: true; timezone_note?: string };
+    expect(result.timezone_note).toBeUndefined();
   });
 
   it("schedules an interval reminder with a window", async () => {
@@ -635,6 +742,14 @@ describe("get_current_time tool", () => {
     const user = findOrCreateUserByEmail(uniqueEmail("time-no-tz"));
     const result = (await runTool(user.id, "get_current_time", {})) as { error: string };
     expect(result.error).toMatch(/timezone/i);
+  });
+
+  it("flags a zone that's only guessed from the phone number", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("time-guessed-tz"));
+    addPhoneNumberForUser(user.id, randomUkMobile());
+    const result = (await runTool(user.id, "get_current_time", {})) as { timezone: string; timezone_note?: string };
+    expect(result.timezone).toBe("Europe/London");
+    expect(result.timezone_note).toContain("assumed from their phone number");
   });
 
   it("reports the current time in the user's set timezone once known", async () => {

@@ -36,7 +36,7 @@ const {
 const { findOrCreateUserByEmail, getPendingSetup, getEnabledTools, getSetting, setSetting, upsertAccount } =
   await import("../db/store.js");
 const { getBriefingSettings, saveBriefingSettings } = await import("./briefing.js");
-const { todayKey } = await import("./dateKey.js");
+const { userLocalClock } = await import("./userTimezone.js");
 const { incrementSuppressedOnboardingAlerts, takeSuppressedOnboardingAlertCount, isOnboardingSuppressionActive } =
   await import("./onboardingAlertSuppression.js");
 
@@ -523,7 +523,7 @@ describe("handlePostConnectSetupReply", () => {
     expect(settings.proactive).toBe(true);
     expect(settings.includeNews).toBe(true);
     expect(settings.topics.length).toBeGreaterThan(0);
-    expect(getSetting(ownerId, "last_proactive_send_date")).toBe(todayKey());
+    expect(getSetting(ownerId, "last_proactive_send_date")).toBe(userLocalClock(ownerId).dateKey);
     expect(sendWhatsAppMessage).toHaveBeenCalledWith(PHONE, expect.stringContaining("news"));
     expect(sendWhatsAppReplyButtons).not.toHaveBeenCalled(); // no Microsoft account, so no Teams question
     expect(getPendingSetup(ownerId)).toBeNull();

@@ -6,6 +6,7 @@
 import {
   sendWhatsAppMessage,
   sendWhatsAppTemplate,
+  sendChoiceMessage,
   WhatsAppSendError,
   type WhatsAppTemplateName,
 } from "../providers/whatsapp.js";
@@ -72,6 +73,31 @@ export async function sendProactiveMessage(
 ): Promise<void> {
   const wamid = await sendProactive(phone, text, kind);
   recordProactiveInHistory(phone, historyNote ? `${text}\n\n${historyNote}` : text, wamid);
+}
+
+// Like sendProactiveMessage, but with tappable buttons under the text. Buttons are only possible
+// inside the 24h window — a template can't carry them — so outside it (or if Meta disagrees about
+// the window being open) `fallbackText`, which should ask for a typed reply instead, goes out as
+// the template. `text` is the button prompt; a tap comes back as a button reply carrying an id.
+export async function sendProactiveMessageWithButtons(
+  phone: string,
+  text: string,
+  buttons: { id: string; title: string }[],
+  kind: ProactiveMessageKind,
+  historyNote?: string,
+  fallbackText: string = text
+): Promise<void> {
+  if (isWithinCustomerServiceWindow(phone)) {
+    try {
+      const wamid = await sendChoiceMessage(phone, text, buttons);
+      recordProactiveInHistory(phone, historyNote ? `${text}\n\n${historyNote}` : text, wamid);
+      return;
+    } catch (err) {
+      if (!(err instanceof WhatsAppSendError && err.code === WINDOW_CLOSED_ERROR_CODE)) throw err;
+    }
+  }
+  const wamid = await sendWhatsAppTemplate(phone, TEMPLATE_BY_KIND[kind], truncateForTemplate(fallbackText));
+  recordProactiveInHistory(phone, historyNote ? `${fallbackText}\n\n${historyNote}` : fallbackText, wamid);
 }
 
 // A proactive push goes into chat history and its wamid is recorded, exactly like a normal reply

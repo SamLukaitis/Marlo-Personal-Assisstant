@@ -6,7 +6,8 @@ import { IMPORTANT_EMAIL_ENTITY_TYPE, type ImportantEmailEntityData } from "./im
 import { isWhatsAppConfigured } from "../providers/whatsapp.js";
 import { sendProactiveMessage } from "./outbound.js";
 import { emailReferenceNote } from "./emailReference.js";
-import { realPersonAlertsEnabledSince } from "./emailAlertSettings.js";
+import { realPersonAlertMode, realPersonAlertsEnabledSince } from "./emailAlertSettings.js";
+import { queueForEmailDigest } from "./emailDigest.js";
 import {
   isOnboardingSuppressionActive,
   incrementSuppressedOnboardingAlerts,
@@ -103,6 +104,15 @@ export async function checkForNewImportantMessages(ownerId: number): Promise<voi
   const toAlert = unseen.filter((m) => !skips.has(m));
   if (toAlert.length === 0) {
     logScan(`skipped ${skips.size} (marketing or repeats an earlier alert)`, unseen.length);
+    return;
+  }
+
+  // Digest mode: hold the email for emailDigest.ts's once-a-day summary instead of pinging now.
+  // Marked alerted at once, same as a sent alert, so it can never be queued or sent twice.
+  if (realPersonAlertMode(ownerId) === "digest") {
+    queueForEmailDigest(ownerId, toAlert);
+    for (const m of toAlert) markAlerted(ownerId, messageKey(m));
+    logScan(`queued ${toAlert.length} for the digest${skips.size ? `, skipped ${skips.size}` : ""}`, unseen.length);
     return;
   }
 

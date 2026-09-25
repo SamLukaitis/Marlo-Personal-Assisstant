@@ -2,7 +2,13 @@
 // db/store.ts's pending_actions table). Called from whatsappRoutes.ts's handleIncoming right
 // after the post-connect-setup check, with the same contract: returns false to fall through to
 // normal handling for anything that isn't one of these taps.
-import { consumePendingAction, appendWhatsAppMessage, getWhatsAppHistory } from "../db/store.js";
+import {
+  consumePendingAction,
+  consumePendingActionsByMode,
+  appendWhatsAppMessage,
+  getWhatsAppHistory,
+} from "../db/store.js";
+import { emailDigestTime, formatDigestTime, setRealPersonAlertMode } from "./emailAlertSettings.js";
 import { runTool, runAssistantChat, MAX_HISTORY_MESSAGES } from "../ai/assistant.js";
 import { sendWhatsAppMessage } from "../providers/whatsapp.js";
 import { sendAssistantReply } from "./whatsappReply.js";
@@ -48,6 +54,43 @@ function parseTapId(buttonId: string): { actionId: string; key: string } | null 
   return { actionId: match[1], key: match[2] };
 }
 
+// The three buttons under the first daily email summary (services/emailDigest.ts). Keep and Instant
+// are answered directly with no model call; "Different time" needs a follow-up question, so it goes
+// through the model like an Edit tap does — the digest's history note tells it to call
+// set_email_alerts with the time.
+async function handleEmailDigestTap(
+  ownerId: number,
+  phone: string,
+  key: string,
+  messageId: string
+): Promise<boolean> {
+  let reply: string;
+  if (key === "keep") {
+    setRealPersonAlertMode(ownerId, "digest");
+    reply =
+      `✓ Great, I'll keep sending one summary of people's emails each day at ` +
+      `${formatDigestTime(emailDigestTime(ownerId))}. Just say "instant" any time if you'd rather be pinged for each one.`;
+  } else if (key === "instant") {
+    setRealPersonAlertMode(ownerId, "instant");
+    reply = `✓ Done, I'll ping you as each email from a person arrives. Say "daily summary" any time to go back.`;
+  } else if (key === "time") {
+    appendWhatsAppMessage(ownerId, phone, "user", "(User wants a different time for the daily email summary.)");
+    const history = getWhatsAppHistory(phone, MAX_HISTORY_MESSAGES).map((m) => ({
+      role: m.role,
+      content: m.content,
+    }));
+    const assistantReply = await runAssistantChat(ownerId, history, phone);
+    await sendAssistantReply(ownerId, phone, assistantReply, messageId);
+    return true;
+  } else {
+    await sendWhatsAppMessage(phone, EXPIRED_REPLY);
+    return true;
+  }
+  appendWhatsAppMessage(ownerId, phone, "assistant", reply);
+  await sendWhatsAppMessage(phone, reply);
+  return true;
+}
+
 export async function handlePendingActionReply(
   ownerId: number,
   message: IncomingWhatsAppMessage
@@ -61,6 +104,13 @@ export async function handlePendingActionReply(
   if (!action) {
     await sendWhatsAppMessage(phone, EXPIRED_REPLY);
     return true;
+  }
+
+  if (action.mode === "email_digest") {
+    // Whichever button was tapped, the question is answered: retire any other open copy of it (a
+    // retried send, another of the user's numbers) so a stale tap can't undo this one.
+    consumePendingActionsByMode(ownerId, "email_digest");
+    return handleEmailDigestTap(ownerId, phone, parsed.key, message.messageId);
   }
 
   if (action.mode === "confirm") {

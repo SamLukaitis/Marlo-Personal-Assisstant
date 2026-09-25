@@ -785,7 +785,7 @@ export function SettingsPage() {
                   )}
                 </div>
 
-                <h2>Instant alerts</h2>
+                <h2>Email alerts</h2>
                 <div className="card card-padded" style={{ marginBottom: 20 }}>
                   <label className="check-row">
                     <input
@@ -794,10 +794,12 @@ export function SettingsPage() {
                       onChange={(e) => handleToggleAlerts(e.target.checked)}
                     />
                     <span>
-                      <span className="check-row-title">Ping me when a real person emails</span>
+                      <span className="check-row-title">Tell me when a real person emails</span>
                       <span className="check-row-desc">
-                        Newsletters and automated notifications are ignored. Starts from the moment
-                        you switch it on, so your existing unread mail won't set it off.
+                        You get one summary each evening (around 9pm); ask Marlowe in chat if you
+                        would rather be pinged the moment one arrives. Newsletters and automated
+                        notifications are ignored. Starts from the moment you switch it on, so your
+                        existing unread mail won't set it off.
                       </span>
                     </span>
                   </label>
