@@ -284,6 +284,54 @@ export function findSaveableUrl(message: string): string | null {
 }
 
 // ---------------------------------------------------------------------------
+// RFC 8058 one-click unsubscribe POST
+// ---------------------------------------------------------------------------
+
+export type PostOneClickResult =
+  | { ok: true; status: number }
+  | { ok: false; reason: FetchFailureReason | "http_error"; detail?: string };
+
+// The URL comes from a List-Unsubscribe header — attacker-controlled mail content — so it gets the
+// same fail-closed treatment as fetchPageText. Redirects are never followed: RFC 8058 says the POST
+// itself is the action, and a 3xx would only steer it somewhere unvalidated.
+export async function safePostOneClick(
+  rawUrl: string,
+  options: { timeoutMs?: number } = {}
+): Promise<PostOneClickResult> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), options.timeoutMs ?? 8_000);
+  try {
+    let url: URL;
+    try {
+      url = validateHttpUrl(rawUrl);
+      await assertHostIsPublic(url.hostname);
+    } catch (e) {
+      const err = e as SafeFetchError;
+      return { ok: false, reason: err.reason, detail: err.message };
+    }
+
+    let res: Response;
+    try {
+      res = await fetch(url.toString(), {
+        method: "POST",
+        redirect: "manual",
+        signal: controller.signal,
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+        body: "List-Unsubscribe=One-Click",
+      });
+    } catch (e) {
+      if (controller.signal.aborted) return { ok: false, reason: "timeout", detail: `deadline exceeded at ${url}` };
+      return { ok: false, reason: "network_error", detail: (e as Error).message };
+    }
+    await res.body?.cancel().catch(() => {});
+    if (res.status >= 200 && res.status < 300) return { ok: true, status: res.status };
+    return { ok: false, reason: "http_error", detail: `HTTP ${res.status}` };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Main entry point
 // ---------------------------------------------------------------------------
 

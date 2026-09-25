@@ -19,6 +19,19 @@ const CONFIRM_RESULT_LABEL: Record<string, (result: unknown) => string> = {
       ? `✓ Archived ${archived} message${archived === 1 ? "" : "s"}.`
       : "✓ Done.";
   },
+  unsubscribe_from_sender: (result) => {
+    const r = result as
+      | { status?: string; method?: string; url?: string; sender?: string; reason?: string }
+      | undefined;
+    const sender = r?.sender ? ` from ${r.sender}` : "";
+    if (r?.status === "unsubscribed") {
+      return `✓ Unsubscribed${sender}. It can take a few days for the emails to stop.`;
+    }
+    if (r?.status === "manual_link" && r.url) {
+      return `I couldn't unsubscribe${sender} automatically — tap this link to finish: ${r.url}`;
+    }
+    return r?.reason ?? "Sorry, I couldn't unsubscribe from that sender.";
+  },
   delete_calendar_event: () => "✓ Deleted.",
   send_email: () => "✓ Sent.",
   undo_expense: (result) => {
