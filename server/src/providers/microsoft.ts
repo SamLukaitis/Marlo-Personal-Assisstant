@@ -7,6 +7,7 @@ import type {
   ChatThread,
   ContactHit,
   EventInput,
+  UnsubscribeInfo,
 } from "./types.js";
 
 const AUTH_BASE = "https://login.microsoftonline.com/common/oauth2/v2.0";
@@ -260,6 +261,29 @@ export async function microsoftListMessages(
     : `/me/mailFolders/inbox/messages?$orderby=receivedDateTime desc&${top}&${MSG_SELECT}`;
   const data = await graphGet<{ value: GraphMessage[] }>(account, path);
   return data.value.map((m) => toUnified(account, m));
+}
+
+export async function microsoftGetUnsubscribeInfo(
+  account: AccountRow,
+  messageId: string
+): Promise<UnsubscribeInfo | null> {
+  let m: GraphMessage;
+  try {
+    m = await graphGet<GraphMessage>(
+      account,
+      `/me/messages/${encodeURIComponent(messageId)}?$select=id,from,internetMessageHeaders`
+    );
+  } catch {
+    return null;
+  }
+  const headerValue = (name: string) =>
+    (m.internetMessageHeaders ?? []).find((h) => h.name?.toLowerCase() === name)?.value ?? "";
+  const from = m.from?.emailAddress;
+  return {
+    from: from ? `${from.name ?? ""} <${from.address ?? ""}>`.trim() : "",
+    listUnsubscribe: headerValue("list-unsubscribe"),
+    listUnsubscribePost: headerValue("list-unsubscribe-post"),
+  };
 }
 
 export async function microsoftGetMessage(

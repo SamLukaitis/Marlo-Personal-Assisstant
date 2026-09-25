@@ -87,6 +87,37 @@ describe("handlePendingActionReply", () => {
     expect(sendWhatsAppMessage).toHaveBeenCalledWith("44700", "✓ Archived 3 messages.");
   });
 
+  it.each([
+    [
+      { status: "unsubscribed", method: "one_click", sender: "Nike <news@nike.com>" },
+      "✓ Unsubscribed from Nike <news@nike.com>. It can take a few days for the emails to stop.",
+    ],
+    [
+      { status: "manual_link", url: "https://nike.com/u/1", sender: "Nike" },
+      "I couldn't unsubscribe from Nike automatically — tap this link to finish: https://nike.com/u/1",
+    ],
+    [{ status: "unavailable", reason: "No unsubscribe option." }, "No unsubscribe option."],
+  ])("confirm + yes: unsubscribe_from_sender reports %j", async (toolResult, expectedReply) => {
+    vi.mocked(consumePendingAction).mockReturnValue({
+      id: "abc-123",
+      ownerId: 1,
+      mode: "confirm",
+      question: "Unsubscribe from Nike?",
+      contextJson: JSON.stringify({ tool: "unsubscribe_from_sender", input: { account_id: 1, message_id: "m9" } }),
+    });
+    vi.mocked(runTool).mockResolvedValue(toolResult);
+
+    await handlePendingActionReply(1, {
+      kind: "interactive",
+      from: "44700",
+      messageId: "m4",
+      buttonId: "pa:abc-123:yes",
+    });
+
+    expect(runTool).toHaveBeenCalledWith(1, "unsubscribe_from_sender", { account_id: 1, message_id: "m9" }, "44700");
+    expect(sendWhatsAppMessage).toHaveBeenCalledWith("44700", expectedReply);
+  });
+
   it("confirm + no: cancels without calling runTool", async () => {
     vi.mocked(consumePendingAction).mockReturnValue({
       id: "abc-123",

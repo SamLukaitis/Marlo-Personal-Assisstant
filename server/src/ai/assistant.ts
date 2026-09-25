@@ -111,6 +111,7 @@ import {
   hubSearchContacts,
   hubFlaggedMessages,
 } from "../services/hub.js";
+import { unsubscribeFromMessage } from "../services/unsubscribe.js";
 import type { UnifiedMessage } from "../providers/types.js";
 
 // Cheap tier for lookups/summaries, richer tier for anything needing judgment or drafting.
@@ -162,7 +163,12 @@ export const SEARCH_CONVERSATION_HISTORY_DEFAULT_LIMIT = 20;
 // it holds even if the model skips that instruction under an unusual conversational branch or
 // prompt injection from message content it's reading. Extend this set as more irreversible-action
 // tools are added; a tool not in it behaves exactly as before (reversible actions don't need this).
-const CONFIRM_REQUIRED_TOOLS = new Set<string>(["delete_calendar_event", "send_email", "undo_expense"]);
+const CONFIRM_REQUIRED_TOOLS = new Set<string>([
+  "delete_calendar_event",
+  "send_email",
+  "undo_expense",
+  "unsubscribe_from_sender",
+]);
 
 let client: Anthropic | null = null;
 // Exported so portalRoutes.ts's log-explain endpoint can reuse the same lazily-created client
@@ -461,6 +467,19 @@ const ALWAYS_ON_TOOLS: Anthropic.ToolUnion[] = [
         limit: { type: "number", description: "Max messages to archive, default 50" },
       },
       required: ["account_id", "query"],
+    },
+  },
+  {
+    name: "unsubscribe_from_sender",
+    description:
+      "Unsubscribe the user from a mailing list, using the unsubscribe option built into one of that sender's emails. Get account_id and message_id from search_messages/list_recent_messages (any recent message from that sender works). Cannot be undone, so it must go through ask_user_choice(mode=\"confirm\") first — never call it directly. Only works on bulk/marketing mail that carries an unsubscribe header; the result says whether it was unsubscribed, needs the user to tap a link, or isn't possible.",
+    input_schema: {
+      type: "object",
+      properties: {
+        account_id: { type: "number" },
+        message_id: { type: "string", description: "A message from the sender to unsubscribe from" },
+      },
+      required: ["account_id", "message_id"],
     },
   },
   {
@@ -1256,6 +1275,8 @@ export async function runTool(
           (input.limit as number | undefined) ?? 50
         ),
       };
+    case "unsubscribe_from_sender":
+      return unsubscribeFromMessage(ownerId, input.account_id as number, input.message_id as string);
     case "label_message":
       await hubAddLabel(ownerId, input.account_id as number, input.message_id as string, input.label as string);
       return { ok: true };
@@ -1853,6 +1874,7 @@ function buildRules(enabled: Set<ToolKey>): string {
     "- list_needs_attention only covers unread mail from real people — it deliberately excludes automated/system senders (alerts, receipts, notifications). For a broad ask like \"anything important\", \"check my email\", or \"what am I missing\", also call list_recent_messages/search_messages so automated-but-significant mail (crash/deployment alerts, security notices, government or financial mail) isn't missed. Don't treat a clean list_needs_attention result on its own as \"nothing important\".",
     "- You can create, edit, and delete calendar events directly on the user's own calendar — these are low-risk and reversible. You can never invite other people to an event; calendar events you create are personal-only.",
     '- You can archive emails and apply labels/categories directly — archiving is fully reversible (the email is just removed from the inbox, never deleted) so you don\'t need to ask permission first, but when the query is broad or ambiguous (e.g. "archive everything" with no filter), confirm first with ask_user_choice(mode="confirm", confirm_tool="archive_messages", confirm_input=<the exact call>) instead of asking in prose.',
+    '- To unsubscribe the user from promotional mail, find a recent message from that sender (search_messages), then ALWAYS confirm first with ask_user_choice(mode="confirm", confirm_tool="unsubscribe_from_sender", confirm_input={account_id, message_id}, question naming the sender) — unsubscribing can\'t be undone, and the tool refuses to run without that tap. Afterwards tell the user senders can take a few days to stop; if the result says it needs a link, give them the link; if it isn\'t possible, offer to archive that sender\'s mail instead.',
     "- Use search_contacts to resolve a name to an email address before drafting to someone when you don't already have their address.",
     "- If search_contacts (or any lookup) returns more than one plausible match and it's not obvious which one is meant, use ask_user_choice(mode=\"resume\") with one option per candidate instead of listing them in prose and waiting for a typed reply.",
     "- Use the remember tool proactively whenever the user shares something worth recalling later (preferences, which account is which, standing instructions, people in their life) — don't wait to be asked. Use kind 'core' only for identity-level facts (their name, partner/children/close family, home city, job/employer).",

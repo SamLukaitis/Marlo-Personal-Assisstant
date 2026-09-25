@@ -19,6 +19,14 @@ export interface UnifiedMessage {
   attachments?: EmailAttachmentMeta[]; // only populated by getMessage
 }
 
+// Raw List-Unsubscribe / List-Unsubscribe-Post header values ("" when absent) — parsed in
+// services/unsubscribe.ts.
+export interface UnsubscribeInfo {
+  from: string;
+  listUnsubscribe: string;
+  listUnsubscribePost: string;
+}
+
 export interface CalendarEvent {
   id: string;
   accountId: number;
