@@ -21,6 +21,7 @@ import type {
   EventInput,
   EmailAttachment,
   SendResult,
+  UnsubscribeInfo,
 } from "../providers/types.js";
 
 // Both providers throw differently (Google's gaxios errors carry structured
@@ -311,6 +312,18 @@ export async function hubGetMessage(
   // check in importantEmailAlerts.ts, the web UI's message view) gets this for free.
   if (message) upsertReadEmail(ownerId, message);
   return message;
+}
+
+export async function hubGetUnsubscribeInfo(
+  ownerId: number,
+  accountId: number,
+  messageId: string
+): Promise<UnsubscribeInfo | null> {
+  const account = requireAccount(ownerId, accountId);
+  requirePermission(account, "read");
+  return account.provider === "google"
+    ? g.googleGetUnsubscribeInfo(account, messageId)
+    : ms.microsoftGetUnsubscribeInfo(account, messageId);
 }
 
 export async function hubGetAttachment(
