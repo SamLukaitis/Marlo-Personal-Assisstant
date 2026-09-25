@@ -163,14 +163,16 @@ async function tick(): Promise<void> {
     // (query, limit) window (alerts + important-email both use {limit:50}) into a single Gmail
     // fetch instead of paying for it twice. See hub.ts's withMessageCache doc comment.
     await withMessageCache(async () => {
+      // Important-email first: it records what it alerted on, which the real-person check then
+      // reads so a venue's own confirmation of a booking it just announced isn't announced twice.
+      await runImportantEmailAlertsCheckForUser(ownerId).catch((err) =>
+        console.error(`scheduler: important-email check failed for user ${ownerId}`, err)
+      );
       await runAlertsCheckForUser(ownerId).catch((err) =>
         console.error(`scheduler: alerts check failed for user ${ownerId}`, err)
       );
       await runReconciliationCheckForUser(ownerId).catch((err) =>
         console.error(`scheduler: reconciliation check failed for user ${ownerId}`, err)
-      );
-      await runImportantEmailAlertsCheckForUser(ownerId).catch((err) =>
-        console.error(`scheduler: important-email check failed for user ${ownerId}`, err)
       );
       await runOnboardingAlertSummaryFlushForUser(ownerId).catch((err) =>
         console.error(`scheduler: onboarding alert summary flush failed for user ${ownerId}`, err)

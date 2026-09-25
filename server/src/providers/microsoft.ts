@@ -213,6 +213,7 @@ interface GraphMessage {
   webLink?: string;
   body?: { content?: string; contentType?: string };
   hasAttachments?: boolean;
+  internetMessageHeaders?: { name?: string; value?: string }[];
 }
 
 interface GraphAttachment {
@@ -234,11 +235,18 @@ function toUnified(account: AccountRow, m: GraphMessage): UnifiedMessage {
     snippet: m.bodyPreview ?? "",
     receivedAt: m.receivedDateTime ?? "",
     unread: m.isRead === false,
+    // Same signal google.ts's isBulk uses: every marketing platform sets List-Unsubscribe however
+    // ordinary its From address looks. Without it Outlook mail (UNiDAYS, Pinterest, ...) had no
+    // bulk signal at all and pinged as "X emailed you".
+    bulk: (m.internetMessageHeaders ?? []).some(
+      (h) => h.name?.toLowerCase() === "list-unsubscribe" && !!h.value
+    ),
     link: m.webLink,
   };
 }
 
-const MSG_SELECT = "$select=id,subject,from,bodyPreview,receivedDateTime,isRead,webLink";
+const MSG_SELECT =
+  "$select=id,subject,from,bodyPreview,receivedDateTime,isRead,webLink,internetMessageHeaders";
 
 export async function microsoftListMessages(
   account: AccountRow,
