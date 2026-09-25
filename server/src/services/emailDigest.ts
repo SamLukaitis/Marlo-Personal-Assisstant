@@ -4,7 +4,12 @@ import { senderDisplayName } from "./hub.js";
 import { sendToAllNumbers } from "./proactiveDelivery.js";
 import { sendProactiveMessageWithButtons } from "./outbound.js";
 import { emailReferenceNote } from "./emailReference.js";
-import { emailDigestTime, formatDigestTime, realPersonAlertModeChosen } from "./emailAlertSettings.js";
+import {
+  emailDigestTime,
+  formatDigestTime,
+  realPersonAlertModeChosen,
+  realPersonAlertsEnabled,
+} from "./emailAlertSettings.js";
 import { userLocalClock } from "./userTimezone.js";
 
 // Real-person emails held back for the user's once-a-day summary (emailAlertSettings.ts's "digest"
@@ -23,6 +28,8 @@ const INTRO_SENT_KEY = "email_digest_intro_sent";
 const MAX_QUEUED = 200;
 const MAX_NAMED = 5;
 const MAX_SUBJECT_LENGTH = 40;
+// Keeps the first digest, check-in question included, inside a template's 1000-character limit.
+const MAX_NAME_LENGTH = 30;
 
 function readQueue(ownerId: number): DigestEmail[] {
   try {
@@ -49,18 +56,18 @@ export function queuedEmailDigestCount(ownerId: number): number {
   return readQueue(ownerId).length;
 }
 
-function shorten(subject: string): string {
+function shorten(subject: string, max = MAX_SUBJECT_LENGTH): string {
   const flat = subject.replace(/\s+/g, " ").trim();
-  return flat.length > MAX_SUBJECT_LENGTH ? `${flat.slice(0, MAX_SUBJECT_LENGTH - 1)}…` : flat;
+  return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
 }
 
 function digestMessage(ownerId: number, queue: DigestEmail[]): string {
   const userName = getSetting(ownerId, "user_name");
   const greeting = userName ? `${userName}, ` : "";
-  const named = queue.slice(0, MAX_NAMED).map((m) => `${senderDisplayName(m.from)} (${shorten(m.subject)})`);
+  const named = queue.slice(0, MAX_NAMED).map((m) => `${shorten(senderDisplayName(m.from), MAX_NAME_LENGTH)} (${shorten(m.subject)})`);
   const rest = queue.length - named.length;
   return (
-    `📬 ${greeting}${queue.length} email${queue.length === 1 ? "" : "s"} from people today: ` +
+    `📬 ${greeting}${queue.length} new email${queue.length === 1 ? "" : "s"} from people: ` +
     `${named.join(", ")}${rest > 0 ? `, and ${rest} more` : ""}. Ask me about any of them.`
   );
 }
@@ -105,8 +112,12 @@ const INTRO_HISTORY_NOTE =
 // reached (no number, WhatsApp off) keeps their queue and is retried on later ticks.
 export async function flushEmailDigestIfDue(ownerId: number): Promise<void> {
   const { dateKey, hhmm } = userLocalClock(ownerId);
-  if (getSetting(ownerId, LAST_SENT_KEY) === dateKey) return;
+  // ">=": a date later than the user's own (their timezone just moved west) also counts as sent.
+  if ((getSetting(ownerId, LAST_SENT_KEY) ?? "") >= dateKey) return;
   if (hhmm < emailDigestTime(ownerId)) return;
+
+  // They turned people's emails off since these were queued, so they don't want them sent.
+  if (!realPersonAlertsEnabled(ownerId)) writeQueue(ownerId, []);
 
   const queue = readQueue(ownerId);
   if (queue.length === 0) {

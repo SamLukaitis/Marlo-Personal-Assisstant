@@ -23,7 +23,9 @@ const {
   consumePendingAction,
 } = await import("../db/store.js");
 const { queueForEmailDigest, flushEmailDigestIfDue, queuedEmailDigestCount } = await import("./emailDigest.js");
-const { setEmailDigestTime, setRealPersonAlertMode } = await import("./emailAlertSettings.js");
+const { setEmailDigestTime, setRealPersonAlertMode, setRealPersonAlertsEnabled } = await import(
+  "./emailAlertSettings.js"
+);
 const { setUserTimezone } = await import("./userTimezone.js");
 const { DateTime } = await import("luxon");
 
@@ -92,7 +94,7 @@ describe("flushEmailDigestIfDue", () => {
     expect(sendWhatsAppMessage).toHaveBeenCalledTimes(1);
     const [sentTo, text] = vi.mocked(sendWhatsAppMessage).mock.calls[0];
     expect(sentTo).toBe(phone);
-    expect(text).toContain("2 emails");
+    expect(text).toContain("2 new emails");
     expect(text).toContain("Sarah Jones");
     expect(text).toContain("Lunch on Sunday?");
     expect(text).toContain("Dr Patel");
@@ -183,7 +185,7 @@ describe("flushEmailDigestIfDue", () => {
     await flushEmailDigestIfDue(user.id);
 
     const [, text] = vi.mocked(sendWhatsAppMessage).mock.calls[0];
-    expect(text).toContain("8 emails");
+    expect(text).toContain("8 new emails");
     expect(text).toContain("Person0");
     expect(text).toContain("Person4");
     expect(text).not.toContain("Person5");
@@ -301,6 +303,25 @@ describe("flushEmailDigestIfDue", () => {
     expect(text).toContain("instant");
   });
 
+  it("keeps the whole check-in question inside a template even with long names and subjects", async () => {
+    const user = newUser("digest-intro-long");
+    registerUndecidedPhone(user.id, { messagedRecently: false });
+    setSetting(user.id, "user_name", "Bartholomew-Alexander");
+    queueForEmailDigest(
+      user.id,
+      Array.from({ length: 12 }, (_, i) =>
+        email(`m${i}`, `${"Very Long Sender Name ".repeat(6)}${i} <p${i}@example.com>`, "Subject ".repeat(30))
+      )
+    );
+
+    setLocalTime("21:05");
+    await flushEmailDigestIfDue(user.id);
+
+    const [, , text] = vi.mocked(sendWhatsAppTemplate).mock.calls[0];
+    expect(text.length).toBeLessThanOrEqual(1000);
+    expect(text).toMatch(/every email as it arrives\.$/);
+  });
+
   it("doesn't ask a user who already chose the digest themselves", async () => {
     const user = newUser("digest-intro-chosen");
     registerActivePhone(user.id);
@@ -337,6 +358,32 @@ describe("flushEmailDigestIfDue", () => {
     const actionId = buttons[0].id.split(":")[1];
     vi.setSystemTime(new Date(2026, 8, 12, 21, 5)); // two days later
     expect(consumePendingAction(actionId, user.id)?.mode).toBe("email_digest");
+  });
+
+  it("drops the queue instead of sending it if the user turned people's emails off", async () => {
+    const user = newUser("digest-turned-off");
+    registerActivePhone(user.id);
+    queueForEmailDigest(user.id, [email("m1", "Sarah <sarah@example.com>", "Hi")]);
+    setRealPersonAlertsEnabled(user.id, false);
+
+    setLocalTime("21:05");
+    await flushEmailDigestIfDue(user.id);
+
+    expect(sendWhatsAppMessage).not.toHaveBeenCalled();
+    expect(sendChoiceMessage).not.toHaveBeenCalled();
+    expect(queuedEmailDigestCount(user.id)).toBe(0);
+  });
+
+  it("treats a last-sent date later than the user's own date as already sent", async () => {
+    const user = newUser("digest-date-ahead");
+    registerActivePhone(user.id);
+    queueForEmailDigest(user.id, [email("m1", "Sarah <sarah@example.com>", "Hi")]);
+    setSetting(user.id, "last_email_digest_date", "2026-09-11");
+
+    setLocalTime("21:05", 10);
+    await flushEmailDigestIfDue(user.id);
+    expect(sendWhatsAppMessage).not.toHaveBeenCalled();
+    expect(queuedEmailDigestCount(user.id)).toBe(1);
   });
 
   it("tolerates a corrupted queue", async () => {

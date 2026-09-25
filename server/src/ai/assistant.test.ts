@@ -32,6 +32,7 @@ import {
 import type { UnifiedMessage } from "../providers/types.js";
 import {
   findOrCreateUserByEmail,
+  addPhoneNumberForUser,
   createPendingAction,
   consumePendingAction,
   setToolEnabled,
@@ -609,6 +610,11 @@ describe("remember tool — no longer schedules anything", () => {
   });
 });
 
+// The test database keeps phone numbers between runs, and a number belongs to one account only.
+function randomUkMobile(): string {
+  return `447911${String(Math.floor(Math.random() * 1_000_000)).padStart(6, "0")}`;
+}
+
 describe("set_reminder tool", () => {
   it("is always available, same as remember", () => {
     const user = findOrCreateUserByEmail(uniqueEmail("reminder-available"));
@@ -655,6 +661,33 @@ describe("set_reminder tool", () => {
 
     expect(result.ok).toBe(true);
     expect(listActiveRemindersForOwner(user.id)).toHaveLength(1);
+  });
+
+  it("uses a timezone guessed from the phone number, and says which zone it assumed", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("reminder-guessed-tz"));
+    addPhoneNumberForUser(user.id, randomUkMobile());
+    const result = (await runTool(user.id, "set_reminder", {
+      message: "Call the bank",
+      mode: "once",
+      local_time: "15:00",
+    })) as { ok: true; timezone_note?: string };
+
+    expect(result.ok, JSON.stringify(result)).toBe(true);
+    expect(result, JSON.stringify(result)).toHaveProperty("timezone_note");
+    expect(result.timezone_note).toContain("Europe/London");
+    expect(result.timezone_note).toMatch(/share their location/);
+  });
+
+  it("adds no timezone note once the zone is confirmed", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("reminder-confirmed-tz"));
+    addPhoneNumberForUser(user.id, randomUkMobile());
+    setUserTimezone(user.id, "Europe/London");
+    const result = (await runTool(user.id, "set_reminder", {
+      message: "Call the bank",
+      mode: "once",
+      local_time: "15:00",
+    })) as { ok: true; timezone_note?: string };
+    expect(result.timezone_note).toBeUndefined();
   });
 
   it("schedules an interval reminder with a window", async () => {
@@ -709,6 +742,14 @@ describe("get_current_time tool", () => {
     const user = findOrCreateUserByEmail(uniqueEmail("time-no-tz"));
     const result = (await runTool(user.id, "get_current_time", {})) as { error: string };
     expect(result.error).toMatch(/timezone/i);
+  });
+
+  it("flags a zone that's only guessed from the phone number", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("time-guessed-tz"));
+    addPhoneNumberForUser(user.id, randomUkMobile());
+    const result = (await runTool(user.id, "get_current_time", {})) as { timezone: string; timezone_note?: string };
+    expect(result.timezone).toBe("Europe/London");
+    expect(result.timezone_note).toContain("assumed from their phone number");
   });
 
   it("reports the current time in the user's set timezone once known", async () => {

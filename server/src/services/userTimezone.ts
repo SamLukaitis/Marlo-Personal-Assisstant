@@ -44,11 +44,17 @@ function timezoneFromCoords(latitude: number, longitude: number): string | null 
   }
 }
 
+// The latest check-in with a real GPS point. Check-ins read off documents (a booking, a boarding
+// pass) have no coordinates and may be dated in the future, so they are skipped rather than
+// allowed to hide the last place the user actually was.
 function latestCheckinZone(ownerId: number): { zone: string; at: number } | null {
   if (!getEnabledTools(ownerId).has("travel")) return null;
-  const lastCheckin = listCheckins(ownerId, 1)[0];
-  if (!lastCheckin || lastCheckin.latitude == null || lastCheckin.longitude == null) return null;
-  const zone = timezoneFromCoords(lastCheckin.latitude, lastCheckin.longitude);
+  const now = Date.now();
+  const lastCheckin = listCheckins(ownerId).find(
+    (c) => c.latitude != null && c.longitude != null && c.checkedInAt <= now
+  );
+  if (!lastCheckin) return null;
+  const zone = timezoneFromCoords(lastCheckin.latitude!, lastCheckin.longitude!);
   return zone ? { zone, at: lastCheckin.checkedInAt } : null;
 }
 
@@ -60,16 +66,24 @@ function phoneGuessZone(ownerId: number): string | null {
   return null;
 }
 
-export function getUserTimezone(ownerId: number): string | null {
+// `guessed` is true when the zone comes only from the phone number — callers that act on an exact
+// clock time (reminders) say which zone they assumed, so a wrong guess gets noticed and corrected.
+export function resolveUserTimezone(ownerId: number): { zone: string | null; guessed: boolean } {
   const stored = getSetting(ownerId, TIMEZONE_SETTING_KEY);
-  if (stored && getSetting(ownerId, TIMEZONE_SOURCE_KEY) !== "location") return stored;
+  if (stored && getSetting(ownerId, TIMEZONE_SOURCE_KEY) !== "location") return { zone: stored, guessed: false };
 
   const checkin = latestCheckinZone(ownerId);
   if (stored) {
     const sharedAt = Number(getSetting(ownerId, TIMEZONE_SET_AT_KEY) ?? "0") || 0;
-    return checkin && checkin.at > sharedAt ? checkin.zone : stored;
+    return { zone: checkin && checkin.at > sharedAt ? checkin.zone : stored, guessed: false };
   }
-  return checkin?.zone ?? phoneGuessZone(ownerId);
+  if (checkin) return { zone: checkin.zone, guessed: false };
+  const phoneZone = phoneGuessZone(ownerId);
+  return { zone: phoneZone, guessed: phoneZone !== null };
+}
+
+export function getUserTimezone(ownerId: number): string | null {
+  return resolveUserTimezone(ownerId).zone;
 }
 
 // The user's current wall-clock date ("YYYY-MM-DD") and time ("HH:MM") for "send at 9pm"-style

@@ -68,7 +68,17 @@ import { fetchWeather } from "../providers/weather.js";
 import { fetchQuotes, DEFAULT_SYMBOLS } from "../providers/markets.js";
 import { countTravelDays } from "../services/travelDays.js";
 import { resolveReminderTime, ReminderTimeError, type ReminderTimeInput } from "../services/reminderTime.js";
-import { getUserTimezone } from "../services/userTimezone.js";
+import { resolveUserTimezone } from "../services/userTimezone.js";
+
+// Added to a tool result when the user's timezone is only inferred from their phone number, so the
+// reply names the zone it used instead of silently acting on a guess.
+function guessedTimezoneNote(zone: string): string {
+  return (
+    `The user's timezone (${zone}) is only assumed from their phone number, not confirmed. Say which ` +
+    `time zone you used (e.g. "10am UK time"), and that if they're somewhere else they can share their ` +
+    `location via WhatsApp (attachment/+ icon → Location) to fix it.`
+  );
+}
 import { DateTime } from "luxon";
 import { findFreeSlots } from "../services/freeSlots.js";
 import { buildSpendingDigest } from "../services/spendingDigest.js";
@@ -1311,7 +1321,7 @@ export async function runTool(
       return facts.map((f) => factForModel(ownerId, f));
     }
     case "get_current_time": {
-      const timezone = getUserTimezone(ownerId);
+      const { zone: timezone, guessed } = resolveUserTimezone(ownerId);
       if (!timezone) {
         return {
           error:
@@ -1323,6 +1333,7 @@ export async function runTool(
       return {
         timezone,
         current_time: now.toFormat("cccc, LLLL d, yyyy, h:mm a"),
+        ...(guessed ? { timezone_note: guessedTimezoneNote(timezone) } : {}),
       };
     }
     case "check_reminder_status":
@@ -1365,7 +1376,7 @@ export async function runTool(
       // until_reply is purely relative-to-now — no clock time involved, so no timezone needed.
       // once/interval need a real local-time-to-instant conversion, which needs a known zone.
       const needsTimezone = timeInput.mode !== "until_reply" && timeInput.localTime != null;
-      const timezone = needsTimezone ? getUserTimezone(ownerId) : null;
+      const { zone: timezone, guessed } = needsTimezone ? resolveUserTimezone(ownerId) : { zone: null, guessed: false };
       if (needsTimezone && !timezone) {
         return {
           error:
@@ -1384,7 +1395,12 @@ export async function runTool(
           intervalMs: resolved.intervalMs,
           windowEndAt: resolved.windowEndAt,
         });
-        return { ok: true, reminder_id: reminder.id, next_fire_at: reminder.nextFireAt };
+        return {
+          ok: true,
+          reminder_id: reminder.id,
+          next_fire_at: reminder.nextFireAt,
+          ...(guessed && timezone ? { timezone_note: guessedTimezoneNote(timezone) } : {}),
+        };
       } catch (err) {
         if (err instanceof ReminderTimeError) return { error: err.message };
         throw err;
@@ -1936,9 +1952,11 @@ export function buildSystemPrompt(ownerId: number, conversationSummary?: string)
   // (not the server's, which runs in whatever zone it's deployed to — UTC on Railway) so this
   // can't be a day off from the user's actual local date. Falls back to UTC, flagged as such,
   // only when no timezone is known yet for this user.
-  const timezone = getUserTimezone(ownerId);
+  const { zone: timezone, guessed: timezoneGuessed } = resolveUserTimezone(ownerId);
   const todayLine = timezone
-    ? `Today's date is ${DateTime.now().setZone(timezone).toFormat("cccc, LLLL d, yyyy")} (${timezone} time).`
+    ? `Today's date is ${DateTime.now().setZone(timezone).toFormat("cccc, LLLL d, yyyy")} (${timezone} time${
+        timezoneGuessed ? ", assumed from the user's phone number and not confirmed" : ""
+      }).`
     : `Today's date is ${DateTime.now().setZone("utc").toFormat("cccc, LLLL d, yyyy")} UTC — the user's own timezone isn't known yet, so this may not match their local calendar day. Use set_reminder as normal (it asks for the timezone itself if it needs one); for anything else date-sensitive, prefer asking the user to confirm rather than assuming this date is their local one.`;
 
   return [

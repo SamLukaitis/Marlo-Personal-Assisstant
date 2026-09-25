@@ -16,7 +16,9 @@ vi.mock("./briefing.js", async (importOriginal) => {
 });
 
 const { sendWhatsAppMessage } = await import("../providers/whatsapp.js");
-const { findOrCreateUserByEmail, addPhoneNumberForUser, recordInboundMessage } = await import("../db/store.js");
+const { findOrCreateUserByEmail, addPhoneNumberForUser, recordInboundMessage, setSetting } = await import(
+  "../db/store.js"
+);
 const { saveBriefingSettings } = await import("./briefing.js");
 const { setUserTimezone } = await import("./userTimezone.js");
 const { runDailyCheckForUser } = await import("./scheduler.js");
@@ -83,6 +85,22 @@ describe("morning briefing send time", () => {
     vi.setSystemTime(new Date("2026-09-10T21:45:00Z"));
     await runDailyCheckForUser(user.id);
     expect(sendWhatsAppMessage).toHaveBeenCalledTimes(2);
+  });
+
+  // Hawaii on deploy day: the old stamp is the server's (UTC) date, already tomorrow for them.
+  it("a last-sent date ahead of the user's own date counts as already sent", async () => {
+    const { user } = newSubscriber("Pacific/Honolulu");
+    setSetting(user.id, "last_proactive_send_date", "2026-09-10");
+
+    // 18:00 UTC on the 9th is 08:00 on the 9th in Honolulu: the stamp is ahead, so nothing.
+    vi.setSystemTime(new Date("2026-09-09T18:00:00Z"));
+    await runDailyCheckForUser(user.id);
+    expect(sendWhatsAppMessage).not.toHaveBeenCalled();
+
+    // 18:00 UTC on the 11th is 08:00 on the 11th in Honolulu: a new day, so it goes.
+    vi.setSystemTime(new Date("2026-09-11T18:00:00Z"));
+    await runDailyCheckForUser(user.id);
+    expect(sendWhatsAppMessage).toHaveBeenCalledTimes(1);
   });
 
   it("a user across the world gets it at their own 07:30", async () => {

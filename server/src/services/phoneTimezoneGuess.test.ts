@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { AREA_CODES_BY_ZONE, guessTimezoneFromPhone } from "./phoneTimezoneGuess.js";
+import { getCountries, getCountryCallingCode } from "libphonenumber-js/min";
+import { AREA_CODES_BY_ZONE, MAIN_COUNTRY_FOR_SHARED_CODE, guessTimezoneFromPhone } from "./phoneTimezoneGuess.js";
 import { isValidIanaTimezone } from "./userTimezone.js";
 
 describe("guessTimezoneFromPhone", () => {
@@ -42,6 +43,37 @@ describe("guessTimezoneFromPhone", () => {
     expect(guessTimezoneFromPhone("353851234567")).toBe("Europe/Dublin");
     expect(guessTimezoneFromPhone("919812345678")).toBe("Asia/Kolkata");
     expect(guessTimezoneFromPhone("4915123456789")).toBe("Europe/Berlin");
+  });
+
+  // +44 is shared with the Crown Dependencies, whose zones the tz database lists as aliases of London.
+  it("places Guernsey, Jersey and Isle of Man numbers on London's clock", () => {
+    expect(guessTimezoneFromPhone("447911123456")).toBe("Europe/London"); // Guernsey
+    expect(guessTimezoneFromPhone("447797123456")).toBe("Europe/London"); // Jersey
+    expect(guessTimezoneFromPhone("447624123456")).toBe("Europe/London"); // Isle of Man
+  });
+
+  it("gives every country a usable guess, never an invalid zone", () => {
+    for (const country of ["GG", "JE", "IM", "AX", "SJ", "VA", "SM", "MC", "LI", "GI"]) {
+      const zone = guessTimezoneFromPhone(
+        { GG: "447911123456", JE: "447797123456", IM: "447624123456", AX: "358181234567", SJ: "4779123456", VA: "3906698123456", SM: "378661234567", MC: "37799123456", LI: "4237812345", GI: "35020012345" }[country]!
+      );
+      if (zone !== null) expect(isValidIanaTimezone(zone), `${country}: ${zone}`).toBe(true);
+    }
+  });
+
+  it("falls back to the calling code's main country for a number in an unallocated range", () => {
+    expect(guessTimezoneFromPhone("447911999999")).toBe("Europe/London");
+    expect(guessTimezoneFromPhone("15551234567")).toBe("America/New_York");
+  });
+
+  it("names a main country for every calling code that several countries share", () => {
+    const shared = new Map<string, number>();
+    for (const c of getCountries()) {
+      const code = getCountryCallingCode(c);
+      shared.set(code, (shared.get(code) ?? 0) + 1);
+    }
+    const missing = [...shared].filter(([code, n]) => n > 1 && !(code in MAIN_COUNTRY_FOR_SHARED_CODE)).map(([c]) => c);
+    expect(missing).toEqual([]);
   });
 
   it("gives nothing for a number with no recognisable country", () => {

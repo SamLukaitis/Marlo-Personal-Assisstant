@@ -47,7 +47,9 @@ export async function runDailyCheckForUser(ownerId: number): Promise<void> {
   const settings = getBriefingSettings(ownerId);
   if (!settings.proactive) return;
   const { dateKey, hhmm } = userLocalClock(ownerId);
-  if (getSetting(ownerId, "last_proactive_send_date") === dateKey) return;
+  // ">=": a stamp later than the user's own date (their timezone moved west, or the day the
+  // stamp switched from server-local to user-local dates) also counts as already sent today.
+  if ((getSetting(ownerId, "last_proactive_send_date") ?? "") >= dateKey) return;
   if (hhmm < settings.sendTime) return;
 
   if (!isWhatsAppConfigured()) {

@@ -8,9 +8,41 @@
 //   3. Other countries with several zones: the zone most people live in (DEFAULT_ZONE_BY_COUNTRY).
 //   4. Any other country with one zone, or several that keep identical time all year.
 //   5. Otherwise nothing.
-import { parsePhoneNumberFromString } from "libphonenumber-js/min";
+import {
+  parsePhoneNumberFromString,
+  getCountries,
+  getCountryCallingCode,
+  type CountryCode,
+} from "libphonenumber-js/min";
 import { getTimezonesForCountry } from "countries-and-timezones";
 import { DateTime } from "luxon";
+
+// Calling codes several countries share, and the one most of their numbers belong to.
+export const MAIN_COUNTRY_FOR_SHARED_CODE: Record<string, CountryCode> = {
+  "1": "US",
+  "7": "RU",
+  "44": "GB",
+  "47": "NO",
+  "61": "AU",
+  "39": "IT",
+  "212": "MA",
+  "262": "RE",
+  "290": "SH",
+  "358": "FI",
+  "590": "GP",
+  "599": "CW",
+};
+
+const countriesByCallingCode = new Map<string, CountryCode[]>();
+for (const country of getCountries()) {
+  const code = getCountryCallingCode(country);
+  countriesByCallingCode.set(code, [...(countriesByCallingCode.get(code) ?? []), country]);
+}
+
+function mainCountryForCallingCode(code: string): CountryCode | undefined {
+  const countries = countriesByCallingCode.get(code) ?? [];
+  return countries.length === 1 ? countries[0] : MAIN_COUNTRY_FOR_SHARED_CODE[code];
+}
 
 export const AREA_CODES_BY_ZONE: Record<string, string[]> = {
   "America/New_York": [
@@ -91,7 +123,8 @@ const singleZoneByCountry = new Map<string, string | null>();
 function singleZoneForCountry(country: string): string | null {
   const known = singleZoneByCountry.get(country);
   if (known !== undefined) return known;
-  const zones = (getTimezonesForCountry(country) ?? []).filter((t) => !t.aliasOf).map((t) => t.name);
+  // An alias (Guernsey's zone is London's) counts as the zone it points to, not as nothing.
+  const zones = [...new Set((getTimezonesForCountry(country) ?? []).map((t) => t.aliasOf ?? t.name))];
   const year = DateTime.utc().year;
   const offsets = (zone: string) =>
     [DateTime.utc(year, 1, 15), DateTime.utc(year, 7, 15)].map((d) => d.setZone(zone).offset).join(",");
@@ -104,12 +137,18 @@ function singleZoneForCountry(country: string): string | null {
 // `phone` is the number's digits with the country code, no "+" (how numbers are stored).
 export function guessTimezoneFromPhone(phone: string): string | null {
   const parsed = parsePhoneNumberFromString(`+${phone}`);
-  const country = parsed?.country;
-  if (!parsed || !country) return null;
+  if (!parsed) return null;
+  // The library only names the country for a number in a range it knows is allocated; otherwise
+  // fall back to the calling code's main country (+44 is the UK, +1 the US), which is right for
+  // almost everyone who shares it.
+  const country = parsed.country ?? mainCountryForCallingCode(parsed.countryCallingCode);
+  if (!country) return null;
 
-  if (country === "US" || country === "CA") {
-    return ZONE_BY_AREA_CODE.get(parsed.nationalNumber.slice(0, 3)) ?? DEFAULT_ZONE_BY_COUNTRY[country];
+  if (parsed.countryCallingCode === "1") {
+    const byAreaCode = ZONE_BY_AREA_CODE.get(parsed.nationalNumber.slice(0, 3));
+    if (byAreaCode) return byAreaCode;
   }
+  if (country === "US" || country === "CA") return DEFAULT_ZONE_BY_COUNTRY[country];
   if (country === "AU" && parsed.nationalNumber.startsWith("7")) return "Australia/Brisbane";
   return DEFAULT_ZONE_BY_COUNTRY[country] ?? singleZoneForCountry(country);
 }
