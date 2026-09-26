@@ -65,6 +65,7 @@ import { validateTrip, type ExpenseData, type BookingData, type TripData } from 
 import { listLocalFolders } from "../providers/local.js";
 import { fetchHeadlines, NEWS_TOPICS, type NewsTopic } from "../providers/news.js";
 import { fetchWeather } from "../providers/weather.js";
+import { isMapsConfigured, searchPlaces, computeRoute } from "../providers/maps.js";
 import { fetchQuotes, DEFAULT_SYMBOLS } from "../providers/markets.js";
 import { countTravelDays } from "../services/travelDays.js";
 import { resolveReminderTime, ReminderTimeError, type ReminderTimeInput } from "../services/reminderTime.js";
@@ -1096,12 +1097,67 @@ const CONDITIONAL_TOOLS: Record<ToolKey, Anthropic.Tool[]> = {
   ],
 };
 
+// Google Maps Grounding Lite (providers/maps.ts), offered only when GOOGLE_MAPS_API_KEY is set —
+// constant for the life of the process, so it never varies the cached tools prefix between
+// requests. Pinned definitions, not the MCP server's own listTools() output: see
+// services/mcpClient.ts for why.
+const MAPS_TOOLS: Anthropic.Tool[] = [
+  {
+    name: "find_places",
+    description:
+      "Find real places (restaurants, cafés, pharmacies, hotels, shops, attractions…) from Google Maps: name, address, rating, whether it's open now, and a Google Maps link. Use this instead of web_search for any request to find or recommend places. For 'near me', pass latitude/longitude from the most recent '[User shared their location: lat, lng]' line in the conversation if it's under ~2 hours old. For a named area ('ramen in Lisbon', 'cafés near Borough Market'), put the area in the query and omit coordinates. For city-scale asks with no place named ('good restaurants here'), you may use the user's latest travel check-in city as the area if list_travel_checkins is available. If the user means near them specifically and there's no recent pin, call request_location instead of guessing. Always end your answer with the places' Google Maps links (and any attribution in the result) as sources.",
+    input_schema: {
+      type: "object",
+      properties: {
+        query: { type: "string", description: "What to find, including the area if not using coordinates, e.g. 'pharmacy open now' or 'ramen in Lisbon'." },
+        latitude: { type: "number", description: "Latitude of the user's recent pin. Pass together with longitude, or neither." },
+        longitude: { type: "number", description: "Longitude of the user's recent pin. Pass together with latitude, or neither." },
+        radius_meters: { type: "number", description: "Search radius around the coordinates, default 2000." },
+      },
+      required: ["query"],
+    },
+  },
+  {
+    name: "get_route",
+    description:
+      "Driving or walking distance and travel time between two places, from Google Maps. Driving and walking only — if asked about public transport, say plainly you can only give driving or walking times rather than inventing one. Origin/destination can be an address or place name, or 'lat,lng' from the user's recent pin. Cite the result's attribution as the source.",
+    input_schema: {
+      type: "object",
+      properties: {
+        origin: { type: "string", description: "Start: an address/place name, or 'lat,lng'." },
+        destination: { type: "string", description: "End: an address/place name, or 'lat,lng'." },
+        mode: { type: "string", enum: ["drive", "walk"], description: "Default drive." },
+      },
+      required: ["origin", "destination"],
+    },
+  },
+  {
+    name: "request_location",
+    description:
+      "Ask the user to share their current location with a one-tap 'Send location' button on WhatsApp. Use when they ask for something near them and there's no '[User shared their location: …]' line from the last ~2 hours. Call it ALONE — the only tool call in your turn. When they share it, you'll get their location as the next message; answer their original question then.",
+    input_schema: {
+      type: "object",
+      properties: {
+        message: {
+          type: "string",
+          description: "One short sentence saying what you'll do with it, e.g. \"Tap below to share where you are and I'll find the nearest pharmacy.\"",
+        },
+      },
+      required: ["message"],
+    },
+  },
+];
+
+export const MAX_MAPS_CALLS_PER_MESSAGE = 5;
+const MAPS_CALL_TOOLS = new Set(["find_places", "get_route"]);
+
 export function buildToolsForOwner(ownerId: number): Anthropic.ToolUnion[] {
   const enabled = getEnabledTools(ownerId);
   const result = [...ALWAYS_ON_TOOLS];
   for (const key of TOOL_KEYS) {
     if (enabled.has(key)) result.push(...CONDITIONAL_TOOLS[key]);
   }
+  if (isMapsConfigured()) result.push(...MAPS_TOOLS);
   // Cache breakpoint must be on the LAST tool schema in the array — which tool that is now
   // depends on which conditional tools are enabled, so it's set dynamically here rather than
   // hardcoded on one specific tool definition like before.
@@ -1526,6 +1582,34 @@ export async function runTool(
       const report = await fetchWeather(input.location as string);
       return report ?? { error: `couldn't find a place called "${input.location as string}"` };
     }
+    case "find_places": {
+      if (!isMapsConfigured()) return { error: "Maps lookups aren't set up on this server." };
+      const lat = typeof input.latitude === "number" ? input.latitude : undefined;
+      const lng = typeof input.longitude === "number" ? input.longitude : undefined;
+      try {
+        return await searchPlaces({
+          query: String(input.query ?? ""),
+          ...(lat !== undefined && lng !== undefined ? { near: { latitude: lat, longitude: lng } } : {}),
+          ...(typeof input.radius_meters === "number" ? { radiusMeters: input.radius_meters } : {}),
+        });
+      } catch (err) {
+        console.warn("find_places: Maps lookup failed", err);
+        return { error: `Couldn't reach Google Maps: ${(err as Error).message}` };
+      }
+    }
+    case "get_route": {
+      if (!isMapsConfigured()) return { error: "Maps lookups aren't set up on this server." };
+      try {
+        return await computeRoute({
+          origin: String(input.origin ?? ""),
+          destination: String(input.destination ?? ""),
+          mode: input.mode === "walk" ? "walk" : "drive",
+        });
+      } catch (err) {
+        console.warn("get_route: Maps lookup failed", err);
+        return { error: `Couldn't reach Google Maps: ${(err as Error).message}` };
+      }
+    }
     case "get_markets": {
       const requested = (input.symbols as string[] | undefined) ?? [];
       const quotes = await fetchQuotes(requested.length ? requested : DEFAULT_SYMBOLS);
@@ -1863,6 +1947,14 @@ export interface ChatMessage {
   content: string;
 }
 
+// Which places rule applies depends on whether Google Maps is configured (providers/maps.ts):
+// without it, web_search stays the places tool and the model hand-builds Maps links.
+const WEB_SEARCH_RULE_NO_MAPS =
+  "- Use web_search for questions you don't have another tool for — nearby places (hotels, restaurants, attractions), current prices/events, or anything else that needs a live answer from the web rather than what you already know. Attribute the answer to what search turned up rather than presenting it as verified fact — e.g. \"these consistently come up as favorites near X\" or \"per current listings, ...\" — don't frame it as a disclaimer about lacking personal experience (you're an assistant, not a diner; that framing reads as oddly defensive rather than just informative). When you recommend a specific place, include a Google Maps link built as https://www.google.com/maps/search/?api=1&query=<url-encoded name and address/area> so the user can open it directly — never invent coordinates, and never claim you've sent a location pin (you haven't).";
+
+const WEB_SEARCH_RULE_WITH_MAPS =
+  "- Use find_places to find or recommend places and get_route for driving/walking times — they return real Google Maps data. Use web_search only for what Maps doesn't cover (reviews in depth, events, menus, prices, news). For anything near the user with no shared location from the last ~2 hours, call request_location rather than guessing where they are. Always list the Google Maps links (and any attribution) from the Maps result as sources right after your answer. Never invent coordinates or place details, and never claim you've sent a location pin (you haven't).";
+
 function buildRules(enabled: Set<ToolKey>): string {
   const base = [
     "- Always look up real data with your tools before answering questions about email, calendar, or files — never invent contents.",
@@ -1897,7 +1989,7 @@ function buildRules(enabled: Set<ToolKey>): string {
     "- Use get_weather and get_markets for weather and stock/index questions. The same rule applies: report only what the tool returned. Never state a price, a percentage move, or a forecast you didn't just fetch.",
     "- If the user asks to connect/set up Xero: Xero gives each account a unique forwarding email (in Xero: Business > Bills to pay, or Accounting > Bills — the 'email bills to this address' address). Ask them to paste it, then call connect_xero with exactly what they send — never guess or fill in an address yourself. Once connected, receipts they send that are filed under 'receipts' and yield a recognized expense are forwarded to Xero automatically in the background — this already works, don't tell the user it's unbuilt or manual.",
     "- There are TWO separate paths to Xero, both already built: (1) a WhatsApp photo/PDF filed as a receipt forwards automatically, no confirmation needed. (2) Email is scanned periodically (every few minutes) for invoice-looking automated mail; ONLY when that scan actually flags one do you get a pending confirmation to offer 'reply yes to forward' (see below) — the scan hasn't necessarily run yet or matched a given email, so no pending confirmation does NOT mean email invoices are unsupported. If the user asks about a specific email invoice with nothing pending, never claim this feature only works for WhatsApp — instead offer to call extract_email_attachment on it directly, which also triggers the same automatic Xero forwarding once it's saved as a receipt with a real expense, just without the alert/confirm step.",
-    "- Use web_search for questions you don't have another tool for — nearby places (hotels, restaurants, attractions), current prices/events, or anything else that needs a live answer from the web rather than what you already know. Attribute the answer to what search turned up rather than presenting it as verified fact — e.g. \"these consistently come up as favorites near X\" or \"per current listings, ...\" — don't frame it as a disclaimer about lacking personal experience (you're an assistant, not a diner; that framing reads as oddly defensive rather than just informative). When you recommend a specific place, include a Google Maps link built as https://www.google.com/maps/search/?api=1&query=<url-encoded name and address/area> so the user can open it directly — never invent coordinates, and never claim you've sent a location pin (you haven't).",
+    isMapsConfigured() ? WEB_SEARCH_RULE_WITH_MAPS : WEB_SEARCH_RULE_NO_MAPS,
   ];
   const travel = [
     "- Use list_travel_checkins for questions about where the user has physically been or when they arrived somewhere — this is automatic location history, separate from documents.",
@@ -2112,6 +2204,10 @@ export async function runAssistantChat(
   // via finish() below, rather than once per turn — admins want "how many times was the assistant
   // actually asked something" and "how many tokens did that cost", not internal loop iterations.
   const usageTotals = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0 };
+  // Maps calls made while answering this one user message — same blast-radius guard as
+  // web_search's max_uses. Counted synchronously inside the map below, so parallel calls in one
+  // response are counted too.
+  let mapsCalls = 0;
   const channel = phone ? "whatsapp" : "web";
   function finish(reply: AssistantReply): AssistantReply {
     recordApiUsage(
@@ -2188,6 +2284,20 @@ export async function runAssistantChat(
       return finish({ text: "", reaction: { emoji: input.emoji as string } });
     }
 
+    // request_location is a hard stop too — the answer arrives as the user's next message (their
+    // shared pin, via chatDispatch.handleLocation), not as a tool result. It wins over any other
+    // tool call in the same response, same as ask_user_choice. The web has no location button,
+    // so there it becomes a plain question instead of "tap below" with nothing to tap.
+    const locationUse = toolUses.find((t) => t.name === "request_location");
+    if (locationUse) {
+      if (!phone) {
+        return finish({ text: "Where are you? Tell me the area or an address and I'll look it up." });
+      }
+      const raw = (locationUse.input as Record<string, unknown>).message;
+      const message = typeof raw === "string" && raw.trim() ? raw.trim() : "Tap below to share your location and I'll look it up.";
+      return finish({ text: message, locationRequest: true });
+    }
+
     // flag_unmet_request is a fire-and-forget log, not a tool whose result the model needs fed
     // back to keep reasoning — its own instructions tell the model to call it "alongside your
     // normal reply, same turn," meaning the actual reply text is usually already sitting right
@@ -2214,6 +2324,14 @@ export async function runAssistantChat(
               `Error: ${toolUse.name} requires user confirmation before it can run — it was not ` +
               `executed. Call ask_user_choice(mode="confirm", confirm_tool="${toolUse.name}", ` +
               `confirm_input=<the same input>) instead of calling this tool directly.`,
+            is_error: true,
+          };
+        }
+        if (MAPS_CALL_TOOLS.has(toolUse.name) && ++mapsCalls > MAX_MAPS_CALLS_PER_MESSAGE) {
+          return {
+            type: "tool_result" as const,
+            tool_use_id: toolUse.id,
+            content: "Error: Maps lookup limit reached for this message — answer with what you already have.",
             is_error: true,
           };
         }
