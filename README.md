@@ -23,7 +23,7 @@ Marlowe can be used from the web app and, optionally, through WhatsApp. It is de
 
 - Access is **invite-only**. An administrator must invite an email address before that person can use the application.
 - Each user's connected accounts, documents, settings, memories, phone numbers, and conversations are isolated by tenant-aware API routes.
-- Marlowe creates email drafts but does not send email automatically.
+- Marlowe never sends email on its own: every email it writes is shown to the user first and only sent after they explicitly tap Send (otherwise it's saved to their Drafts).
 - Calendar actions are limited to the user's own calendar; it does not invite other people to events.
 - Archiving email is non-destructive; messages are not deleted by the assistant.
 - WhatsApp webhooks use Meta verification/signature checks, and only registered phone numbers are routed to a user's assistant.

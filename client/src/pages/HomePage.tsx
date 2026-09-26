@@ -459,9 +459,9 @@ export function HomePage() {
           flip
           eyebrow="Ask for the work"
           title="Say what you want. It goes and does it."
-          body="Drafting replies, moving meetings, digging out the invoice from March. Marlowe writes drafts into your own mailbox for you to send — it never sends mail as you."
+          body="Drafting replies, moving meetings, digging out the invoice from March. Marlowe shows you every email it writes, and only sends it once you tap Send."
           ask="Reply to Priya — Thursday works, but make it 3pm"
-          reply="Draft's sitting in your Gmail, ready for you to look over and send."
+          reply="Here's the draft — tap Send, Edit, or Leave in Drafts."
         />
 
         <section className="home-section">
@@ -517,10 +517,10 @@ export function HomePage() {
                   </p>
                 </li>
                 <li>
-                  <h3>It can't send mail as you</h3>
+                  <h3>Nothing sends without you</h3>
                   <p>
-                    Marlowe writes drafts into your mailbox and stops there. You read them and you
-                    press send.
+                    Marlowe shows you every email before it goes. It sends only when you tap Send —
+                    otherwise it stays in your Drafts.
                   </p>
                 </li>
                 <li>
