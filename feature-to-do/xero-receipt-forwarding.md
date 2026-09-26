@@ -21,10 +21,10 @@ switch. Here's what's actually involved, in plain terms:
    someone trying to trick Marlowe in chat) where it sends anywhere other than your one Xero
    address. This directly answers the "only Xero, not runaway email access" concern.
 
-2. **Give Marlowe the ability to send from Outlook/Microsoft too.** Not done — Outlook accounts
-   were only ever given permission to *read* email, not send, so a Microsoft-connected user can't
-   use this yet. Needs one extra permission added and a one-time reconnect. Not urgent while usage
-   is Gmail-only.
+2. **Give Marlowe the ability to send from Outlook/Microsoft too. ✅ Done (2026-09-26).** Outlook
+   now asks for send permission (`microsoftSendMessage` in `server/src/providers/microsoft.ts`).
+   Forwarding uses Gmail if connected, otherwise Outlook. Outlook accounts connected before this
+   are only asked to reconnect the first time a receipt actually needs forwarding — never up front.
 
 3. **Somewhere to store your Xero forwarding address. ✅ Done (2026-08-25).** Ask Marlowe to
    "connect Xero" / "set up Xero" in chat — it explains where to find the forwarding address in
