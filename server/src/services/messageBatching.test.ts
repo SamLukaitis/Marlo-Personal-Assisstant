@@ -12,13 +12,14 @@ vi.mock("./whatsappReply.js", () => ({
 }));
 vi.mock("../providers/whatsapp.js", () => ({
   sendWhatsAppMessage: vi.fn().mockResolvedValue(undefined),
+  sendWhatsAppTypingIndicator: vi.fn().mockResolvedValue(undefined),
 }));
 
 const { getWhatsAppHistory } = await import("../db/store.js");
 const { runAssistantChat } = await import("../ai/assistant.js");
 const { sendAssistantReply } = await import("./whatsappReply.js");
-const { sendWhatsAppMessage } = await import("../providers/whatsapp.js");
-const { queueForAssistant, looksComplete, SHORT_DEBOUNCE_MS, LONG_DEBOUNCE_MS } = await import(
+const { sendWhatsAppMessage, sendWhatsAppTypingIndicator } = await import("../providers/whatsapp.js");
+const { queueForAssistant, looksComplete, SHORT_DEBOUNCE_MS, LONG_DEBOUNCE_MS, HOLDING_MESSAGE_MS, HOLDING_MESSAGES } = await import(
   "./messageBatching.js"
 );
 
@@ -223,5 +224,58 @@ describe("looksComplete", () => {
 
   it("treats an ellipsis-trailing message as incomplete", () => {
     expect(looksComplete("so about that meeting...")).toBe(false);
+  });
+});
+
+describe("holding message on slow replies", () => {
+  function slowReply(ms: number, fail = false) {
+    vi.mocked(runAssistantChat).mockImplementation(
+      () =>
+        new Promise((resolve, reject) =>
+          setTimeout(() => (fail ? reject(new Error("boom")) : resolve({ text: "reply" } as never)), ms)
+        )
+    );
+  }
+
+  it("sends one holding line, then the real reply, when the assistant is slow", async () => {
+    const from = nextPhone();
+    slowReply(HOLDING_MESSAGE_MS * 3);
+    queueForAssistant(1, from, "wamid1", undefined, null, true);
+    await vi.advanceTimersByTimeAsync(SHORT_DEBOUNCE_MS);
+
+    await vi.advanceTimersByTimeAsync(HOLDING_MESSAGE_MS - 1);
+    expect(sendWhatsAppMessage).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(1);
+    expect(sendWhatsAppMessage).toHaveBeenCalledTimes(1);
+    expect(HOLDING_MESSAGES).toContain(vi.mocked(sendWhatsAppMessage).mock.calls[0][1]);
+    // Re-shows the "..." dots, which WhatsApp drops after ~25s.
+    expect(sendWhatsAppTypingIndicator).toHaveBeenCalledWith("wamid1");
+    expect(sendAssistantReply).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(HOLDING_MESSAGE_MS * 3);
+    expect(sendWhatsAppMessage).toHaveBeenCalledTimes(1);
+    expect(sendAssistantReply).toHaveBeenCalledTimes(1);
+  });
+
+  it("sends no holding line when the reply is quick", async () => {
+    const from = nextPhone();
+    slowReply(HOLDING_MESSAGE_MS - 100);
+    queueForAssistant(1, from, "wamid1", undefined, null, true);
+    await vi.advanceTimersByTimeAsync(SHORT_DEBOUNCE_MS + HOLDING_MESSAGE_MS * 3);
+
+    expect(sendAssistantReply).toHaveBeenCalledTimes(1);
+    expect(sendWhatsAppMessage).not.toHaveBeenCalled();
+  });
+
+  it("cancels the holding line when the assistant call fails fast", async () => {
+    const from = nextPhone();
+    slowReply(100, true);
+    queueForAssistant(1, from, "wamid1", undefined, null, true);
+    await vi.advanceTimersByTimeAsync(SHORT_DEBOUNCE_MS + HOLDING_MESSAGE_MS * 3);
+
+    // Only the error message — no holding line after it.
+    expect(sendWhatsAppMessage).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(sendWhatsAppMessage).mock.calls[0][1]).toMatch(/error/);
   });
 });
