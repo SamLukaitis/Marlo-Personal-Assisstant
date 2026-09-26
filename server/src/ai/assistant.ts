@@ -1794,6 +1794,9 @@ export interface AssistantReply {
   reaction?: {
     emoji: string;
   };
+  // request_location was called: on WhatsApp, `text` is sent with a "Send location" button
+  // (whatsappReply.ts). The web ignores this flag and just shows `text`.
+  locationRequest?: true;
 }
 
 // Builds the AssistantReply for an ask_user_choice tool call and persists the pending_actions

@@ -7,11 +7,12 @@ vi.mock("../providers/whatsapp.js", () => ({
   sendWhatsAppMessage: vi.fn().mockResolvedValue(undefined),
   sendChoiceMessage: vi.fn().mockResolvedValue(undefined),
   sendWhatsAppReaction: vi.fn().mockResolvedValue(undefined),
+  sendWhatsAppLocationRequest: vi.fn().mockResolvedValue("wamid.loc"),
 }));
 vi.mock("./sleep.js", () => ({ sleep: vi.fn().mockResolvedValue(undefined) }));
 
 const { appendWhatsAppMessage } = await import("../db/store.js");
-const { sendWhatsAppMessage, sendChoiceMessage, sendWhatsAppReaction } = await import("../providers/whatsapp.js");
+const { sendWhatsAppMessage, sendChoiceMessage, sendWhatsAppReaction, sendWhatsAppLocationRequest } = await import("../providers/whatsapp.js");
 const { sleep } = await import("./sleep.js");
 const { sendAssistantReply } = await import("./whatsappReply.js");
 
@@ -21,6 +22,7 @@ beforeEach(() => {
   vi.mocked(sendChoiceMessage).mockClear();
   vi.mocked(sendWhatsAppReaction).mockClear();
   vi.mocked(sleep).mockClear();
+  vi.mocked(sendWhatsAppLocationRequest).mockClear();
 });
 
 describe("sendAssistantReply", () => {
@@ -111,5 +113,13 @@ describe("sendAssistantReply", () => {
     expect(sendWhatsAppMessage).not.toHaveBeenCalled();
     expect(sendChoiceMessage).not.toHaveBeenCalled();
     expect(appendWhatsAppMessage).toHaveBeenCalledWith(1, "44700", "assistant", "[reacted 👍]");
+  });
+
+  it("sends a location request with the Send location button and persists the prompt with its wamid", async () => {
+    await sendAssistantReply(1, "44700", { text: "Tap below to share where you are.", locationRequest: true }, "wamid.in");
+
+    expect(sendWhatsAppLocationRequest).toHaveBeenCalledWith("44700", "Tap below to share where you are.");
+    expect(sendWhatsAppMessage).not.toHaveBeenCalled();
+    expect(appendWhatsAppMessage).toHaveBeenCalledWith(1, "44700", "assistant", "Tap below to share where you are.", ["wamid.loc"]);
   });
 });
