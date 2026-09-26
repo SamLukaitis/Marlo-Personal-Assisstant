@@ -19,6 +19,7 @@ vi.mock("../ai/assistant.js", () => ({
 }));
 vi.mock("../providers/whatsapp.js", () => ({
   sendWhatsAppMessage: vi.fn(async () => "wamid.out"),
+  sendWhatsAppTypingIndicator: vi.fn(async () => undefined),
   sendChoiceMessage: vi.fn(),
   sendWhatsAppReaction: vi.fn(),
 }));

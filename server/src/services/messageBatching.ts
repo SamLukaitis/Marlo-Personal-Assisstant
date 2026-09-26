@@ -11,10 +11,22 @@
 import { getWhatsAppHistory, type WhatsAppMessageRow } from "../db/store.js";
 import { runAssistantChat, MAX_HISTORY_MESSAGES, type ChatMessage } from "../ai/assistant.js";
 import { sendAssistantReply } from "./whatsappReply.js";
-import { sendWhatsAppMessage } from "../providers/whatsapp.js";
+import { sendWhatsAppMessage, sendWhatsAppTypingIndicator } from "../providers/whatsapp.js";
 
 export const SHORT_DEBOUNCE_MS = Number(process.env.WHATSAPP_DEBOUNCE_SHORT_MS ?? 1500);
 export const LONG_DEBOUNCE_MS = Number(process.env.WHATSAPP_DEBOUNCE_LONG_MS ?? 5000);
+
+// A reply still not ready this long after the assistant call starts gets one short holding line, so
+// a slow tool round trip doesn't read as silence — WhatsApp's "..." indicator vanishes after ~25s.
+// Sent with sendWhatsAppMessage directly, never saved to history, so the model never sees it.
+export const HOLDING_MESSAGE_MS = Number(process.env.WHATSAPP_HOLDING_MS ?? 10_000);
+export const HOLDING_MESSAGES = [
+  "One sec, working on it…",
+  "On it, give me a moment…",
+  "Bear with me, nearly there…",
+  "Just a moment, still on it…",
+  "Hang tight, working on that now…",
+];
 
 interface BufferedEntry {
   // The whatsapp_messages row this message was saved as. Undefined only when a caller had nothing
@@ -94,11 +106,17 @@ async function flush(from: string): Promise<void> {
   const replyToMessageId = state.lastMessageId;
   const ownerId = state.ownerId;
 
+  const wait = { done: false };
+  const holdingTimer = setTimeout(() => void sendHoldingMessage(from, replyToMessageId, wait), HOLDING_MESSAGE_MS);
   try {
     const history = buildBatchHistory(getWhatsAppHistory(from, MAX_HISTORY_MESSAGES), entries);
     const reply = await runAssistantChat(ownerId, history, from);
+    wait.done = true;
+    clearTimeout(holdingTimer);
     await sendAssistantReply(ownerId, from, reply, replyToMessageId);
   } catch (err) {
+    wait.done = true;
+    clearTimeout(holdingTimer);
     console.error("whatsapp: batched assistant call failed", err);
     await sendWhatsAppMessage(
       from,
@@ -116,6 +134,18 @@ async function flush(from: string): Promise<void> {
     } else if (state.entries.length === 0) {
       batches.delete(from);
     }
+  }
+}
+
+async function sendHoldingMessage(from: string, replyToMessageId: string, wait: { done: boolean }): Promise<void> {
+  const line = HOLDING_MESSAGES[Math.floor(Math.random() * HOLDING_MESSAGES.length)];
+  try {
+    await sendWhatsAppMessage(from, line);
+    // Sending a message clears the "..." dots; bring them back for the rest of the wait — unless
+    // the real reply landed while this line was in flight.
+    if (!wait.done) await sendWhatsAppTypingIndicator(replyToMessageId);
+  } catch (err) {
+    console.error("whatsapp: holding message failed", err);
   }
 }
 

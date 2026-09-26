@@ -141,9 +141,9 @@ describe("microsoftListNewMessages — incremental", () => {
   it("rethrows any other fetch failure so the old checkpoint is kept for a retry", async () => {
     vi.mocked(fetch)
       .mockResolvedValueOnce(ok({ value: [{ id: "a", receivedDateTime: new Date().toISOString() }], "@odata.deltaLink": NEXT_DELTA }))
-      .mockResolvedValueOnce(fail(429, "throttled"));
+      .mockResolvedValueOnce(fail(500, "server error"));
 
-    await expect(microsoftListNewMessages(account(DELTA_LINK))).rejects.toThrow(/429/);
+    await expect(microsoftListNewMessages(account(DELTA_LINK))).rejects.toThrow(/500/);
   });
 
   it("rebaselines when Graph says the delta link has expired", async () => {

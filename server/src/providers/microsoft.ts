@@ -176,11 +176,37 @@ async function refreshTokens(account: AccountRow): Promise<TokenResponse> {
   return tokens;
 }
 
+const GRAPH_MAX_ATTEMPTS = 5;
+const GRAPH_MAX_RETRY_WAIT_MS = 30_000;
+
+/**
+ * fetch against Graph, retrying when Graph throttles. Outlook caps each app at ~4 requests in flight
+ * per mailbox (429 "MailboxConcurrency"), and the assistant runs tools in parallel alongside
+ * background scans, so hitting it is routine rather than exceptional. A 429 means the request was
+ * refused, so it's safe to retry any method; 503/504 only for GETs, since a write may have landed.
+ */
+async function graphFetch(url: string, init: RequestInit = {}): Promise<Response> {
+  const method = (init.method ?? "GET").toUpperCase();
+  for (let attempt = 1; ; attempt++) {
+    const res = await fetch(url, init);
+    const retryable = res.status === 429 || (method === "GET" && (res.status === 503 || res.status === 504));
+    if (!retryable || attempt >= GRAPH_MAX_ATTEMPTS) return res;
+    await new Promise((resolve) => setTimeout(resolve, retryDelayMs(res, attempt)));
+  }
+}
+
+// Graph's Retry-After is in seconds; without one, back off exponentially with jitter.
+function retryDelayMs(res: Response, attempt: number): number {
+  const header = Number(res.headers?.get?.("retry-after"));
+  const ms = Number.isFinite(header) && header >= 0 ? header * 1000 : 500 * 2 ** (attempt - 1) + Math.random() * 250;
+  return Math.min(ms, GRAPH_MAX_RETRY_WAIT_MS);
+}
+
 async function graphGet<T>(account: AccountRow, path: string, extraHeaders: Record<string, string> = {}): Promise<T> {
   const token = await accessTokenFor(account);
   // Absolute URLs are Graph's own paging/delta links (@odata.nextLink / @odata.deltaLink).
   const url = path.startsWith("https://") ? path : `${GRAPH}${path}`;
-  const res = await fetch(url, {
+  const res = await graphFetch(url, {
     headers: { Authorization: `Bearer ${token}`, ...extraHeaders },
   });
   if (!res.ok) {
@@ -199,7 +225,7 @@ class GraphHttpError extends Error {
 
 async function graphPost<T>(account: AccountRow, path: string, body: unknown): Promise<T> {
   const token = await accessTokenFor(account);
-  const res = await fetch(`${GRAPH}${path}`, {
+  const res = await graphFetch(`${GRAPH}${path}`, {
     method: "POST",
     headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
     body: JSON.stringify(body),
@@ -210,7 +236,7 @@ async function graphPost<T>(account: AccountRow, path: string, body: unknown): P
 
 async function graphPatch<T>(account: AccountRow, path: string, body: unknown): Promise<T> {
   const token = await accessTokenFor(account);
-  const res = await fetch(`${GRAPH}${path}`, {
+  const res = await graphFetch(`${GRAPH}${path}`, {
     method: "PATCH",
     headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
     body: JSON.stringify(body),
@@ -221,7 +247,7 @@ async function graphPatch<T>(account: AccountRow, path: string, body: unknown): 
 
 async function graphDelete(account: AccountRow, path: string): Promise<void> {
   const token = await accessTokenFor(account);
-  const res = await fetch(`${GRAPH}${path}`, {
+  const res = await graphFetch(`${GRAPH}${path}`, {
     method: "DELETE",
     headers: { Authorization: `Bearer ${token}` },
   });
@@ -640,7 +666,7 @@ export async function microsoftCreateDraft(
   body: string
 ): Promise<DraftResult> {
   const token = await accessTokenFor(account);
-  const res = await fetch(`${GRAPH}/me/messages`, {
+  const res = await graphFetch(`${GRAPH}/me/messages`, {
     method: "POST",
     headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -683,7 +709,7 @@ export async function microsoftSendMessage(
     throw new Error(`"${attachment.filename}" is over 3 MB — too large to send from Outlook this way.`);
   }
   const token = await accessTokenFor(account);
-  const res = await fetch(`${GRAPH}/me/sendMail`, {
+  const res = await graphFetch(`${GRAPH}/me/sendMail`, {
     method: "POST",
     headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
     body: JSON.stringify({
