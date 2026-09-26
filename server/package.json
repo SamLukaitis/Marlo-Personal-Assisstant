@@ -10,7 +10,8 @@
     "invite": "tsx src/scripts/invite.ts",
     "test": "vitest run",
     "eval:grounding": "vitest run --config vitest.eval.config.ts",
-    "whatsapp:check": "tsx src/scripts/whatsappCheck.ts"
+    "whatsapp:check": "tsx src/scripts/whatsappCheck.ts",
+    "maps:probe": "tsx src/scripts/mapsProbe.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.112.5",
