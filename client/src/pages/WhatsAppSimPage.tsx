@@ -100,6 +100,20 @@ export function WhatsAppSimPage() {
     await send({ text });
   }
 
+  // Uses the browser's real location rather than a fixed test pin: a shared pin also sets the
+  // account's timezone (chatDispatch.handleLocation), and "Me" is the admin's real account.
+  function shareLocation() {
+    if (!navigator.geolocation) {
+      setError("This browser can't share a location.");
+      return;
+    }
+    navigator.geolocation.getCurrentPosition(
+      (pos) => void send({ latitude: pos.coords.latitude, longitude: pos.coords.longitude }),
+      (err) => setError(`Couldn't get your location: ${err.message}`),
+      { timeout: 10_000 }
+    );
+  }
+
   async function newTestUser() {
     setBusy(true);
     setError(null);
@@ -201,6 +215,13 @@ export function WhatsAppSimPage() {
                     <a href={entry.link.url} target="_blank" rel="noreferrer" className="chip-minimal">
                       {entry.link.label} ↗
                     </a>
+                  </div>
+                )}
+                {entry.locationRequest && (
+                  <div className="chips" style={{ marginTop: 8 }}>
+                    <button type="button" className="chip-minimal" disabled={busy} onClick={shareLocation}>
+                      📍 Send location
+                    </button>
                   </div>
                 )}
               </div>
