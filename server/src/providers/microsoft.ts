@@ -178,11 +178,23 @@ async function refreshTokens(account: AccountRow): Promise<TokenResponse> {
 
 async function graphGet<T>(account: AccountRow, path: string, extraHeaders: Record<string, string> = {}): Promise<T> {
   const token = await accessTokenFor(account);
-  const res = await fetch(`${GRAPH}${path}`, {
+  // Absolute URLs are Graph's own paging/delta links (@odata.nextLink / @odata.deltaLink).
+  const url = path.startsWith("https://") ? path : `${GRAPH}${path}`;
+  const res = await fetch(url, {
     headers: { Authorization: `Bearer ${token}`, ...extraHeaders },
   });
-  if (!res.ok) throw new Error(`Graph ${path} returned ${res.status}: ${await res.text()}`);
+  if (!res.ok) {
+    throw new GraphHttpError(res.status, `Graph ${path.slice(0, 200)} returned ${res.status}: ${await res.text()}`);
+  }
   return (await res.json()) as T;
+}
+
+// Same message text as before (hub.ts's isAuthError reads the status out of it), plus the status
+// as a field for callers that branch on it.
+class GraphHttpError extends Error {
+  constructor(public readonly status: number, message: string) {
+    super(message);
+  }
 }
 
 async function graphPost<T>(account: AccountRow, path: string, body: unknown): Promise<T> {
@@ -412,6 +424,111 @@ export async function microsoftListMessages(
   // KQL can't express read state, so with free text is:unread/is:read is applied here instead.
   if (q.kql && q.unread !== undefined) return messages.filter((m) => m.unread === q.unread);
   return messages;
+}
+
+export interface NewMessagesResult {
+  messages: UnifiedMessage[];
+  // The delta link to resume from next time. Stored in the same accounts.history_id column as
+  // Gmail's historyId, and like it, deliberately NOT saved here — hub.ts saves it once the tick's
+  // scanners have handled the messages (see google.ts's googleListNewMessages).
+  historyId: string | null;
+}
+
+interface DeltaPage {
+  value: { id: string; receivedDateTime?: string; "@removed"?: unknown }[];
+  "@odata.nextLink"?: string;
+  "@odata.deltaLink"?: string;
+}
+
+const INBOX_DELTA = "/me/mailFolders/inbox/messages/delta";
+// Exchange's clock and ours can disagree by a little; starting the baseline this far back means a
+// message landing during the baseline is seen twice (harmless — every scanner dedupes on its own
+// ledger) rather than never (the unsafe direction).
+const DELTA_BASELINE_SKEW_MS = 10 * 60 * 1000;
+// Delta also reports messages that merely *changed* — read, flagged, categorised. Gmail's history
+// is asked for additions only; Graph can't filter that way, so anything received this long before
+// now is a change to old mail, not new mail, and isn't worth a fetch. Far longer than
+// hub.ts's MAX_CHECKPOINT_HOLD_MS, so a held checkpoint can never age genuinely new mail out.
+const DELTA_NEW_MAIL_WINDOW_MS = 2 * 24 * 60 * 60 * 1000;
+const GRAPH_GET_CONCURRENCY = 4;
+
+function isDeltaExpired(err: unknown): boolean {
+  if (!(err instanceof GraphHttpError)) return false;
+  return err.status === 410 || /syncstate|resyncrequired/i.test(err.message);
+}
+
+// Walks a delta round to its end, collecting ids. Returns the new delta link.
+async function walkDelta(account: AccountRow, start: string): Promise<{ ids: DeltaPage["value"]; deltaLink: string | null }> {
+  const ids: DeltaPage["value"] = [];
+  let next: string | undefined = start;
+  let deltaLink: string | null = null;
+  while (next) {
+    const page: DeltaPage = await graphGet<DeltaPage>(account, next, { Prefer: "odata.maxpagesize=100" });
+    ids.push(...page.value);
+    next = page["@odata.nextLink"];
+    deltaLink = page["@odata.deltaLink"] ?? deltaLink;
+  }
+  return { ids, deltaLink };
+}
+
+// Outlook's version of googleListNewMessages: a Graph delta query over the inbox returns only what
+// changed since the stored delta link, instead of re-listing the newest 150 messages (with all
+// their headers) on every 5-minute tick. The delta round itself asks for ids and dates only; the
+// handful of genuinely new messages are then fetched individually with the usual fields, the same
+// shape as Gmail's history.list + messages.get.
+//
+// No checkpoint yet (first run, or Graph says the old one expired): starts a delta round filtered to
+// mail received from now on — so it returns almost nothing and costs one call — and does a normal
+// inbox list for this tick's messages, exactly like google.ts's baselineAndList.
+export async function microsoftListNewMessages(
+  account: AccountRow,
+  opts: { limit?: number } = {}
+): Promise<NewMessagesResult> {
+  if (account.historyId) {
+    try {
+      return await incrementalNewMessages(account, account.historyId);
+    } catch (err) {
+      if (!isDeltaExpired(err)) throw err;
+    }
+  }
+  return baselineNewMessages(account, opts.limit ?? 20);
+}
+
+async function baselineNewMessages(account: AccountRow, limit: number): Promise<NewMessagesResult> {
+  // Captured BEFORE the list — see google.ts's baselineAndList for why that's the safe order.
+  const since = new Date(Date.now() - DELTA_BASELINE_SKEW_MS).toISOString();
+  const filter = encodeURIComponent(`receivedDateTime ge ${since}`);
+  const { deltaLink } = await walkDelta(account, `${INBOX_DELTA}?$select=id,receivedDateTime&$filter=${filter}`);
+  const messages = await microsoftListMessages(account, { limit });
+  return { messages, historyId: deltaLink };
+}
+
+async function incrementalNewMessages(account: AccountRow, deltaLink: string): Promise<NewMessagesResult> {
+  const { ids, deltaLink: nextLink } = await walkDelta(account, deltaLink);
+  const floor = Date.now() - DELTA_NEW_MAIL_WINDOW_MS;
+  const fresh = [
+    ...new Set(
+      ids
+        .filter((item) => !item["@removed"])
+        .filter((item) => !item.receivedDateTime || Date.parse(item.receivedDateTime) >= floor)
+        .map((item) => item.id)
+    ),
+  ];
+  const fetched = await mapWithConcurrency(fresh, GRAPH_GET_CONCURRENCY, async (id) => {
+    try {
+      const m = await graphGet<GraphMessage>(account, `/me/messages/${encodeURIComponent(id)}?${MSG_SELECT}`);
+      return toUnified(account, m);
+    } catch (err) {
+      // Deleted or moved out again before this ran (Outlook ids change when a message moves).
+      // Permanent, so skip it rather than stall the checkpoint — see google.ts's same case.
+      if (err instanceof GraphHttpError && err.status === 404) return null;
+      throw err;
+    }
+  });
+  return {
+    messages: fetched.filter((m): m is UnifiedMessage => m !== null),
+    historyId: nextLink ?? deltaLink,
+  };
 }
 
 export async function microsoftGetUnsubscribeInfo(

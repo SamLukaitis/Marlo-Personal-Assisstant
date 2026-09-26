@@ -19,7 +19,9 @@ vi.mock("../providers/google.js", () => ({
 }));
 const mockMicrosoftSendMessage = vi.fn();
 const mockMicrosoftListChats = vi.fn();
+const mockMicrosoftListNewMessages = vi.fn();
 vi.mock("../providers/microsoft.js", () => ({
+  microsoftListNewMessages: (...args: unknown[]) => mockMicrosoftListNewMessages(...args),
   microsoftSendMessage: (...args: unknown[]) => mockMicrosoftSendMessage(...args),
   microsoftListChats: (...args: unknown[]) => mockMicrosoftListChats(...args),
 }));
@@ -425,6 +427,23 @@ describe("hubListNewMessages checkpoint", () => {
     await hubListNewMessages(user.id);
 
     expect(getAccount(user.id, account.id)?.historyId).toBe("123");
+  });
+
+  it("uses Outlook's delta fetch and saves its delta link as the checkpoint", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("ckpt-ms"));
+    const account = upsertAccount(user.id, {
+      provider: "microsoft",
+      email: uniqueEmail("ckpt-ms-inbox"),
+      accessToken: "t",
+      refreshToken: "r",
+      expiryDate: null,
+    });
+    mockMicrosoftListNewMessages.mockResolvedValue({ messages: [], historyId: "https://graph/delta?token=1" });
+
+    await withMessageCache(() => hubListNewMessages(user.id));
+
+    expect(mockMicrosoftListNewMessages).toHaveBeenCalledWith(expect.objectContaining({ id: account.id }), { limit: 150 });
+    expect(getAccount(user.id, account.id)?.historyId).toBe("https://graph/delta?token=1");
   });
 
   it("inside a tick scope, saves the checkpoint only once the scope finishes", async () => {

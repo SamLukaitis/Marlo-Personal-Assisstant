@@ -114,7 +114,7 @@ function requirePermission(account: AccountRow, action: "read" | "send" | "delet
 // Assistant page — always see a freshly-fetched inbox; the cache only exists for the duration of
 // one withMessageCache(...) call.
 //
-// The same scope also defers saving Gmail history checkpoints (see hubListNewMessages) until every
+// The same scope also defers saving Gmail/Outlook new-mail checkpoints (see hubListNewMessages) until every
 // scanner in the tick has run, so a scanner that deliberately leaves mail unhandled for a retry can
 // hold the checkpoint with holdNewMessageCheckpoint — otherwise the next tick's incremental fetch
 // would start past that mail and it would never be seen again.
@@ -168,7 +168,7 @@ function commitCheckpoints(scope: TickScope): void {
     if (now - startedAt < MAX_CHECKPOINT_HOLD_MS) {
       skipOwners.add(ownerId);
     } else {
-      console.warn(`hub: releasing a Gmail checkpoint held over an hour for owner ${ownerId}`);
+      console.warn(`hub: releasing a new-mail checkpoint held over an hour for owner ${ownerId}`);
     }
   }
   for (const { ownerId, accountId, historyId } of scope.pendingCheckpoints) {
@@ -244,10 +244,13 @@ const HISTORY_BASELINE_LIMIT = 150;
 async function fetchNewMessages(accounts: AccountRow[]): Promise<UnifiedMessage[]> {
   const results = await Promise.allSettled(
     accounts.map(async (a) => {
-      if (a.provider !== "google") return ms.microsoftListMessages(a, { limit: HISTORY_BASELINE_LIMIT });
       // Only reached once the provider has actually fetched every message it found — a failed
-      // fetch rejects before this, leaving the old checkpoint in place for the next tick.
-      const { messages, historyId } = await g.googleListNewMessages(a, { limit: HISTORY_BASELINE_LIMIT });
+      // fetch rejects before this, leaving the old checkpoint in place for the next tick. Gmail's
+      // checkpoint is a History API id, Outlook's a Graph delta link; both live in history_id.
+      const { messages, historyId } =
+        a.provider === "google"
+          ? await g.googleListNewMessages(a, { limit: HISTORY_BASELINE_LIMIT })
+          : await ms.microsoftListNewMessages(a, { limit: HISTORY_BASELINE_LIMIT });
       if (historyId) {
         if (tickScope) {
           tickScope.pendingCheckpoints.push({ ownerId: a.ownerId, accountId: a.id, historyId });
