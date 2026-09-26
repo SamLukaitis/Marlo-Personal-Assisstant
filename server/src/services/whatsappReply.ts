@@ -6,7 +6,7 @@
 // needs it too, and whatsappRoutes.ts imports actionHandlers.ts — putting it in whatsappRoutes.ts
 // would create a circular import.
 import { appendWhatsAppMessage } from "../db/store.js";
-import { sendWhatsAppMessage, sendChoiceMessage, sendWhatsAppReaction } from "../providers/whatsapp.js";
+import { sendWhatsAppMessage, sendChoiceMessage, sendWhatsAppReaction, sendWhatsAppLocationRequest } from "../providers/whatsapp.js";
 import { splitIntoChunks, delayForChunk } from "./messageSplitting.js";
 import { sleep } from "./sleep.js";
 import type { AssistantReply } from "../ai/assistant.js";
@@ -23,6 +23,18 @@ export async function sendAssistantReply(
     // triggered this turn (the wamid the caller passed in), not one of Marlowe's own messages.
     appendWhatsAppMessage(ownerId, phone, "assistant", `[reacted ${reply.reaction.emoji}]`);
     await sendWhatsAppReaction(phone, inboundMessageId, reply.reaction.emoji);
+    return;
+  }
+
+  if (reply.locationRequest) {
+    // Persisted like any reply so the next turn — triggered by the pin the user shares — can see
+    // what was asked for (chatDispatch.handleLocation appends the pin right after this row).
+    const wamid = await sendWhatsAppLocationRequest(phone, reply.text);
+    if (wamid) {
+      appendWhatsAppMessage(ownerId, phone, "assistant", reply.text, [wamid]);
+    } else {
+      appendWhatsAppMessage(ownerId, phone, "assistant", reply.text);
+    }
     return;
   }
 

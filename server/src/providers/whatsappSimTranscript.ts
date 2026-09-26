@@ -23,6 +23,8 @@ export interface SimTranscriptEntry {
   choices?: SimChoice[];
   /** A cta_url button — a plain link, never a webhook event of its own. */
   link?: { label: string; url: string };
+  /** A location_request_message — the simulator shows a "Send location" button for it. */
+  locationRequest?: boolean;
 }
 
 // Plenty for a test conversation without letting a long-lived staging process grow unbounded.
