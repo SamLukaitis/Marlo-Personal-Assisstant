@@ -101,12 +101,13 @@ export function createMcpClient(opts: McpServerOptions, factory: McpSessionFacto
     return sessionPromise;
   }
 
-  async function dropSession(): Promise<void> {
-    const current = sessionPromise;
+  // Drops only the session that actually failed: with parallel calls, a second failure from the
+  // same dead session must not close the fresh one the first failure already opened.
+  async function dropSession(failed: Promise<McpSession> | null = sessionPromise): Promise<void> {
+    if (!failed || sessionPromise !== failed) return;
     sessionPromise = null;
-    if (!current) return;
     try {
-      await (await current).close();
+      await (await failed).close();
     } catch {
       // Already broken — nothing useful to do with a close failure.
     }
@@ -114,11 +115,13 @@ export function createMcpClient(opts: McpServerOptions, factory: McpSessionFacto
 
   async function withSession<T>(fn: (session: McpSession) => Promise<T>): Promise<T> {
     for (let attempt = 0; ; attempt++) {
+      let used: Promise<McpSession> | null = null;
       try {
-        return await fn(await getSession());
+        used = getSession();
+        return await fn(await used);
       } catch (err) {
         if (attempt === 0 && isRetryable(err)) {
-          await dropSession();
+          await dropSession(used);
           continue;
         }
         throw err;
@@ -126,9 +129,22 @@ export function createMcpClient(opts: McpServerOptions, factory: McpSessionFacto
     }
   }
 
+  // On a throwaway session, never the shared one: the SDK caches output-schema validators on a
+  // Client after listTools(), after which every callTool on it strictly validates the server's
+  // structuredContent — a server whose declared schema drifts from its output would then fail
+  // every call instead of degrading to the raw fallback.
+  async function listToolNames(): Promise<string[]> {
+    const probe = await factory({ ...opts, timeoutMs });
+    try {
+      return await probe.listToolNames(timeoutMs);
+    } finally {
+      await probe.close().catch(() => {});
+    }
+  }
+
   return {
     callTool: (name, args) => withSession(async (s) => parseResult(await s.callTool(name, args, timeoutMs))),
-    listToolNames: () => withSession((s) => s.listToolNames(timeoutMs)),
-    close: dropSession,
+    listToolNames,
+    close: () => dropSession(),
   };
 }
