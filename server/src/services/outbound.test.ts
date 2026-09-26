@@ -6,6 +6,7 @@ vi.mock("../providers/whatsapp.js", async (importOriginal) => {
     ...actual, // keeps the real WhatsAppSendError class — the code under test does `instanceof` on it
     sendWhatsAppMessage: vi.fn(),
     sendWhatsAppTemplate: vi.fn(),
+    sendChoiceMessage: vi.fn(),
   };
 });
 
@@ -15,9 +16,11 @@ vi.mock("../db/store.js", () => ({
   appendWhatsAppMessage: vi.fn(),
 }));
 
-const { sendWhatsAppMessage, sendWhatsAppTemplate, WhatsAppSendError } = await import("../providers/whatsapp.js");
+const { sendWhatsAppMessage, sendWhatsAppTemplate, sendChoiceMessage, WhatsAppSendError } = await import(
+  "../providers/whatsapp.js"
+);
 const { getLastInboundAt, resolveOwnerByPhone, appendWhatsAppMessage } = await import("../db/store.js");
-const { sendProactiveMessage, truncateForTemplate } = await import("./outbound.js");
+const { sendProactiveMessage, sendProactiveMessageWithButtons, truncateForTemplate } = await import("./outbound.js");
 
 const PHONE = "447000000001";
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -25,9 +28,57 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 beforeEach(() => {
   vi.mocked(sendWhatsAppMessage).mockReset().mockResolvedValue(undefined);
   vi.mocked(sendWhatsAppTemplate).mockReset().mockResolvedValue(undefined);
+  vi.mocked(sendChoiceMessage).mockReset().mockResolvedValue("wamid.BUTTONS");
   vi.mocked(getLastInboundAt).mockReset();
   vi.mocked(resolveOwnerByPhone).mockReset().mockReturnValue(null);
   vi.mocked(appendWhatsAppMessage).mockReset();
+});
+
+describe("sendProactiveMessageWithButtons", () => {
+  const buttons = [
+    { id: "a", title: "Yes" },
+    { id: "b", title: "No" },
+  ];
+
+  it("sends tappable buttons within the 24h window, and records the message with its wamid in history", async () => {
+    vi.mocked(getLastInboundAt).mockReturnValue(Date.now() - 60_000);
+    vi.mocked(resolveOwnerByPhone).mockReturnValue(7);
+
+    await sendProactiveMessageWithButtons(PHONE, "question?", buttons, "alert", "[note]", "question? reply yes or no");
+
+    expect(sendChoiceMessage).toHaveBeenCalledWith(PHONE, "question?", buttons);
+    expect(sendWhatsAppTemplate).not.toHaveBeenCalled();
+    expect(appendWhatsAppMessage).toHaveBeenCalledWith(7, PHONE, "assistant", "question?\n\n[note]", ["wamid.BUTTONS"]);
+  });
+
+  // A template can't carry buttons, so the person is asked in words instead.
+  it("outside the window sends the typed-reply fallback as a template", async () => {
+    vi.mocked(getLastInboundAt).mockReturnValue(null);
+
+    await sendProactiveMessageWithButtons(PHONE, "question?", buttons, "alert", undefined, "question? reply yes or no");
+
+    expect(sendChoiceMessage).not.toHaveBeenCalled();
+    expect(sendWhatsAppTemplate).toHaveBeenCalledWith(PHONE, "marlowe_alert", "question? reply yes or no");
+  });
+
+  it("falls back to the template when Meta says the window is closed after all", async () => {
+    vi.mocked(getLastInboundAt).mockReturnValue(Date.now() - 60_000);
+    vi.mocked(sendChoiceMessage).mockRejectedValueOnce(new WhatsAppSendError("closed", 131047));
+
+    await sendProactiveMessageWithButtons(PHONE, "question?", buttons, "alert", undefined, "typed fallback");
+
+    expect(sendWhatsAppTemplate).toHaveBeenCalledWith(PHONE, "marlowe_alert", "typed fallback");
+  });
+
+  it("rethrows any other failure so the caller retries", async () => {
+    vi.mocked(getLastInboundAt).mockReturnValue(Date.now() - 60_000);
+    vi.mocked(sendChoiceMessage).mockRejectedValueOnce(new WhatsAppSendError("rate limited", 130429));
+
+    await expect(
+      sendProactiveMessageWithButtons(PHONE, "question?", buttons, "alert", undefined, "typed fallback")
+    ).rejects.toThrow("rate limited");
+    expect(sendWhatsAppTemplate).not.toHaveBeenCalled();
+  });
 });
 
 describe("sendProactiveMessage", () => {

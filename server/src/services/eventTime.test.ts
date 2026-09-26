@@ -32,4 +32,19 @@ describe("eventLocalDateKey", () => {
     const iso = "2026-09-15T23:30:00Z";
     expect(eventLocalDateKey(iso)).toBe(localDateKey(new Date(iso)));
   });
+
+  it("uses the given timezone's calendar day when one is passed", () => {
+    // 23:30 UTC on the 15th is already the 16th in Sydney, but still the 15th in New York.
+    expect(eventLocalDateKey("2026-09-15T23:30:00Z", "Australia/Sydney")).toBe("2026-09-16");
+    expect(eventLocalDateKey("2026-09-15T23:30:00Z", "America/New_York")).toBe("2026-09-15");
+  });
+
+  it("leaves an all-day date alone whatever the timezone", () => {
+    expect(eventLocalDateKey("2026-09-15", "Australia/Sydney")).toBe("2026-09-15");
+  });
+
+  it("falls back to server-local for an unusable timezone", () => {
+    const iso = "2026-09-15T23:30:00Z";
+    expect(eventLocalDateKey(iso, "Not/AZone")).toBe(localDateKey(new Date(iso)));
+  });
 });

@@ -12,7 +12,8 @@ import { hubListMessages, hubListEvents, hubFlaggedMessages } from "./hub.js";
 import { fetchHeadlines, type NewsTopic } from "../providers/news.js";
 import { fetchWeather, type WeatherReport } from "../providers/weather.js";
 import { fetchQuotes, DEFAULT_SYMBOLS, type Quote } from "../providers/markets.js";
-import { todayKey } from "./dateKey.js";
+import { DateTime } from "luxon";
+import { getUserTimezone, userLocalClock } from "./userTimezone.js";
 import { eventLocalDateKey } from "./eventTime.js";
 import type { CalendarEvent, UnifiedMessage } from "../providers/types.js";
 
@@ -41,7 +42,7 @@ export interface BriefingSettings {
   includeWeather: boolean;
   weatherLocation: string;
   proactive: boolean;
-  sendTime: string; // "HH:MM", 24h, server-local time
+  sendTime: string; // "HH:MM", 24h, in the user's own timezone (server time if theirs isn't known)
 }
 
 const DEFAULT_SETTINGS: BriefingSettings = {
@@ -112,24 +113,35 @@ export function saveBriefingSettings(ownerId: number, settings: BriefingSettings
 // messages aren't lost: hubFlaggedMessages already surfaces the >3-day-old ones under "needs a
 // reply". This just keeps the headline count from double-counting yesterday's backlog as "today's"
 // unread mail.
-export function selectUnreadSinceMidnight(messages: UnifiedMessage[], now: Date): UnifiedMessage[] {
-  const midnight = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+export function selectUnreadSinceMidnight(
+  messages: UnifiedMessage[],
+  now: Date,
+  zone?: string | null
+): UnifiedMessage[] {
+  const midnight = startOfDayMs(now.getTime(), zone);
   return messages.filter((m) => m.unread && new Date(m.receivedAt).getTime() >= midnight);
+}
+
+// Midnight of the day `ms` falls on — in `zone` (the user's IANA timezone) when known and usable,
+// else the server's own zone, which is what these day boundaries used before there was a timezone.
+function startOfDayMs(ms: number, zone?: string | null): number {
+  const zoned = zone ? DateTime.fromMillis(ms, { zone }) : DateTime.fromMillis(ms);
+  return (zoned.isValid ? zoned : DateTime.fromMillis(ms)).startOf("day").toMillis();
 }
 
 // Gives the briefing continuity about where the user has been, instead of leaving the model to
 // guess from whatever calendar/document text happens to be in context — which is how "arrived in
 // Rio" mentions kept resurfacing days after the actual arrival. checkin is the most recent
 // travel_checkin row (listCheckins(ownerId, 1)[0]), or undefined if none exist yet.
-export function describeLocationStreak(checkin: TravelCheckinRow | undefined, now: Date): string {
+export function describeLocationStreak(
+  checkin: TravelCheckinRow | undefined,
+  now: Date,
+  zone?: string | null
+): string {
   if (!checkin || !checkin.city) return "";
   const place = checkin.country ? `${checkin.city}, ${checkin.country}` : checkin.city;
-  const midnight = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
-  const checkinMidnight = new Date(
-    new Date(checkin.checkedInAt).getFullYear(),
-    new Date(checkin.checkedInAt).getMonth(),
-    new Date(checkin.checkedInAt).getDate()
-  ).getTime();
+  const midnight = startOfDayMs(now.getTime(), zone);
+  const checkinMidnight = startOfDayMs(checkin.checkedInAt, zone);
   const daysSince = Math.round((midnight - checkinMidnight) / (24 * 60 * 60 * 1000));
   if (daysSince <= 0) return `Currently in ${place} — arrived today.`;
   return `Currently in ${place} — arrived ${daysSince} day${daysSince === 1 ? "" : "s"} ago, been there ${daysSince} day${daysSince === 1 ? "" : "s"}.`;
@@ -155,12 +167,14 @@ async function buildBriefingText(ownerId: number): Promise<string> {
     hubFlaggedMessages(ownerId),
   ]);
 
-  const unread = selectUnreadSinceMidnight(messages, now);
-  const todayKeyStr = todayKey();
+  // "Today" is the user's own day, not the server's (see userTimezone.ts for how their zone is known).
+  const zone = getUserTimezone(ownerId);
+  const unread = selectUnreadSinceMidnight(messages, now, zone);
+  const todayKeyStr = userLocalClock(ownerId).dateKey;
   // By calendar day, not the string prefix — a UTC "Z" time near midnight is a different local day.
-  const todayEvents = events.filter((e) => eventLocalDateKey(e.start) === todayKeyStr);
-  const upcomingEvents = events.filter((e) => eventLocalDateKey(e.start) !== todayKeyStr);
-  const location = describeLocationStreak(listCheckins(ownerId, 1)[0], now);
+  const todayEvents = events.filter((e) => eventLocalDateKey(e.start, zone) === todayKeyStr);
+  const upcomingEvents = events.filter((e) => eventLocalDateKey(e.start, zone) !== todayKeyStr);
+  const location = describeLocationStreak(listCheckins(ownerId, 1)[0], now, zone);
   const { headlines: news, quotes, weather } = await getBriefingFeed(ownerId);
 
   const facts = [
@@ -236,7 +250,7 @@ For Inbox/Calendar/Needs attention, if the fact says "none" or "nothing schedule
 }
 
 export async function getTodaysBriefing(ownerId: number): Promise<{ date: string; content: string }> {
-  const date = todayKey();
+  const date = userLocalClock(ownerId).dateKey;
   const existing = getBriefing(ownerId, date);
   if (existing) return existing;
   const content = await buildBriefingText(ownerId);
@@ -244,7 +258,7 @@ export async function getTodaysBriefing(ownerId: number): Promise<{ date: string
 }
 
 export async function refreshBriefing(ownerId: number): Promise<{ date: string; content: string }> {
-  const date = todayKey();
+  const date = userLocalClock(ownerId).dateKey;
   const content = await buildBriefingText(ownerId);
   return saveBriefing(ownerId, date, content);
 }

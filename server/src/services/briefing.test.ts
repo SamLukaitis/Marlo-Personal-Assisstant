@@ -75,6 +75,16 @@ describe("selectUnreadSinceMidnight", () => {
     const readToday = msg({ receivedAt: new Date(2026, 8, 10, 7, 0, 0).toISOString(), unread: false });
     expect(selectUnreadSinceMidnight([readToday], now)).toEqual([]);
   });
+
+  // 08:00 UTC on the 10th is 18:00 in Sydney (midnight was 14:00 UTC on the 9th) and 04:00 in New
+  // York (midnight was 04:00 UTC on the 10th).
+  const utcNow = new Date("2026-09-10T08:00:00Z");
+
+  it("counts midnight in the given timezone", () => {
+    const lateLastNightUtc = msg({ receivedAt: "2026-09-09T20:00:00Z" });
+    expect(selectUnreadSinceMidnight([lateLastNightUtc], utcNow, "Australia/Sydney")).toEqual([lateLastNightUtc]);
+    expect(selectUnreadSinceMidnight([lateLastNightUtc], utcNow, "America/New_York")).toEqual([]);
+  });
 });
 
 describe("describeLocationStreak", () => {
@@ -101,6 +111,15 @@ describe("describeLocationStreak", () => {
   it("says arrived today when the checkin is from today", () => {
     const c = checkin({ checkedInAt: new Date(2026, 8, 10, 6, 0, 0).getTime() });
     expect(describeLocationStreak(c, now)).toMatch(/arrived today/i);
+  });
+
+  it("counts days by the given timezone's calendar", () => {
+    // Checked in 13:00 UTC on the 9th, "now" is 22:00 UTC on the 9th. In Sydney that is 23:00 on the
+    // 9th -> 08:00 on the 10th (yesterday); in New York it is 09:00 -> 18:00 on the 9th (today).
+    const at = new Date("2026-09-09T22:00:00Z");
+    const c = checkin({ checkedInAt: new Date("2026-09-09T13:00:00Z").getTime() });
+    expect(describeLocationStreak(c, at, "Australia/Sydney")).toMatch(/1 day ago/);
+    expect(describeLocationStreak(c, at, "America/New_York")).toMatch(/arrived today/i);
   });
 
   it("reports how many days the user has been there for an older checkin", () => {

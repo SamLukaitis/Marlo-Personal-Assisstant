@@ -16,11 +16,15 @@ vi.mock("../providers/whatsapp.js", () => ({
 vi.mock("./whatsappReply.js", () => ({
   sendAssistantReply: vi.fn().mockResolvedValue(undefined),
 }));
+vi.mock("./connectMailboxLink.js", () => ({
+  sendConnectLink: vi.fn().mockResolvedValue("sent"),
+}));
 
 const { consumePendingAction, appendWhatsAppMessage, getWhatsAppHistory } = await import("../db/store.js");
 const { runTool, runAssistantChat } = await import("../ai/assistant.js");
 const { sendWhatsAppMessage } = await import("../providers/whatsapp.js");
 const { sendAssistantReply } = await import("./whatsappReply.js");
+const { sendConnectLink } = await import("./connectMailboxLink.js");
 const { handlePendingActionReply } = await import("./actionHandlers.js");
 
 beforeEach(() => {
@@ -201,6 +205,42 @@ describe("handlePendingActionReply", () => {
       "44700"
     );
     expect(sendWhatsAppMessage).toHaveBeenCalledWith("44700", "✓ Sent.");
+  });
+
+  it("confirm + yes on an Outlook account without send permission: saves a draft and sends the reconnect link", async () => {
+    const input = { account_id: 2, to: "jane@x.com", subject: "Hi", body: "..." };
+    vi.mocked(consumePendingAction).mockReturnValue({
+      id: "abc-123",
+      ownerId: 1,
+      mode: "confirm",
+      question: "Ready to send this?",
+      contextJson: JSON.stringify({ tool: "send_email", input, declineTool: "create_email_draft", declineInput: input }),
+    });
+    const permissionError = Object.assign(new Error("needs reconnecting"), {
+      name: "OutlookSendPermissionError",
+      accountEmail: "me@outlook.com",
+    });
+    vi.mocked(runTool).mockImplementation(async (_owner, name) => {
+      if (name === "send_email") throw permissionError;
+      return { draftId: "d1" };
+    });
+
+    const result = await handlePendingActionReply(1, {
+      kind: "interactive",
+      from: "44700",
+      messageId: "m9",
+      buttonId: "pa:abc-123:yes",
+    });
+
+    expect(result).toBe(true);
+    expect(runTool).toHaveBeenCalledWith(1, "create_email_draft", input, "44700");
+    const [, text] = vi.mocked(sendWhatsAppMessage).mock.calls[0];
+    expect(text).toContain("me@outlook.com");
+    expect(text).toContain("reconnect");
+    expect(text).toContain("Drafts");
+    expect(text).not.toContain("server logs");
+    expect(appendWhatsAppMessage).toHaveBeenCalledWith(1, "44700", "assistant", text);
+    expect(sendConnectLink).toHaveBeenCalledWith("44700", "microsoft", "enable_send");
   });
 
   it("confirm + edit: routes back through the model instead of running either tool", async () => {

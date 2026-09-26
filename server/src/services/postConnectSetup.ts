@@ -30,7 +30,7 @@ import {
   listAccounts,
 } from "../db/store.js";
 import { getBriefingSettings, saveBriefingSettings, hasBriefingSettings } from "./briefing.js";
-import { todayKey } from "./dateKey.js";
+import { userLocalClock } from "./userTimezone.js";
 import { sendWhatsAppMessage, sendWhatsAppReplyButtons } from "../providers/whatsapp.js";
 import { hubListEvents } from "./hub.js";
 import { handleText } from "./chatDispatch.js";
@@ -388,7 +388,7 @@ export async function handlePostConnectSetupReply(
         // Stamped immediately so the scheduler (runDailyCheckForUser in scheduler.ts) treats
         // today as already sent — the first real proactive briefing goes out tomorrow morning,
         // not minutes after onboarding finishes.
-        setSetting(ownerId, "last_proactive_send_date", todayKey());
+        setSetting(ownerId, "last_proactive_send_date", userLocalClock(ownerId).dateKey);
         await announceBriefingDefault(phone);
       }
       await askTeamsOrFinish(ownerId, phone);

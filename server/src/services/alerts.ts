@@ -1,9 +1,13 @@
 import { hubListNewMessages, isAutomatedMail, senderDisplayName } from "./hub.js";
-import { hasAlerted, markAlerted, getSetting, setSetting, listPhoneNumbersForUser } from "../db/store.js";
+import { hasAlerted, markAlerted, getSetting, setSetting, listPhoneNumbersForUser, listEntities } from "../db/store.js";
+import { tidySnippet } from "./htmlToText.js";
+import { triageRealPersonEmails } from "./realPersonTriage.js";
+import { IMPORTANT_EMAIL_ENTITY_TYPE, type ImportantEmailEntityData } from "./importantEmailAlerts.js";
 import { isWhatsAppConfigured } from "../providers/whatsapp.js";
 import { sendProactiveMessage } from "./outbound.js";
 import { emailReferenceNote } from "./emailReference.js";
-import { realPersonAlertsEnabledSince } from "./emailAlertSettings.js";
+import { realPersonAlertMode, realPersonAlertsEnabledSince } from "./emailAlertSettings.js";
+import { queueForEmailDigest } from "./emailDigest.js";
 import {
   isOnboardingSuppressionActive,
   incrementSuppressedOnboardingAlerts,
@@ -95,23 +99,40 @@ export async function checkForNewImportantMessages(ownerId: number): Promise<voi
     return;
   }
 
+  const skips = await triageUnseen(ownerId, unseen);
+  for (const m of unseen) if (skips.has(m)) markAlerted(ownerId, messageKey(m));
+  const toAlert = unseen.filter((m) => !skips.has(m));
+  if (toAlert.length === 0) {
+    logScan(`skipped ${skips.size} (marketing or repeats an earlier alert)`, unseen.length);
+    return;
+  }
+
+  // Digest mode: hold the email for emailDigest.ts's once-a-day summary instead of pinging now.
+  // Marked alerted at once, same as a sent alert, so it can never be queued or sent twice.
+  if (realPersonAlertMode(ownerId) === "digest") {
+    queueForEmailDigest(ownerId, toAlert);
+    for (const m of toAlert) markAlerted(ownerId, messageKey(m));
+    logScan(`queued ${toAlert.length} for the digest${skips.size ? `, skipped ${skips.size}` : ""}`, unseen.length);
+    return;
+  }
+
   const userName = getSetting(ownerId, "user_name");
   const greeting = userName ? `${userName}, ` : "";
-  const toSend = unseen.slice(0, MAX_ALERTS_PER_CHECK);
+  const toSend = toAlert.slice(0, MAX_ALERTS_PER_CHECK);
   for (const m of toSend) {
     // Never the raw email address — senderDisplayName pulls a real name out of the From header
     // (or falls back to the address's local part) so this reads like a person telling you who
     // emailed, not a log line.
     await notify(
       numbers,
-      `📬 ${greeting}${senderDisplayName(m.from)} emailed you: "${m.subject}"\n${m.snippet}`,
+      `📬 ${greeting}${senderDisplayName(m.from)} emailed you: "${m.subject}"\n${tidySnippet(m.snippet)}`,
       emailReferenceNote(m)
     );
     markAlerted(ownerId, messageKey(m));
   }
 
   // A burst beyond the per-check cap gets one summary line instead of individually spamming.
-  const rest = unseen.slice(MAX_ALERTS_PER_CHECK);
+  const rest = toAlert.slice(MAX_ALERTS_PER_CHECK);
   if (rest.length > 0) {
     for (const m of rest) markAlerted(ownerId, messageKey(m));
     await notify(
@@ -119,5 +140,35 @@ export async function checkForNewImportantMessages(ownerId: number): Promise<voi
       `...and ${rest.length} more new message${rest.length === 1 ? "" : "s"} that might need attention — check your inbox.`
     );
   }
-  logScan(`sent ${toSend.length}${rest.length ? ` + overflow summary for ${rest.length}` : ""}`, unseen.length);
+  logScan(
+    `sent ${toSend.length}${rest.length ? ` + overflow summary for ${rest.length}` : ""}` +
+      (skips.size ? `, skipped ${skips.size}` : ""),
+    unseen.length
+  );
+}
+
+const RECENT_ALERT_WINDOW_MS = 48 * 60 * 60 * 1000;
+const MAX_RECENT_ALERTS = 15;
+
+// Which of `unseen` should not alert (see realPersonTriage.ts), keyed by message. Fails open: if
+// the model call breaks, every message alerts as it did before the triage existed. Runs after the
+// deliverability and onboarding gates so it is only paid for when an alert is actually about to go.
+async function triageUnseen(ownerId: number, unseen: UnifiedMessage[]): Promise<Set<UnifiedMessage>> {
+  const skipped = new Set<UnifiedMessage>();
+  const since = Date.now() - RECENT_ALERT_WINDOW_MS;
+  const recentAlerts = listEntities<ImportantEmailEntityData>(ownerId, { type: IMPORTANT_EMAIL_ENTITY_TYPE })
+    .filter((e) => e.createdAt >= since)
+    .slice(0, MAX_RECENT_ALERTS)
+    .map((e) => e.data.summary);
+  try {
+    const verdicts = await triageRealPersonEmails(
+      unseen.map((m, index) => ({ index, from: m.from, subject: m.subject, snippet: m.snippet })),
+      recentAlerts,
+      ownerId
+    );
+    for (const index of verdicts.keys()) if (unseen[index]) skipped.add(unseen[index]);
+  } catch (err) {
+    console.error(`alerts: triage failed for owner ${ownerId}, alerting on everything`, err);
+  }
+  return skipped;
 }

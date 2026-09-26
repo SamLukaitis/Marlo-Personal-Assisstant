@@ -52,6 +52,10 @@ vi.mock("./importantEmailAlerts.js", () => ({
   checkForImportantEmails: vi.fn(),
 }));
 
+vi.mock("./emailDigest.js", () => ({
+  flushEmailDigestIfDue: vi.fn(() => Promise.resolve()),
+}));
+
 vi.mock("./onboardingAlertSuppression.js", () => ({
   flushOnboardingAlertSummaryIfDue: vi.fn(() => Promise.resolve()),
 }));

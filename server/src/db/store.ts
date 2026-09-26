@@ -433,10 +433,10 @@ if (!accountColumns.includes("can_send")) {
 if (!accountColumns.includes("can_delete")) {
   db.exec(`ALTER TABLE accounts ADD COLUMN can_delete INTEGER NOT NULL DEFAULT 1`);
 }
-// Gmail History API checkpoint (google.ts's incremental list) — NULL means "never baselined",
-// which falls back to a full messages.list and sets this from the mailbox's current historyId.
-// Microsoft accounts never set this; Graph has its own separate delta-query mechanism, not
-// implemented here, so they keep doing a full list every tick, unaffected.
+// New-mail checkpoint for the background scans — a Gmail History API id (google.ts's incremental
+// list) or, for Microsoft accounts, a Graph inbox delta link (microsoft.ts's
+// microsoftListNewMessages). NULL means "never baselined", which falls back to a full list and
+// sets this from the mailbox's current position.
 if (!accountColumns.includes("history_id")) {
   db.exec(`ALTER TABLE accounts ADD COLUMN history_id TEXT`);
 }
@@ -4036,7 +4036,9 @@ export function getOnboardingStepEvents(ownerId: number): OnboardingStepEvent[] 
 // Pending actions — ask_user_choice's backing store (see assistant.ts / actionHandlers.ts)
 // ---------------------------------------------------------------------------
 
-export type PendingActionMode = "confirm" | "resume";
+// "email_digest" is the first-digest check-in's keep / instant / different-time buttons
+// (services/emailDigest.ts), handled directly by actionHandlers.ts with no model call.
+export type PendingActionMode = "confirm" | "resume" | "email_digest";
 
 export interface PendingActionRow {
   id: string;
@@ -4052,15 +4054,24 @@ export function createPendingAction(
   ownerId: number,
   mode: PendingActionMode,
   question: string,
-  contextJson: string
+  contextJson: string,
+  ttlMs: number = PENDING_ACTION_TTL_MS
 ): string {
   const id = crypto.randomUUID();
   const now = Date.now();
   db.prepare(
     `INSERT INTO pending_actions (id, owner_id, mode, question, context_json, created_at, expires_at)
      VALUES (?, ?, ?, ?, ?, ?, ?)`
-  ).run(id, ownerId, mode, question, contextJson, now, now + PENDING_ACTION_TTL_MS);
+  ).run(id, ownerId, mode, question, contextJson, now, now + ttlMs);
   return id;
+}
+
+// Retires every still-open question of one mode for an owner — used when the user answers a
+// question some other way (e.g. by typing), so a later tap on the old buttons can't undo that.
+export function consumePendingActionsByMode(ownerId: number, mode: PendingActionMode): void {
+  db.prepare(
+    `UPDATE pending_actions SET consumed_at = ? WHERE owner_id = ? AND mode = ? AND consumed_at IS NULL`
+  ).run(Date.now(), ownerId, mode);
 }
 
 // Atomically marks the row consumed and returns it. Returns null if the id doesn't exist,

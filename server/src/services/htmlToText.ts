@@ -23,7 +23,7 @@ function safeCodePoint(cp: number): string {
   }
 }
 
-function decodeEntities(s: string): string {
+export function decodeEntities(s: string): string {
   return s.replace(/&(#x[0-9a-fA-F]+|#[0-9]+|[a-zA-Z][a-zA-Z0-9]{1,31});/g, (whole, body: string) => {
     if (body.startsWith("#x") || body.startsWith("#X")) {
       const cp = parseInt(body.slice(2), 16);
@@ -35,6 +35,26 @@ function decodeEntities(s: string): string {
     }
     return NAMED_ENTITIES[body.toLowerCase()] ?? whole;
   });
+}
+
+// Gmail and Outlook cap their previews at roughly 200-255 characters, so an unfinished-looking
+// preview well under this is a short message that simply ends that way, not a cut-off one.
+const PROVIDER_PREVIEW_MIN_TRUNCATED = 150;
+
+// Gmail's snippet is HTML-entity-encoded ("everyone&#39;s") and both providers cut it off wherever
+// their preview limit falls. Decoded, whitespace-collapsed, ended on a word boundary, and marked
+// with "…" when it was cut (by the provider or here) so a truncated preview reads as one.
+export function tidySnippet(snippet: string, max = 220): string {
+  let text = decodeEntities(snippet).replace(/\s+/g, " ").trim();
+  let cut = false;
+  if (text.length > max) {
+    const head = text.slice(0, max);
+    const lastSpace = head.lastIndexOf(" ");
+    text = (lastSpace > max / 2 ? head.slice(0, lastSpace) : head).trimEnd();
+    cut = true;
+  }
+  const looksUnfinished = !/[.!?…)"'”’]$/.test(text);
+  return text && looksUnfinished && (cut || text.length >= PROVIDER_PREVIEW_MIN_TRUNCATED) ? `${text}…` : text;
 }
 
 export function htmlToText(html: string): string {

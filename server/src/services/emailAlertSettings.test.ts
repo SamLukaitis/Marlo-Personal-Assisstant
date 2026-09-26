@@ -1,10 +1,14 @@
 import { describe, it, expect } from "vitest";
 import { findOrCreateUserByEmail, setSetting } from "../db/store.js";
 import {
+  emailDigestTime,
   importantEmailAlertsEnabled,
+  realPersonAlertMode,
   realPersonAlertsEnabled,
   realPersonAlertsEnabledSince,
+  setEmailDigestTime,
   setImportantEmailAlertsEnabled,
+  setRealPersonAlertMode,
   setRealPersonAlertsEnabled,
 } from "./emailAlertSettings.js";
 
@@ -37,6 +41,31 @@ describe("email alert settings", () => {
     setRealPersonAlertsEnabled(user.id, true);
     expect(realPersonAlertsEnabled(user.id)).toBe(true);
     expect(importantEmailAlertsEnabled(user.id)).toBe(false);
+  });
+
+  it("real-person alerts are a 21:00 digest until the user opts into instant pings", () => {
+    const user = newUser("alerts-mode-default");
+    expect(realPersonAlertMode(user.id)).toBe("digest");
+    expect(emailDigestTime(user.id)).toBe("21:00");
+  });
+
+  it("stores the mode and digest time, and the mode leaves the important-email switch alone", () => {
+    const user = newUser("alerts-mode-set");
+    setRealPersonAlertMode(user.id, "instant");
+    setEmailDigestTime(user.id, "18:30");
+    expect(realPersonAlertMode(user.id)).toBe("instant");
+    expect(emailDigestTime(user.id)).toBe("18:30");
+    expect(importantEmailAlertsEnabled(user.id)).toBe(true);
+
+    setRealPersonAlertMode(user.id, "digest");
+    expect(realPersonAlertMode(user.id)).toBe("digest");
+  });
+
+  it("rejects a digest time that isn't a 24h HH:MM", () => {
+    const user = newUser("alerts-mode-badtime");
+    expect(() => setEmailDigestTime(user.id, "9pm")).toThrow();
+    expect(() => setEmailDigestTime(user.id, "24:00")).toThrow();
+    expect(emailDigestTime(user.id)).toBe("21:00");
   });
 
   it("records when real-person alerts were switched on from off, not on a no-op re-enable", () => {

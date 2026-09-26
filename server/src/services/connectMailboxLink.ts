@@ -66,7 +66,16 @@ export type ConnectLinkResult = "sent" | "throttled" | "no_pending_row";
 // tool must NOT move a completed row back into the registration state machine (see
 // handlePendingRegistration's routing in whatsappRegistration.ts) so it deliberately leaves it
 // alone.
-export async function sendConnectLink(phone: string, provider: RegistrationProvider): Promise<ConnectLinkResult> {
+// "enable_send" is the reconnect for an Outlook mailbox connected before Mail.Send was requested
+// (microsoft.ts's SCOPES) — same link, same callback, which recognises the mailbox as already
+// connected and skips the new-user setup chain (authRoutes.ts's isReconnect).
+export type ConnectLinkPurpose = "connect" | "enable_send";
+
+export async function sendConnectLink(
+  phone: string,
+  provider: RegistrationProvider,
+  purpose: ConnectLinkPurpose = "connect"
+): Promise<ConnectLinkResult> {
   if (withinCooldown(phone)) {
     await sendWhatsAppMessage(phone, "Still working on it — give it a few seconds and try again if the link doesn't work.");
     return "throttled";
@@ -98,6 +107,15 @@ export async function sendConnectLink(phone: string, provider: RegistrationProvi
   recordTokenIssued(phone);
   const path = provider === "google" ? "/auth/google/register" : "/auth/microsoft/register";
   const link = `${SERVER_URL}${path}?token=${token}`;
+  if (purpose === "enable_send") {
+    await sendWhatsAppCtaUrl(
+      phone,
+      `Tap below to reconnect *${PROVIDER_LABEL[provider]}* and allow sending — it only takes a moment. I'll still never send anything without you approving it first. This link works for ten minutes.`,
+      `Reconnect ${PROVIDER_LABEL[provider]}`,
+      link
+    );
+    return "sent";
+  }
   await sendWhatsAppCtaUrl(
     phone,
     `Almost there — tap below to connect *${PROVIDER_LABEL[provider]}*. I'll be able to read your mail and draft replies, but I can never send anything without you approving it first. This link works for ten minutes.`,
