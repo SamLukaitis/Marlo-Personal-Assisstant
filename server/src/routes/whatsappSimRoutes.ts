@@ -61,7 +61,8 @@ function refuse(res: Response, r: Extract<ResolvedPhone, { ok: false }>): void {
 // providers/whatsapp.ts write to for every simulated number.
 //
 // Body: { text } to type a message, or { buttonId, label } to tap a reply button / list row the
-// transcript offered. Optional { phone } picks a test user; omitted means the caller's own number.
+// transcript offered, or { latitude, longitude } to share a location pin (the answer to a "Send
+// location" request). Optional { phone } picks a test user; omitted means the caller's own number.
 whatsappSimRoutes.post("/whatsapp-sim/send", (req, res) => {
   const ownerId = (req as unknown as AuthedRequest).userId;
   const target = resolveSimPhone(req, req.body?.phone);
@@ -73,7 +74,22 @@ whatsappSimRoutes.post("/whatsapp-sim/send", (req, res) => {
 
   const text = typeof req.body?.text === "string" ? req.body.text.trim() : "";
   const buttonId = typeof req.body?.buttonId === "string" ? req.body.buttonId.trim() : "";
-  if (!text && !buttonId) {
+  const latitude = req.body?.latitude;
+  const longitude = req.body?.longitude;
+  const isLocation = latitude !== undefined || longitude !== undefined;
+  if (
+    isLocation &&
+    !(
+      typeof latitude === "number" &&
+      typeof longitude === "number" &&
+      Math.abs(latitude) <= 90 &&
+      Math.abs(longitude) <= 180
+    )
+  ) {
+    res.status(400).json({ error: "latitude and longitude must both be valid numbers" });
+    return;
+  }
+  if (!text && !buttonId && !isLocation) {
     res.status(400).json({ error: "text is required" });
     return;
   }
@@ -84,7 +100,10 @@ whatsappSimRoutes.post("/whatsapp-sim/send", (req, res) => {
 
   const messageId = `sim-${crypto.randomUUID()}`;
   let message: IncomingWhatsAppMessage;
-  if (buttonId) {
+  if (isLocation) {
+    recordSimMessage(phone, { role: "user", text: `[shared location ${latitude}, ${longitude}]` });
+    message = { kind: "location", from: phone, messageId, latitude, longitude };
+  } else if (buttonId) {
     const label = typeof req.body?.label === "string" && req.body.label.trim() ? req.body.label.trim() : buttonId;
     recordSimMessage(phone, { role: "user", text: `[tapped ${label}]` });
     message = { kind: "interactive", from: phone, messageId, buttonId };

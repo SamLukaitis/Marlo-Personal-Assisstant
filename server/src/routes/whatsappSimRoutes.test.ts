@@ -98,6 +98,28 @@ describe("POST /whatsapp-sim/send — chat as me", () => {
     expect(getSimTranscript(phone).at(-1)?.text).toBe("[tapped Gmail]");
   });
 
+  it("sends a shared location as a location message", async () => {
+    const { user, app } = newAdminApp("wa-sim-location");
+    const phone = simulatedPhoneForOwner(user.id);
+
+    const res = await request(app).post("/whatsapp-sim/send").send({ latitude: 51.5308, longitude: -0.1238 });
+
+    expect(res.status).toBe(202);
+    const arg = vi.mocked(handleIncoming).mock.calls[0][0];
+    expect(arg).toMatchObject({ kind: "location", from: phone, latitude: 51.5308, longitude: -0.1238 });
+    expect(getSimTranscript(phone).at(-1)?.text).toBe("[shared location 51.5308, -0.1238]");
+  });
+
+  it("rejects an out-of-range or half-specified location with 400", async () => {
+    const { app } = newAdminApp("wa-sim-location-bad");
+
+    for (const body of [{ latitude: 91, longitude: 0 }, { latitude: 10 }, { latitude: "x", longitude: 1 }]) {
+      const res = await request(app).post("/whatsapp-sim/send").send(body);
+      expect(res.status).toBe(400);
+    }
+    expect(handleIncoming).not.toHaveBeenCalled();
+  });
+
   it("refuses to drive a number that is neither the caller's own nor a simulator test user", async () => {
     const { app } = newAdminApp("wa-sim-foreign");
 
