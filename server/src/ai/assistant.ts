@@ -111,6 +111,7 @@ import {
   hubSearchContacts,
   hubFlaggedMessages,
 } from "../services/hub.js";
+import { unsubscribeFromMessage } from "../services/unsubscribe.js";
 import type { UnifiedMessage } from "../providers/types.js";
 
 // Cheap tier for lookups/summaries, richer tier for anything needing judgment or drafting.
@@ -162,7 +163,12 @@ export const SEARCH_CONVERSATION_HISTORY_DEFAULT_LIMIT = 20;
 // it holds even if the model skips that instruction under an unusual conversational branch or
 // prompt injection from message content it's reading. Extend this set as more irreversible-action
 // tools are added; a tool not in it behaves exactly as before (reversible actions don't need this).
-const CONFIRM_REQUIRED_TOOLS = new Set<string>(["delete_calendar_event", "send_email", "undo_expense"]);
+const CONFIRM_REQUIRED_TOOLS = new Set<string>([
+  "delete_calendar_event",
+  "send_email",
+  "undo_expense",
+  "unsubscribe_from_sender",
+]);
 
 let client: Anthropic | null = null;
 // Exported so portalRoutes.ts's log-explain endpoint can reuse the same lazily-created client
@@ -193,7 +199,7 @@ const ALWAYS_ON_TOOLS: Anthropic.ToolUnion[] = [
   {
     name: "search_messages",
     description:
-      "Search emails across connected accounts with a query (sender, subject keywords, Gmail search operators like from: or has:attachment). Call this whenever the user asks to find a specific email or topic.",
+      "Search emails across connected accounts with a query (sender, subject keywords, Gmail-style search operators like from:, subject:, has:attachment, newer_than:7d, is:unread — these work on Outlook accounts too). Call this whenever the user asks to find a specific email or topic.",
     input_schema: {
       type: "object",
       properties: {
@@ -365,7 +371,7 @@ const ALWAYS_ON_TOOLS: Anthropic.ToolUnion[] = [
   {
     name: "send_email",
     description:
-      "Send an email from the user's own mailbox. This is irreversible — you can only reach it through a user-confirmed ask_user_choice(mode=\"confirm\") pending action (see the rules), never by calling it directly. Gmail accounts only for now; Outlook accounts can't send yet.",
+      "Send an email from the user's own mailbox. This is irreversible — you can only reach it through a user-confirmed ask_user_choice(mode=\"confirm\") pending action (see the rules), never by calling it directly. Works for Gmail and Outlook accounts. An Outlook account connected a while ago may need a one-time reconnect before it can send — that's handled automatically when the user taps Send (the email is saved to their Drafts and a reconnect link is sent), so don't warn about it in advance.",
     input_schema: {
       type: "object",
       properties: {
@@ -461,6 +467,19 @@ const ALWAYS_ON_TOOLS: Anthropic.ToolUnion[] = [
         limit: { type: "number", description: "Max messages to archive, default 50" },
       },
       required: ["account_id", "query"],
+    },
+  },
+  {
+    name: "unsubscribe_from_sender",
+    description:
+      "Unsubscribe the user from a mailing list, using the unsubscribe option built into one of that sender's emails. Get account_id and message_id from search_messages/list_recent_messages (any recent message from that sender works). Cannot be undone, so it must go through ask_user_choice(mode=\"confirm\") first — never call it directly. Only works on bulk/marketing mail that carries an unsubscribe header; the result says whether it was unsubscribed, needs the user to tap a link, or isn't possible.",
+    input_schema: {
+      type: "object",
+      properties: {
+        account_id: { type: "number" },
+        message_id: { type: "string", description: "A message from the sender to unsubscribe from" },
+      },
+      required: ["account_id", "message_id"],
     },
   },
   {
@@ -924,7 +943,7 @@ const ALWAYS_ON_TOOLS: Anthropic.ToolUnion[] = [
   {
     name: "connect_xero",
     description:
-      "Save the user's Xero forwarding email address. Once this is saved, receipts they send that get filed under the 'receipts' category and yield a recognized expense are automatically emailed to this address in the background (via their connected Gmail) — no further action needed from them or from you. Call this ONLY once the user has actually told you the address in this conversation — never guess or invent one. If they ask to 'connect Xero' / 'set up Xero' and haven't given the address yet, first explain that Xero gives every account its own unique forwarding email (in Xero: Business > Bills to pay, or Accounting > Bills, look for the 'email bills to this address' address) and ask them to paste it — then call this tool with exactly what they send.",
+      "Save the user's Xero forwarding email address. Once this is saved, receipts they send that get filed under the 'receipts' category and yield a recognized expense are automatically emailed to this address in the background (via their connected mailbox) — no further action needed from them or from you. Call this ONLY once the user has actually told you the address in this conversation — never guess or invent one. If they ask to 'connect Xero' / 'set up Xero' and haven't given the address yet, first explain that Xero gives every account its own unique forwarding email (in Xero: Business > Bills to pay, or Accounting > Bills, look for the 'email bills to this address' address) and ask them to paste it — then call this tool with exactly what they send.",
     input_schema: {
       type: "object",
       properties: {
@@ -1256,6 +1275,8 @@ export async function runTool(
           (input.limit as number | undefined) ?? 50
         ),
       };
+    case "unsubscribe_from_sender":
+      return unsubscribeFromMessage(ownerId, input.account_id as number, input.message_id as string);
     case "label_message":
       await hubAddLabel(ownerId, input.account_id as number, input.message_id as string, input.label as string);
       return { ok: true };
@@ -1849,10 +1870,11 @@ function buildRules(enabled: Set<ToolKey>): string {
     "- After re-running a tool in response to pushback, check what it actually returned before deciding how to respond: if it confirms your original answer was correct, just say so plainly (e.g. \"confirmed — it's still Feb 8\") and move on. Don't apologize or claim you were reciting/guessing/pulling from context you shouldn't have relied on when the tool result backs up what you said — that's confusing and untrue when the original answer was grounded. Reserve the apology for when re-checking actually turns up something different from what you first said.",
     "- list_bookings/list_expenses only cover confirmations and receipts that were already saved as a document AND successfully extracted into a structured record — they do NOT search email. Before telling the user there's no hotel, flight, car rental, invoice, or payment due, also check search_messages/list_recent_messages: the confirmation or invoice email may exist even though nothing has been extracted into list_bookings/list_expenses yet. An empty list_bookings/list_expenses result on its own is not enough to say something doesn't exist.",
     "- For a broad or topic-level search (a country, region, or trip name — e.g. \"South America\", \"my Lisbon trip\"), call search_messages multiple times with different concrete sub-terms — city/place names, likely vendor names (airlines, hotels, booking sites), reference codes you already know — before concluding nothing was found. A single broad query is not sufficient; a broad topic phrase rarely appears verbatim in a real subject line.",
-    '- Whenever you write an email on the user\'s behalf (a new email, or a reply), never send or draft it silently. Instead call ask_user_choice ALONE with the full draft shown IN the question text itself (any other text you write this same turn is discarded — see ask_user_choice\'s own description) — e.g. question="To: jane@x.com\\nSubject: Re: Thursday\\n\\n<body>\\n\\nReady to send this?" — with mode="confirm", confirm_tool="send_email", confirm_input={account_id, to, subject, body}, editable=true, yes_label="Send", no_label="Leave in Drafts", decline_tool="create_email_draft", decline_input={account_id, to, subject, body}. That renders Edit / Send / Leave in Drafts. Send it only if they tap Send — Leave in Drafts saves it in their mailbox without sending, and Edit comes back to you as a follow-up message asking what to change (draft the revised content and ask again the same way). send_email only works for Gmail accounts — for an Outlook account, skip the ask and call create_email_draft directly instead, telling the user Outlook sending isn\'t supported yet so it\'s saved as a draft for them to send themselves.',
+    '- Whenever you write an email on the user\'s behalf (a new email, or a reply), never send or draft it silently. Instead call ask_user_choice ALONE with the full draft shown IN the question text itself (any other text you write this same turn is discarded — see ask_user_choice\'s own description) — e.g. question="To: jane@x.com\\nSubject: Re: Thursday\\n\\n<body>\\n\\nReady to send this?" — with mode="confirm", confirm_tool="send_email", confirm_input={account_id, to, subject, body}, editable=true, yes_label="Send", no_label="Leave in Drafts", decline_tool="create_email_draft", decline_input={account_id, to, subject, body}. That renders Edit / Send / Leave in Drafts. Send it only if they tap Send — Leave in Drafts saves it in their mailbox without sending, and Edit comes back to you as a follow-up message asking what to change (draft the revised content and ask again the same way). This applies to Gmail and Outlook accounts alike.',
     "- list_needs_attention only covers unread mail from real people — it deliberately excludes automated/system senders (alerts, receipts, notifications). For a broad ask like \"anything important\", \"check my email\", or \"what am I missing\", also call list_recent_messages/search_messages so automated-but-significant mail (crash/deployment alerts, security notices, government or financial mail) isn't missed. Don't treat a clean list_needs_attention result on its own as \"nothing important\".",
     "- You can create, edit, and delete calendar events directly on the user's own calendar — these are low-risk and reversible. You can never invite other people to an event; calendar events you create are personal-only.",
     '- You can archive emails and apply labels/categories directly — archiving is fully reversible (the email is just removed from the inbox, never deleted) so you don\'t need to ask permission first, but when the query is broad or ambiguous (e.g. "archive everything" with no filter), confirm first with ask_user_choice(mode="confirm", confirm_tool="archive_messages", confirm_input=<the exact call>) instead of asking in prose.',
+    '- To unsubscribe the user from promotional mail, find a recent message from that sender (search_messages), then ALWAYS confirm first with ask_user_choice(mode="confirm", confirm_tool="unsubscribe_from_sender", confirm_input={account_id, message_id}, question naming the sender) — unsubscribing can\'t be undone, and the tool refuses to run without that tap. Afterwards tell the user senders can take a few days to stop; if the result says it needs a link, give them the link; if it isn\'t possible, offer to archive that sender\'s mail instead.',
     "- Use search_contacts to resolve a name to an email address before drafting to someone when you don't already have their address.",
     "- If search_contacts (or any lookup) returns more than one plausible match and it's not obvious which one is meant, use ask_user_choice(mode=\"resume\") with one option per candidate instead of listing them in prose and waiting for a typed reply.",
     "- Use the remember tool proactively whenever the user shares something worth recalling later (preferences, which account is which, standing instructions, people in their life) — don't wait to be asked. Use kind 'core' only for identity-level facts (their name, partner/children/close family, home city, job/employer).",
@@ -1921,7 +1943,7 @@ export function buildSystemPrompt(ownerId: number, conversationSummary?: string)
 
   const xeroEmail = getXeroForwardingEmail(ownerId);
   const xeroStatus = xeroEmail
-    ? `Xero forwarding address on file: ${xeroEmail}. Receipts filed under 'receipts' that yield a recognized expense are already being forwarded there automatically (via connected Gmail) — this is live, not a future feature.`
+    ? `Xero forwarding address on file: ${xeroEmail}. Receipts filed under 'receipts' that yield a recognized expense are already being forwarded there automatically (via their connected mailbox) — this is live, not a future feature.`
     : "Xero: not connected — no forwarding address saved yet.";
 
   const pendingInvoice = getPendingInvoiceForward(ownerId);
@@ -2270,8 +2292,9 @@ const HELP_CHAT_SYSTEM_PROMPT =
   "who has not signed in. Marlowe is a personal AI assistant that connects to someone's Gmail " +
   "or Outlook, calendar, Google Drive or OneDrive, and Microsoft Teams, plus a dedicated " +
   "WhatsApp number — one conversation instead of switching between apps. It gives a daily " +
-  "briefing, answers questions about mail/calendar/files, drafts email replies (it never sends " +
-  "mail as the user — drafts always wait in their own mailbox for them to send), helps move " +
+  "briefing, answers questions about mail/calendar/files, drafts email replies (it only sends " +
+  "mail as the user once they've seen the draft and tapped Send — otherwise it stays in their " +
+  "Drafts), helps move " +
   "meetings, and files forwarded documents like boarding passes or receipts, including tracking " +
   "Schengen 90/180-day limits automatically from tickets already forwarded. Sign-in is with a " +
   "Google or Microsoft account, no separate password. Marlowe is currently in a closed preview — " +

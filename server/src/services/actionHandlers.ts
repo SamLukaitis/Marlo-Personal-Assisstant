@@ -12,9 +12,44 @@ import { emailDigestTime, formatDigestTime, setRealPersonAlertMode } from "./ema
 import { runTool, runAssistantChat, MAX_HISTORY_MESSAGES } from "../ai/assistant.js";
 import { sendWhatsAppMessage } from "../providers/whatsapp.js";
 import { sendAssistantReply } from "./whatsappReply.js";
+import { sendConnectLink } from "./connectMailboxLink.js";
 import type { IncomingWhatsAppMessage } from "../providers/whatsapp.js";
 
 const EXPIRED_REPLY = "That option has expired — just ask me again.";
+
+// Matched by name, not instanceof, so it survives the provider module being mocked in tests.
+function isOutlookSendPermissionError(err: unknown): err is { accountEmail: string } {
+  return err instanceof Error && err.name === "OutlookSendPermissionError";
+}
+
+// The Send tap hit an Outlook mailbox connected before Mail.Send was requested. This is the one
+// moment the reconnect is worth asking for — the user is trying to send right now — so the email
+// is kept safe in their Drafts (Mail.ReadWrite, which they did grant) and the reconnect link
+// follows. Recorded in the chat history so a later "send it" has the context to go again.
+async function handleOutlookSendPermission(
+  ownerId: number,
+  phone: string,
+  input: Record<string, unknown>,
+  accountEmail: string
+): Promise<void> {
+  let savedDraft = false;
+  try {
+    await runTool(ownerId, "create_email_draft", input, phone);
+    savedDraft = true;
+  } catch (err) {
+    console.error("actionHandlers: couldn't save the unsent Outlook email as a draft", err);
+  }
+  const text =
+    `I couldn't send that yet — ${accountEmail} was connected before I could send from Outlook, ` +
+    `so it needs one quick reconnect.` +
+    (savedDraft ? " I've saved your email in your Outlook Drafts in the meantime." : "") +
+    " Once you've reconnected, just tell me to send it.";
+  appendWhatsAppMessage(ownerId, phone, "assistant", text);
+  await sendWhatsAppMessage(phone, text).catch(() => {});
+  await sendConnectLink(phone, "microsoft", "enable_send").catch((err) =>
+    console.error("actionHandlers: couldn't send the Outlook reconnect link", err)
+  );
+}
 
 // Friendly per-tool confirmation text for a zero-LLM confirm execution — falls back to a generic
 // "done" for any tool without a specific entry here.
@@ -24,6 +59,19 @@ const CONFIRM_RESULT_LABEL: Record<string, (result: unknown) => string> = {
     return typeof archived === "number"
       ? `✓ Archived ${archived} message${archived === 1 ? "" : "s"}.`
       : "✓ Done.";
+  },
+  unsubscribe_from_sender: (result) => {
+    const r = result as
+      | { status?: string; method?: string; url?: string; sender?: string; reason?: string }
+      | undefined;
+    const sender = r?.sender ? ` from ${r.sender}` : "";
+    if (r?.status === "unsubscribed") {
+      return `✓ Unsubscribed${sender}. It can take a few days for the emails to stop.`;
+    }
+    if (r?.status === "manual_link" && r.url) {
+      return `I couldn't unsubscribe${sender} automatically — tap this link to finish: ${r.url}`;
+    }
+    return r?.reason ?? "Sorry, I couldn't unsubscribe from that sender.";
   },
   delete_calendar_event: () => "✓ Deleted.",
   send_email: () => "✓ Sent.",
@@ -155,6 +203,10 @@ export async function handlePendingActionReply(
       appendWhatsAppMessage(ownerId, phone, "assistant", confirmText);
       await sendWhatsAppMessage(phone, confirmText);
     } catch (err) {
+      if (isOutlookSendPermissionError(err)) {
+        await handleOutlookSendPermission(ownerId, phone, runInput, err.accountEmail);
+        return true;
+      }
       console.error("actionHandlers: confirmed tool call failed", err);
       await sendWhatsAppMessage(
         phone,

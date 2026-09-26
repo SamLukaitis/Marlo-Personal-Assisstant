@@ -1,6 +1,7 @@
 import { google, gmail_v1 } from "googleapis";
 import { upsertAccount, updateAccountTokens, type AccountRow } from "../db/store.js";
 import { mapWithConcurrency } from "../services/concurrency.js";
+import { htmlToText } from "../services/htmlToText.js";
 import type {
   UnifiedMessage,
   CalendarEvent,
@@ -11,6 +12,7 @@ import type {
   EmailAttachment,
   EmailAttachmentMeta,
   SendResult,
+  UnsubscribeInfo,
 } from "./types.js";
 
 const SCOPES = [
@@ -158,7 +160,7 @@ function extractBody(payload: gmail_v1.Schema$MessagePart | undefined): string {
   const plain = parts.find((p) => p.mimeType === "text/plain" && p.body?.data);
   if (plain) return decode(plain.body!.data);
   const html = parts.find((p) => p.mimeType === "text/html" && p.body?.data);
-  if (html) return decode(html.body!.data).replace(/<[^>]+>/g, " ");
+  if (html) return htmlToText(decode(html.body!.data));
   return "";
 }
 
@@ -347,6 +349,29 @@ export async function googleGetMessage(
     return unified;
   } catch {
     return null;
+  }
+}
+
+export async function googleGetUnsubscribeInfo(
+  account: AccountRow,
+  messageId: string
+): Promise<UnsubscribeInfo | null> {
+  const gmail = google.gmail({ version: "v1", auth: authFor(account) });
+  try {
+    const res = await gmail.users.messages.get({
+      userId: "me",
+      id: messageId,
+      format: "metadata",
+      metadataHeaders: ["From", "List-Unsubscribe", "List-Unsubscribe-Post"],
+    });
+    return {
+      from: header(res.data, "From"),
+      listUnsubscribe: header(res.data, "List-Unsubscribe"),
+      listUnsubscribePost: header(res.data, "List-Unsubscribe-Post"),
+    };
+  } catch (err) {
+    if (isNotFoundError(err)) return null;
+    throw err;
   }
 }
 

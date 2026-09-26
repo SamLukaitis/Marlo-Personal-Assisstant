@@ -27,6 +27,7 @@ import {
   getUserIdBySessionToken,
   listAccounts,
   upsertAccount,
+  completePendingRegistration,
   consumePendingRegistrationToken,
   peekPendingRegistrationByToken,
   addPhoneNumberForUser,
@@ -623,11 +624,25 @@ authRoutes.get("/auth/microsoft/callback", async (req, res) => {
         );
         return;
       }
+      // This exact mailbox is already connected: the link was a reconnect (sendConnectLink's
+      // "enable_send", to pick up Mail.Send), not a signup — refresh the tokens and say so, rather
+      // than rerunning the new-user setup chain (inbox preview, briefing questions) at them.
+      const isReconnect = listAccounts(userId, "microsoft").some(
+        (a) => a.email.toLowerCase() === auth.email.toLowerCase()
+      );
       linkIdentity(userId, "microsoft", microsoftIdentitySubject(auth));
       saveMicrosoftAccount(userId, auth);
       // Same simulator carve-out as the Google callback above.
       if (!isSimulatedPhone(reg.phone)) setSessionCookie(res, createSession(userId));
       res.redirect(`${CLIENT_URL}/connected`);
+      if (isReconnect) {
+        completePendingRegistration(reg.phone);
+        sendWhatsAppMessage(
+          reg.phone,
+          `✓ Reconnected ${auth.email} — I can send email from Outlook now. Just ask me to send it again.`
+        ).catch((err) => console.error("whatsapp-register: reconnect message failed", err));
+        return;
+      }
       sendFirstValueAndBriefingPrompt(userId, reg.phone, linkedExistingAccount).catch((err) =>
         console.error("whatsapp-register: post-connect message failed", err)
       );

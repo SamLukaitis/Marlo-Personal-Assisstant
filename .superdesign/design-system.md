@@ -8,7 +8,7 @@ A multi-tenant personal AI assistant that sits in front of a user's email (Gmail
 - "Find X across everything I have" — unified search across mail/files/chats/documents.
 - "Do this for me" — draft a reply, move a meeting, archive mail, remember a preference.
 - "Where's my paperwork" — ask about a previously-sent boarding pass/license/receipt.
-- Trust: the tool touches sensitive personal/business accounts, so it must read as **secure, competent, and transparent** — never gimmicky or toy-like. Explicit safety boundaries exist (never sends email, never invites people to events) and should be legible in the UI, not just the README.
+- Trust: the tool touches sensitive personal/business accounts, so it must read as **secure, competent, and transparent** — never gimmicky or toy-like. Explicit safety boundaries exist (never sends email without the user tapping Send, never invites people to events) and should be legible in the UI, not just the README.
 
 ## Key pages & architecture
 - **Public marketing/sign-in homepage** (`/`) — the only page a logged-out visitor sees. Job: explain the product in one glance and convert to sign-in (Google/Microsoft OAuth, no password).

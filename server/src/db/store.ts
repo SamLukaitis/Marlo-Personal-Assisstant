@@ -433,10 +433,10 @@ if (!accountColumns.includes("can_send")) {
 if (!accountColumns.includes("can_delete")) {
   db.exec(`ALTER TABLE accounts ADD COLUMN can_delete INTEGER NOT NULL DEFAULT 1`);
 }
-// Gmail History API checkpoint (google.ts's incremental list) — NULL means "never baselined",
-// which falls back to a full messages.list and sets this from the mailbox's current historyId.
-// Microsoft accounts never set this; Graph has its own separate delta-query mechanism, not
-// implemented here, so they keep doing a full list every tick, unaffected.
+// New-mail checkpoint for the background scans — a Gmail History API id (google.ts's incremental
+// list) or, for Microsoft accounts, a Graph inbox delta link (microsoft.ts's
+// microsoftListNewMessages). NULL means "never baselined", which falls back to a full list and
+// sets this from the mailbox's current position.
 if (!accountColumns.includes("history_id")) {
   db.exec(`ALTER TABLE accounts ADD COLUMN history_id TEXT`);
 }

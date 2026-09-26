@@ -1,4 +1,6 @@
 import { updateAccountTokens, type AccountRow } from "../db/store.js";
+import { mapWithConcurrency } from "../services/concurrency.js";
+import { htmlToText } from "../services/htmlToText.js";
 import type {
   UnifiedMessage,
   CalendarEvent,
@@ -7,6 +9,9 @@ import type {
   ChatThread,
   ContactHit,
   EventInput,
+  EmailAttachment,
+  SendResult,
+  UnsubscribeInfo,
 } from "./types.js";
 
 const AUTH_BASE = "https://login.microsoftonline.com/common/oauth2/v2.0";
@@ -16,8 +21,11 @@ const GRAPH = "https://graph.microsoft.com/v1.0";
 // profile is what puts `oid` in that id_token: Microsoft gates the claim on it ("the profile scope
 // is required to receive this claim"), so openid alone returns sub + tid but no oid and every
 // sign-in fails in readIdTokenIdentity. Don't drop it.
+// Mail.Send was added after the first Outlook accounts connected: their refresh tokens still carry
+// only the original scopes, so microsoftSendMessage raises OutlookSendPermissionError for them and
+// the reconnect is asked for only at the moment they actually try to send.
 const SCOPES =
-  "openid profile offline_access User.Read Mail.Read Mail.ReadWrite Calendars.ReadWrite Chat.Read Files.Read People.Read";
+  "openid profile offline_access User.Read Mail.Read Mail.ReadWrite Mail.Send Calendars.ReadWrite Chat.Read Files.Read People.Read";
 
 export function isMicrosoftConfigured(): boolean {
   return !!(process.env.MS_CLIENT_ID && process.env.MS_CLIENT_SECRET);
@@ -51,6 +59,7 @@ interface TokenResponse {
   refresh_token?: string;
   expires_in: number;
   id_token?: string;
+  scope?: string; // space-separated scopes this token actually carries
 }
 
 // The id_token comes straight back from Microsoft's token endpoint over TLS, in exchange for this
@@ -150,6 +159,10 @@ async function accessTokenFor(account: AccountRow): Promise<string> {
     account.accessToken && account.expiryDate && account.expiryDate > Date.now() + 60_000;
   if (stillValid) return account.accessToken!;
 
+  return (await refreshTokens(account)).access_token;
+}
+
+async function refreshTokens(account: AccountRow): Promise<TokenResponse> {
   if (!account.refreshToken) throw new Error(`No refresh token for ${account.email}`);
   const tokens = await exchangeToken({
     grant_type: "refresh_token",
@@ -160,21 +173,59 @@ async function accessTokenFor(account: AccountRow): Promise<string> {
     refreshToken: tokens.refresh_token ?? undefined,
     expiryDate: Date.now() + tokens.expires_in * 1000,
   });
-  return tokens.access_token;
+  return tokens;
+}
+
+const GRAPH_MAX_ATTEMPTS = 5;
+const GRAPH_MAX_RETRY_WAIT_MS = 30_000;
+
+/**
+ * fetch against Graph, retrying when Graph throttles. Outlook caps each app at ~4 requests in flight
+ * per mailbox (429 "MailboxConcurrency"), and the assistant runs tools in parallel alongside
+ * background scans, so hitting it is routine rather than exceptional. A 429 means the request was
+ * refused, so it's safe to retry any method; 503/504 only for GETs, since a write may have landed.
+ */
+async function graphFetch(url: string, init: RequestInit = {}): Promise<Response> {
+  const method = (init.method ?? "GET").toUpperCase();
+  for (let attempt = 1; ; attempt++) {
+    const res = await fetch(url, init);
+    const retryable = res.status === 429 || (method === "GET" && (res.status === 503 || res.status === 504));
+    if (!retryable || attempt >= GRAPH_MAX_ATTEMPTS) return res;
+    await new Promise((resolve) => setTimeout(resolve, retryDelayMs(res, attempt)));
+  }
+}
+
+// Graph's Retry-After is in seconds; without one, back off exponentially with jitter.
+function retryDelayMs(res: Response, attempt: number): number {
+  const header = Number(res.headers?.get?.("retry-after"));
+  const ms = Number.isFinite(header) && header >= 0 ? header * 1000 : 500 * 2 ** (attempt - 1) + Math.random() * 250;
+  return Math.min(ms, GRAPH_MAX_RETRY_WAIT_MS);
 }
 
 async function graphGet<T>(account: AccountRow, path: string, extraHeaders: Record<string, string> = {}): Promise<T> {
   const token = await accessTokenFor(account);
-  const res = await fetch(`${GRAPH}${path}`, {
+  // Absolute URLs are Graph's own paging/delta links (@odata.nextLink / @odata.deltaLink).
+  const url = path.startsWith("https://") ? path : `${GRAPH}${path}`;
+  const res = await graphFetch(url, {
     headers: { Authorization: `Bearer ${token}`, ...extraHeaders },
   });
-  if (!res.ok) throw new Error(`Graph ${path} returned ${res.status}: ${await res.text()}`);
+  if (!res.ok) {
+    throw new GraphHttpError(res.status, `Graph ${path.slice(0, 200)} returned ${res.status}: ${await res.text()}`);
+  }
   return (await res.json()) as T;
+}
+
+// Same message text as before (hub.ts's isAuthError reads the status out of it), plus the status
+// as a field for callers that branch on it.
+class GraphHttpError extends Error {
+  constructor(public readonly status: number, message: string) {
+    super(message);
+  }
 }
 
 async function graphPost<T>(account: AccountRow, path: string, body: unknown): Promise<T> {
   const token = await accessTokenFor(account);
-  const res = await fetch(`${GRAPH}${path}`, {
+  const res = await graphFetch(`${GRAPH}${path}`, {
     method: "POST",
     headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
     body: JSON.stringify(body),
@@ -185,7 +236,7 @@ async function graphPost<T>(account: AccountRow, path: string, body: unknown): P
 
 async function graphPatch<T>(account: AccountRow, path: string, body: unknown): Promise<T> {
   const token = await accessTokenFor(account);
-  const res = await fetch(`${GRAPH}${path}`, {
+  const res = await graphFetch(`${GRAPH}${path}`, {
     method: "PATCH",
     headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
     body: JSON.stringify(body),
@@ -196,7 +247,7 @@ async function graphPatch<T>(account: AccountRow, path: string, body: unknown): 
 
 async function graphDelete(account: AccountRow, path: string): Promise<void> {
   const token = await accessTokenFor(account);
-  const res = await fetch(`${GRAPH}${path}`, {
+  const res = await graphFetch(`${GRAPH}${path}`, {
     method: "DELETE",
     headers: { Authorization: `Bearer ${token}` },
   });
@@ -248,18 +299,285 @@ function toUnified(account: AccountRow, m: GraphMessage): UnifiedMessage {
 const MSG_SELECT =
   "$select=id,subject,from,bodyPreview,receivedDateTime,isRead,webLink,internetMessageHeaders";
 
+// The assistant writes Gmail search syntax (search_messages's tool description says so, and it's
+// what the model reaches for anyway), but Graph's $search is KQL: newer_than:, is:unread, in:inbox
+// and has:attachment either matched nothing or broke the request. This maps the Gmail operators
+// that have a Graph equivalent and drops the ones that don't (label:, category:, is:starred, ...)
+// rather than letting them turn a real search into an empty one. from:/to:/subject: and plain
+// words are the same in both and pass straight through.
+export interface GraphMailQuery {
+  kql: string; // remaining free text + passthrough operators, "" when there are none
+  folder: "inbox" | "sentitems" | "drafts" | null; // null = every folder
+  receivedAfter?: string; // YYYY-MM-DD, inclusive
+  receivedBefore?: string; // YYYY-MM-DD, exclusive
+  hasAttachment?: boolean;
+  unread?: boolean;
+}
+
+const FOLDER_FOR_IN: Record<string, GraphMailQuery["folder"]> = {
+  inbox: "inbox",
+  sent: "sentitems",
+  drafts: "drafts",
+  anywhere: null,
+  all: null,
+};
+
+function isoDay(ms: number): string {
+  return new Date(ms).toISOString().slice(0, 10);
+}
+
+// Gmail's relative age: 7d, 2w, 3m, 1y (and h, which Graph can only honour to the day).
+function relativeAgeMs(value: string): number | null {
+  const m = /^(\d+)([hdwmy])$/i.exec(value);
+  if (!m) return null;
+  const unitMs = { h: 3600e3, d: 86400e3, w: 7 * 86400e3, m: 30 * 86400e3, y: 365 * 86400e3 }[
+    m[2].toLowerCase() as "h" | "d" | "w" | "m" | "y"
+  ];
+  return Number(m[1]) * unitMs;
+}
+
+// Gmail accepts 2026/09/01 and 2026-09-01 (and single-digit month/day).
+function absoluteDay(value: string): string | null {
+  const m = /^(\d{4})[/-](\d{1,2})[/-](\d{1,2})$/.exec(value);
+  if (!m) return null;
+  return `${m[1]}-${m[2].padStart(2, "0")}-${m[3].padStart(2, "0")}`;
+}
+
+export function toGraphMailQuery(query: string, now = Date.now()): GraphMailQuery {
+  const result: GraphMailQuery = { kql: "", folder: null };
+  const kept: string[] = [];
+  const tokens = query.match(/[^\s:"]+:"[^"]*"|"[^"]*"|\S+/g) ?? [];
+  for (const token of tokens) {
+    const op = /^([a-z_]+):(.*)$/i.exec(token);
+    if (!op) {
+      kept.push(token);
+      continue;
+    }
+    const name = op[1].toLowerCase();
+    const value = op[2].replace(/^"|"$/g, "");
+    const lower = value.toLowerCase();
+    switch (name) {
+      case "in":
+        if (lower in FOLDER_FOR_IN) result.folder = FOLDER_FOR_IN[lower];
+        break;
+      case "is":
+        if (lower === "unread") result.unread = true;
+        else if (lower === "read") result.unread = false;
+        break;
+      case "has":
+        if (lower === "attachment") result.hasAttachment = true;
+        break;
+      case "filename":
+        kept.push(`attachment:${op[2]}`);
+        break;
+      case "newer_than":
+      case "older_than": {
+        const age = relativeAgeMs(value);
+        if (age === null) break;
+        if (name === "newer_than") result.receivedAfter = isoDay(now - age);
+        else result.receivedBefore = isoDay(now - age);
+        break;
+      }
+      case "after":
+      case "before": {
+        const day = absoluteDay(value);
+        if (!day) break;
+        if (name === "after") result.receivedAfter = day;
+        else result.receivedBefore = day;
+        break;
+      }
+      case "label":
+      case "category":
+      case "newer":
+      case "older":
+        break;
+      default:
+        kept.push(token); // from:, to:, cc:, subject:, ... — KQL spells these the same way
+    }
+  }
+  result.kql = kept.join(" ");
+  return result;
+}
+
+function folderPath(folder: GraphMailQuery["folder"]): string {
+  return folder ? `/me/mailFolders/${folder}/messages` : "/me/messages";
+}
+
+// Builds the Graph request for a translated query. $search and $filter can't be combined on
+// messages, so with free text the date/attachment bounds go into the KQL itself; with none, they
+// become a $filter so the listing can still be date-ordered (Graph requires the $orderby property
+// to lead the $filter, hence the always-present receivedDateTime bound).
+function graphMessagesPath(q: GraphMailQuery, top: number, select: string): string {
+  const base = folderPath(q.folder);
+  if (q.kql) {
+    const kql = [
+      q.kql,
+      ...(q.hasAttachment ? ["hasAttachments:true"] : []),
+      ...(q.receivedAfter ? [`received>=${q.receivedAfter}`] : []),
+      ...(q.receivedBefore ? [`received<${q.receivedBefore}`] : []),
+    ].join(" ");
+    return `${base}?$search="${encodeURIComponent(kql.replace(/"/g, '\\"'))}"&$top=${top}&${select}`;
+  }
+  const filters = [
+    `receivedDateTime ge ${q.receivedAfter ?? "1900-01-01"}T00:00:00Z`,
+    ...(q.receivedBefore ? [`receivedDateTime lt ${q.receivedBefore}T00:00:00Z`] : []),
+    ...(q.hasAttachment ? ["hasAttachments eq true"] : []),
+    ...(q.unread !== undefined ? [`isRead eq ${!q.unread}`] : []),
+  ];
+  return (
+    `${base}?$filter=${encodeURIComponent(filters.join(" and "))}` +
+    `&$orderby=receivedDateTime desc&$top=${top}&${select}`
+  );
+}
+
 export async function microsoftListMessages(
   account: AccountRow,
   opts: { query?: string; limit?: number } = {}
 ): Promise<UnifiedMessage[]> {
-  const top = `$top=${opts.limit ?? 20}`;
+  const top = opts.limit ?? 20;
   // Without a search query, "list recent messages" should mean the inbox —
   // /me/messages otherwise returns messages from every folder, archived or not.
-  const path = opts.query
-    ? `/me/messages?$search="${encodeURIComponent(opts.query)}"&${top}&${MSG_SELECT}`
-    : `/me/mailFolders/inbox/messages?$orderby=receivedDateTime desc&${top}&${MSG_SELECT}`;
-  const data = await graphGet<{ value: GraphMessage[] }>(account, path);
-  return data.value.map((m) => toUnified(account, m));
+  if (!opts.query?.trim()) {
+    const data = await graphGet<{ value: GraphMessage[] }>(
+      account,
+      `/me/mailFolders/inbox/messages?$orderby=receivedDateTime desc&$top=${top}&${MSG_SELECT}`
+    );
+    return data.value.map((m) => toUnified(account, m));
+  }
+  const q = toGraphMailQuery(opts.query);
+  const data = await graphGet<{ value: GraphMessage[] }>(account, graphMessagesPath(q, top, MSG_SELECT));
+  const messages = data.value.map((m) => toUnified(account, m));
+  // KQL can't express read state, so with free text is:unread/is:read is applied here instead.
+  if (q.kql && q.unread !== undefined) return messages.filter((m) => m.unread === q.unread);
+  return messages;
+}
+
+export interface NewMessagesResult {
+  messages: UnifiedMessage[];
+  // The delta link to resume from next time. Stored in the same accounts.history_id column as
+  // Gmail's historyId, and like it, deliberately NOT saved here — hub.ts saves it once the tick's
+  // scanners have handled the messages (see google.ts's googleListNewMessages).
+  historyId: string | null;
+}
+
+interface DeltaPage {
+  value: { id: string; receivedDateTime?: string; "@removed"?: unknown }[];
+  "@odata.nextLink"?: string;
+  "@odata.deltaLink"?: string;
+}
+
+const INBOX_DELTA = "/me/mailFolders/inbox/messages/delta";
+// Exchange's clock and ours can disagree by a little; starting the baseline this far back means a
+// message landing during the baseline is seen twice (harmless — every scanner dedupes on its own
+// ledger) rather than never (the unsafe direction).
+const DELTA_BASELINE_SKEW_MS = 10 * 60 * 1000;
+// Delta also reports messages that merely *changed* — read, flagged, categorised. Gmail's history
+// is asked for additions only; Graph can't filter that way, so anything received this long before
+// now is a change to old mail, not new mail, and isn't worth a fetch. Far longer than
+// hub.ts's MAX_CHECKPOINT_HOLD_MS, so a held checkpoint can never age genuinely new mail out.
+const DELTA_NEW_MAIL_WINDOW_MS = 2 * 24 * 60 * 60 * 1000;
+const GRAPH_GET_CONCURRENCY = 4;
+
+function isDeltaExpired(err: unknown): boolean {
+  if (!(err instanceof GraphHttpError)) return false;
+  return err.status === 410 || /syncstate|resyncrequired/i.test(err.message);
+}
+
+// Walks a delta round to its end, collecting ids. Returns the new delta link.
+async function walkDelta(account: AccountRow, start: string): Promise<{ ids: DeltaPage["value"]; deltaLink: string | null }> {
+  const ids: DeltaPage["value"] = [];
+  let next: string | undefined = start;
+  let deltaLink: string | null = null;
+  while (next) {
+    const page: DeltaPage = await graphGet<DeltaPage>(account, next, { Prefer: "odata.maxpagesize=100" });
+    ids.push(...page.value);
+    next = page["@odata.nextLink"];
+    deltaLink = page["@odata.deltaLink"] ?? deltaLink;
+  }
+  return { ids, deltaLink };
+}
+
+// Outlook's version of googleListNewMessages: a Graph delta query over the inbox returns only what
+// changed since the stored delta link, instead of re-listing the newest 150 messages (with all
+// their headers) on every 5-minute tick. The delta round itself asks for ids and dates only; the
+// handful of genuinely new messages are then fetched individually with the usual fields, the same
+// shape as Gmail's history.list + messages.get.
+//
+// No checkpoint yet (first run, or Graph says the old one expired): starts a delta round filtered to
+// mail received from now on — so it returns almost nothing and costs one call — and does a normal
+// inbox list for this tick's messages, exactly like google.ts's baselineAndList.
+export async function microsoftListNewMessages(
+  account: AccountRow,
+  opts: { limit?: number } = {}
+): Promise<NewMessagesResult> {
+  if (account.historyId) {
+    try {
+      return await incrementalNewMessages(account, account.historyId);
+    } catch (err) {
+      if (!isDeltaExpired(err)) throw err;
+    }
+  }
+  return baselineNewMessages(account, opts.limit ?? 20);
+}
+
+async function baselineNewMessages(account: AccountRow, limit: number): Promise<NewMessagesResult> {
+  // Captured BEFORE the list — see google.ts's baselineAndList for why that's the safe order.
+  const since = new Date(Date.now() - DELTA_BASELINE_SKEW_MS).toISOString();
+  const filter = encodeURIComponent(`receivedDateTime ge ${since}`);
+  const { deltaLink } = await walkDelta(account, `${INBOX_DELTA}?$select=id,receivedDateTime&$filter=${filter}`);
+  const messages = await microsoftListMessages(account, { limit });
+  return { messages, historyId: deltaLink };
+}
+
+async function incrementalNewMessages(account: AccountRow, deltaLink: string): Promise<NewMessagesResult> {
+  const { ids, deltaLink: nextLink } = await walkDelta(account, deltaLink);
+  const floor = Date.now() - DELTA_NEW_MAIL_WINDOW_MS;
+  const fresh = [
+    ...new Set(
+      ids
+        .filter((item) => !item["@removed"])
+        .filter((item) => !item.receivedDateTime || Date.parse(item.receivedDateTime) >= floor)
+        .map((item) => item.id)
+    ),
+  ];
+  const fetched = await mapWithConcurrency(fresh, GRAPH_GET_CONCURRENCY, async (id) => {
+    try {
+      const m = await graphGet<GraphMessage>(account, `/me/messages/${encodeURIComponent(id)}?${MSG_SELECT}`);
+      return toUnified(account, m);
+    } catch (err) {
+      // Deleted or moved out again before this ran (Outlook ids change when a message moves).
+      // Permanent, so skip it rather than stall the checkpoint — see google.ts's same case.
+      if (err instanceof GraphHttpError && err.status === 404) return null;
+      throw err;
+    }
+  });
+  return {
+    messages: fetched.filter((m): m is UnifiedMessage => m !== null),
+    historyId: nextLink ?? deltaLink,
+  };
+}
+
+export async function microsoftGetUnsubscribeInfo(
+  account: AccountRow,
+  messageId: string
+): Promise<UnsubscribeInfo | null> {
+  let m: GraphMessage;
+  try {
+    m = await graphGet<GraphMessage>(
+      account,
+      `/me/messages/${encodeURIComponent(messageId)}?$select=id,from,internetMessageHeaders`
+    );
+  } catch {
+    return null;
+  }
+  const headerValue = (name: string) =>
+    (m.internetMessageHeaders ?? []).find((h) => h.name?.toLowerCase() === name)?.value ?? "";
+  const from = m.from?.emailAddress;
+  return {
+    from: from ? `${from.name ?? ""} <${from.address ?? ""}>`.trim() : "",
+    listUnsubscribe: headerValue("list-unsubscribe"),
+    listUnsubscribePost: headerValue("list-unsubscribe-post"),
+  };
 }
 
 export async function microsoftGetMessage(
@@ -267,16 +585,17 @@ export async function microsoftGetMessage(
   messageId: string
 ): Promise<UnifiedMessage | null> {
   try {
+    // Outlook stores nearly all mail as HTML. Asking Graph for text makes Exchange do the
+    // conversion; htmlToText is the fallback if HTML comes back anyway. A bare tag-strip left
+    // <style> blocks and &nbsp; soup that filled the 20k budget before the actual message text.
     const m = await graphGet<GraphMessage>(
       account,
-      `/me/messages/${encodeURIComponent(messageId)}?${MSG_SELECT},body,hasAttachments`
+      `/me/messages/${encodeURIComponent(messageId)}?${MSG_SELECT},body,hasAttachments`,
+      { Prefer: 'outlook.body-content-type="text"' }
     );
     const unified = toUnified(account, m);
     const raw = m.body?.content ?? "";
-    unified.body = (m.body?.contentType === "html" ? raw.replace(/<[^>]+>/g, " ") : raw).slice(
-      0,
-      20000
-    );
+    unified.body = (m.body?.contentType?.toLowerCase() === "html" ? htmlToText(raw) : raw).slice(0, 20000);
     // TEMP diagnostic (investigating a reported "email body came back empty" bug, 2026-08-27):
     // remove once root-caused — see docs/superpowers/plans/2026-08-27-whatsapp-session-handover.md.
     if (!unified.body) {
@@ -347,7 +666,7 @@ export async function microsoftCreateDraft(
   body: string
 ): Promise<DraftResult> {
   const token = await accessTokenFor(account);
-  const res = await fetch(`${GRAPH}/me/messages`, {
+  const res = await graphFetch(`${GRAPH}/me/messages`, {
     method: "POST",
     headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -364,6 +683,74 @@ export async function microsoftCreateDraft(
     accountEmail: account.email,
     reviewNote: `Draft created in Outlook (${account.email}). Review and send it from Outlook — nothing has been sent.`,
   };
+}
+
+// The account connected before Mail.Send was requested (see SCOPES) — sending needs a one-time
+// reconnect. A distinct type so callers can offer that reconnect instead of a generic failure.
+export class OutlookSendPermissionError extends Error {
+  constructor(public readonly accountEmail: string) {
+    super(`${accountEmail} was connected before Outlook sending was switched on — it needs reconnecting once to send.`);
+    this.name = "OutlookSendPermissionError";
+  }
+}
+
+// /me/sendMail takes file attachments inline only up to 3 MB; bigger ones need an upload session.
+const MAX_INLINE_ATTACHMENT_BYTES = 3 * 1024 * 1024;
+
+/** Actually sends (as opposed to microsoftCreateDraft, which only stages an unsent draft). */
+export async function microsoftSendMessage(
+  account: AccountRow,
+  to: string,
+  subject: string,
+  body: string,
+  attachment?: EmailAttachment
+): Promise<SendResult> {
+  if (attachment && attachment.data.length > MAX_INLINE_ATTACHMENT_BYTES) {
+    throw new Error(`"${attachment.filename}" is over 3 MB — too large to send from Outlook this way.`);
+  }
+  const token = await accessTokenFor(account);
+  const res = await graphFetch(`${GRAPH}/me/sendMail`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+    body: JSON.stringify({
+      message: {
+        subject,
+        body: { contentType: "Text", content: body },
+        toRecipients: [{ emailAddress: { address: to } }],
+        ...(attachment
+          ? {
+              attachments: [
+                {
+                  "@odata.type": "#microsoft.graph.fileAttachment",
+                  name: attachment.filename,
+                  contentType: attachment.mimeType,
+                  contentBytes: attachment.data.toString("base64"),
+                },
+              ],
+            }
+          : {}),
+      },
+      saveToSentItems: true,
+    }),
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    // Graph answers a missing scope with a bare 403 "Access is denied", indistinguishable from any
+    // other refusal — so ask the token endpoint what this account was actually granted.
+    if (res.status === 403 && !(await hasSendScope(account))) throw new OutlookSendPermissionError(account.email);
+    throw new Error(`Graph /me/sendMail returned ${res.status}: ${text}`);
+  }
+  // sendMail is 202 Accepted with no body — Graph doesn't hand back the sent message's id.
+  return { messageId: "", provider: "microsoft", accountEmail: account.email };
+}
+
+async function hasSendScope(account: AccountRow): Promise<boolean> {
+  try {
+    const tokens = await refreshTokens(account);
+    return /(^|[\s/])Mail\.Send(\s|$)/i.test(tokens.scope ?? "");
+  } catch {
+    return true; // can't tell — report the original 403 rather than guess it's the scope
+  }
 }
 
 function stripHtml(html: string): string {
@@ -516,9 +903,25 @@ function graphDateTimeToIso(value: GraphDateTime | undefined, allDay: boolean): 
   const dateTime = value?.dateTime;
   if (!dateTime) return "";
   if (allDay) return dateTime.slice(0, 10);
-  if ((value?.timeZone ?? "UTC") !== "UTC" || /(Z|[+-]d{2}:d{2})$/.test(dateTime)) return dateTime;
+  if ((value?.timeZone ?? "UTC") !== "UTC" || ZONED_SUFFIX.test(dateTime)) return dateTime;
   const ms = Date.parse(`${dateTime}Z`);
   return Number.isFinite(ms) ? new Date(ms).toISOString() : dateTime;
+}
+
+const ZONED_SUFFIX = /(Z|[+-]\d{2}:?\d{2})$/i;
+
+// Graph's dateTimeTimeZone wants a bare wall-clock time plus a zone name, and doesn't honour an
+// offset inside dateTime — "09:00+01:00" tagged UTC landed at 09:00 UTC, an hour late. Google takes
+// the offset natively, so the model reasonably sends one. With no explicit zone, resolve the offset
+// to the real instant and send it as UTC wall-clock time; an explicit zone means the caller already
+// gave local clock time at that place (EventInput's contract) and it passes through untouched.
+export function toGraphDateTime(dateTime: string, timeZone: string | undefined): { dateTime: string; timeZone: string } {
+  if (timeZone) return { dateTime, timeZone };
+  if (ZONED_SUFFIX.test(dateTime)) {
+    const ms = Date.parse(dateTime);
+    if (Number.isFinite(ms)) return { dateTime: new Date(ms).toISOString().slice(0, 19), timeZone: "UTC" };
+  }
+  return { dateTime, timeZone: "UTC" };
 }
 
 function graphEventToCalendarEvent(account: AccountRow, e: GraphEvent): CalendarEvent {
@@ -547,8 +950,8 @@ export async function microsoftCreateEvent(
     body: input.description
       ? { contentType: "Text", content: input.description }
       : undefined,
-    start: { dateTime: input.start, timeZone: input.startTimeZone ?? "UTC" },
-    end: { dateTime: input.end, timeZone: input.endTimeZone ?? "UTC" },
+    start: toGraphDateTime(input.start, input.startTimeZone),
+    end: toGraphDateTime(input.end, input.endTimeZone),
   });
   return graphEventToCalendarEvent(account, event);
 }
@@ -564,12 +967,8 @@ export async function microsoftUpdateEvent(
     ...(input.description !== undefined
       ? { body: { contentType: "Text", content: input.description } }
       : {}),
-    ...(input.start !== undefined
-      ? { start: { dateTime: input.start, timeZone: input.startTimeZone ?? "UTC" } }
-      : {}),
-    ...(input.end !== undefined
-      ? { end: { dateTime: input.end, timeZone: input.endTimeZone ?? "UTC" } }
-      : {}),
+    ...(input.start !== undefined ? { start: toGraphDateTime(input.start, input.startTimeZone) } : {}),
+    ...(input.end !== undefined ? { end: toGraphDateTime(input.end, input.endTimeZone) } : {}),
   });
   return graphEventToCalendarEvent(account, event);
 }
@@ -583,15 +982,17 @@ export async function microsoftArchiveMessages(
   query: string,
   limit = 50
 ): Promise<number> {
-  const data = await graphGet<{ value: GraphMessage[] }>(
-    account,
-    `/me/messages?$search="${encodeURIComponent(query)}"&$top=${limit}&$select=id`
-  );
-  const ids = data.value.map((m) => m.id).filter(Boolean);
-  await Promise.all(
-    ids.map((id) => graphPost(account, `/me/messages/${encodeURIComponent(id)}/move`, {
-      destinationId: "archive",
-    }))
+  // Always the inbox, whatever the query says — archiving means "out of the inbox". Searching
+  // /me/messages also matched Sent Items and the Archive folder itself, and moved sent mail too.
+  const q = { ...toGraphMailQuery(query), folder: "inbox" as const };
+  const data = await graphGet<{ value: GraphMessage[] }>(account, graphMessagesPath(q, limit, "$select=id,isRead"));
+  const ids = data.value
+    .filter((m) => !q.kql || q.unread === undefined || (m.isRead === false) === q.unread)
+    .map((m) => m.id)
+    .filter(Boolean);
+  // Graph throttles bursts of writes per mailbox; one move per message, a few at a time.
+  await mapWithConcurrency(ids, 4, (id) =>
+    graphPost(account, `/me/messages/${encodeURIComponent(id)}/move`, { destinationId: "archive" })
   );
   return ids.length;
 }

@@ -21,6 +21,7 @@ import type {
   EventInput,
   EmailAttachment,
   SendResult,
+  UnsubscribeInfo,
 } from "../providers/types.js";
 
 // Both providers throw differently (Google's gaxios errors carry structured
@@ -113,7 +114,7 @@ function requirePermission(account: AccountRow, action: "read" | "send" | "delet
 // Assistant page — always see a freshly-fetched inbox; the cache only exists for the duration of
 // one withMessageCache(...) call.
 //
-// The same scope also defers saving Gmail history checkpoints (see hubListNewMessages) until every
+// The same scope also defers saving Gmail/Outlook new-mail checkpoints (see hubListNewMessages) until every
 // scanner in the tick has run, so a scanner that deliberately leaves mail unhandled for a retry can
 // hold the checkpoint with holdNewMessageCheckpoint — otherwise the next tick's incremental fetch
 // would start past that mail and it would never be seen again.
@@ -167,7 +168,7 @@ function commitCheckpoints(scope: TickScope): void {
     if (now - startedAt < MAX_CHECKPOINT_HOLD_MS) {
       skipOwners.add(ownerId);
     } else {
-      console.warn(`hub: releasing a Gmail checkpoint held over an hour for owner ${ownerId}`);
+      console.warn(`hub: releasing a new-mail checkpoint held over an hour for owner ${ownerId}`);
     }
   }
   for (const { ownerId, accountId, historyId } of scope.pendingCheckpoints) {
@@ -243,10 +244,13 @@ const HISTORY_BASELINE_LIMIT = 150;
 async function fetchNewMessages(accounts: AccountRow[]): Promise<UnifiedMessage[]> {
   const results = await Promise.allSettled(
     accounts.map(async (a) => {
-      if (a.provider !== "google") return ms.microsoftListMessages(a, { limit: HISTORY_BASELINE_LIMIT });
       // Only reached once the provider has actually fetched every message it found — a failed
-      // fetch rejects before this, leaving the old checkpoint in place for the next tick.
-      const { messages, historyId } = await g.googleListNewMessages(a, { limit: HISTORY_BASELINE_LIMIT });
+      // fetch rejects before this, leaving the old checkpoint in place for the next tick. Gmail's
+      // checkpoint is a History API id, Outlook's a Graph delta link; both live in history_id.
+      const { messages, historyId } =
+        a.provider === "google"
+          ? await g.googleListNewMessages(a, { limit: HISTORY_BASELINE_LIMIT })
+          : await ms.microsoftListNewMessages(a, { limit: HISTORY_BASELINE_LIMIT });
       if (historyId) {
         if (tickScope) {
           tickScope.pendingCheckpoints.push({ ownerId: a.ownerId, accountId: a.id, historyId });
@@ -313,6 +317,18 @@ export async function hubGetMessage(
   return message;
 }
 
+export async function hubGetUnsubscribeInfo(
+  ownerId: number,
+  accountId: number,
+  messageId: string
+): Promise<UnsubscribeInfo | null> {
+  const account = requireAccount(ownerId, accountId);
+  requirePermission(account, "read");
+  return account.provider === "google"
+    ? g.googleGetUnsubscribeInfo(account, messageId)
+    : ms.microsoftGetUnsubscribeInfo(account, messageId);
+}
+
 export async function hubGetAttachment(
   ownerId: number,
   accountId: number,
@@ -350,10 +366,14 @@ export async function hubSearchFiles(ownerId: number, query: string): Promise<Fi
   return settleForAccounts(owners, results).sort((a, b) => (a.modifiedAt < b.modifiedAt ? 1 : -1));
 }
 
+// Teams chat only exists for work/school Microsoft accounts — a personal Outlook.com/Hotmail
+// account gets a 403 here even though its mailbox connection is perfectly healthy. So chat
+// failures are logged and dropped via settle, never attributed to the account the way
+// settleForAccounts would (which flagged the whole mailbox as needing a reconnect).
 export async function hubListChats(ownerId: number, limit = 20): Promise<ChatThread[]> {
   const accounts = listAccounts(ownerId, "microsoft");
   const results = await Promise.allSettled(accounts.map((a) => ms.microsoftListChats(a, limit)));
-  return settleForAccounts(accounts, results).sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1));
+  return settle(results).sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1));
 }
 
 export async function hubSearchChats(ownerId: number, query: string, limit = 20): Promise<ChatThread[]> {
@@ -361,7 +381,7 @@ export async function hubSearchChats(ownerId: number, query: string, limit = 20)
   const results = await Promise.allSettled(
     accounts.map((a) => ms.microsoftSearchChats(a, query, limit))
   );
-  return settleForAccounts(accounts, results).sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1));
+  return settle(results).sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1));
 }
 
 export async function hubCreateDraft(
@@ -377,9 +397,8 @@ export async function hubCreateDraft(
     : ms.microsoftCreateDraft(account, to, subject, body);
 }
 
-// Google only for now — Outlook can't send yet because the connected Microsoft accounts were
-// authorized with Mail.Read/Mail.ReadWrite only, not Mail.Send; adding that needs a scope change
-// and a one-time reconnect (tracked in feature-to-do/xero-receipt-forwarding.md step 1).
+// An Outlook account connected before Mail.Send was requested throws ms.OutlookSendPermissionError
+// here — callers that can offer a reconnect link check for it (see outlookSendReconnect.ts).
 export async function hubSendMessage(
   ownerId: number,
   accountId: number,
@@ -389,13 +408,10 @@ export async function hubSendMessage(
   attachment?: EmailAttachment
 ): Promise<SendResult> {
   const account = requireAccount(ownerId, accountId);
-  if (account.provider !== "google") {
-    throw new Error(
-      `Sending email isn't set up yet for Microsoft accounts (${account.email}) — only Gmail accounts can send right now.`
-    );
-  }
   requirePermission(account, "send");
-  return g.googleSendMessage(account, to, subject, body, attachment);
+  return account.provider === "google"
+    ? g.googleSendMessage(account, to, subject, body, attachment)
+    : ms.microsoftSendMessage(account, to, subject, body, attachment);
 }
 
 export async function hubCreateEvent(
