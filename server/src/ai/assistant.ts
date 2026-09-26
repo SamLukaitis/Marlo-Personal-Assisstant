@@ -1105,7 +1105,7 @@ const MAPS_TOOLS: Anthropic.Tool[] = [
   {
     name: "find_places",
     description:
-      "Find real places (restaurants, cafés, pharmacies, hotels, shops, attractions…) from Google Maps: name, address, rating, whether it's open now, and a Google Maps link. Use this instead of web_search for any request to find or recommend places. For 'near me', pass latitude/longitude from the most recent '[User shared their location: lat, lng]' line in the conversation if it's under ~2 hours old. For a named area ('ramen in Lisbon', 'cafés near Borough Market'), put the area in the query and omit coordinates. For city-scale asks with no place named ('good restaurants here'), you may use the user's latest travel check-in city as the area if list_travel_checkins is available. If the user means near them specifically and there's no recent pin, call request_location instead of guessing. Always end your answer with the places' Google Maps links (and any attribution in the result) as sources.",
+      "Find real places (restaurants, cafés, pharmacies, hotels, shops, attractions…) from Google Maps: name, address, rating, whether it's open now, and a Google Maps link. Use this instead of web_search for any request to find or recommend places. For 'near me', pass latitude/longitude from the most recent '[User shared their location at <time> UTC: lat, lng]' line in the conversation if that time is within ~2 hours of now (a pin from an earlier day is stale; call get_current_time if you can't tell). For a named area ('ramen in Lisbon', 'cafés near Borough Market'), put the area in the query and omit coordinates. For city-scale asks with no place named ('good restaurants here'), you may use the user's latest travel check-in city as the area if list_travel_checkins is available. If the user means near them specifically and there's no recent pin, call request_location instead of guessing. Always end your answer with the places' Google Maps links (and any attribution in the result) as sources.",
     input_schema: {
       type: "object",
       properties: {
@@ -1134,7 +1134,7 @@ const MAPS_TOOLS: Anthropic.Tool[] = [
   {
     name: "request_location",
     description:
-      "Ask the user to share their current location with a one-tap 'Send location' button on WhatsApp. Use when they ask for something near them and there's no '[User shared their location: …]' line from the last ~2 hours. Call it ALONE — the only tool call in your turn. When they share it, you'll get their location as the next message; answer their original question then.",
+      "Ask the user to share their current location with a one-tap 'Send location' button on WhatsApp. Use when they ask for something near them and there's no '[User shared their location at <time> UTC: …]' line from the last ~2 hours (a pin from an earlier day is stale; call get_current_time if you can't tell). Call it ALONE — the only tool call in your turn. When they share it, you'll get their location as the next message; answer their original question then.",
     input_schema: {
       type: "object",
       properties: {
@@ -1953,7 +1953,7 @@ const WEB_SEARCH_RULE_NO_MAPS =
   "- Use web_search for questions you don't have another tool for — nearby places (hotels, restaurants, attractions), current prices/events, or anything else that needs a live answer from the web rather than what you already know. Attribute the answer to what search turned up rather than presenting it as verified fact — e.g. \"these consistently come up as favorites near X\" or \"per current listings, ...\" — don't frame it as a disclaimer about lacking personal experience (you're an assistant, not a diner; that framing reads as oddly defensive rather than just informative). When you recommend a specific place, include a Google Maps link built as https://www.google.com/maps/search/?api=1&query=<url-encoded name and address/area> so the user can open it directly — never invent coordinates, and never claim you've sent a location pin (you haven't).";
 
 const WEB_SEARCH_RULE_WITH_MAPS =
-  "- Use find_places to find or recommend places and get_route for driving/walking times — they return real Google Maps data. Use web_search only for what Maps doesn't cover (reviews in depth, events, menus, prices, news). For anything near the user with no shared location from the last ~2 hours, call request_location rather than guessing where they are. Always list the Google Maps links (and any attribution) from the Maps result as sources right after your answer. Never invent coordinates or place details, and never claim you've sent a location pin (you haven't).";
+  "- Use find_places to find or recommend places and get_route for driving/walking times — they return real Google Maps data. Use web_search only for what Maps doesn't cover (reviews in depth, events, menus, prices, news). For anything near the user with no shared location from the last ~2 hours (pin lines carry the UTC time they were shared), call request_location rather than guessing where they are. Always list the Google Maps links (and any attribution) from the Maps result as sources right after your answer. Never invent coordinates or place details, and never claim you've sent a location pin (you haven't).";
 
 function buildRules(enabled: Set<ToolKey>): string {
   const base = [

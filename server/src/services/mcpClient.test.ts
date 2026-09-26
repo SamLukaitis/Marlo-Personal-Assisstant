@@ -140,12 +140,53 @@ describe("createMcpClient", () => {
     }
   });
 
-  it("lists tool names through the same session", async () => {
-    const session = fakeSession(async () => jsonText({}));
-    const client = createMcpClient(OPTS, async () => session);
+  it("parallel calls failing on the same dead session reconnect once and both succeed", async () => {
+    // Both calls are in flight on S1 when it dies. The second failure must not tear down the
+    // fresh session the first failure already opened (that would reject the first call's retry).
+    let rejectS1: Array<() => void> = [];
+    const s1 = fakeSession(
+      () =>
+        new Promise<McpCallResult>((_, reject) => {
+          rejectS1.push(() => reject(new StreamableHTTPError(404, "session not found")));
+        })
+    );
+    let s2Resolvers: Array<() => void> = [];
+    const s2 = fakeSession(
+      () => new Promise<McpCallResult>((resolve) => s2Resolvers.push(() => resolve(jsonText({ ok: true }))))
+    );
+    const factory = vi.fn<McpSessionFactory>().mockResolvedValueOnce(s1).mockResolvedValueOnce(s2);
+    const client = createMcpClient(OPTS, factory);
 
+    const a = client.callTool("x", {});
+    const b = client.callTool("x", {});
+    await vi.waitFor(() => expect(rejectS1).toHaveLength(2));
+    rejectS1[0]();
+    await vi.waitFor(() => expect(s2Resolvers).toHaveLength(1));
+    rejectS1[1]();
+    await vi.waitFor(() => expect(s2Resolvers).toHaveLength(2));
+    s2Resolvers.forEach((r) => r());
+
+    await expect(a).resolves.toEqual({ ok: true });
+    await expect(b).resolves.toEqual({ ok: true });
+    expect(factory).toHaveBeenCalledTimes(2);
+    expect(s2.close).not.toHaveBeenCalled();
+  });
+
+  it("lists tool names on a separate throwaway session, never the one tool calls use", async () => {
+    // The SDK caches output-schema validators on a Client after listTools(); doing that on the
+    // shared session would make later calls strict-validate Google's structuredContent.
+    const shared = fakeSession(async () => jsonText({}));
+    const probe = fakeSession(async () => jsonText({}));
+    const factory = vi.fn<McpSessionFactory>().mockResolvedValueOnce(shared).mockResolvedValueOnce(probe);
+    const client = createMcpClient(OPTS, factory);
+
+    await client.callTool("x", {});
     await expect(client.listToolNames()).resolves.toEqual(["a", "b"]);
-    expect(session.listToolNames).toHaveBeenCalledWith(10_000);
+
+    expect(shared.listToolNames).not.toHaveBeenCalled();
+    expect(probe.listToolNames).toHaveBeenCalledWith(10_000);
+    expect(probe.close).toHaveBeenCalled();
+    expect(shared.close).not.toHaveBeenCalled();
   });
 
   it("close() closes the open session and the next call reconnects", async () => {

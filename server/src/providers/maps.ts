@@ -21,7 +21,7 @@ const DEFAULT_RADIUS_METERS = 2000;
 const MAX_RAW_CHARS = 3000;
 
 export interface PlaceSummary {
-  name: string;
+  name?: string;
   address?: string;
   rating?: number;
   ratingCount?: number;
@@ -105,10 +105,10 @@ function rawOf(result: unknown): string {
 
 function trimPlace(p: Record<string, unknown>): PlaceSummary | null {
   const name = str(p.displayName) ?? str(p.name) ?? str(p.title);
-  if (!name) return null;
   const hours = asRecord(p.currentOpeningHours) ?? asRecord(p.regularOpeningHours);
   const links = asRecord(p.googleMapsLinks);
-  const place: PlaceSummary = { name };
+  const place: PlaceSummary = {};
+  if (name) place.name = name;
   const address = str(p.formattedAddress) ?? str(p.address) ?? str(p.shortFormattedAddress);
   if (address) place.address = address;
   const rating = num(p.rating);
@@ -122,7 +122,9 @@ function trimPlace(p: Record<string, unknown>): PlaceSummary | null {
   if (placeId) place.placeId = placeId;
   const summary = str(p.summary) ?? str(p.editorialSummary) ?? str(p.generativeSummary);
   if (summary) place.summary = summary;
-  return place;
+  // A place with none of these is noise; one with only a link or id still carries the Maps
+  // source the answer must cite (Grounding Lite may put names only in the top-level summary).
+  return place.name || place.mapsUrl || place.placeId ? place : null;
 }
 
 export async function searchPlaces(input: {
@@ -142,7 +144,11 @@ export async function searchPlaces(input: {
   const result = await getClient().callTool("search_places", args);
 
   const rec = asRecord(result);
-  if (!rec || !Array.isArray(rec.places)) return { places: [], raw: rawOf(result) };
+  if (!rec || !Array.isArray(rec.places)) {
+    const fallback: PlacesResult = { places: [], raw: rawOf(result) };
+    if (rec?.attribution !== undefined) fallback.attribution = rec.attribution;
+    return fallback;
+  }
 
   const places = rec.places
     .map((p) => asRecord(p))
@@ -154,6 +160,9 @@ export async function searchPlaces(input: {
   const summary = str(rec.summary);
   if (summary) out.summary = summary;
   if (rec.attribution !== undefined) out.attribution = rec.attribution;
+  // Places came back but trimming found no Maps link: the shape isn't what we map, so pass the
+  // raw payload too rather than an answer with no sources.
+  if (rec.places.length > 0 && !places.some((p) => p.mapsUrl)) out.raw = rawOf(result);
   return out;
 }
 
@@ -193,7 +202,9 @@ export async function computeRoute(input: {
   const distanceMeters = num(first?.distanceMeters);
   const durationSeconds = parseDurationSeconds(first?.duration);
   if (distanceMeters === undefined && durationSeconds === undefined) {
-    return { mode: input.mode, raw: rawOf(result) };
+    const fallback: RouteResult = { mode: input.mode, raw: rawOf(result) };
+    if (rec?.attribution !== undefined) fallback.attribution = rec.attribution;
+    return fallback;
   }
   const out: RouteResult = { mode: input.mode };
   if (distanceMeters !== undefined) out.distanceMeters = distanceMeters;

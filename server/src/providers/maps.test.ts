@@ -124,6 +124,35 @@ describe("searchPlaces", () => {
     expect(result.raw).toContain("results");
   });
 
+  it("keeps a place that has a Maps link or id but no display name", async () => {
+    setMapsClientForTest(stubClient({ summary: "Boots and Superdrug are nearby.", places: [{ id: "ChIJ1", googleMapsUri: "https://maps.google.com/?cid=1" }] }));
+
+    const result = await searchPlaces({ query: "pharmacy" });
+
+    expect(result.places).toEqual([{ mapsUrl: "https://maps.google.com/?cid=1", placeId: "ChIJ1" }]);
+    expect(result.summary).toBe("Boots and Superdrug are nearby.");
+  });
+
+  it("also attaches raw when places came back but none has a recognisable Maps link", async () => {
+    setMapsClientForTest(stubClient({ places: [{ displayName: "Boots", placeUrl: "https://maps.google.com/?cid=9" }] }));
+
+    const result = await searchPlaces({ query: "pharmacy" });
+
+    expect(result.places).toEqual([{ name: "Boots" }]);
+    expect(result.raw).toContain("placeUrl");
+  });
+
+  it("keeps attribution when falling back to raw", async () => {
+    setMapsClientForTest(stubClient({ results: [], attribution: { text: "Google Maps" } }));
+    const places = await searchPlaces({ query: "cafe" });
+    expect(places.attribution).toEqual({ text: "Google Maps" });
+
+    setMapsClientForTest(stubClient({ legs: [], attribution: "Google Maps" }));
+    const route = await computeRoute({ origin: "a", destination: "b", mode: "walk" });
+    expect(route.attribution).toBe("Google Maps");
+    expect(route.raw).toBeDefined();
+  });
+
   it("wraps a plain-text answer as raw", async () => {
     setMapsClientForTest(stubClient("Here are some places: ..."));
     await expect(searchPlaces({ query: "cafe" })).resolves.toEqual({ places: [], raw: "Here are some places: ..." });
