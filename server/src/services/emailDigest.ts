@@ -61,14 +61,39 @@ function shorten(subject: string, max = MAX_SUBJECT_LENGTH): string {
   return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
 }
 
+// Same sender replying on the same thread (a chain of "Re:"s) collapses into one line with a
+// count, instead of repeating an identical name/subject pair for every reply in the queue.
+function groupBySenderAndSubject(queue: DigestEmail[]): { name: string; subject: string; count: number }[] {
+  const groups: { name: string; subject: string; count: number }[] = [];
+  const indexByKey = new Map<string, number>();
+  for (const m of queue) {
+    const name = senderDisplayName(m.from);
+    const subject = m.subject.replace(/\s+/g, " ").trim();
+    const key = `${name}\u0000${subject}`;
+    const existing = indexByKey.get(key);
+    if (existing !== undefined) groups[existing].count += 1;
+    else {
+      indexByKey.set(key, groups.length);
+      groups.push({ name, subject, count: 1 });
+    }
+  }
+  return groups;
+}
+
 function digestMessage(ownerId: number, queue: DigestEmail[]): string {
   const userName = getSetting(ownerId, "user_name");
   const greeting = userName ? `${userName}, ` : "";
-  const named = queue.slice(0, MAX_NAMED).map((m) => `${shorten(senderDisplayName(m.from), MAX_NAME_LENGTH)} (${shorten(m.subject)})`);
-  const rest = queue.length - named.length;
+  const shown = groupBySenderAndSubject(queue).slice(0, MAX_NAMED);
+  const bullets = shown.map((g) => {
+    const label = `${shorten(g.name, MAX_NAME_LENGTH)} (${shorten(g.subject)})`;
+    return `• ${g.count > 1 ? `${label} x${g.count}` : label}`;
+  });
+  const rest = queue.length - shown.reduce((sum, g) => sum + g.count, 0);
+  if (rest > 0) bullets.push(`• ${rest} more`);
   return (
-    `📬 ${greeting}${queue.length} new email${queue.length === 1 ? "" : "s"} from people: ` +
-    `${named.join(", ")}${rest > 0 ? `, and ${rest} more` : ""}. Ask me about any of them.`
+    `📬 ${greeting}${queue.length} new email${queue.length === 1 ? "" : "s"} from people:\n` +
+    `${bullets.join("\n")}\n` +
+    `Ask me about any of them.`
   );
 }
 

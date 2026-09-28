@@ -192,6 +192,26 @@ describe("flushEmailDigestIfDue", () => {
     expect(text).toContain("3 more");
   });
 
+  it("collapses repeated replies on the same thread into one line with a count", async () => {
+    const user = newUser("digest-thread");
+    registerActivePhone(user.id);
+    queueForEmailDigest(user.id, [
+      email("m1", "Jake McMillan <jake@example.com>", "Re: Compliance Follow-up"),
+      email("m2", "Jake McMillan <jake@example.com>", "Re: Compliance Follow-up"),
+      email("m3", "Jake McMillan <jake@example.com>", "Re: Compliance Follow-up"),
+      email("m4", "Markos, Steven <steven@example.com>", "RE: Compliance Follow-up"),
+      email("m5", "Markos, Steven <steven@example.com>", "RE: Compliance Follow-up"),
+    ]);
+
+    setLocalTime("21:05");
+    await flushEmailDigestIfDue(user.id);
+
+    const [, text] = vi.mocked(sendWhatsAppMessage).mock.calls[0];
+    expect(text).toContain("5 new emails");
+    expect(text).toContain("• Jake McMillan (Re: Compliance Follow-up) x3");
+    expect(text).toContain("• Markos, Steven (RE: Compliance Follow-up) x2");
+  });
+
   it("keeps the queue and retries when WhatsApp isn't configured or there is no number", async () => {
     const user = newUser("digest-undeliverable");
     queueForEmailDigest(user.id, [email("m1", "Sarah <sarah@example.com>", "Hi")]);
