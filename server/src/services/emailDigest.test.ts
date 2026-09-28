@@ -94,6 +94,7 @@ describe("flushEmailDigestIfDue", () => {
     expect(sendWhatsAppMessage).toHaveBeenCalledTimes(1);
     const [sentTo, text] = vi.mocked(sendWhatsAppMessage).mock.calls[0];
     expect(sentTo).toBe(phone);
+    expect(text).toContain("Your 9pm email summary");
     expect(text).toContain("2 new emails");
     expect(text).toContain("Sarah Jones");
     expect(text).toContain("Lunch on Sunday?");
@@ -138,6 +139,9 @@ describe("flushEmailDigestIfDue", () => {
     await flushEmailDigestIfDue(user.id);
 
     expect(sendWhatsAppMessage).toHaveBeenCalledTimes(1);
+    const [, text] = vi.mocked(sendWhatsAppMessage).mock.calls[0];
+    expect(text).toContain("6pm email summary");
+    expect(text).not.toContain("9pm");
   });
 
   it("sends nothing on a day with no emails, and doesn't send a late arrival the same evening", async () => {
