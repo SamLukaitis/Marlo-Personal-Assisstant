@@ -61,13 +61,15 @@ function shorten(subject: string, max = MAX_SUBJECT_LENGTH): string {
   return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
 }
 
-function digestMessage(ownerId: number, queue: DigestEmail[]): string {
+// Names the user's own digest time, so a one-email summary doesn't read like an instant ping.
+function digestMessage(ownerId: number, queue: DigestEmail[], digestTime: string): string {
   const userName = getSetting(ownerId, "user_name");
-  const greeting = userName ? `${userName}, ` : "";
+  const greeting = userName ? `${userName}, your` : "Your";
   const named = queue.slice(0, MAX_NAMED).map((m) => `${shorten(senderDisplayName(m.from), MAX_NAME_LENGTH)} (${shorten(m.subject)})`);
   const rest = queue.length - named.length;
   return (
-    `📬 ${greeting}${queue.length} new email${queue.length === 1 ? "" : "s"} from people: ` +
+    `📬 ${greeting} ${formatDigestTime(digestTime)} email summary: ` +
+    `${queue.length} new email${queue.length === 1 ? "" : "s"} from people — ` +
     `${named.join(", ")}${rest > 0 ? `, and ${rest} more` : ""}. Ask me about any of them.`
   );
 }
@@ -135,8 +137,8 @@ export async function flushEmailDigestIfDue(ownerId: number): Promise<void> {
     ...queue.slice(0, MAX_NAMED).map((m) => emailReferenceNote(m)),
     ...(askToKeep ? [INTRO_HISTORY_NOTE] : []),
   ].join("\n");
-  const digest = digestMessage(ownerId, queue);
   const digestTime = emailDigestTime(ownerId);
+  const digest = digestMessage(ownerId, queue, digestTime);
   let send: ((phone: string) => Promise<void>) | undefined;
   if (askToKeep) {
     // One row shared by the three buttons, so the first tap answers it and a second tap (or a tap
