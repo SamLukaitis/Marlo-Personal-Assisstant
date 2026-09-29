@@ -86,7 +86,11 @@ export async function handleLocation(
   setUserTimezoneFromLocation(ownerId, latitude, longitude);
 
   const label = name ? `${name}${address ? `, ${address}` : ""}` : undefined;
-  const locationText = `[User shared their location: ${latitude}, ${longitude}${label ? ` (${label})` : ""}]`;
+  // Stamped with an absolute time so the model can tell a fresh pin from yesterday's (history
+  // reaches it without timestamps) — absolute, not "N min ago", so the history prefix stays
+  // cache-stable. The Maps tools only use a pin from the last ~2 hours for "near me".
+  const sharedAt = new Date().toISOString().slice(0, 16).replace("T", " ");
+  const locationText = `[User shared their location at ${sharedAt} UTC: ${latitude}, ${longitude}${label ? ` (${label})` : ""}]`;
   const rowId = appendWhatsAppMessage(ownerId, from, "user", locationText);
 
   // The persisted line is already exactly what the model should see, so no override — a dropped

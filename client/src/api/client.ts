@@ -673,6 +673,7 @@ export interface WhatsAppSimEntry {
   text: string;
   choices?: { id: string; title: string }[];
   link?: { label: string; url: string };
+  locationRequest?: boolean;
 }
 
 export interface WhatsAppSimTestUser {
@@ -681,7 +682,10 @@ export interface WhatsAppSimTestUser {
   hasAccount: boolean;
 }
 
-export type WhatsAppSimInput = { text: string } | { buttonId: string; label: string };
+export type WhatsAppSimInput =
+  | { text: string }
+  | { buttonId: string; label: string }
+  | { latitude: number; longitude: number };
 
 export const sendWhatsAppSimMessage = (input: WhatsAppSimInput, phone?: string) =>
   mutateJson<{ phone: string }>("/api/dev/whatsapp-sim/send", "POST", { ...input, ...(phone ? { phone } : {}) });
