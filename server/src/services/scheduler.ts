@@ -1,4 +1,4 @@
-import { getBriefingSettings, getTodaysBriefing } from "./briefing.js";
+import { getBriefingSettings, getTodaysBriefing, refreshBriefing } from "./briefing.js";
 import { withMessageCache } from "./hub.js";
 import {
   getSetting,
@@ -40,6 +40,22 @@ function schengenAlertLine(ownerId: number): string | null {
   return null;
 }
 
+// The exact text of the daily proactive push: the LLM-synthesized briefing plus whatever non-LLM
+// lines get appended after it. Shared with the WhatsApp simulator's "Send daily briefing" button
+// (routes/whatsappSimRoutes.ts) so what that button sends can never drift from what the real
+// scheduled send does — which is the whole point of testing a briefing rewrite through it.
+//
+// `refresh` rebuilds today's briefing from scratch instead of reusing the one already stored for
+// today. That's what the simulator wants (a snapshot of right now, repeatable on every press) and
+// never what the scheduler wants (one build per day, reused by the Assistant page's briefing bar).
+export async function composeDailyBriefingMessage(ownerId: number, refresh = false): Promise<string> {
+  const briefing = refresh ? await refreshBriefing(ownerId) : await getTodaysBriefing(ownerId);
+  // Both channels (UI and WhatsApp) must reflect the same enabled/disabled state — a user
+  // with travel off gets no Schengen line, same as their Setup page shows no travel section.
+  const alert = getEnabledTools(ownerId).has("travel") ? schengenAlertLine(ownerId) : null;
+  return alert ? `${briefing.content}\n\n${alert}` : briefing.content;
+}
+
 // Runs every few minutes and fires at most once per calendar day, once the user's own local time
 // (userTimezone.ts; the server's clock if theirs isn't known yet) has passed the configured send time — not a precise cron, but good enough for a personal daily nudge,
 // and it still catches up later in the day if the server was off right at the target time.
@@ -70,11 +86,7 @@ export async function runDailyCheckForUser(ownerId: number): Promise<void> {
   }
 
   try {
-    const briefing = await getTodaysBriefing(ownerId);
-    // Both channels (UI and WhatsApp) must reflect the same enabled/disabled state — a user
-    // with travel off gets no Schengen line, same as their Setup page shows no travel section.
-    const alert = getEnabledTools(ownerId).has("travel") ? schengenAlertLine(ownerId) : null;
-    const message = alert ? `${briefing.content}\n\n${alert}` : briefing.content;
+    const message = await composeDailyBriefingMessage(ownerId);
     // Only stamp the day done once every number has it; a retry next tick skips numbers that
     // already got today's briefing (see proactiveDelivery.ts).
     const itemKey = `daily-briefing:${dateKey}`;

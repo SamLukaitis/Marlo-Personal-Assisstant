@@ -690,6 +690,12 @@ export type WhatsAppSimInput =
 export const sendWhatsAppSimMessage = (input: WhatsAppSimInput, phone?: string) =>
   mutateJson<{ phone: string }>("/api/dev/whatsapp-sim/send", "POST", { ...input, ...(phone ? { phone } : {}) });
 
+// Pushes the daily briefing to the simulated number, rebuilt from scratch and composed exactly
+// as the scheduled morning send would — see whatsappSimRoutes.ts. Resolves once it's delivered
+// (unlike sendWhatsAppSimMessage, whose reply is debounced), so the caller can just re-poll.
+export const sendWhatsAppSimBriefing = (phone?: string) =>
+  mutateJson<{ ok: true }>("/api/dev/whatsapp-sim/briefing", "POST", phone ? { phone } : {});
+
 export const fetchWhatsAppSimTranscript = (phone?: string) =>
   getJson<{ phone: string; entries: WhatsAppSimEntry[] }>(
     `/api/dev/whatsapp-sim/transcript${phone ? `?phone=${encodeURIComponent(phone)}` : ""}`

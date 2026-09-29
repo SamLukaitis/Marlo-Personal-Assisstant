@@ -17,6 +17,8 @@ import {
 } from "../providers/whatsapp.js";
 import { clearSimTranscript, getSimTranscript, recordSimMessage } from "../providers/whatsappSimTranscript.js";
 import { resetTestPhone, TestPhoneResetError } from "../services/testPhoneReset.js";
+import { composeDailyBriefingMessage } from "../services/scheduler.js";
+import { sendProactiveMessage } from "../services/outbound.js";
 import { handleIncoming } from "./whatsappRoutes.js";
 import type { AuthedRequest } from "../middleware/auth.js";
 
@@ -115,6 +117,48 @@ whatsappSimRoutes.post("/whatsapp-sim/send", (req, res) => {
   handleIncoming(message).catch((err) => console.error("whatsapp-sim: handleIncoming failed", err));
 
   res.status(202).json({ phone });
+});
+
+// Sends the daily briefing to the simulated number on demand, composed exactly as the scheduled
+// 07:30 send composes it (scheduler.ts's composeDailyBriefingMessage — Schengen line and all) and
+// delivered down the same proactive path (outbound.ts's "digest" kind), so what lands in the
+// transcript is what a real user would receive. Rebuilt from scratch on every press rather than
+// reusing today's stored briefing: this is for iterating on the briefing's content and style, so
+// each press must be a fresh snapshot of right now.
+//
+// Deliberately skips the scheduler's own gates — the `proactive` setting, the once-a-day stamp,
+// and proactiveDelivery.ts's per-number dedup — because those govern *when* the briefing fires,
+// which isn't what this button is for. It also only ever sends to the one simulated number, never
+// to the account's real ones.
+//
+// Awaited rather than fire-and-forget like /send: the build is a single LLM call, and a failure in
+// it (a missing API key, a dead provider) is exactly what the caller needs to see.
+whatsappSimRoutes.post("/whatsapp-sim/briefing", async (req, res) => {
+  const callerId = (req as unknown as AuthedRequest).userId;
+  const target = resolveSimPhone(req, req.body?.phone);
+  if (!target.ok) {
+    refuse(res, target);
+    return;
+  }
+  const { phone } = target;
+
+  // Same idempotent binding as /send — the caller's own sim number may not be bound yet, and the
+  // proactive path resolves the number back to an account to record the send in chat history.
+  if (target.self) addPhoneNumberForUser(callerId, phone);
+  // A test user has no briefing to build until its first message has run the signup flow.
+  const ownerId = target.self ? callerId : resolveOwnerByPhone(phone);
+  if (ownerId === null) {
+    res.status(409).json({ error: "this test user hasn't signed up yet — send it a message first" });
+    return;
+  }
+
+  try {
+    await sendProactiveMessage(phone, await composeDailyBriefingMessage(ownerId, true), "digest");
+    res.json({ ok: true });
+  } catch (err) {
+    console.error("whatsapp-sim: briefing send failed", err);
+    res.status(500).json({ error: (err as Error).message });
+  }
 });
 
 whatsappSimRoutes.get("/whatsapp-sim/transcript", (req, res) => {

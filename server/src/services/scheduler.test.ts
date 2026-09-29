@@ -3,6 +3,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 vi.mock("./briefing.js", () => ({
   getBriefingSettings: vi.fn(() => ({ proactive: false, sendTime: "00:00" })),
   getTodaysBriefing: vi.fn(),
+  refreshBriefing: vi.fn(),
 }));
 
 vi.mock("../db/store.js", () => ({

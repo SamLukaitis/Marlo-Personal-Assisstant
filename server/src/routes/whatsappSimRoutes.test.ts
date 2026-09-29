@@ -6,6 +6,7 @@ import {
   findOrCreateUserByEmail,
   isPhoneInvited,
   listPhoneNumbersForUser,
+  recordInboundMessage,
   resolveOwnerByPhone,
 } from "../db/store.js";
 import { newSimulatedTestUserPhone, simulatedPhoneForOwner } from "../providers/whatsapp.js";
@@ -19,8 +20,16 @@ vi.mock("./whatsappRoutes.js", () => ({
   handleIncoming: vi.fn().mockResolvedValue(undefined),
 }));
 
+// Composing the briefing is scheduler.ts/briefing.ts's job (and their tests') — it makes a real
+// LLM call. Stubbing it here leaves what this route layer is actually responsible for: building
+// for the right account, forcing a fresh build, and handing the text to the real proactive send.
+vi.mock("../services/scheduler.js", () => ({
+  composeDailyBriefingMessage: vi.fn().mockResolvedValue("Sunny. 3 unread. Nothing on today."),
+}));
+
 const { whatsappSimRoutes } = await import("./whatsappSimRoutes.js");
 const { handleIncoming } = await import("./whatsappRoutes.js");
+const { composeDailyBriefingMessage } = await import("../services/scheduler.js");
 
 let counter = 0;
 function uniqueEmail(prefix: string): string {
@@ -46,6 +55,7 @@ function newAdminApp(prefix: string) {
 
 beforeEach(() => {
   vi.mocked(handleIncoming).mockClear();
+  vi.mocked(composeDailyBriefingMessage).mockClear();
 });
 
 describe("POST /whatsapp-sim/send — chat as me", () => {
@@ -214,5 +224,89 @@ describe("GET /whatsapp-sim/transcript", () => {
     const res = await request(app).get("/whatsapp-sim/transcript?phone=447000000001");
 
     expect(res.status).toBe(400);
+  });
+});
+
+// The simulator's "Send daily briefing" button — the loop for iterating on briefing content/style
+// without waiting for the scheduled send.
+describe("POST /whatsapp-sim/briefing", () => {
+  it("builds a fresh briefing for the caller's account and delivers it to their sim number", async () => {
+    const { user, app } = newAdminApp("wa-sim-brief");
+    const phone = simulatedPhoneForOwner(user.id);
+    addPhoneNumberForUser(user.id, phone);
+    // An inbound message on record means the 24h free-form window is open, so the briefing goes
+    // out as ordinary chat text rather than the template.
+    recordInboundMessage(phone);
+
+    const res = await request(app).post("/whatsapp-sim/briefing");
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ ok: true });
+    // `true` is the refresh flag: every press must rebuild, not replay today's stored briefing.
+    expect(composeDailyBriefingMessage).toHaveBeenCalledWith(user.id, true);
+    expect(getSimTranscript(phone).at(-1)).toMatchObject({
+      role: "assistant",
+      text: "Sunny. 3 unread. Nothing on today.",
+    });
+  });
+
+  it("binds the caller's sim number on first use, like /send does", async () => {
+    const { user, app } = newAdminApp("wa-sim-brief-bind");
+
+    const res = await request(app).post("/whatsapp-sim/briefing");
+
+    expect(res.status).toBe(200);
+    expect(listPhoneNumbersForUser(user.id).map((r) => r.phone)).toContain(simulatedPhoneForOwner(user.id));
+  });
+
+  it("falls back to the digest template when the free-form window is closed, as a real send would", async () => {
+    const { user, app } = newAdminApp("wa-sim-brief-template");
+    const phone = simulatedPhoneForOwner(user.id);
+
+    const res = await request(app).post("/whatsapp-sim/briefing");
+
+    expect(res.status).toBe(200);
+    expect(getSimTranscript(phone).at(-1)?.text).toBe("[template marlowe_digest] Sunny. 3 unread. Nothing on today.");
+  });
+
+  it("builds for the test user's own account, not the caller's", async () => {
+    const { app } = newAdminApp("wa-sim-brief-testuser");
+    const { phone } = (await request(app).post("/whatsapp-sim/test-users")).body as { phone: string };
+    const testUser = findOrCreateUserByEmail(uniqueEmail("wa-sim-brief-signedup"));
+    addPhoneNumberForUser(testUser.id, phone);
+
+    const res = await request(app).post("/whatsapp-sim/briefing").send({ phone });
+
+    expect(res.status).toBe(200);
+    expect(composeDailyBriefingMessage).toHaveBeenCalledWith(testUser.id, true);
+  });
+
+  it("refuses a test user that hasn't signed up yet with 409 and never builds", async () => {
+    const { app } = newAdminApp("wa-sim-brief-nosignup");
+    const { phone } = (await request(app).post("/whatsapp-sim/test-users")).body as { phone: string };
+
+    const res = await request(app).post("/whatsapp-sim/briefing").send({ phone });
+
+    expect(res.status).toBe(409);
+    expect(composeDailyBriefingMessage).not.toHaveBeenCalled();
+  });
+
+  it("refuses a number that is neither the caller's own nor a simulator test user", async () => {
+    const { app } = newAdminApp("wa-sim-brief-foreign");
+
+    const res = await request(app).post("/whatsapp-sim/briefing").send({ phone: "447000000001" });
+
+    expect(res.status).toBe(400);
+    expect(composeDailyBriefingMessage).not.toHaveBeenCalled();
+  });
+
+  it("surfaces a failed build as a 500 rather than silently sending nothing", async () => {
+    const { app } = newAdminApp("wa-sim-brief-fail");
+    vi.mocked(composeDailyBriefingMessage).mockRejectedValueOnce(new Error("ANTHROPIC_API_KEY is not set"));
+
+    const res = await request(app).post("/whatsapp-sim/briefing");
+
+    expect(res.status).toBe(500);
+    expect(res.body.error).toBe("ANTHROPIC_API_KEY is not set");
   });
 });
