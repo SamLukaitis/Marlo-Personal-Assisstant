@@ -98,6 +98,52 @@ describe("searchPlaces", () => {
     });
   });
 
+  it("recovers name and rating from Grounding Lite's real shape (attribution title + summary prose)", async () => {
+    setMapsClientForTest(
+      stubClient({
+        summary:
+          "**Peptides pharmacy** [0] (5.0★ (1)) is a 24-hour pharmacy offering delivery.\n\n" +
+          "**Alrasheed Pharmacy (Alfarabi Pharmacy)** [1] (1.8★ (383)) is an inclusive pharmacy.",
+        places: [
+          {
+            attribution: { title: "Peptides pharmacy - Google Maps", url: "https://www.google.com/maps/place/x" },
+            googleMapsLinks: { placeUrl: "https://www.google.com/maps/place/peptides" },
+            id: "ChIJ-1238QQbdkgRsHQJeRmsqiI",
+            location: { latitude: 51.5314641, longitude: -0.1066709 },
+          },
+          {
+            attribution: { title: "Alrasheed Pharmacy (Alfarabi Pharmacy) - Google Maps" },
+            googleMapsLinks: { placeUrl: "https://www.google.com/maps/place/alrasheed" },
+            id: "ChIJEaEJMTUFdkgRkuVZ1uqnobo",
+            location: { latitude: 51.514754, longitude: -0.1628335 },
+          },
+        ],
+      })
+    );
+
+    const result = await searchPlaces({ query: "pharmacy" });
+
+    expect(result.places).toEqual([
+      {
+        name: "Peptides pharmacy",
+        rating: 5,
+        ratingCount: 1,
+        mapsUrl: "https://www.google.com/maps/place/peptides",
+        placeId: "ChIJ-1238QQbdkgRsHQJeRmsqiI",
+        summary: "is a 24-hour pharmacy offering delivery.",
+      },
+      {
+        name: "Alrasheed Pharmacy (Alfarabi Pharmacy)",
+        rating: 1.8,
+        ratingCount: 383,
+        mapsUrl: "https://www.google.com/maps/place/alrasheed",
+        placeId: "ChIJEaEJMTUFdkgRkuVZ1uqnobo",
+        summary: "is an inclusive pharmacy.",
+      },
+    ]);
+    expect(result.raw).toBeUndefined();
+  });
+
   it("caps the list at 8 places", async () => {
     const places = Array.from({ length: 12 }, (_, i) => ({ id: `p${i}`, displayName: { text: `Place ${i}` } }));
     setMapsClientForTest(stubClient({ places }));

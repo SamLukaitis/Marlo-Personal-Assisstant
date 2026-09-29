@@ -103,24 +103,64 @@ function rawOf(result: unknown): string {
   return text.slice(0, MAX_RAW_CHARS);
 }
 
-function trimPlace(p: Record<string, unknown>): PlaceSummary | null {
-  const name = str(p.displayName) ?? str(p.name) ?? str(p.title);
+// Grounding Lite's real `search_places` shape has no per-place name/rating fields at all — a
+// place is just { attribution: { title: "<Name> - Google Maps" }, googleMapsLinks, id, location
+// }. The actual name/rating/blurb only exist in the top-level `summary` string, written as one
+// paragraph per place in order: "**<Name>** [<index>] (<rating>★ (<count>)) is a ...". This
+// parses that text back into per-index data so find_places can report a name and rating instead
+// of a bare place ID. If Google changes the summary's wording, entries just come back empty and
+// trimPlace() falls back to the attribution title.
+const SUMMARY_ENTRY = /\*\*(.+?)\*\*\s*\[(\d+)\]\s*(?:\(([\d.]+)★\s*\((\d+)\)\)\s*)?([\s\S]*?)(?=\n\n\*\*|\s*$)/g;
+const MAX_BLURB_CHARS = 160;
+
+interface SummaryEntry {
+  name?: string;
+  rating?: number;
+  ratingCount?: number;
+  blurb?: string;
+}
+
+function parseSummaryEntries(summary: string | undefined): Map<number, SummaryEntry> {
+  const entries = new Map<number, SummaryEntry>();
+  if (!summary) return entries;
+  for (const m of summary.matchAll(SUMMARY_ENTRY)) {
+    const entry: SummaryEntry = { name: m[1].trim() };
+    if (m[3]) entry.rating = Number(m[3]);
+    if (m[4]) entry.ratingCount = Number(m[4]);
+    const blurb = m[5].trim();
+    if (blurb) entry.blurb = blurb.length > MAX_BLURB_CHARS ? `${blurb.slice(0, MAX_BLURB_CHARS - 1)}…` : blurb;
+    entries.set(Number(m[2]), entry);
+  }
+  return entries;
+}
+
+function trimPlace(p: Record<string, unknown>, fromSummary?: SummaryEntry): PlaceSummary | null {
+  const attribution = asRecord(p.attribution);
+  const titleName = str(attribution?.title)?.replace(/\s*-\s*Google Maps$/, "");
+  const name = str(p.displayName) ?? str(p.name) ?? str(p.title) ?? fromSummary?.name ?? titleName;
   const hours = asRecord(p.currentOpeningHours) ?? asRecord(p.regularOpeningHours);
   const links = asRecord(p.googleMapsLinks);
   const place: PlaceSummary = {};
   if (name) place.name = name;
   const address = str(p.formattedAddress) ?? str(p.address) ?? str(p.shortFormattedAddress);
   if (address) place.address = address;
-  const rating = num(p.rating);
+  const rating = num(p.rating) ?? fromSummary?.rating;
   if (rating !== undefined) place.rating = rating;
-  const ratingCount = num(p.userRatingCount);
+  const ratingCount = num(p.userRatingCount) ?? fromSummary?.ratingCount;
   if (ratingCount !== undefined) place.ratingCount = ratingCount;
   if (typeof hours?.openNow === "boolean") place.openNow = hours.openNow;
-  const mapsUrl = str(p.googleMapsUri) ?? str(links?.placeUri) ?? str(p.maps_uri) ?? str(p.mapsUri) ?? str(p.url);
+  const mapsUrl =
+    str(p.googleMapsUri) ??
+    str(links?.placeUrl) ??
+    str(links?.placeUri) ??
+    str(p.maps_uri) ??
+    str(p.mapsUri) ??
+    str(p.url) ??
+    str(attribution?.url);
   if (mapsUrl) place.mapsUrl = mapsUrl;
   const placeId = str(p.id) ?? str(p.place_id) ?? str(p.placeId);
   if (placeId) place.placeId = placeId;
-  const summary = str(p.summary) ?? str(p.editorialSummary) ?? str(p.generativeSummary);
+  const summary = str(p.summary) ?? str(p.editorialSummary) ?? str(p.generativeSummary) ?? fromSummary?.blurb;
   if (summary) place.summary = summary;
   // A place with none of these is noise; one with only a link or id still carries the Maps
   // source the answer must cite (Grounding Lite may put names only in the top-level summary).
@@ -150,14 +190,16 @@ export async function searchPlaces(input: {
     return fallback;
   }
 
+  const summary = str(rec.summary);
+  const summaryEntries = parseSummaryEntries(summary);
   const places = rec.places
-    .map((p) => asRecord(p))
-    .filter((p): p is Record<string, unknown> => p !== null)
-    .map(trimPlace)
+    .map((p, i) => {
+      const record = asRecord(p);
+      return record ? trimPlace(record, summaryEntries.get(i)) : null;
+    })
     .filter((p): p is PlaceSummary => p !== null)
     .slice(0, MAX_PLACES);
   const out: PlacesResult = { places };
-  const summary = str(rec.summary);
   if (summary) out.summary = summary;
   if (rec.attribution !== undefined) out.attribution = rec.attribution;
   // Places came back but trimming found no Maps link: the shape isn't what we map, so pass the
