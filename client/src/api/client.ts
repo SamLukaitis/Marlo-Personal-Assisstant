@@ -701,6 +701,45 @@ export const fetchWhatsAppSimTranscript = (phone?: string) =>
     `/api/dev/whatsapp-sim/transcript${phone ? `?phone=${encodeURIComponent(phone)}` : ""}`
   );
 
+// --- Briefing Lab -------------------------------------------------------------------------------
+// Ten synthetic users rendered through the real briefing prompt — see briefingPreview.ts. The
+// profiles come back instantly (no model calls) so the page can paint before the renders land.
+export interface BriefingLabDay {
+  localTime: string;
+  localWeekday: string;
+  location: string;
+  weather: { place: string; condition: string; tempC: number; highC: number; lowC: number } | null;
+  quotes: { name: string; price: number; changePercent: number }[];
+  unread: { count: number; shown: { subject: string; from: string }[] };
+  todayEvents: string[];
+  upcomingEvents: string[];
+  flagged: { subject: string; from: string }[];
+  news: { topic: string; title: string }[];
+}
+
+export interface BriefingLabProfile {
+  id: string;
+  label: string;
+  tests: string;
+  voice: { assistantName: string; userName: string; persona: string };
+  day: BriefingLabDay;
+}
+
+export interface BriefingLabRendered extends BriefingLabProfile {
+  text: string;
+  wordCount: number;
+  quiet: boolean;
+}
+
+export const fetchBriefingLabProfiles = (seed?: number) =>
+  getJson<{ seed: number; profiles: BriefingLabProfile[] }>(
+    `/api/dev/briefing-lab/profiles${seed ? `?seed=${seed}` : ""}`
+  );
+
+// `scramble` asks the server for a fresh random seed; otherwise `seed` re-renders that exact set.
+export const renderBriefingLab = (opts: { seed?: number; scramble?: boolean }) =>
+  mutateJson<{ seed: number; profiles: BriefingLabRendered[] }>("/api/dev/briefing-lab/render", "POST", opts);
+
 export const fetchWhatsAppSimTestUsers = () => getJson<WhatsAppSimTestUser[]>("/api/dev/whatsapp-sim/test-users");
 
 export const createWhatsAppSimTestUser = () =>

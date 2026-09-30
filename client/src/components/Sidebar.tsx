@@ -44,6 +44,15 @@ const NAV_ITEMS: NavItem[] = [
     requiresAdmin: true,
     requiresFlag: "whatsappSimulatorEnabled",
   },
+  // Shares the simulator's flag rather than getting one of its own: both are staging-only
+  // authoring tools, and there's nothing either should do in production.
+  {
+    to: "/briefing-lab",
+    label: "Briefing Lab",
+    Icon: IconAssistant,
+    requiresAdmin: true,
+    requiresFlag: "whatsappSimulatorEnabled",
+  },
 ];
 
 export function Sidebar() {

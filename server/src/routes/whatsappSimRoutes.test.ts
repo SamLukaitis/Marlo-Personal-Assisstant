@@ -27,9 +27,22 @@ vi.mock("../services/scheduler.js", () => ({
   composeDailyBriefingMessage: vi.fn().mockResolvedValue("Sunny. 3 unread. Nothing on today."),
 }));
 
+// Only the model call is stubbed: buildProfiles stays real, since the route's job is to hand the
+// right seed to it and pass its output back out.
+vi.mock("../services/briefingPreview.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../services/briefingPreview.js")>();
+  return {
+    ...actual,
+    renderProfiles: vi.fn(async (_ownerId: number, seed: number) =>
+      actual.buildProfiles(seed).map((p) => ({ ...p, text: `briefing for ${p.id}`, wordCount: 3, quiet: false }))
+    ),
+  };
+});
+
 const { whatsappSimRoutes } = await import("./whatsappSimRoutes.js");
 const { handleIncoming } = await import("./whatsappRoutes.js");
 const { composeDailyBriefingMessage } = await import("../services/scheduler.js");
+const { renderProfiles, buildProfiles, DEFAULT_SEED } = await import("../services/briefingPreview.js");
 
 let counter = 0;
 function uniqueEmail(prefix: string): string {
@@ -56,6 +69,7 @@ function newAdminApp(prefix: string) {
 beforeEach(() => {
   vi.mocked(handleIncoming).mockClear();
   vi.mocked(composeDailyBriefingMessage).mockClear();
+  vi.mocked(renderProfiles).mockClear();
 });
 
 describe("POST /whatsapp-sim/send — chat as me", () => {
@@ -305,6 +319,78 @@ describe("POST /whatsapp-sim/briefing", () => {
     vi.mocked(composeDailyBriefingMessage).mockRejectedValueOnce(new Error("ANTHROPIC_API_KEY is not set"));
 
     const res = await request(app).post("/whatsapp-sim/briefing");
+
+    expect(res.status).toBe(500);
+    expect(res.body.error).toBe("ANTHROPIC_API_KEY is not set");
+  });
+});
+
+// The Briefing Lab: ten synthetic users rendered through the real briefing prompt. No accounts, no
+// providers, no writes — the route layer's job is the seed and the passthrough.
+describe("briefing lab", () => {
+  it("returns the ten profiles for the default seed without calling the model", async () => {
+    const { app } = newAdminApp("lab-profiles");
+
+    const res = await request(app).get("/briefing-lab/profiles");
+
+    expect(res.status).toBe(200);
+    expect(res.body.seed).toBe(DEFAULT_SEED);
+    expect(res.body.profiles).toHaveLength(10);
+    expect(renderProfiles).not.toHaveBeenCalled();
+  });
+
+  it("honours an explicit seed, and the same seed gives the same profiles", async () => {
+    const { app } = newAdminApp("lab-seed");
+
+    const a = await request(app).get("/briefing-lab/profiles?seed=4821");
+    const b = await request(app).get("/briefing-lab/profiles?seed=4821");
+
+    expect(a.body.seed).toBe(4821);
+    expect(a.body.profiles).toEqual(b.body.profiles);
+    expect(a.body.profiles).toEqual(JSON.parse(JSON.stringify(buildProfiles(4821))));
+  });
+
+  it("falls back to the default seed for junk rather than erroring", async () => {
+    const { app } = newAdminApp("lab-seed-junk");
+
+    const res = await request(app).get("/briefing-lab/profiles?seed=not-a-number");
+
+    expect(res.status).toBe(200);
+    expect(res.body.seed).toBe(DEFAULT_SEED);
+  });
+
+  it("renders all ten and records usage against the admin who asked", async () => {
+    const { user, app } = newAdminApp("lab-render");
+
+    const res = await request(app).post("/briefing-lab/render").send({ seed: 7 });
+
+    expect(res.status).toBe(200);
+    expect(res.body.seed).toBe(7);
+    expect(res.body.profiles).toHaveLength(10);
+    expect(res.body.profiles[0].text).toMatch(/^briefing for /);
+    expect(renderProfiles).toHaveBeenCalledWith(user.id, 7);
+  });
+
+  // Scramble is "a new random seed", and the response has to echo it so a set can be reproduced.
+  it("scramble picks a fresh seed and reports which one it used", async () => {
+    const { app } = newAdminApp("lab-scramble");
+
+    const seeds = new Set<number>();
+    for (let i = 0; i < 6; i++) {
+      const res = await request(app).post("/briefing-lab/render").send({ scramble: true });
+      expect(res.status).toBe(200);
+      expect(res.body.seed).toBeGreaterThanOrEqual(1);
+      seeds.add(res.body.seed);
+    }
+    // Six draws from ~10k landing on one number would mean the seed isn't random at all.
+    expect(seeds.size).toBeGreaterThan(1);
+  });
+
+  it("surfaces a failed render as a 500 with the reason", async () => {
+    const { app } = newAdminApp("lab-fail");
+    vi.mocked(renderProfiles).mockRejectedValueOnce(new Error("ANTHROPIC_API_KEY is not set"));
+
+    const res = await request(app).post("/briefing-lab/render").send({});
 
     expect(res.status).toBe(500);
     expect(res.body.error).toBe("ANTHROPIC_API_KEY is not set");

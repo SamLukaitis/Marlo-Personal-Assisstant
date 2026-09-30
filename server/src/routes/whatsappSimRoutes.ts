@@ -19,6 +19,7 @@ import { clearSimTranscript, getSimTranscript, recordSimMessage } from "../provi
 import { resetTestPhone, TestPhoneResetError } from "../services/testPhoneReset.js";
 import { composeDailyBriefingMessage } from "../services/scheduler.js";
 import { sendProactiveMessage } from "../services/outbound.js";
+import { DEFAULT_SEED, buildProfiles, newSeed, renderProfiles } from "../services/briefingPreview.js";
 import { handleIncoming } from "./whatsappRoutes.js";
 import type { AuthedRequest } from "../middleware/auth.js";
 
@@ -172,6 +173,33 @@ whatsappSimRoutes.get("/whatsapp-sim/transcript", (req, res) => {
 
 // Test users are shared between admins (the invite list is global), which is fine for a two-person
 // staging tool and means either of you can pick up a conversation the other started.
+// --- Briefing Lab ------------------------------------------------------------------------------
+// Ten synthetic users rendered through the real briefing prompt (services/briefingPreview.ts), so
+// the voice can be judged across setups without owning ten accounts or waiting for ten mornings.
+// Nothing is written, no provider is called, and no real mail is read — the profiles are invented
+// fact sets. Lives on this router because it shares the simulator's gates: admin-only, and only
+// mounted when ENABLE_WHATSAPP_SIMULATOR is set, i.e. staging.
+
+// The profile definitions for a seed, with no model calls — lets the page paint the ten cards and
+// their fact sets instantly, then fill in the briefings from the render call below.
+whatsappSimRoutes.get("/briefing-lab/profiles", (req, res) => {
+  const seed = Number(req.query.seed) || DEFAULT_SEED;
+  res.json({ seed, profiles: buildProfiles(seed) });
+});
+
+// Renders all ten. `seed` omitted means the stable default; "scramble" in the UI is just a new
+// random seed, which the response echoes so a run can be reproduced from it later.
+whatsappSimRoutes.post("/briefing-lab/render", async (req, res) => {
+  const ownerId = (req as unknown as AuthedRequest).userId;
+  const seed = req.body?.scramble ? newSeed() : Number(req.body?.seed) || DEFAULT_SEED;
+  try {
+    res.json({ seed, profiles: await renderProfiles(ownerId, seed) });
+  } catch (err) {
+    console.error("briefing-lab: render failed", err);
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
 whatsappSimRoutes.get("/whatsapp-sim/test-users", (_req, res) => {
   res.json(
     listInvitedPhones()

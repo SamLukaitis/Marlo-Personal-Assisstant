@@ -134,12 +134,31 @@ describe("describeEventTime", () => {
   const base = { id: "e", accountId: 1, accountEmail: "me@example.com", provider: "google" as const, title: "Offsite" };
 
   it("describes an all-day event as all day rather than a midnight start", () => {
-    expect(describeEventTime({ ...base, start: "2026-09-15", end: "2026-09-16", allDay: true })).toBe("Offsite (all day)");
+    expect(
+      describeEventTime({ ...base, start: "2026-09-15", end: "2026-09-16", allDay: true }, "Europe/London")
+    ).toBe("Offsite (all day, Tuesday 15 Sep)");
   });
 
-  it("keeps the zoned time for a timed event", () => {
-    expect(describeEventTime({ ...base, start: "2026-09-15T09:00:00.000Z", end: "2026-09-15T10:00:00.000Z" })).toBe(
-      "Offsite at 2026-09-15T09:00:00.000Z"
-    );
+  // The weekday and clock time are what let the briefing say "Thursday evening" instead of reading
+  // an ISO string out loud — so they have to be computed, not left to the model.
+  it("gives a timed event a weekday and a local clock time", () => {
+    expect(
+      describeEventTime(
+        { ...base, start: "2026-09-15T09:00:00.000Z", end: "2026-09-15T10:00:00.000Z" },
+        "Europe/London"
+      )
+    ).toBe("Offsite at 10:00 on Tuesday 15 Sep");
+  });
+
+  // Same instant, two zones: the time the user reads must be their own, not the server's.
+  it("renders the time in the user's zone, not UTC", () => {
+    const e = { ...base, start: "2026-09-15T23:30:00.000Z", end: "2026-09-16T00:30:00.000Z" };
+    expect(describeEventTime(e, "Australia/Sydney")).toBe("Offsite at 09:30 on Wednesday 16 Sep");
+    expect(describeEventTime(e, "America/New_York")).toBe("Offsite at 19:30 on Tuesday 15 Sep");
+  });
+
+  // A provider can hand back something unparseable; a stiff line beats a confidently wrong day.
+  it("falls back to the raw start when it can't be parsed", () => {
+    expect(describeEventTime({ ...base, start: "not-a-date" }, "Europe/London")).toBe("Offsite at not-a-date");
   });
 });

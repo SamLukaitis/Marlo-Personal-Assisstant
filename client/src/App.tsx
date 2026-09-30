@@ -13,6 +13,7 @@ import { TravelPage } from "./pages/TravelPage";
 import { SettingsPage } from "./pages/SettingsPage";
 import { PortalPage } from "./pages/PortalPage";
 import { WhatsAppSimPage } from "./pages/WhatsAppSimPage";
+import { BriefingLabPage } from "./pages/BriefingLabPage";
 
 function App() {
   return (
@@ -54,6 +55,7 @@ function App() {
             <Route path="/settings" element={<SettingsPage />} />
             <Route path="/portal" element={<PortalPage />} />
             <Route path="/whatsapp-sim" element={<WhatsAppSimPage />} />
+            <Route path="/briefing-lab" element={<BriefingLabPage />} />
             {/* "Setup" was renamed to "Settings" — it behaves like one now. */}
             <Route path="/setup" element={<Navigate to="/settings" replace />} />
           </Route>
