@@ -166,14 +166,30 @@ export function listNotes(session: FamilySession, limit = 50): NoteRow[] {
  * read them and neither can anyone holding the file without the key. Families hold tens of
  * notes, not millions, so decrypt-then-filter is the right trade for a long while.
  */
+/**
+ * Ranks items by how many of the query's words they contain, most first, keeping only those with
+ * at least one. Whole-phrase matching was too strict: the model searches in its own words
+ * ("Leo trip payment"), which rarely appear verbatim in what a family member saved. Ties keep the
+ * input order, which is newest first. Words under three letters are skipped as noise.
+ */
+function rankByWords<T>(items: T[], query: string, textOf: (item: T) => string, limit: number): T[] {
+  const words = [...new Set(query.toLowerCase().split(/[^\p{L}\p{N}]+/u))].filter(
+    (w) => w.length >= 3
+  );
+  if (words.length === 0) return [];
+  return items
+    .map((item) => {
+      const text = textOf(item).toLowerCase();
+      return { item, score: words.filter((w) => text.includes(w)).length };
+    })
+    .filter((r) => r.score > 0)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, limit)
+    .map((r) => r.item);
+}
+
 export function searchNotes(session: FamilySession, query: string, limit = 10): NoteRow[] {
-  const needle = query.trim().toLowerCase();
-  if (!needle) return [];
-  return listNotes(session, 500)
-    .filter(
-      (n) => n.title.toLowerCase().includes(needle) || n.body.toLowerCase().includes(needle)
-    )
-    .slice(0, limit);
+  return rankByWords(listNotes(session, 500), query, (n) => `${n.title} ${n.body}`, limit);
 }
 
 // --- Documents -------------------------------------------------------------------------------
@@ -194,7 +210,8 @@ export function saveDocument(
     filename?: string;
     caption?: string;
     mimeType: string;
-    storedPath: string;
+    /** A bare filename inside the family's folder — see joyce/files.ts. */
+    storedName: string;
     extractedText: string;
   }
 ): number {
@@ -208,7 +225,7 @@ export function saveDocument(
       doc.filename ? encryptFor(session.key, doc.filename) : null,
       doc.caption ? encryptFor(session.key, doc.caption) : null,
       doc.mimeType,
-      doc.storedPath,
+      doc.storedName,
       encryptFor(session.key, doc.extractedText),
       Date.now()
     );
@@ -243,17 +260,32 @@ export function listDocuments(session: FamilySession, limit = 50): DocumentRow[]
   }));
 }
 
+/** One document by its id within this family, for sending the original file back. */
+export function getDocument(
+  session: FamilySession,
+  id: number
+): { id: number; filename: string | null; mimeType: string; storedName: string } | null {
+  const row = session.db
+    .prepare(`SELECT id, filename_enc, mime_type, stored_path FROM documents WHERE id = ?`)
+    .get(id) as
+    | { id: number; filename_enc: string | null; mime_type: string; stored_path: string }
+    | undefined;
+  if (!row) return null;
+  return {
+    id: row.id,
+    filename: row.filename_enc === null ? null : decryptFor(session.key, row.filename_enc),
+    mimeType: row.mime_type,
+    storedName: row.stored_path,
+  };
+}
+
 export function searchDocuments(session: FamilySession, query: string, limit = 5): DocumentRow[] {
-  const needle = query.trim().toLowerCase();
-  if (!needle) return [];
-  return listDocuments(session, 200)
-    .filter(
-      (d) =>
-        d.extractedText.toLowerCase().includes(needle) ||
-        (d.filename?.toLowerCase().includes(needle) ?? false) ||
-        (d.caption?.toLowerCase().includes(needle) ?? false)
-    )
-    .slice(0, limit);
+  return rankByWords(
+    listDocuments(session, 200),
+    query,
+    (d) => `${d.filename ?? ""} ${d.caption ?? ""} ${d.extractedText}`,
+    limit
+  );
 }
 
 // --- Reminders -------------------------------------------------------------------------------

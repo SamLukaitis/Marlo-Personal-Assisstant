@@ -89,6 +89,7 @@ I ran a real conversation end to end against the live API. All of this is workin
 - One phone can only ever be in one family — enforced by a database primary key, not by code
   remembering to check.
 - **Leaving a family**, with a two-step confirmation (see below).
+- **Photos and files** (added 2026-10-03): see below.
 
 Every test passes: 31 Joyce tests, and Marlowe's existing suite still green (1557 total).
 
@@ -122,6 +123,28 @@ What leaving does and doesn't do:
   out can still be rejoined by anyone who kept the code — the data is never stranded.
 
 
+## Photos and files
+
+Added 2026-10-03, modelled on Marlowe's but written separately in `joyce/files.ts`, because Joyce
+can't import Marlowe's code.
+
+- A member sends a photo, PDF, Word document or text file. Joyce downloads it, encrypts it with
+  *that family's* key, and stores it in a folder belonging to that family alone
+  (`data/joyce/files/<family-id>/`).
+- Photos and PDFs are read by Claude; Word and text files are read directly. The text is saved
+  (encrypted) so any member can ask about it later in their own words: Priya sends the school
+  trip letter, Sam asks "when do we pay for Leo's trip?" and gets "£12.50 by 9 October". Tested
+  live against the API.
+- Any member can ask for the original back ("send me that letter again"). The model chooses
+  *which* file, never *who* gets it: it only ever goes to the person asking.
+- Other types (spreadsheets, zips) are kept and can be sent back, but aren't read.
+- Unlike Marlowe, Joyce doesn't pull travel dates, receipts or bookings out of files. She only
+  needs the family to be able to find things again.
+
+Searching notes and documents now ranks by how many of the search words match. Previously it
+needed the exact phrase, which the live test showed failing whenever the model searched in its own
+words.
+
 ## Problems I hit, and what I did about them
 
 **Marlowe would have answered Joyce's messages.** This was the real landmine. Meta configures a
@@ -154,13 +177,12 @@ Roughly in the order I'd do them.
    messages Joyce, and she's honest about that. Real delivery needs a scheduler like Marlowe's,
    plus WhatsApp message templates — outside the 24-hour window since a user's last message,
    Meta only allows pre-approved templates, which have to be submitted and approved.
-3. **Documents and photos.** The storage table and the search tool are built and wired up, but
-   nothing ingests a WhatsApp media message into them yet. Marlowe's `services/documents.ts` is
-   the model to copy — carefully, since it writes to Marlowe's store.
+3. ~~Documents and photos~~ — done 2026-10-03, see "Photos and files" above. Voice notes are
+   still ignored.
 4. **Expiring or single-use join codes**, if permanent shareable codes feel too loose once real
    people use them.
-6. **Deleting a family**, for the same reasons Marlowe has `deleteUserCompletely`. With one file
-   per family this is genuinely easy — delete the file, delete the registry rows.
+5. **Deleting a family**, for the same reasons Marlowe has `deleteUserCompletely`. With one file
+   per family this is genuinely easy — delete the file, its files folder, and the registry rows.
 6. **A simulator**, like Marlowe's WhatsApp Simulator, so Joyce can be exercised from a browser
    without a real number.
 
