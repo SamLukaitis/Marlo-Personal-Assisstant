@@ -8,7 +8,7 @@ import {
   listCheckins,
   type TravelCheckinRow,
 } from "../db/store.js";
-import { hubListMessages, hubListEvents, hubFlaggedMessages } from "./hub.js";
+import { hubListMessages, hubListEvents, hubFlaggedMessages, senderDisplayName } from "./hub.js";
 import { fetchHeadlines, type NewsTopic } from "../providers/news.js";
 import { fetchWeather, type WeatherReport } from "../providers/weather.js";
 import { fetchQuotes, DEFAULT_SYMBOLS, type Quote } from "../providers/markets.js";
@@ -147,16 +147,164 @@ export function describeLocationStreak(
   return `Currently in ${place} — arrived ${daysSince} day${daysSince === 1 ? "" : "s"} ago, been there ${daysSince} day${daysSince === 1 ? "" : "s"}.`;
 }
 
-// Timed events keep their zoned ISO string (unambiguous for the model); an all-day event's plain
-// date would otherwise read as a midnight start.
-export function describeEventTime(e: CalendarEvent): string {
-  return e.allDay ? `${e.title} (all day)` : `${e.title} at ${e.start}`;
+// The briefing is written as prose, so the model needs the day in words ("Thursday") as well as
+// the clock time. Handed a raw ISO string it either does the weekday arithmetic itself (a guess
+// presented as fact) or reads the date out loud — "2026-10-02T19:15:00+02:00" becoming "Oct 2,
+// 19:15", which is exactly the robotic register this is trying to get away from. Formatted here,
+// in the user's own zone, so the weekday is a fact rather than the model's inference.
+//
+// An invalid or unparseable start falls back to the raw string: better a stiff line than a
+// confidently wrong day.
+export function describeEventTime(e: CalendarEvent, zone?: string | null): string {
+  const at = DateTime.fromISO(e.start, zone ? { zone } : undefined);
+  if (!at.isValid) return e.allDay ? `${e.title} (all day, ${e.start})` : `${e.title} at ${e.start}`;
+  const day = at.toFormat("cccc d LLL");
+  return e.allDay ? `${e.title} (all day, ${day})` : `${e.title} at ${at.toFormat("HH:mm")} on ${day}`;
 }
 
+// Everything the briefing's voice depends on that isn't a fact about the day. Split out from the
+// fetch so the Briefing Lab (briefingPreview.ts) renders synthetic profiles through this exact
+// prompt — a second copy of it would have drifted from the real one within a week.
+export interface BriefingVoice {
+  assistantName: string;
+  /** First name only, or "" if unknown — "Hey Jake" is the register this is written in. */
+  userName: string;
+  persona: string;
+}
+
+// The facts the model is allowed to use, already reduced to display strings. Anything not in here
+// does not exist as far as the briefing is concerned (the prompt is emphatic about that), so this
+// type is also the definition of what a briefing can ever mention.
+export interface BriefingDay {
+  /** "07:30" in the user's own zone — what the greeting and sign-off are pitched to. */
+  localTime: string;
+  /** "Wednesday" in the user's own zone. */
+  localWeekday: string;
+  /** describeLocationStreak output, or "" when there's no check-in. */
+  location: string;
+  weather: WeatherReport | null;
+  quotes: Quote[];
+  /**
+   * Unread since local midnight. `shown` is capped for the prompt; `count` is the real total.
+   * `from` is a display name (senderDisplayName), never a raw address — the briefing is prose.
+   */
+  unread: { count: number; shown: { subject: string; from: string }[] };
+  /** describeEventTime output for each. */
+  todayEvents: string[];
+  upcomingEvents: string[];
+  /** `from` is a display name, as with `unread`. */
+  flagged: { subject: string; from: string }[];
+  news: { topic: string; title: string }[];
+}
+
+// Nothing on today, no new mail, nothing waiting on a reply. Decided here rather than left to the
+// model to infer from three separate "none" lines, because the quiet-day message is a different
+// message rather than a shorter one — the branch has to be reliable, not probabilistic.
+export function isQuietDay(day: BriefingDay): boolean {
+  return day.unread.count === 0 && day.todayEvents.length === 0 && day.flagged.length === 0;
+}
+
+export function briefingSystemPrompt({ assistantName, userName, persona }: BriefingVoice): string {
+  return `You are ${assistantName}, ${
+    userName ? `${userName}'s` : "the user's"
+  } assistant, sending them a short message to start the day.${
+    persona ? ` They've told you how they want you to work with them: ${persona}` : ""
+  }
+
+Write one short paragraph, the way you'd text someone you work for. Aim for about 45 words and never go past 70 — on the busiest day that means dropping things, not writing tighter. No labels, no headings, no bullets, no emoji, no markdown, no line breaks you're relying on.
+
+Talk about PEOPLE and what they want, not about emails and their subject lines. "Sarah's chasing that invoice again" — never "Invoice 2291 overdue from Sarah Whitfield". First names where you have them. Never quote a subject line, not even part of one, and never in quotation marks. Never give a count of unread emails: "a few things waiting" and "nothing much in" are what a person would say.
+
+Name at most two things. If there's more, describe the shape of the rest in a few words and stop — "a couple of others can wait", "rest is newsletters", "nothing else urgent". Being complete is the wrong instinct; they can ask you for the rest.
+
+USE ONLY THE FACTS GIVEN BELOW. Never add an email, an event, a headline, a price or a forecast that isn't there. If it isn't in the facts, it doesn't exist. Inventing any of it is a serious error. Don't invent advice or jobs for them either — no "maybe sort your packing", no "good chance to get ahead on admin" — unless a fact actually points at it. Don't dress a fact up as bigger or smaller than it is.
+
+If the facts say QUIET DAY, don't recite the emptiness back to them. Say something easy and short that makes clear there's nothing to worry about${
+    userName ? `, using their first name` : ""
+  } — one or two sentences, warm, worded differently each day rather than a stock line. Anything worth acting on from the next three days still gets a mention.
+
+Pitch the greeting and any sign-off to the time of day in the facts: "morning" only in the morning, "sleep well" or "have a good evening" only in the evening or at night. If the time would make a sign-off awkward, leave it off rather than guess.
+
+Weather, markets and news are opt-in. Mention one ONLY if its fact line is present below, in a few words inside a sentence, and leave it out entirely otherwise — never a line saying there's none. For markets, say the direction in plain words, not a string of percentages.
+
+It may arrive as one unbroken line, so it has to read correctly as flowing prose.`
+}
+
+export function briefingFactBlock(day: BriefingDay): string {
+  return [
+    `Right now it is ${day.localTime} on ${day.localWeekday}, the user's own local time.`,
+    isQuietDay(day)
+      ? "QUIET DAY: nothing on their calendar today, no unread mail today, nothing waiting on a reply. Use the quiet-day check-in from your instructions. Anything worth acting on from the next-three-days list below still gets mentioned — a quiet day with a flight to pack for is still a quiet day, but they should hear about the flight."
+      : "",
+    day.location,
+    day.weather
+      ? `Weather in ${day.weather.place}: ${day.weather.condition}, currently ${day.weather.tempC}°C, high ${day.weather.highC}°C, low ${day.weather.lowC}°C`
+      : "",
+    day.quotes.length
+      ? `Markets: ${day.quotes
+          .map(
+            (q) =>
+              `${q.name} ${q.price} (${q.changePercent >= 0 ? "+" : ""}${q.changePercent}%)`
+          )
+          .join("; ")}`
+      : "",
+    `Unread emails today (${day.unread.count}): ${
+      day.unread.shown
+        .map((m) => `"${m.subject}" from ${m.from}`)
+        .join("; ") || "none"
+    }`,
+    `Today's calendar events: ${
+      day.todayEvents.join("; ") || "nothing scheduled"
+    }`,
+    `Calendar events in the next 3 days (not today) — mention only if there's something notable, e.g. a flight or a change of accommodation: ${
+      day.upcomingEvents.join("; ") || "none"
+    }`,
+    `Emails that look like they need a reply (unread, over 3 days old, not automated): ${
+      day.flagged.map((m) => `"${m.subject}" from ${m.from}`).join("; ") || "none"
+    }`,
+    day.news.length
+      ? `Top news headlines: ${day.news.map((h) => `[${h.topic}] ${h.title}`).join("; ")}`
+      : "",
+  ]
+    .filter(Boolean)
+    .join("\n\n");
+}
+
+// The one place the briefing model is actually called. `purpose` separates the real morning
+// briefing from Briefing Lab renders in the API-usage breakdown, so preview spend is visible
+// rather than hidden inside daily_briefing's numbers.
+export async function renderBriefing(
+  ownerId: number,
+  voice: BriefingVoice,
+  day: BriefingDay,
+  purpose: string
+): Promise<string> {
+  const anthropic = getClient();
+  const response = await anthropic.messages.create({
+    model: MODEL,
+    max_tokens: 1024,
+    system: briefingSystemPrompt(voice),
+    messages: [{ role: "user", content: briefingFactBlock(day) }],
+  });
+  recordApiUsage(
+    ownerId,
+    "background",
+    MODEL,
+    purpose,
+    response.usage?.input_tokens ?? 0,
+    response.usage?.output_tokens ?? 0,
+    response.usage?.cache_read_input_tokens ?? 0,
+    response.usage?.cache_creation_input_tokens ?? 0
+  );
+  const text = response.content.find((b): b is Anthropic.TextBlock => b.type === "text");
+  return text?.text ?? "Nothing to report today.";
+}
+
+// Gathers the real day for a real user, then hands it to the shared renderer above.
 async function buildBriefingText(ownerId: number): Promise<string> {
-  const settings = getBriefingSettings(ownerId);
   const assistantName = getSetting(ownerId, "assistant_name") ?? "Marlowe";
   const persona = getSetting(ownerId, "persona") ?? "";
+  const userName = (getSetting(ownerId, "user_name") ?? "").trim().split(/\s+/)[0] ?? "";
 
   const now = new Date();
   // 3-day window (not just today) so a hostel checkout or flight tomorrow/the day after shows up
@@ -170,83 +318,35 @@ async function buildBriefingText(ownerId: number): Promise<string> {
   // "Today" is the user's own day, not the server's (see userTimezone.ts for how their zone is known).
   const zone = getUserTimezone(ownerId);
   const unread = selectUnreadSinceMidnight(messages, now, zone);
-  const todayKeyStr = userLocalClock(ownerId).dateKey;
+  const clock = userLocalClock(ownerId);
   // By calendar day, not the string prefix — a UTC "Z" time near midnight is a different local day.
-  const todayEvents = events.filter((e) => eventLocalDateKey(e.start, zone) === todayKeyStr);
-  const upcomingEvents = events.filter((e) => eventLocalDateKey(e.start, zone) !== todayKeyStr);
-  const location = describeLocationStreak(listCheckins(ownerId, 1)[0], now, zone);
+  const todayEvents = events.filter((e) => eventLocalDateKey(e.start, zone) === clock.dateKey);
+  const upcomingEvents = events.filter((e) => eventLocalDateKey(e.start, zone) !== clock.dateKey);
   const { headlines: news, quotes, weather } = await getBriefingFeed(ownerId);
 
-  const facts = [
-    location,
-    weather
-      ? `Weather in ${weather.place}: ${weather.condition}, currently ${weather.tempC}°C, high ${weather.highC}°C, low ${weather.lowC}°C`
-      : "",
-    quotes.length
-      ? `Markets: ${quotes
-          .map(
-            (q) =>
-              `${q.name} ${q.price} (${q.changePercent >= 0 ? "+" : ""}${q.changePercent}%)`
-          )
-          .join("; ")}`
-      : "",
-    `Unread emails today (${unread.length}): ${
-      unread
-        .slice(0, 15)
-        .map((m) => `"${m.subject}" from ${m.from}`)
-        .join("; ") || "none"
-    }`,
-    `Today's calendar events: ${
-      todayEvents.map(describeEventTime).join("; ") || "nothing scheduled"
-    }`,
-    `Calendar events in the next 3 days (not today) — mention only if there's something notable, e.g. a flight or a change of accommodation: ${
-      upcomingEvents.map(describeEventTime).join("; ") || "none"
-    }`,
-    `Emails that look like they need a reply (unread, over 3 days old, not automated): ${
-      flagged.map((m) => `"${m.subject}" from ${m.from}`).join("; ") || "none"
-    }`,
-    news.length
-      ? `Top news headlines: ${news.map((h) => `[${h.topic}] ${h.title}`).join("; ")}`
-      : "",
-  ]
-    .filter(Boolean)
-    .join("\n\n");
-
-  const anthropic = getClient();
-  const response = await anthropic.messages.create({
-    model: MODEL,
-    max_tokens: 1024,
-    system: `You are ${assistantName}, the user's personal assistant, writing their morning briefing.${
-      persona ? ` The user described their preferences: ${persona}` : ""
-    } Write a terse, scannable briefing using ONLY the facts given below — never supplement them with your own general knowledge, training data, or plausible-sounding guesses, even for things like current events or news. This is a hard rule: fabricating a headline, email, or event is a serious error.
-
-Structure, in this order:
-- Location: ONLY if a "Currently in ..." fact line is present below. One short clause, e.g. mention in passing if it's relevant to the day (don't say "just arrived" or "welcome to" unless the fact itself says arrived today).
-- Weather: ONLY if a "Weather in ..." fact line is present below. One short clause.
-- Inbox: one line based on the "Unread emails today" fact — the count plus at most 2-3 senders/subjects worth calling out, not a full list.
-- Calendar: based on the "Today's calendar events" fact. Only add a note from "Calendar events in the next 3 days" if it's something the user should prep for now (a flight, checking out of where they're staying) — otherwise leave it out entirely.
-- Needs attention: one line based on the "Emails that look like they need a reply" fact.
-- Markets: ONLY if a "Markets:" fact line is present below. One short line, mentioning direction.
-- News: ONLY include this section if a "Top news headlines" fact line is present below. One line per headline, max 3.
-
-Weather, Markets, News, and the upcoming-events note are opt-in: if there's nothing to say, omit them entirely — not even a line saying there's none. Never invent a headline, a price, or a forecast.
-
-For Inbox/Calendar/Needs attention, if the fact says "none" or "nothing scheduled", say so in one short clause rather than skipping it — those three always get a line. No headers, no preamble, no sign-off — just the lines themselves. Keep the whole thing under 100 words.`,
-    messages: [{ role: "user", content: facts }],
-  });
-  recordApiUsage(
+  return renderBriefing(
     ownerId,
-    "background",
-    MODEL,
-    "daily_briefing",
-    response.usage?.input_tokens ?? 0,
-    response.usage?.output_tokens ?? 0,
-    response.usage?.cache_read_input_tokens ?? 0,
-    response.usage?.cache_creation_input_tokens ?? 0
+    { assistantName, userName, persona },
+    {
+      localTime: clock.hhmm,
+      localWeekday: DateTime.fromISO(clock.dateKey).toFormat("cccc"),
+      location: describeLocationStreak(listCheckins(ownerId, 1)[0], now, zone),
+      weather,
+      quotes,
+      // Display name, not the raw address: handed "accounts@supplier.example" the model writes it
+      // out verbatim mid-sentence, which reads like a machine. The email digest has always done
+      // this (senderDisplayName); the briefing was passing raw `from` and it showed.
+      unread: {
+        count: unread.length,
+        shown: unread.slice(0, 15).map((m) => ({ subject: m.subject, from: senderDisplayName(m.from) })),
+      },
+      todayEvents: todayEvents.map((e) => describeEventTime(e, zone)),
+      upcomingEvents: upcomingEvents.map((e) => describeEventTime(e, zone)),
+      flagged: flagged.map((m) => ({ subject: m.subject, from: senderDisplayName(m.from) })),
+      news: news.map((h) => ({ topic: h.topic, title: h.title })),
+    },
+    "daily_briefing"
   );
-
-  const text = response.content.find((b): b is Anthropic.TextBlock => b.type === "text");
-  return text?.text ?? "Nothing to report today.";
 }
 
 export async function getTodaysBriefing(ownerId: number): Promise<{ date: string; content: string }> {
