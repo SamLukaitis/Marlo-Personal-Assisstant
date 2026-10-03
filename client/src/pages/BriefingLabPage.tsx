@@ -71,9 +71,13 @@ export function BriefingLabPage() {
     loadProfiles(n).then(() => render({ seed: n }));
   }
 
+  // `scrollable` on both, as Settings and Portal do: .main defaults to height:100vh with
+  // overflow:hidden for pages that fit one screen and scroll inside their own panel (the chat and
+  // simulator pages). This one is a long stack of ten cards, so without it everything past the
+  // first screen is simply clipped with no way to reach it.
   return (
-    <div className="main">
-      <div className="main-inner">
+    <div className="main scrollable">
+      <div className="main-inner scrollable">
         <div className="page-header">
           <h1 className="heading-font">Briefing Lab</h1>
         </div>
