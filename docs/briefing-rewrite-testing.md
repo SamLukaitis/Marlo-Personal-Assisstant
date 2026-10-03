@@ -1,9 +1,12 @@
 # Daily briefing rewrite — what changed and how to test it
 
-**On staging since 30 Sep 2026** (commit `308366b`, deploy `7e831b4f`).
-Staging: https://startupwjake-staging.up.railway.app — sign in with your admin account.
+**The voice change is live in production** as of 3 Oct 2026 (master `0a9beb6`) — the live WhatsApp
+number now sends the new briefing.
 
-Nothing in here has gone to production. The live WhatsApp number still sends the old briefing.
+**The Briefing Lab is staging only** (`c98e6d1`): https://startupwjake-staging.up.railway.app — sign
+in with your admin account. It's hidden in production on purpose.
+
+This is not finished. See "Still to do" at the bottom.
 
 ---
 
@@ -15,12 +18,17 @@ produced a message that reliably said nothing, three times over:
 
 > Inbox: none unread. Calendar: nothing scheduled today. Needs attention: nothing pending.
 
-It now writes as prose, leads with whatever actually matters, drops anything empty, and on a
-genuinely quiet day sends a short warm check-in instead:
+It now writes one short paragraph of prose, talks about **people rather than email subject lines**,
+leads with whatever actually matters, and drops anything empty:
 
-> Evening Margaret, nice and quiet tonight — nothing on your calendar, no unread mail, nothing
-> waiting on you. Light rain in Bristol, 13°C, so nothing pressing either way. Have a good evening
-> and sleep well.
+> Morning, Jake. Light rain in Lisbon today, topping out around 19°C. Sarah's still chasing that
+> overdue invoice, and Tiago's waiting on a quote for the Porto job. You've got the dentist at 2 and
+> a call with Priya at 4:30, plus a flight to Amsterdam Monday evening — rest can wait.
+
+On a genuinely quiet day it sends a short warm check-in instead of a list of nothings:
+
+> Evening, Jake. Nothing came up today and nothing's sitting there needing you, so it's a genuinely
+> clear one. Good chance to actually switch off tonight. Sleep well.
 
 There is also a new **Briefing Lab** page for looking at ten different users' briefings at once,
 without needing ten accounts or ten mornings.
@@ -40,9 +48,15 @@ without needing ten accounts or ten mornings.
 - **Quiet days get a different message, not a shorter one.** Whether a day is quiet is decided in
   code (no mail, nothing on, nothing awaiting a reply), so it's reliable rather than a judgement
   call the model might get wrong.
-- **90-word hard limit.** The first version of the rewrite overshot to 102 words by trying to
-  mention everything, including a bank statement. The instruction now says explicitly that a busy
-  day means *choosing*, not compressing. Ten test profiles now land between 19 and 70 words.
+- **Talks about people, not subject lines.** This was the main complaint and it took two passes.
+  "Sarah's still chasing that overdue invoice" — not `"Invoice 2291 overdue" from Sarah Whitfield`.
+  It never quotes a subject line, never gives a count of unread mail, names at most two things, and
+  describes the shape of the rest ("rest can wait", "nothing else urgent").
+- **Aim 45 words, hard stop 70**, down from 100. Earlier drafts overshot their own stated limit by
+  trying to be complete, so the instruction now says a busy day means *dropping* things, not writing
+  tighter. Across 30 test renders the mean is 45 words and nothing exceeds 70.
+- **It won't invent jobs for you.** An earlier draft offered "maybe sort your packing" and "a good
+  chance to get ahead on admin" off facts that said no such thing. That's now explicitly banned.
 
 ### 2. Greetings now match the time of day
 
@@ -97,8 +111,8 @@ You'll get ten cards. Each one is an invented person with a different setup:
 
 **On each card you can:**
 
-- See the **word count**. If a briefing goes over the 90-word limit the card shows **OVER 90** —
-  that's a problem worth telling me about.
+- See the **word count**. Typical is 30–55. The card flags anything over the limit — tell me if you
+  see one.
 - Click **Show the facts it was given** to see exactly what the model had to work with. Worth doing
   whenever a briefing says something odd: usually the facts explain it.
 
@@ -168,16 +182,30 @@ source of truth, not your phone.
 
 ---
 
-## Two things still outstanding
+## Still to do
 
-**1. You didn't get a briefing on your real number.** We looked into this separately. Production is
-running fine, but three of the six conditions that decide whether it sends skip *silently*, so I
-couldn't tell from the logs which one stopped you. Most likely the "Send it to me on WhatsApp"
-checkbox is off. There's also a genuine bug: unticking "Show my daily briefing" on the Settings page
-**hides** the WhatsApp checkbox without turning it off, so someone can keep receiving messages with
-no visible way to stop them. Neither is fixed yet — say the word.
+This is not finished. Known gaps, in the order I'd tackle them:
 
-**2. The evening email digest is untouched.** You said both were annoying; this work only covers the
-morning briefing. The digest still uses its hardcoded 📬 bullet-list format, and its real controls
-(daily summary vs. instant, and what time) are only reachable by asking Marlowe in chat — they're not
-on the Settings page at all.
+1. **The evening email digest is untouched.** You said both were annoying; only the morning briefing
+   has been rewritten. The digest still sends its hardcoded 📬 bullet list with senders and subject
+   lines — exactly the format you objected to. It needs the same treatment.
+2. **The hidden off-switch bug.** On the Settings page, unticking "Show my daily briefing" *hides*
+   the "Send it to me on WhatsApp" checkbox without turning it off. Someone can keep receiving
+   messages every morning with no visible way to stop them. This is very likely why users called it
+   annoying and couldn't change it.
+3. **The digest's real controls aren't in the UI.** Daily-summary-vs-instant, and what time it
+   arrives, are only reachable by asking Marlowe in chat. The Settings page just tells people to go
+   ask. Anyone who wants *less* rather than *none* has to know that's possible.
+4. **Why you got no briefing on your own number.** Three of the six conditions that decide whether
+   it sends skip silently, so the logs can't tell you which one stopped you. Most likely the
+   WhatsApp checkbox is off. Logging the skip reason would make this answer itself next time.
+5. **Tone across more cases.** The lab covers ten setups. Worth scrambling a few more times and
+   telling me where the voice still slips.
+
+## A note on what's where
+
+- **Production (master)** has the voice change only — two files, `briefing.ts` and its test.
+- **Staging** additionally has the Briefing Lab, the simulator's "Send daily briefing" button, and
+  the Google Maps work that hasn't been promoted yet.
+- The Briefing Lab and WhatsApp Test pages are gated on an environment flag that isn't set in
+  production, so neither appears on the live site.
