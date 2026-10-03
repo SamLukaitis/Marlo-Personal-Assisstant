@@ -269,7 +269,7 @@ describe("handleIncoming — location messages", () => {
       42,
       "447900000020",
       "user",
-      "[User shared their location: 51.5074, -0.1278 (Big Ben, London SW1A 0AA)]",
+      expect.stringMatching(/^\[User shared their location at \d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC: 51\.5074, -0\.1278 \(Big Ben, London SW1A 0AA\)\]$/),
     ]);
     expect(runAssistantChat).toHaveBeenCalled();
     expect(sendAssistantReply).toHaveBeenCalledWith(
@@ -295,7 +295,7 @@ describe("handleIncoming — location messages", () => {
       42,
       "447900000021",
       "user",
-      "[User shared their location: 51.5, -0.1]",
+      expect.stringMatching(/^\[User shared their location at \d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC: 51\.5, -0\.1\]$/),
     ]);
   });
 });
