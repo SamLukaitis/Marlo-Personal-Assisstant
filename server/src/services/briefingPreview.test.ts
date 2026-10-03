@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { buildProfiles, DEFAULT_SEED, newSeed } from "./briefingPreview.js";
+import { buildDigestProfiles, buildProfiles, DEFAULT_SEED, newSeed } from "./briefingPreview.js";
 import { isQuietDay } from "./briefing.js";
 
 // The lab's value depends on two properties: a seed always gives the same ten days (so a set that
@@ -100,5 +100,91 @@ describe("newSeed", () => {
       expect(s).toBeGreaterThanOrEqual(1);
       expect(s).toBeLessThan(10000);
     }
+  });
+});
+
+// The evening recap half of the lab. Same seed contract as the briefings, plus two rules that are
+// properties of the recap itself rather than of the preview.
+describe("buildDigestProfiles", () => {
+  it("gives ten profiles with unique ids", () => {
+    const profiles = buildDigestProfiles(DEFAULT_SEED);
+    expect(profiles).toHaveLength(10);
+    expect(new Set(profiles.map((p) => p.id)).size).toBe(10);
+  });
+
+  it("is deterministic for a seed", () => {
+    expect(buildDigestProfiles(4821)).toEqual(buildDigestProfiles(4821));
+  });
+
+  // The recap is real-person mail by definition — automated mail goes out as an instant
+  // important-email alert and never queues for the digest. If a newsletter could show up here, the
+  // lab would be testing the prompt against input the real digest can never produce.
+  it("never puts automated mail in a recap", () => {
+    const automated = ["Northbank", "Shopfront Orders", "Ledgerly Billing", "The Weekly"];
+    for (const seed of [1, 2, 3, 77, 4821]) {
+      for (const p of buildDigestProfiles(seed)) {
+        for (const sender of p.day?.senders ?? []) {
+          expect(automated, `${p.id} @ seed ${seed}`).not.toContain(sender.name);
+        }
+      }
+    }
+  });
+
+  it("keeps the total consistent with the per-thread counts", () => {
+    for (const seed of [1, 2, 99]) {
+      for (const p of buildDigestProfiles(seed)) {
+        if (!p.day) continue;
+        expect(p.day.total).toBe(p.day.senders.reduce((sum, g) => sum + g.count, 0));
+        expect(p.day.total).toBeGreaterThanOrEqual(p.day.senders.length);
+      }
+    }
+  });
+
+  it("never lists the same sender twice in one recap", () => {
+    for (const seed of [1, 7, 512]) {
+      for (const p of buildDigestProfiles(seed)) {
+        const names = (p.day?.senders ?? []).map((g) => g.name);
+        expect(new Set(names).size).toBe(names.length);
+      }
+    }
+  });
+
+  // Two profiles exist to show that a day with nothing held sends no recap at all — the recap has
+  // always been silent on an empty day, unlike the old briefing, and that's worth being able to see.
+  it("always leaves the empty-queue profiles with nothing to send", () => {
+    for (const seed of [1, 2, 3, 50, 4821]) {
+      const byId = Object.fromEntries(buildDigestProfiles(seed).map((p) => [p.id, p]));
+      expect(byId.minimalist.day, `minimalist @ ${seed}`).toBeNull();
+      expect(byId.newuser.day, `newuser @ ${seed}`).toBeNull();
+    }
+  });
+
+  it("always gives the busy profiles something to summarise", () => {
+    for (const seed of [1, 2, 3, 50, 4821]) {
+      const byId = Object.fromEntries(buildDigestProfiles(seed).map((p) => [p.id, p]));
+      for (const id of ["founder", "exec", "parent", "freelancer"]) {
+        expect(byId[id].day?.senders.length ?? 0, `${id} @ ${seed}`).toBeGreaterThan(0);
+      }
+    }
+  });
+
+  // The night-shift profile's recap lands at 06:30, not in the evening. It's there to catch a prompt
+  // that assumes "digest" means "night" and signs off with "sleep well" at breakfast.
+  it("keeps the night-shift recap outside evening hours", () => {
+    for (const seed of [1, 2, 3, 99]) {
+      const nightshift = buildDigestProfiles(seed).find((p) => p.id === "nightshift")!;
+      expect(nightshift.day?.localTime).toBe("06:30");
+    }
+  });
+
+  // A profile's recap must not be drawn from the same rolls as its morning briefing, or scrambling
+  // would move both in lockstep and the two views would stop being independent samples.
+  it("does not move in lockstep with the morning briefings", () => {
+    const sameWeekday = [1, 2, 3, 4, 5].filter((seed) => {
+      const b = buildProfiles(seed);
+      const d = buildDigestProfiles(seed);
+      return b.every((p, i) => p.day.localWeekday === d[i].day?.localWeekday);
+    });
+    expect(sameWeekday).toEqual([]);
   });
 });
