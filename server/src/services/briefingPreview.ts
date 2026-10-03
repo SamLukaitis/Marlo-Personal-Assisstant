@@ -9,6 +9,7 @@
 // shows is what a user with that shape of day would actually receive.
 import { isQuietDay, renderBriefing, type BriefingDay, type BriefingVoice } from "./briefing.js";
 import { senderDisplayName } from "./hub.js";
+import { renderDigest, type DigestDay } from "./emailDigest.js";
 
 export interface BriefingProfile {
   id: string;
@@ -166,6 +167,15 @@ interface ProfileShape {
    * random draw from the pool would lose on most seeds.
    */
   alwaysUpcoming?: string;
+  /**
+   * Real-person emails held for the evening recap. Independent of `unread`, which is
+   * unread-since-midnight — a day can end with a full recap queue and an empty inbox badge.
+   * A shape with only 0 here is showing the case where no recap is sent at all, which is correct
+   * behaviour and worth being able to see.
+   */
+  digest: readonly number[];
+  /** When the recap goes out, in their own local time. */
+  digestTimes: readonly string[];
 }
 
 const SHAPES: readonly ProfileShape[] = [
@@ -184,6 +194,8 @@ const SHAPES: readonly ProfileShape[] = [
     markets: true,
     news: true,
     noisyInbox: true,
+    digest: [5, 8],
+    digestTimes: ["21:00", "22:00"],
   },
   {
     id: "retiree",
@@ -196,6 +208,8 @@ const SHAPES: readonly ProfileShape[] = [
     upcoming: [0, 1],
     flagged: [0],
     weatherPlace: "Bristol",
+    digest: [1, 2],
+    digestTimes: ["20:00", "21:00"],
   },
   {
     id: "nomad",
@@ -213,6 +227,8 @@ const SHAPES: readonly ProfileShape[] = [
     flagged: [0],
     alwaysUpcoming: "Flight to Amsterdam KL 1014",
     location: "Currently in Tbilisi, Georgia — arrived 11 days ago, been there 11 days.",
+    digest: [1, 3],
+    digestTimes: ["18:30", "21:00"],
   },
   {
     id: "exec",
@@ -225,6 +241,8 @@ const SHAPES: readonly ProfileShape[] = [
     upcoming: [1, 2],
     flagged: [2, 3],
     markets: true,
+    digest: [6, 9],
+    digestTimes: ["21:00"],
   },
   {
     id: "freelancer",
@@ -237,6 +255,8 @@ const SHAPES: readonly ProfileShape[] = [
     upcoming: [0],
     flagged: [1],
     news: true,
+    digest: [2, 3],
+    digestTimes: ["18:30", "20:00"],
   },
   {
     id: "newuser",
@@ -248,11 +268,15 @@ const SHAPES: readonly ProfileShape[] = [
     todayEvents: [0],
     upcoming: [0],
     flagged: [0],
+    digest: [0],
+    digestTimes: ["21:00"],
   },
   {
     id: "nightshift",
     label: "Night shift, 10pm send",
-    tests: "A late send time with a real day's worth of content — is the greeting still right?",
+    tests:
+      "An off-hours send time (recap at 06:30) plus a persona saying mornings are wrong for them — " +
+      "evening framing is correct here; what must not appear is \"sleep well\" as they start their day.",
     voice: { assistantName: "Marlowe", userName: "Kemi", persona: "I work nights, so 'morning' is wrong for me." },
     times: ["22:00", "22:30"],
     unread: [2, 4],
@@ -260,6 +284,8 @@ const SHAPES: readonly ProfileShape[] = [
     upcoming: [1],
     flagged: [0, 1],
     weatherPlace: "Cape Town",
+    digest: [2, 4],
+    digestTimes: ["06:30"],
   },
   {
     id: "parent",
@@ -273,6 +299,8 @@ const SHAPES: readonly ProfileShape[] = [
     flagged: [0],
     weatherPlace: "Bristol",
     noisyInbox: true,
+    digest: [3, 5],
+    digestTimes: ["20:00", "21:00"],
   },
   {
     id: "trader",
@@ -286,6 +314,8 @@ const SHAPES: readonly ProfileShape[] = [
     flagged: [0],
     markets: true,
     news: true,
+    digest: [1, 2],
+    digestTimes: ["18:30"],
   },
   {
     id: "minimalist",
@@ -297,6 +327,8 @@ const SHAPES: readonly ProfileShape[] = [
     todayEvents: [0],
     upcoming: [0],
     flagged: [0],
+    digest: [0],
+    digestTimes: ["21:00"],
   },
 ];
 
@@ -338,6 +370,63 @@ function dayFor(shape: ProfileShape, r: () => number): BriefingDay {
     })),
     news: shape.news ? sample(r, HEADLINES, 3).map((h) => ({ topic: h.topic, title: h.title })) : [],
   };
+}
+
+// The evening recap's facts for a profile. Senders come from PEOPLE_MAIL only, never
+// AUTOMATED_MAIL: the recap is real-person mail by definition, and automated mail is routed to the
+// instant important-email alerts instead — it can never appear here, so neither can it here.
+//
+// Some senders get a count above 1, which is what exercises the thread-grouping line ("and 2 more
+// on the same thread") the model needs in order to say "Jake's come back a few times".
+function digestDayFor(shape: ProfileShape, r: () => number): DigestDay | null {
+  const people = pick(r, shape.digest);
+  if (people === 0) return null;
+  const senders = sample(r, PEOPLE_MAIL, people).map((m) => ({
+    name: senderDisplayName(m.from),
+    subject: m.subject,
+    // Roughly a third of threads get a reply or two on top, so grouping is usually in play.
+    count: r() < 0.33 ? 2 + Math.floor(r() * 2) : 1,
+  }));
+  return {
+    localTime: pick(r, shape.digestTimes),
+    localWeekday: WEEKDAYS[Math.floor(r() * 7)],
+    total: senders.reduce((sum, g) => sum + g.count, 0),
+    senders,
+  };
+}
+
+export interface DigestProfile {
+  id: string;
+  label: string;
+  tests: string;
+  voice: BriefingVoice;
+  /** null when this profile has nothing held, i.e. no recap is sent — correct, and worth seeing. */
+  day: DigestDay | null;
+}
+
+export interface RenderedDigest extends DigestProfile {
+  /** "" when day is null: nothing is sent. */
+  text: string;
+  wordCount: number;
+}
+
+export function buildDigestProfiles(seed = DEFAULT_SEED): DigestProfile[] {
+  return SHAPES.map((shape, i) => {
+    // A different multiplier from buildProfiles, so a profile's recap isn't drawn from the same
+    // rolls as its morning briefing and the two don't move in lockstep when you scramble.
+    const r = rng(seed * 6271 + i * 92831);
+    return { id: shape.id, label: shape.label, tests: shape.tests, voice: shape.voice, day: digestDayFor(shape, r) };
+  });
+}
+
+export async function renderDigests(ownerId: number, seed: number): Promise<RenderedDigest[]> {
+  return Promise.all(
+    buildDigestProfiles(seed).map(async (p) => {
+      if (!p.day) return { ...p, text: "", wordCount: 0 };
+      const text = (await renderDigest(ownerId, p.voice, p.day, "briefing_lab")).trim();
+      return { ...p, text, wordCount: text.split(/\s+/).filter(Boolean).length };
+    })
+  );
 }
 
 // The default seed. Any other seed is a scramble; the same seed always gives the same ten days.

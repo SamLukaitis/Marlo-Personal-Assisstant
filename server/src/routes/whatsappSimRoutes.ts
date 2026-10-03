@@ -19,7 +19,14 @@ import { clearSimTranscript, getSimTranscript, recordSimMessage } from "../provi
 import { resetTestPhone, TestPhoneResetError } from "../services/testPhoneReset.js";
 import { composeDailyBriefingMessage } from "../services/scheduler.js";
 import { sendProactiveMessage } from "../services/outbound.js";
-import { DEFAULT_SEED, buildProfiles, newSeed, renderProfiles } from "../services/briefingPreview.js";
+import {
+  DEFAULT_SEED,
+  buildDigestProfiles,
+  buildProfiles,
+  newSeed,
+  renderDigests,
+  renderProfiles,
+} from "../services/briefingPreview.js";
 import { handleIncoming } from "./whatsappRoutes.js";
 import type { AuthedRequest } from "../middleware/auth.js";
 
@@ -182,9 +189,17 @@ whatsappSimRoutes.get("/whatsapp-sim/transcript", (req, res) => {
 
 // The profile definitions for a seed, with no model calls — lets the page paint the ten cards and
 // their fact sets instantly, then fill in the briefings from the render call below.
+// `kind` picks which of the two proactive messages to preview: the morning briefing or the evening
+// recap of who emailed. Both are written by the model from the shared voice (proactiveVoice.ts), so
+// they're judged side by side here rather than in two separate tools.
+function wantsDigest(raw: unknown): boolean {
+  return raw === "digest";
+}
+
 whatsappSimRoutes.get("/briefing-lab/profiles", (req, res) => {
   const seed = Number(req.query.seed) || DEFAULT_SEED;
-  res.json({ seed, profiles: buildProfiles(seed) });
+  const digest = wantsDigest(req.query.kind);
+  res.json({ seed, kind: digest ? "digest" : "briefing", profiles: digest ? buildDigestProfiles(seed) : buildProfiles(seed) });
 });
 
 // Renders all ten. `seed` omitted means the stable default; "scramble" in the UI is just a new
@@ -192,8 +207,10 @@ whatsappSimRoutes.get("/briefing-lab/profiles", (req, res) => {
 whatsappSimRoutes.post("/briefing-lab/render", async (req, res) => {
   const ownerId = (req as unknown as AuthedRequest).userId;
   const seed = req.body?.scramble ? newSeed() : Number(req.body?.seed) || DEFAULT_SEED;
+  const digest = wantsDigest(req.body?.kind);
   try {
-    res.json({ seed, profiles: await renderProfiles(ownerId, seed) });
+    const profiles = digest ? await renderDigests(ownerId, seed) : await renderProfiles(ownerId, seed);
+    res.json({ seed, kind: digest ? "digest" : "briefing", profiles });
   } catch (err) {
     console.error("briefing-lab: render failed", err);
     res.status(500).json({ error: (err as Error).message });

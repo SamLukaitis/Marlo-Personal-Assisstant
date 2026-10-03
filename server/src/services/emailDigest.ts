@@ -1,4 +1,23 @@
-import { getSetting, setSetting, listPhoneNumbersForUser, createPendingAction } from "../db/store.js";
+import type Anthropic from "@anthropic-ai/sdk";
+import {
+  getSetting,
+  setSetting,
+  listPhoneNumbersForUser,
+  createPendingAction,
+  recordApiUsage,
+} from "../db/store.js";
+import { getClient } from "../ai/assistant.js";
+import {
+  timeOfDayBand,
+  voiceOpening,
+  voiceTimeOfDay,
+  VOICE_FACTS_ONLY,
+  VOICE_FORM,
+  VOICE_PEOPLE_NOT_SUBJECTS,
+  VOICE_SINGLE_LINE,
+  type ProactiveVoice,
+} from "./proactiveVoice.js";
+import { DateTime } from "luxon";
 import { isWhatsAppConfigured } from "../providers/whatsapp.js";
 import { senderDisplayName } from "./hub.js";
 import { sendToAllNumbers } from "./proactiveDelivery.js";
@@ -80,7 +99,10 @@ function groupBySenderAndSubject(queue: DigestEmail[]): { name: string; subject:
   return groups;
 }
 
-function digestMessage(ownerId: number, queue: DigestEmail[]): string {
+// The old hardcoded digest, kept as the fallback for when the model call fails. A recap that
+// reads like a machine still beats no recap at all — the queue has already been held all day and
+// is cleared on a successful send, so silently skipping would lose it.
+export function staticDigestMessage(ownerId: number, queue: DigestEmail[]): string {
   const userName = getSetting(ownerId, "user_name");
   const greeting = userName ? `${userName}, ` : "";
   const shown = groupBySenderAndSubject(queue).slice(0, MAX_NAMED);
@@ -95,6 +117,125 @@ function digestMessage(ownerId: number, queue: DigestEmail[]): string {
     `${bullets.join("\n")}\n` +
     `Ask me about any of them.`
   );
+}
+
+// The model that writes the recap — same tier as the briefing, since this is the same job (turn a
+// day's facts into one human paragraph) and the voice has to match.
+const MODEL = process.env.ASSISTANT_MODEL_COMPLEX ?? "claude-sonnet-5";
+
+// One sender's mail for the day, already grouped: a chain of replies on one thread is one entry
+// with a count, not five. Subjects are given to the model so it can tell what someone wants — it is
+// told never to quote them back (see VOICE_PEOPLE_NOT_SUBJECTS).
+export interface DigestSender {
+  name: string;
+  subject: string;
+  count: number;
+}
+
+export interface DigestDay {
+  /** "21:00" in the user's own zone — what the greeting and sign-off are pitched to. */
+  localTime: string;
+  /** "Friday" in the user's own zone. */
+  localWeekday: string;
+  /** Total emails held for today, which can exceed `senders` once threads are grouped. */
+  total: number;
+  senders: DigestSender[];
+}
+
+export function digestSystemPrompt(voice: ProactiveVoice): string {
+  // Composed from proactiveVoice.ts, same as briefing.ts, so the morning and evening messages read
+  // as the same assistant. Only what's specific to an end-of-day note about mail lives here.
+  return [
+    // Deliberately not "end-of-day": the recap goes out whenever the user set it, and framing it as
+    // an evening note made the model write "Evening —" and "sleep well" to a night-shift worker
+    // whose recap lands at 06:30.
+    voiceOpening(voice, "sending them a short note about who got in touch today"),
+
+    `Write one short paragraph, the way you'd text someone you work for. Aim for about 30 words and never go past 50. ${VOICE_FORM}`,
+
+    VOICE_PEOPLE_NOT_SUBJECTS,
+
+    // Three rather than the briefing's two: this message is only about mail, so naming two of six
+    // people loses more than it saves. Still a cap, because listing everyone is the old behaviour.
+    `Name at most three people. If more got in touch, say so in a few words and stop — "a couple of others", "rest can wait", "nothing else that needs you tonight". Do not work through the list.`,
+
+    VOICE_FACTS_ONLY,
+
+    `This is only about who emailed. You have no calendar, no weather and no news here, so don't reach for any — and don't imply you know what else their day held.`,
+
+    `Don't ask them a question and don't offer to do anything. Something else may be appended after your message, so end on a complete thought rather than a lead-in.`,
+
+    voiceTimeOfDay(),
+
+    `The facts name which part of the day this is arriving in. Treat that as the truth and don't assume it's the evening — people set this for whenever suits them, and for someone working nights it lands at breakfast. Every time word you use has to match it: no "tonight" in the morning, no "sleep well" at breakfast. If it doesn't obviously suit a greeting or sign-off, leave both off and just tell them what came in. Never guess at whether their day is starting or ending.`,
+
+    VOICE_SINGLE_LINE,
+  ].join("\n\n");
+}
+
+export function digestFactBlock(day: DigestDay): string {
+  const people = day.senders.length;
+  return [
+    `Right now it is ${day.localTime} on ${day.localWeekday} for them — ${timeOfDayBand(day.localTime)}.`,
+    `${day.total} email${day.total === 1 ? "" : "s"} from ${people} ${people === 1 ? "person" : "people"} today, newest last:`,
+    day.senders
+      .map((g) => `- ${g.name}: "${g.subject}"${g.count > 1 ? ` (and ${g.count - 1} more on the same thread)` : ""}`)
+      .join("\n"),
+  ].join("\n\n");
+}
+
+// Turns the held queue into what actually gets sent. Falls back to the old hardcoded list if the
+// model call fails for any reason: the queue is cleared on a successful send, so skipping would
+// lose a day of mail the user was told they'd hear about.
+async function digestText(ownerId: number, queue: DigestEmail[]): Promise<string> {
+  const day: DigestDay = {
+    localTime: userLocalClock(ownerId).hhmm,
+    localWeekday: DateTime.fromISO(userLocalClock(ownerId).dateKey).toFormat("cccc"),
+    total: queue.length,
+    senders: groupBySenderAndSubject(queue).slice(0, MAX_NAMED_TO_MODEL),
+  };
+  const voice: ProactiveVoice = {
+    assistantName: getSetting(ownerId, "assistant_name") ?? "Marlowe",
+    userName: (getSetting(ownerId, "user_name") ?? "").trim().split(/\s+/)[0] ?? "",
+    persona: getSetting(ownerId, "persona") ?? "",
+  };
+  try {
+    return await renderDigest(ownerId, voice, day, "email_digest");
+  } catch (err) {
+    console.error(`emailDigest: falling back to the plain digest for user ${ownerId}`, err);
+    return staticDigestMessage(ownerId, queue);
+  }
+}
+
+// More than the model is allowed to name, so it can judge what matters rather than being handed a
+// pre-made shortlist — but bounded, since a 200-deep queue would be mostly noise in the prompt.
+const MAX_NAMED_TO_MODEL = 12;
+
+export async function renderDigest(
+  ownerId: number,
+  voice: ProactiveVoice,
+  day: DigestDay,
+  purpose: string
+): Promise<string> {
+  const response = await getClient().messages.create({
+    model: MODEL,
+    max_tokens: 512,
+    system: digestSystemPrompt(voice),
+    messages: [{ role: "user", content: digestFactBlock(day) }],
+  });
+  recordApiUsage(
+    ownerId,
+    "background",
+    MODEL,
+    purpose,
+    response.usage?.input_tokens ?? 0,
+    response.usage?.output_tokens ?? 0,
+    response.usage?.cache_read_input_tokens ?? 0,
+    response.usage?.cache_creation_input_tokens ?? 0
+  );
+  const text = response.content.find((b): b is Anthropic.TextBlock => b.type === "text");
+  if (!text?.text.trim()) throw new Error("the model returned no text for the digest");
+  return text.text.trim();
 }
 
 // Shown once, on a user's first digest, when they never picked this mode themselves — it became the
@@ -160,7 +301,7 @@ export async function flushEmailDigestIfDue(ownerId: number): Promise<void> {
     ...queue.slice(0, MAX_NAMED).map((m) => emailReferenceNote(m)),
     ...(askToKeep ? [INTRO_HISTORY_NOTE] : []),
   ].join("\n");
-  const digest = digestMessage(ownerId, queue);
+  const digest = await digestText(ownerId, queue);
   const digestTime = emailDigestTime(ownerId);
   let send: ((phone: string) => Promise<void>) | undefined;
   if (askToKeep) {

@@ -731,14 +731,43 @@ export interface BriefingLabRendered extends BriefingLabProfile {
   quiet: boolean;
 }
 
-export const fetchBriefingLabProfiles = (seed?: number) =>
-  getJson<{ seed: number; profiles: BriefingLabProfile[] }>(
-    `/api/dev/briefing-lab/profiles${seed ? `?seed=${seed}` : ""}`
+// The evening recap of who emailed. `day` is null when nothing was held, i.e. no recap is sent —
+// correct behaviour, and shown as such rather than hidden.
+export interface DigestLabDay {
+  localTime: string;
+  localWeekday: string;
+  total: number;
+  senders: { name: string; subject: string; count: number }[];
+}
+
+export interface DigestLabProfile {
+  id: string;
+  label: string;
+  tests: string;
+  voice: { assistantName: string; userName: string; persona: string };
+  day: DigestLabDay | null;
+}
+
+export interface DigestLabRendered extends DigestLabProfile {
+  text: string;
+  wordCount: number;
+}
+
+/** Which of the two proactive messages the lab is previewing. */
+export type LabKind = "briefing" | "digest";
+
+export const fetchBriefingLabProfiles = (kind: LabKind, seed?: number) =>
+  getJson<{ seed: number; kind: LabKind; profiles: BriefingLabProfile[] | DigestLabProfile[] }>(
+    `/api/dev/briefing-lab/profiles?kind=${kind}${seed ? `&seed=${seed}` : ""}`
   );
 
 // `scramble` asks the server for a fresh random seed; otherwise `seed` re-renders that exact set.
-export const renderBriefingLab = (opts: { seed?: number; scramble?: boolean }) =>
-  mutateJson<{ seed: number; profiles: BriefingLabRendered[] }>("/api/dev/briefing-lab/render", "POST", opts);
+export const renderBriefingLab = (opts: { kind: LabKind; seed?: number; scramble?: boolean }) =>
+  mutateJson<{ seed: number; kind: LabKind; profiles: BriefingLabRendered[] | DigestLabRendered[] }>(
+    "/api/dev/briefing-lab/render",
+    "POST",
+    opts
+  );
 
 export const fetchWhatsAppSimTestUsers = () => getJson<WhatsAppSimTestUser[]>("/api/dev/whatsapp-sim/test-users");
 
