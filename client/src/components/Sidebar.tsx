@@ -12,6 +12,7 @@ import {
   IconSettings,
   IconLogOut,
   IconPortal,
+  IconFeatures,
 } from "./icons";
 
 interface NavItem {
@@ -35,6 +36,7 @@ const NAV_ITEMS: NavItem[] = [
   { to: "/calendar", label: "Calendar", Icon: IconCalendar },
   { to: "/files", label: "Files", Icon: IconFolder },
   { to: "/travel", label: "Travel", Icon: IconTravel, requiresTool: "travel" },
+  { to: "/features", label: "Features", Icon: IconFeatures },
   { to: "/settings", label: "Settings", Icon: IconSettings },
   { to: "/portal", label: "Portal", Icon: IconPortal, requiresAdmin: true },
   {

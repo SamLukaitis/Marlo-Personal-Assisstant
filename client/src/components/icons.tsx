@@ -111,3 +111,9 @@ export const IconPortal = () => (
     <path d="M9 12l2 2 4-4" />
   </svg>
 );
+
+export const IconFeatures = () => (
+  <svg {...base}>
+    <path d="M2 4h6a4 4 0 0 1 4 4v13a3 3 0 0 0-3-3H2zM22 4h-6a4 4 0 0 0-4 4v13a3 3 0 0 1 3-3h7z" />
+  </svg>
+);
