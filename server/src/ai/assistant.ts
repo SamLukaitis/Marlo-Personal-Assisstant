@@ -1888,12 +1888,19 @@ export interface AssistantReply {
 // intercepts ask_user_choice before it would otherwise reach runTool's generic dispatch (runTool
 // has no case for it and returns "unknown tool" if ever called directly — see its test).
 function buildChoiceReply(ownerId: number, input: Record<string, unknown>): AssistantReply {
-  const question = input.question as string;
   const mode = input.mode as "confirm" | "resume";
+  let question = input.question as string;
 
   if (mode === "confirm") {
     const tool = input.confirm_tool as string;
     const confirmInput = (input.confirm_input as Record<string, unknown>) ?? {};
+    // The question is the model's own wording, so it can't be trusted to name the real recipient
+    // (a prompt-injected email could have it say "send to Sarah?" over an attacker's address).
+    // This line is written from the exact input the Send tap will run, and goes last so it sits
+    // directly above the buttons even when a long draft is split across messages.
+    if (tool === "send_email") {
+      question = `${question}\n\n📧 Sending to: ${String(confirmInput.to ?? "(no address)")}`;
+    }
     const declineTool = input.decline_tool as string | undefined;
     const declineInput = (input.decline_input as Record<string, unknown>) ?? {};
     const editable = input.editable === true;

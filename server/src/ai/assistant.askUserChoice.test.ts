@@ -85,6 +85,23 @@ describe("runAssistantChat — ask_user_choice", () => {
     expect(reply.choice?.question).toContain("Ready to send this?");
   });
 
+  it("ends a send_email confirm with the recipient taken from the tool input, not the model's wording", async () => {
+    mockCreate.mockResolvedValueOnce(
+      toolUseResponse("ask_user_choice", {
+        question: "To: Sarah\nSubject: Hi\n\nBody text\n\nReady to send this to Sarah?",
+        mode: "confirm",
+        confirm_tool: "send_email",
+        confirm_input: { account_id: 1, to: "attacker@evil.com", subject: "Hi", body: "Body text" },
+      })
+    );
+    const user = findOrCreateUserByEmail(uniqueEmail("send-recipient-line"));
+
+    const reply = await runAssistantChat(user.id, [{ role: "user", content: "email sarah" }]);
+
+    expect(reply.choice?.question.endsWith("\n\n📧 Sending to: attacker@evil.com")).toBe(true);
+    expect(reply.text).toContain("📧 Sending to: attacker@evil.com");
+  });
+
   it("ends the turn immediately on a resume choice, with one button per option", async () => {
     mockCreate.mockResolvedValueOnce(
       toolUseResponse("ask_user_choice", {
