@@ -5,6 +5,8 @@ import {
   selectUnreadSinceMidnight,
   describeLocationStreak,
   describeEventTime,
+  attentionFactLines,
+  briefingSystemPrompt,
   type BriefingSettings,
 } from "./briefing.js";
 import { findOrCreateUserByEmail } from "../db/store.js";
@@ -141,5 +143,35 @@ describe("describeEventTime", () => {
     expect(describeEventTime({ ...base, start: "2026-09-15T09:00:00.000Z", end: "2026-09-15T10:00:00.000Z" })).toBe(
       "Offsite at 2026-09-15T09:00:00.000Z"
     );
+  });
+});
+
+describe("attentionFactLines", () => {
+  const empty = { noted: [], needsAttention: [], upcoming: [], ackIds: [], foldIds: [] };
+  it("adds nothing when there's nothing to say", () => {
+    expect(attentionFactLines(undefined)).toEqual([]);
+    expect(attentionFactLines(empty)).toEqual([]);
+  });
+  it("labels each kind of item so the model keeps them apart", () => {
+    const lines = attentionFactLines({
+      ...empty,
+      noted: ["Noted: your *Netflix* renewal — I'll remind you Wed 30 Sep."],
+      needsAttention: ["Your *Amazon* refund of *£24* was approved."],
+      upcoming: ["🏨 Reminder: Your *Hilton* stay. Check-in is today."],
+    });
+    expect(lines[0]).toMatch(/^Coming up in the next couple of hours/);
+    expect(lines[0]).toContain("*Hilton*");
+    expect(lines.join("\n")).toContain("Noted since the last briefing");
+    expect(lines.join("\n")).toContain("Worth knowing");
+  });
+});
+
+describe("briefingSystemPrompt", () => {
+  it("omits empty sections instead of forcing a 'none' line, and drops the unread count", () => {
+    const prompt = briefingSystemPrompt("Marlowe", "");
+    expect(prompt).not.toMatch(/always get a line/);
+    expect(prompt).not.toMatch(/the count plus/);
+    expect(prompt).toMatch(/omit any section with nothing worth saying/i);
+    expect(prompt).toMatch(/Noted since the last briefing/);
   });
 });

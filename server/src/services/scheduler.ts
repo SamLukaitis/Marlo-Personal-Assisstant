@@ -22,6 +22,7 @@ import { flushEmailDigestIfDue } from "./emailDigest.js";
 import { flushOnboardingAlertSummaryIfDue } from "./onboardingAlertSuppression.js";
 import { syncBookingReminders } from "./tripPrep.js";
 import { userLocalClock } from "./userTimezone.js";
+import { collectAttentionForBriefing, commitAttentionBundle } from "./attention.js";
 
 const CHECK_INTERVAL_MS = 5 * 60 * 1000;
 const SCHENGEN_WARN_AT = 80;
@@ -70,7 +71,11 @@ export async function runDailyCheckForUser(ownerId: number): Promise<void> {
   }
 
   try {
-    const briefing = await getTodaysBriefing(ownerId);
+    // What the attention gate is holding for this morning (acknowledgements, non-urgent items, and
+    // reminders due in the next couple of hours), folded in so they don't each ping separately.
+    const now = Date.now();
+    const attention = collectAttentionForBriefing(ownerId, now);
+    const briefing = await getTodaysBriefing(ownerId, attention);
     // Both channels (UI and WhatsApp) must reflect the same enabled/disabled state — a user
     // with travel off gets no Schengen line, same as their Setup page shows no travel section.
     const alert = getEnabledTools(ownerId).has("travel") ? schengenAlertLine(ownerId) : null;
@@ -80,6 +85,7 @@ export async function runDailyCheckForUser(ownerId: number): Promise<void> {
     const itemKey = `daily-briefing:${dateKey}`;
     if (await sendToAllNumbers(ownerId, itemKey, numbers, message, "digest", "scheduler")) {
       setSetting(ownerId, "last_proactive_send_date", dateKey);
+      commitAttentionBundle(ownerId, attention, now);
     }
   } catch (err) {
     console.error(`scheduler: failed to send proactive briefing for user ${ownerId}`, err);

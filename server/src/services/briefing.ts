@@ -16,6 +16,8 @@ import { DateTime } from "luxon";
 import { getUserTimezone, userLocalClock } from "./userTimezone.js";
 import { eventLocalDateKey } from "./eventTime.js";
 import type { CalendarEvent, UnifiedMessage } from "../providers/types.js";
+// Type-only: attention.ts imports this module at runtime, so a value import here would be a cycle.
+import type { AttentionBundle } from "./attention.js";
 
 // Briefing synthesis is a once-a-day, moderately complex writeup — the richer assistant tier
 // is the right fit, same as assistant.ts's routing, rather than the flat Opus default this
@@ -153,7 +155,48 @@ export function describeEventTime(e: CalendarEvent): string {
   return e.allDay ? `${e.title} (all day)` : `${e.title} at ${e.start}`;
 }
 
-async function buildBriefingText(ownerId: number): Promise<string> {
+// What the attention gate (attention.ts) has for this morning: reminders due in the next couple of
+// hours, non-urgent things worth knowing, and what Marlowe noted since yesterday with when it will
+// bring each up. Labelled so the model keeps the three apart and repeats their wording.
+export function attentionFactLines(bundle: AttentionBundle | undefined): string[] {
+  if (!bundle) return [];
+  const lines: string[] = [];
+  if (bundle.upcoming.length) {
+    lines.push(
+      `Coming up in the next couple of hours — lead the briefing with these, keeping the *bold* specifics: ${bundle.upcoming.join(" | ")}`
+    );
+  }
+  if (bundle.needsAttention.length) {
+    lines.push(`Worth knowing (one short line each, keep the *bold* specifics): ${bundle.needsAttention.join(" | ")}`);
+  }
+  if (bundle.noted.length) {
+    lines.push(
+      `Noted since the last briefing (one short line each, keep the *bold* specifics and the "I'll remind you" part word for word): ${bundle.noted.join(" | ")}`
+    );
+  }
+  return lines;
+}
+
+export function briefingSystemPrompt(assistantName: string, persona: string): string {
+  return `You are ${assistantName}, the user's personal assistant, writing their morning briefing.${
+    persona ? ` The user described their preferences: ${persona}` : ""
+  } Write it like a sharp PA: only what matters today, terse and scannable, using ONLY the facts given below — never supplement them with your own general knowledge, training data, or plausible-sounding guesses. This is a hard rule: fabricating a headline, email, event or date is a serious error.
+
+Structure, in this order. Omit any section with nothing worth saying — no "nothing scheduled", no "no new emails":
+- Coming up: ONLY if a "Coming up in the next couple of hours" fact is present. These lead.
+- Location: ONLY if a "Currently in ..." fact is present. One short clause (don't say "just arrived" or "welcome to" unless the fact says arrived today).
+- Weather: ONLY if a "Weather in ..." fact is present. One short clause.
+- Calendar: today's events from "Today's calendar events". Add a note from "Calendar events in the next 3 days" only if it needs prep now (a flight, checking out of where they're staying).
+- People: ONLY an email from "Unread emails today" or "Emails that look like they need a reply" that genuinely looks like it needs the user — name at most 2, and say what they want if the subject makes it clear. Never state a count of unread emails.
+- Worth knowing: ONLY if a "Worth knowing" fact is present.
+- Noted since the last briefing: ONLY if that fact is present — keep each item's "I'll remind you" wording.
+- Markets: ONLY if a "Markets:" fact is present. One short line, mentioning direction.
+- News: ONLY if a "Top news headlines" fact is present. One line per headline, max 3.
+
+Keep WhatsApp *bold* markers from the facts. No headers, no preamble, no sign-off. Keep the whole thing under 120 words. If nothing at all is worth saying, reply with one short line saying the day looks clear.`;
+}
+
+async function buildBriefingText(ownerId: number, attention?: AttentionBundle): Promise<string> {
   const settings = getBriefingSettings(ownerId);
   const assistantName = getSetting(ownerId, "assistant_name") ?? "Marlowe";
   const persona = getSetting(ownerId, "persona") ?? "";
@@ -178,6 +221,7 @@ async function buildBriefingText(ownerId: number): Promise<string> {
   const { headlines: news, quotes, weather } = await getBriefingFeed(ownerId);
 
   const facts = [
+    ...attentionFactLines(attention),
     location,
     weather
       ? `Weather in ${weather.place}: ${weather.condition}, currently ${weather.tempC}°C, high ${weather.highC}°C, low ${weather.lowC}°C`
@@ -190,7 +234,7 @@ async function buildBriefingText(ownerId: number): Promise<string> {
           )
           .join("; ")}`
       : "",
-    `Unread emails today (${unread.length}): ${
+    `Unread emails today: ${
       unread
         .slice(0, 15)
         .map((m) => `"${m.subject}" from ${m.from}`)
@@ -216,22 +260,7 @@ async function buildBriefingText(ownerId: number): Promise<string> {
   const response = await anthropic.messages.create({
     model: MODEL,
     max_tokens: 1024,
-    system: `You are ${assistantName}, the user's personal assistant, writing their morning briefing.${
-      persona ? ` The user described their preferences: ${persona}` : ""
-    } Write a terse, scannable briefing using ONLY the facts given below — never supplement them with your own general knowledge, training data, or plausible-sounding guesses, even for things like current events or news. This is a hard rule: fabricating a headline, email, or event is a serious error.
-
-Structure, in this order:
-- Location: ONLY if a "Currently in ..." fact line is present below. One short clause, e.g. mention in passing if it's relevant to the day (don't say "just arrived" or "welcome to" unless the fact itself says arrived today).
-- Weather: ONLY if a "Weather in ..." fact line is present below. One short clause.
-- Inbox: one line based on the "Unread emails today" fact — the count plus at most 2-3 senders/subjects worth calling out, not a full list.
-- Calendar: based on the "Today's calendar events" fact. Only add a note from "Calendar events in the next 3 days" if it's something the user should prep for now (a flight, checking out of where they're staying) — otherwise leave it out entirely.
-- Needs attention: one line based on the "Emails that look like they need a reply" fact.
-- Markets: ONLY if a "Markets:" fact line is present below. One short line, mentioning direction.
-- News: ONLY include this section if a "Top news headlines" fact line is present below. One line per headline, max 3.
-
-Weather, Markets, News, and the upcoming-events note are opt-in: if there's nothing to say, omit them entirely — not even a line saying there's none. Never invent a headline, a price, or a forecast.
-
-For Inbox/Calendar/Needs attention, if the fact says "none" or "nothing scheduled", say so in one short clause rather than skipping it — those three always get a line. No headers, no preamble, no sign-off — just the lines themselves. Keep the whole thing under 100 words.`,
+    system: briefingSystemPrompt(assistantName, persona),
     messages: [{ role: "user", content: facts }],
   });
   recordApiUsage(
@@ -249,11 +278,16 @@ For Inbox/Calendar/Needs attention, if the fact says "none" or "nothing schedule
   return text?.text ?? "Nothing to report today.";
 }
 
-export async function getTodaysBriefing(ownerId: number): Promise<{ date: string; content: string }> {
+// A briefing cached earlier today (e.g. the Assistant page opened it) doesn't know about attention
+// items that arrived since, so the proactive send regenerates it whenever it has some to include.
+export async function getTodaysBriefing(
+  ownerId: number,
+  attention?: AttentionBundle
+): Promise<{ date: string; content: string }> {
   const date = userLocalClock(ownerId).dateKey;
   const existing = getBriefing(ownerId, date);
-  if (existing) return existing;
-  const content = await buildBriefingText(ownerId);
+  if (existing && attentionFactLines(attention).length === 0) return existing;
+  const content = await buildBriefingText(ownerId, attention);
   return saveBriefing(ownerId, date, content);
 }
 

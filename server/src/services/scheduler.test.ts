@@ -56,6 +56,12 @@ vi.mock("./emailDigest.js", () => ({
   flushEmailDigestIfDue: vi.fn(() => Promise.resolve()),
 }));
 
+vi.mock("./attention.js", () => ({
+  collectAttentionForBriefing: vi.fn(() => ({ noted: [], needsAttention: [], upcoming: [], ackIds: [], foldIds: [] })),
+  commitAttentionBundle: vi.fn(),
+  deliverDueAttentionItems: vi.fn(() => Promise.resolve()),
+}));
+
 vi.mock("./onboardingAlertSuppression.js", () => ({
   flushOnboardingAlertSummaryIfDue: vi.fn(() => Promise.resolve()),
 }));
