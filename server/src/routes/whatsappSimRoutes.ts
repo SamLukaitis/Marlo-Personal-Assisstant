@@ -17,6 +17,16 @@ import {
 } from "../providers/whatsapp.js";
 import { clearSimTranscript, getSimTranscript, recordSimMessage } from "../providers/whatsappSimTranscript.js";
 import { resetTestPhone, TestPhoneResetError } from "../services/testPhoneReset.js";
+import { composeDailyBriefingMessage } from "../services/scheduler.js";
+import { sendProactiveMessage } from "../services/outbound.js";
+import {
+  DEFAULT_SEED,
+  buildDigestProfiles,
+  buildProfiles,
+  newSeed,
+  renderDigests,
+  renderProfiles,
+} from "../services/briefingPreview.js";
 import { handleIncoming } from "./whatsappRoutes.js";
 import type { AuthedRequest } from "../middleware/auth.js";
 
@@ -61,7 +71,8 @@ function refuse(res: Response, r: Extract<ResolvedPhone, { ok: false }>): void {
 // providers/whatsapp.ts write to for every simulated number.
 //
 // Body: { text } to type a message, or { buttonId, label } to tap a reply button / list row the
-// transcript offered. Optional { phone } picks a test user; omitted means the caller's own number.
+// transcript offered, or { latitude, longitude } to share a location pin (the answer to a "Send
+// location" request). Optional { phone } picks a test user; omitted means the caller's own number.
 whatsappSimRoutes.post("/whatsapp-sim/send", (req, res) => {
   const ownerId = (req as unknown as AuthedRequest).userId;
   const target = resolveSimPhone(req, req.body?.phone);
@@ -73,7 +84,22 @@ whatsappSimRoutes.post("/whatsapp-sim/send", (req, res) => {
 
   const text = typeof req.body?.text === "string" ? req.body.text.trim() : "";
   const buttonId = typeof req.body?.buttonId === "string" ? req.body.buttonId.trim() : "";
-  if (!text && !buttonId) {
+  const latitude = req.body?.latitude;
+  const longitude = req.body?.longitude;
+  const isLocation = latitude !== undefined || longitude !== undefined;
+  if (
+    isLocation &&
+    !(
+      typeof latitude === "number" &&
+      typeof longitude === "number" &&
+      Math.abs(latitude) <= 90 &&
+      Math.abs(longitude) <= 180
+    )
+  ) {
+    res.status(400).json({ error: "latitude and longitude must both be valid numbers" });
+    return;
+  }
+  if (!text && !buttonId && !isLocation) {
     res.status(400).json({ error: "text is required" });
     return;
   }
@@ -84,7 +110,10 @@ whatsappSimRoutes.post("/whatsapp-sim/send", (req, res) => {
 
   const messageId = `sim-${crypto.randomUUID()}`;
   let message: IncomingWhatsAppMessage;
-  if (buttonId) {
+  if (isLocation) {
+    recordSimMessage(phone, { role: "user", text: `[shared location ${latitude}, ${longitude}]` });
+    message = { kind: "location", from: phone, messageId, latitude, longitude };
+  } else if (buttonId) {
     const label = typeof req.body?.label === "string" && req.body.label.trim() ? req.body.label.trim() : buttonId;
     recordSimMessage(phone, { role: "user", text: `[tapped ${label}]` });
     message = { kind: "interactive", from: phone, messageId, buttonId };
@@ -98,6 +127,48 @@ whatsappSimRoutes.post("/whatsapp-sim/send", (req, res) => {
   res.status(202).json({ phone });
 });
 
+// Sends the daily briefing to the simulated number on demand, composed exactly as the scheduled
+// 07:30 send composes it (scheduler.ts's composeDailyBriefingMessage — Schengen line and all) and
+// delivered down the same proactive path (outbound.ts's "digest" kind), so what lands in the
+// transcript is what a real user would receive. Rebuilt from scratch on every press rather than
+// reusing today's stored briefing: this is for iterating on the briefing's content and style, so
+// each press must be a fresh snapshot of right now.
+//
+// Deliberately skips the scheduler's own gates — the `proactive` setting, the once-a-day stamp,
+// and proactiveDelivery.ts's per-number dedup — because those govern *when* the briefing fires,
+// which isn't what this button is for. It also only ever sends to the one simulated number, never
+// to the account's real ones.
+//
+// Awaited rather than fire-and-forget like /send: the build is a single LLM call, and a failure in
+// it (a missing API key, a dead provider) is exactly what the caller needs to see.
+whatsappSimRoutes.post("/whatsapp-sim/briefing", async (req, res) => {
+  const callerId = (req as unknown as AuthedRequest).userId;
+  const target = resolveSimPhone(req, req.body?.phone);
+  if (!target.ok) {
+    refuse(res, target);
+    return;
+  }
+  const { phone } = target;
+
+  // Same idempotent binding as /send — the caller's own sim number may not be bound yet, and the
+  // proactive path resolves the number back to an account to record the send in chat history.
+  if (target.self) addPhoneNumberForUser(callerId, phone);
+  // A test user has no briefing to build until its first message has run the signup flow.
+  const ownerId = target.self ? callerId : resolveOwnerByPhone(phone);
+  if (ownerId === null) {
+    res.status(409).json({ error: "this test user hasn't signed up yet — send it a message first" });
+    return;
+  }
+
+  try {
+    await sendProactiveMessage(phone, await composeDailyBriefingMessage(ownerId, true), "digest");
+    res.json({ ok: true });
+  } catch (err) {
+    console.error("whatsapp-sim: briefing send failed", err);
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
 whatsappSimRoutes.get("/whatsapp-sim/transcript", (req, res) => {
   const target = resolveSimPhone(req, req.query.phone);
   if (!target.ok) {
@@ -109,6 +180,43 @@ whatsappSimRoutes.get("/whatsapp-sim/transcript", (req, res) => {
 
 // Test users are shared between admins (the invite list is global), which is fine for a two-person
 // staging tool and means either of you can pick up a conversation the other started.
+// --- Briefing Lab ------------------------------------------------------------------------------
+// Ten synthetic users rendered through the real briefing prompt (services/briefingPreview.ts), so
+// the voice can be judged across setups without owning ten accounts or waiting for ten mornings.
+// Nothing is written, no provider is called, and no real mail is read — the profiles are invented
+// fact sets. Lives on this router because it shares the simulator's gates: admin-only, and only
+// mounted when ENABLE_WHATSAPP_SIMULATOR is set, i.e. staging.
+
+// The profile definitions for a seed, with no model calls — lets the page paint the ten cards and
+// their fact sets instantly, then fill in the briefings from the render call below.
+// `kind` picks which of the two proactive messages to preview: the morning briefing or the evening
+// recap of who emailed. Both are written by the model from the shared voice (proactiveVoice.ts), so
+// they're judged side by side here rather than in two separate tools.
+function wantsDigest(raw: unknown): boolean {
+  return raw === "digest";
+}
+
+whatsappSimRoutes.get("/briefing-lab/profiles", (req, res) => {
+  const seed = Number(req.query.seed) || DEFAULT_SEED;
+  const digest = wantsDigest(req.query.kind);
+  res.json({ seed, kind: digest ? "digest" : "briefing", profiles: digest ? buildDigestProfiles(seed) : buildProfiles(seed) });
+});
+
+// Renders all ten. `seed` omitted means the stable default; "scramble" in the UI is just a new
+// random seed, which the response echoes so a run can be reproduced from it later.
+whatsappSimRoutes.post("/briefing-lab/render", async (req, res) => {
+  const ownerId = (req as unknown as AuthedRequest).userId;
+  const seed = req.body?.scramble ? newSeed() : Number(req.body?.seed) || DEFAULT_SEED;
+  const digest = wantsDigest(req.body?.kind);
+  try {
+    const profiles = digest ? await renderDigests(ownerId, seed) : await renderProfiles(ownerId, seed);
+    res.json({ seed, kind: digest ? "digest" : "briefing", profiles });
+  } catch (err) {
+    console.error("briefing-lab: render failed", err);
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
 whatsappSimRoutes.get("/whatsapp-sim/test-users", (_req, res) => {
   res.json(
     listInvitedPhones()

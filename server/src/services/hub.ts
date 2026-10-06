@@ -414,6 +414,13 @@ export async function hubSendMessage(
     : ms.microsoftSendMessage(account, to, subject, body, attachment);
 }
 
+export async function hubHasSentTo(ownerId: number, accountId: number, address: string): Promise<boolean> {
+  const account = requireAccount(ownerId, accountId);
+  return account.provider === "google"
+    ? g.googleHasSentTo(account, address)
+    : ms.microsoftHasSentTo(account, address);
+}
+
 export async function hubCreateEvent(
   ownerId: number,
   accountId: number,

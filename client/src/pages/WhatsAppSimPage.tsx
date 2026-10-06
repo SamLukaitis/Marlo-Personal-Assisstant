@@ -4,6 +4,7 @@ import {
   deleteWhatsAppSimTestUser,
   fetchWhatsAppSimTestUsers,
   fetchWhatsAppSimTranscript,
+  sendWhatsAppSimBriefing,
   sendWhatsAppSimMessage,
   type WhatsAppSimEntry,
   type WhatsAppSimInput,
@@ -29,6 +30,9 @@ export function WhatsAppSimPage() {
   const [entries, setEntries] = useState<WhatsAppSimEntry[]>([]);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
+  // Separate from `busy`: the briefing is awaited server-side (not debounced like a reply), so
+  // it gets its own pending label rather than the "Typing…" bubble.
+  const [briefingBusy, setBriefingBusy] = useState(false);
   const [waiting, setWaiting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -98,6 +102,37 @@ export function WhatsAppSimPage() {
     if (!text) return;
     setInput("");
     await send({ text });
+  }
+
+  // Uses the browser's real location rather than a fixed test pin: a shared pin also sets the
+  // account's timezone (chatDispatch.handleLocation), and "Me" is the admin's real account.
+  function shareLocation() {
+    if (!navigator.geolocation) {
+      setError("This browser can't share a location.");
+      return;
+    }
+    navigator.geolocation.getCurrentPosition(
+      (pos) => void send({ latitude: pos.coords.latitude, longitude: pos.coords.longitude }),
+      (err) => setError(`Couldn't get your location: ${err.message}`),
+      { timeout: 10_000 }
+    );
+  }
+
+  // Fires the daily briefing exactly as the morning scheduler would compose it, rebuilt fresh on
+  // every press — the loop for iterating on the briefing's content and style without waiting for
+  // 07:30 or fiddling with the send time.
+  async function sendBriefing() {
+    if (busy || briefingBusy) return;
+    setBriefingBusy(true);
+    setError(null);
+    try {
+      await sendWhatsAppSimBriefing(identity ?? undefined);
+      await poll();
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setBriefingBusy(false);
+    }
   }
 
   async function newTestUser() {
@@ -171,6 +206,21 @@ export function WhatsAppSimPage() {
           Number: {phone ?? "…"}
         </p>
 
+        <div className="row" style={{ gap: 8, marginBottom: 12, alignItems: "center", flexWrap: "wrap" }}>
+          <button
+            className="btn-secondary"
+            type="button"
+            onClick={sendBriefing}
+            disabled={busy || briefingBusy}
+          >
+            {briefingBusy ? "Building briefing…" : "Send daily briefing"}
+          </button>
+          <span className="muted" style={{ fontSize: 12 }}>
+            Rebuilds and pushes the morning briefing as it stands right now, using the same rules as the
+            scheduled send.
+          </span>
+        </div>
+
         <div className="chat-panel">
           <div className="chat-scroll" ref={scrollRef}>
             {entries.length === 0 && !waiting && (
@@ -201,6 +251,13 @@ export function WhatsAppSimPage() {
                     <a href={entry.link.url} target="_blank" rel="noreferrer" className="chip-minimal">
                       {entry.link.label} ↗
                     </a>
+                  </div>
+                )}
+                {entry.locationRequest && (
+                  <div className="chips" style={{ marginTop: 8 }}>
+                    <button type="button" className="chip-minimal" disabled={busy} onClick={shareLocation}>
+                      📍 Send location
+                    </button>
                   </div>
                 )}
               </div>

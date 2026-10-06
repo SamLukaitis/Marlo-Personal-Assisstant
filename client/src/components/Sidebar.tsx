@@ -12,6 +12,7 @@ import {
   IconSettings,
   IconLogOut,
   IconPortal,
+  IconFeatures,
 } from "./icons";
 
 interface NavItem {
@@ -35,12 +36,22 @@ const NAV_ITEMS: NavItem[] = [
   { to: "/calendar", label: "Calendar", Icon: IconCalendar },
   { to: "/files", label: "Files", Icon: IconFolder },
   { to: "/travel", label: "Travel", Icon: IconTravel, requiresTool: "travel" },
+  { to: "/features", label: "Features", Icon: IconFeatures },
   { to: "/settings", label: "Settings", Icon: IconSettings },
   { to: "/portal", label: "Portal", Icon: IconPortal, requiresAdmin: true },
   {
     to: "/whatsapp-sim",
     label: "WhatsApp Test",
     Icon: IconChat,
+    requiresAdmin: true,
+    requiresFlag: "whatsappSimulatorEnabled",
+  },
+  // Shares the simulator's flag rather than getting one of its own: both are staging-only
+  // authoring tools, and there's nothing either should do in production.
+  {
+    to: "/briefing-lab",
+    label: "Briefing Lab",
+    Icon: IconAssistant,
     requiresAdmin: true,
     requiresFlag: "whatsappSimulatorEnabled",
   },

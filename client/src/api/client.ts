@@ -673,6 +673,7 @@ export interface WhatsAppSimEntry {
   text: string;
   choices?: { id: string; title: string }[];
   link?: { label: string; url: string };
+  locationRequest?: boolean;
 }
 
 export interface WhatsAppSimTestUser {
@@ -681,14 +682,91 @@ export interface WhatsAppSimTestUser {
   hasAccount: boolean;
 }
 
-export type WhatsAppSimInput = { text: string } | { buttonId: string; label: string };
+export type WhatsAppSimInput =
+  | { text: string }
+  | { buttonId: string; label: string }
+  | { latitude: number; longitude: number };
 
 export const sendWhatsAppSimMessage = (input: WhatsAppSimInput, phone?: string) =>
   mutateJson<{ phone: string }>("/api/dev/whatsapp-sim/send", "POST", { ...input, ...(phone ? { phone } : {}) });
 
+// Pushes the daily briefing to the simulated number, rebuilt from scratch and composed exactly
+// as the scheduled morning send would — see whatsappSimRoutes.ts. Resolves once it's delivered
+// (unlike sendWhatsAppSimMessage, whose reply is debounced), so the caller can just re-poll.
+export const sendWhatsAppSimBriefing = (phone?: string) =>
+  mutateJson<{ ok: true }>("/api/dev/whatsapp-sim/briefing", "POST", phone ? { phone } : {});
+
 export const fetchWhatsAppSimTranscript = (phone?: string) =>
   getJson<{ phone: string; entries: WhatsAppSimEntry[] }>(
     `/api/dev/whatsapp-sim/transcript${phone ? `?phone=${encodeURIComponent(phone)}` : ""}`
+  );
+
+// --- Briefing Lab -------------------------------------------------------------------------------
+// Ten synthetic users rendered through the real briefing prompt — see briefingPreview.ts. The
+// profiles come back instantly (no model calls) so the page can paint before the renders land.
+export interface BriefingLabDay {
+  localTime: string;
+  localWeekday: string;
+  location: string;
+  weather: { place: string; condition: string; tempC: number; highC: number; lowC: number } | null;
+  quotes: { name: string; price: number; changePercent: number }[];
+  unread: { count: number; shown: { subject: string; from: string }[] };
+  todayEvents: string[];
+  upcomingEvents: string[];
+  flagged: { subject: string; from: string }[];
+  news: { topic: string; title: string }[];
+}
+
+export interface BriefingLabProfile {
+  id: string;
+  label: string;
+  tests: string;
+  voice: { assistantName: string; userName: string; persona: string };
+  day: BriefingLabDay;
+}
+
+export interface BriefingLabRendered extends BriefingLabProfile {
+  text: string;
+  wordCount: number;
+  quiet: boolean;
+}
+
+// The evening recap of who emailed. `day` is null when nothing was held, i.e. no recap is sent —
+// correct behaviour, and shown as such rather than hidden.
+export interface DigestLabDay {
+  localTime: string;
+  localWeekday: string;
+  total: number;
+  senders: { name: string; subject: string; count: number }[];
+}
+
+export interface DigestLabProfile {
+  id: string;
+  label: string;
+  tests: string;
+  voice: { assistantName: string; userName: string; persona: string };
+  day: DigestLabDay | null;
+}
+
+export interface DigestLabRendered extends DigestLabProfile {
+  text: string;
+  wordCount: number;
+}
+
+/** Which of the two proactive messages the lab is previewing. */
+export type LabKind = "briefing" | "digest";
+
+export const fetchBriefingLabProfiles = (kind: LabKind, seed?: number) =>
+  getJson<{ seed: number; kind: LabKind; profiles: BriefingLabProfile[] | DigestLabProfile[] }>(
+    `/api/dev/briefing-lab/profiles?kind=${kind}${seed ? `&seed=${seed}` : ""}`
+  );
+
+// `scramble` asks the server for a fresh random seed; otherwise `seed` re-renders that exact set.
+export const renderBriefingLab = (opts: { kind: LabKind; seed?: number; scramble?: boolean }) =>
+  mutateJson<{ seed: number; kind: LabKind; profiles: BriefingLabRendered[] | DigestLabRendered[] }>(
+    "/api/dev/briefing-lab/render",
+    "POST",
+    opts
   );
 
 export const fetchWhatsAppSimTestUsers = () => getJson<WhatsAppSimTestUser[]>("/api/dev/whatsapp-sim/test-users");

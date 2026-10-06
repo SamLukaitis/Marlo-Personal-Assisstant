@@ -1,4 +1,4 @@
-import { getBriefingSettings, getTodaysBriefing } from "./briefing.js";
+import { getBriefingSettings, getTodaysBriefing, refreshBriefing } from "./briefing.js";
 import { withMessageCache } from "./hub.js";
 import {
   getSetting,
@@ -21,7 +21,12 @@ import { checkForImportantEmails } from "./importantEmailAlerts.js";
 import { flushEmailDigestIfDue } from "./emailDigest.js";
 import { syncBookingReminders } from "./tripPrep.js";
 import { userLocalClock } from "./userTimezone.js";
-import { collectAttentionForBriefing, commitAttentionBundle, deliverDueAttentionItems } from "./attention.js";
+import {
+  collectAttentionForBriefing,
+  commitAttentionBundle,
+  deliverDueAttentionItems,
+  type AttentionBundle,
+} from "./attention.js";
 
 const CHECK_INTERVAL_MS = 5 * 60 * 1000;
 const SCHENGEN_WARN_AT = 80;
@@ -38,6 +43,30 @@ function schengenAlertLine(ownerId: number): string | null {
     return `⚠️ Schengen check: ${result.daysPresent}/90 days used in the last 180 days — getting close to the limit.`;
   }
   return null;
+}
+
+// The exact text of the daily proactive push: the LLM-synthesized briefing plus whatever non-LLM
+// lines get appended after it. Shared with the WhatsApp simulator's "Send daily briefing" button
+// (routes/whatsappSimRoutes.ts) so what that button sends can never drift from what the real
+// scheduled send does — which is the whole point of testing a briefing rewrite through it.
+//
+// `refresh` rebuilds today's briefing from scratch instead of reusing the one already stored for
+// today. That's what the simulator wants (a snapshot of right now, repeatable on every press) and
+// never what the scheduler wants (one build per day, reused by the Assistant page's briefing bar).
+//
+// `attention` is what the attention gate is holding for this briefing (attention.ts). The scheduler
+// passes the bundle it will commit once the send succeeds; the simulator omits it and gets a
+// preview of the same items, left uncommitted so the real send still carries them.
+export async function composeDailyBriefingMessage(
+  ownerId: number,
+  refresh = false,
+  attention: AttentionBundle = collectAttentionForBriefing(ownerId, Date.now())
+): Promise<string> {
+  const briefing = refresh ? await refreshBriefing(ownerId, attention) : await getTodaysBriefing(ownerId, attention);
+  // Both channels (UI and WhatsApp) must reflect the same enabled/disabled state — a user
+  // with travel off gets no Schengen line, same as their Setup page shows no travel section.
+  const alert = getEnabledTools(ownerId).has("travel") ? schengenAlertLine(ownerId) : null;
+  return alert ? `${briefing.content}\n\n${alert}` : briefing.content;
 }
 
 // Runs every few minutes and fires at most once per calendar day, once the user's own local time
@@ -74,11 +103,7 @@ export async function runDailyCheckForUser(ownerId: number): Promise<void> {
     // reminders due in the next couple of hours), folded in so they don't each ping separately.
     const now = Date.now();
     const attention = collectAttentionForBriefing(ownerId, now);
-    const briefing = await getTodaysBriefing(ownerId, attention);
-    // Both channels (UI and WhatsApp) must reflect the same enabled/disabled state — a user
-    // with travel off gets no Schengen line, same as their Setup page shows no travel section.
-    const alert = getEnabledTools(ownerId).has("travel") ? schengenAlertLine(ownerId) : null;
-    const message = alert ? `${briefing.content}\n\n${alert}` : briefing.content;
+    const message = await composeDailyBriefingMessage(ownerId, false, attention);
     // Only stamp the day done once every number has it; a retry next tick skips numbers that
     // already got today's briefing (see proactiveDelivery.ts).
     const itemKey = `daily-briefing:${dateKey}`;

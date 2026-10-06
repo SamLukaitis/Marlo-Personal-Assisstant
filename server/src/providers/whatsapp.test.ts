@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import {
   sendWhatsAppReplyButtons,
   sendWhatsAppCtaUrl,
+  sendWhatsAppLocationRequest,
   sendWhatsAppListMessage,
   sendChoiceMessage,
   sendWhatsAppMediaFromBuffer,
@@ -73,6 +74,44 @@ describe("sendWhatsAppReplyButtons", () => {
     await expect(sendWhatsAppReplyButtons("447000000001", "hi", [{ id: "a", title: "A" }])).rejects.toThrow(
       WhatsAppSendError
     );
+  });
+});
+
+describe("sendWhatsAppLocationRequest", () => {
+  it("posts an interactive location_request_message with a send_location action", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, text: async () => JSON.stringify({ messages: [{ id: "wamid.LOC" }] }) });
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    const wamid = await sendWhatsAppLocationRequest("447000000001", "Tap below to share where you are.");
+
+    expect(wamid).toBe("wamid.LOC");
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body);
+    expect(body).toEqual({
+      messaging_product: "whatsapp",
+      recipient_type: "individual",
+      to: "447000000001",
+      type: "interactive",
+      interactive: {
+        type: "location_request_message",
+        body: { text: "Tap below to share where you are." },
+        action: { name: "send_location" },
+      },
+    });
+  });
+
+  it("throws a WhatsAppSendError on a non-OK response", async () => {
+    global.fetch = vi.fn().mockResolvedValue({ ok: false, status: 400, text: async () => "bad" }) as unknown as typeof fetch;
+    await expect(sendWhatsAppLocationRequest("447000000001", "hi")).rejects.toThrow(WhatsAppSendError);
+  });
+
+  it("records a location request in the simulator transcript instead of calling Meta", async () => {
+    const fetchMock = mockFetchOk();
+    const to = simulatedPhoneForOwner(987654);
+
+    await sendWhatsAppLocationRequest(to, "Share your location?");
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(getSimTranscript(to).at(-1)).toMatchObject({ role: "assistant", text: "Share your location?", locationRequest: true });
   });
 });
 

@@ -11,6 +11,28 @@ vi.mock("../providers/whatsapp.js", async (importOriginal) => {
   };
 });
 
+// The digest is written by the model now, so these tests have to drive that path rather than let it
+// fail into the static fallback — a green suite asserting the fallback's wording would say nothing
+// about what users actually receive. `modelReply` is what the fake model says; `lastCall` captures
+// what it was asked, so the grouping and capping rules can be checked on the facts it was given.
+let modelReply: string | (() => never) = "Evening Jake, Sarah and Dr Patel both got in touch today.";
+let lastCall: { system: string; facts: string } | null = null;
+
+vi.mock("../ai/assistant.js", () => ({
+  getClient: () => ({
+    messages: {
+      create: async ({ system, messages }: { system: string; messages: { content: string }[] }) => {
+        lastCall = { system, facts: messages[0].content };
+        if (typeof modelReply === "function") modelReply();
+        return {
+          content: [{ type: "text", text: modelReply }],
+          usage: { input_tokens: 10, output_tokens: 5 },
+        };
+      },
+    },
+  }),
+}));
+
 const { sendWhatsAppMessage, sendWhatsAppTemplate, sendChoiceMessage, isWhatsAppConfigured } = await import(
   "../providers/whatsapp.js"
 );
@@ -22,7 +44,7 @@ const {
   setSetting,
   consumePendingAction,
 } = await import("../db/store.js");
-const { queueForEmailDigest, flushEmailDigestIfDue, queuedEmailDigestCount, digestMessage } = await import(
+const { queueForEmailDigest, flushEmailDigestIfDue, queuedEmailDigestCount, staticDigestMessage } = await import(
   "./emailDigest.js"
 );
 const { submitAttentionItem } = await import("./attention.js");
@@ -77,6 +99,8 @@ beforeEach(() => {
   vi.mocked(sendWhatsAppTemplate).mockReset();
   vi.mocked(sendChoiceMessage).mockReset().mockResolvedValue("wamid.CHOICE");
   vi.mocked(isWhatsAppConfigured).mockReset().mockReturnValue(true);
+  modelReply = "Evening Jake, Sarah and Dr Patel both got in touch today.";
+  lastCall = null;
 });
 
 afterEach(() => {
@@ -98,9 +122,12 @@ describe("flushEmailDigestIfDue", () => {
     expect(sendWhatsAppMessage).toHaveBeenCalledTimes(1);
     const [sentTo, text] = vi.mocked(sendWhatsAppMessage).mock.calls[0];
     expect(sentTo).toBe(phone);
-    expect(text).toContain("9pm summary");
-    expect(text).toContain('*Sarah Jones* emailed: "Lunch on Sunday?"');
-    expect(text).toContain('*Dr Patel* emailed: "Your results"');
+    // What's sent is the model's paragraph, not a list we built.
+    expect(text).toBe("Evening Jake, Sarah and Dr Patel both got in touch today.");
+    // ...and both senders, with what they wanted, reached the model.
+    expect(lastCall!.facts).toContain("2 emails from 2 people");
+    expect(lastCall!.facts).toContain('Sarah Jones: "Lunch on Sunday?"');
+    expect(lastCall!.facts).toContain('Dr Patel: "Your results"');
     expect(queuedEmailDigestCount(user.id)).toBe(0);
   });
 
@@ -141,9 +168,6 @@ describe("flushEmailDigestIfDue", () => {
     await flushEmailDigestIfDue(user.id);
 
     expect(sendWhatsAppMessage).toHaveBeenCalledTimes(1);
-    const [, text] = vi.mocked(sendWhatsAppMessage).mock.calls[0];
-    expect(text).toContain("6pm summary");
-    expect(text).not.toContain("9pm");
   });
 
   it("sends nothing on a day with no emails, and doesn't send a late arrival the same evening", async () => {
@@ -179,31 +203,62 @@ describe("flushEmailDigestIfDue", () => {
     expect(sendWhatsAppMessage).toHaveBeenCalledTimes(1);
   });
 
-  it("names everyone concretely and never says 'and N more'", async () => {
-    const user = newUser("digest-many");
+  it("names the first few and counts the rest", async () => {
+    const user = newUser("digest-overflow");
     registerActivePhone(user.id);
     queueForEmailDigest(
       user.id,
-      Array.from({ length: 8 }, (_, i) => email(`m${i}`, `Person ${i} <p${i}@x.com>`, `Subject ${i}`))
+      Array.from({ length: 8 }, (_, i) => email(`m${i}`, `Person${i} <p${i}@example.com>`, `Subject ${i}`))
     );
 
     setLocalTime("21:05");
     await flushEmailDigestIfDue(user.id);
 
     const [, text] = vi.mocked(sendWhatsAppMessage).mock.calls[0];
-    expect(text).not.toMatch(/and \d+ more/);
-    expect(text).toContain('*Person 4* emailed: "Subject 4"');
-    expect(text).toContain("Also from *Person 5*, *Person 6*, *Person 7*.");
+    // The model is handed more senders than it may name (MAX_NAMED_TO_MODEL), so it can judge which
+    // matter rather than being given a pre-made shortlist. The old code shortlisted five and
+    // appended "3 more"; that choice is the model's now, so the rule under test is what it was told.
+    expect(lastCall!.facts).toContain("8 emails from 8 people");
+    expect(lastCall!.facts).toContain("Person0");
+    expect(lastCall!.facts).toContain("Person7");
+    expect(lastCall!.system).toContain("Name at most three people");
   });
 
-  it("uses the triage gist and flags replies", () => {
-    const text = digestMessage(
-      null,
-      [{ id: "a", accountId: 1, from: "Sarah Kim <s@x.com>", subject: "Thu", gist: "wants to move Thursday's call", needsReply: true }],
-      { noted: [], needsAttention: [], upcoming: [], ackIds: [], foldIds: [] },
-      "21:00"
+  it("collapses repeated replies on the same thread into one line with a count", async () => {
+    const user = newUser("digest-thread");
+    registerActivePhone(user.id);
+    queueForEmailDigest(user.id, [
+      email("m1", "Jake McMillan <jake@example.com>", "Re: Compliance Follow-up"),
+      email("m2", "Jake McMillan <jake@example.com>", "Re: Compliance Follow-up"),
+      email("m3", "Jake McMillan <jake@example.com>", "Re: Compliance Follow-up"),
+      email("m4", "Markos, Steven <steven@example.com>", "RE: Compliance Follow-up"),
+      email("m5", "Markos, Steven <steven@example.com>", "RE: Compliance Follow-up"),
+    ]);
+
+    setLocalTime("21:05");
+    await flushEmailDigestIfDue(user.id);
+
+    const [, text] = vi.mocked(sendWhatsAppMessage).mock.calls[0];
+    // Repeat replies on one thread still collapse to a single entry with a count — now expressed
+    // for the model rather than rendered as a bullet, so it can say "Jake's come back a few times".
+    expect(lastCall!.facts).toContain("5 emails from 2 people");
+    expect(lastCall!.facts).toContain('Jake McMillan: "Re: Compliance Follow-up" (and 2 more on the same thread)');
+    expect(lastCall!.facts).toContain('Markos, Steven: "RE: Compliance Follow-up" (and 1 more on the same thread)');
+  });
+
+  it("hands the model each sender's gist and whether they're waiting on a reply", async () => {
+    const user = newUser("digest-gist");
+    registerActivePhone(user.id);
+    queueForEmailDigest(user.id, [
+      { ...email("m1", "Sarah Kim <s@x.com>", "Thu"), gist: "wants to move Thursday's call", needsReply: true },
+    ]);
+
+    setLocalTime("21:05");
+    await flushEmailDigestIfDue(user.id);
+
+    expect(lastCall!.facts).toContain(
+      'Sarah Kim: "Thu" — what they want: wants to move Thursday\'s call (waiting on a reply)'
     );
-    expect(text).toContain("*Sarah Kim* — wants to move Thursday's call; needs a reply");
   });
 
   it("carries attention items when the morning briefing is off, then marks them done", async () => {
@@ -218,8 +273,9 @@ describe("flushEmailDigestIfDue", () => {
     });
     setLocalTime("21:05");
     await flushEmailDigestIfDue(user.id);
-    const [, text] = vi.mocked(sendWhatsAppMessage).mock.calls[0];
-    expect(text).toContain("Your *Amazon* refund of *£24* was approved.");
+    expect(sendWhatsAppMessage).toHaveBeenCalledTimes(1);
+    expect(lastCall!.facts).toContain("No emails from people today.");
+    expect(lastCall!.facts).toContain("Worth knowing: Your *Amazon* refund of *£24* was approved.");
 
     vi.mocked(sendWhatsAppMessage).mockClear();
     setLocalTime("21:05", 11);
@@ -253,7 +309,7 @@ describe("flushEmailDigestIfDue", () => {
     expect(sendWhatsAppMessage).not.toHaveBeenCalled();
   });
 
-  it("still sends attention lines when people's email alerts are off", async () => {
+  it("still sends attention items when people's email alerts are off", async () => {
     const user = newUser("digest-people-off");
     registerActivePhone(user.id);
     setRealPersonAlertsEnabled(user.id, false);
@@ -266,7 +322,8 @@ describe("flushEmailDigestIfDue", () => {
     });
     setLocalTime("21:05");
     await flushEmailDigestIfDue(user.id);
-    expect(vi.mocked(sendWhatsAppMessage).mock.calls[0][1]).toContain("*Amazon*");
+    expect(sendWhatsAppMessage).toHaveBeenCalledTimes(1);
+    expect(lastCall!.facts).toContain("*Amazon*");
   });
 
   it("keeps the queue and retries when WhatsApp isn't configured or there is no number", async () => {
@@ -471,5 +528,117 @@ describe("flushEmailDigestIfDue", () => {
     setLocalTime("21:05");
     await expect(flushEmailDigestIfDue(user.id)).resolves.toBeUndefined();
     expect(queuedEmailDigestCount(user.id)).toBe(0);
+  });
+});
+
+// The recap is written by the model now (sharing proactiveVoice.ts's register with the morning
+// briefing). These cover what that introduced: the fallback when the call fails, and the rules the
+// prompt has to carry for the message to read like a person rather than a list.
+describe("the model-written recap", () => {
+  it("falls back to the plain list rather than losing a day's mail when the model fails", async () => {
+    const user = newUser("digest-fallback");
+    registerActivePhone(user.id);
+    setSetting(user.id, "user_name", "Jake");
+    queueForEmailDigest(user.id, [email("m1", "Sarah Jones <sarah@example.com>", "Lunch on Sunday?")]);
+    modelReply = () => {
+      throw new Error("model is down");
+    };
+
+    setLocalTime("21:05");
+    await flushEmailDigestIfDue(user.id);
+
+    const [, text] = vi.mocked(sendWhatsAppMessage).mock.calls[0];
+    // The old hardcoded wording — not pretty, but it went out, and the queue is safe to clear.
+    expect(text).toContain("1 new email");
+    expect(text).toContain("Sarah Jones");
+    expect(queuedEmailDigestCount(user.id)).toBe(0);
+  });
+
+  it("sends nothing and keeps the queue if the fallback can't be delivered either", async () => {
+    const user = newUser("digest-undeliverable");
+    registerActivePhone(user.id);
+    queueForEmailDigest(user.id, [email("m1", "Sarah <sarah@example.com>", "Hi")]);
+    modelReply = () => {
+      throw new Error("model is down");
+    };
+    vi.mocked(sendWhatsAppMessage).mockRejectedValueOnce(new Error("whatsapp down"));
+
+    setLocalTime("21:05");
+    await flushEmailDigestIfDue(user.id);
+
+    // Held for the next tick rather than dropped — the whole point of not clearing on failure.
+    expect(queuedEmailDigestCount(user.id)).toBe(1);
+  });
+
+  it("tells the model the time of day, so an evening recap can sign off like one", async () => {
+    const user = newUser("digest-time");
+    registerActivePhone(user.id);
+    setEmailDigestTime(user.id, "18:30");
+    queueForEmailDigest(user.id, [email("m1", "Sarah <sarah@example.com>", "Hi")]);
+
+    setLocalTime("18:35");
+    await flushEmailDigestIfDue(user.id);
+
+    expect(lastCall!.facts).toContain("18:35");
+    expect(lastCall!.system).toContain('"sleep well" or "have a good evening" only in the evening');
+  });
+
+  it("carries the people-not-subject-lines rules the briefing uses", async () => {
+    const user = newUser("digest-rules");
+    registerActivePhone(user.id);
+    queueForEmailDigest(user.id, [email("m1", "Sarah <sarah@example.com>", "Hi")]);
+
+    setLocalTime("21:05");
+    await flushEmailDigestIfDue(user.id);
+
+    expect(lastCall!.system).toContain("Talk about PEOPLE and what they want");
+    expect(lastCall!.system).toContain("Never quote a subject line");
+    expect(lastCall!.system).toContain("Never count the emails for them, in digits or in words");
+    expect(lastCall!.system).toContain("USE ONLY THE FACTS GIVEN BELOW");
+    // No bullets, and nothing that depends on line breaks surviving the template path.
+    expect(lastCall!.system).toContain("no bullets");
+    expect(lastCall!.system).toContain("one unbroken line");
+  });
+
+  it("tells the model not to ask a question, since the check-in may be appended after it", async () => {
+    const user = newUser("digest-no-question");
+    registerUndecidedPhone(user.id);
+    queueForEmailDigest(user.id, [email("m1", "Sarah <sarah@example.com>", "Hi")]);
+    modelReply = "Evening — Sarah got in touch about something.";
+
+    setLocalTime("21:05");
+    await flushEmailDigestIfDue(user.id);
+
+    expect(lastCall!.system).toContain("Don't ask them a question");
+    // The model's paragraph comes first, then the check-in the code owns.
+    const [, text] = vi.mocked(sendChoiceMessage).mock.calls[0] ?? vi.mocked(sendWhatsAppMessage).mock.calls[0];
+    expect(text).toContain("Evening — Sarah got in touch about something.");
+    expect(text).toContain("Want to keep the daily summary?");
+  });
+
+  it("does not hand the model a calendar, so it can't imply it knows the rest of their day", async () => {
+    const user = newUser("digest-mail-only");
+    registerActivePhone(user.id);
+    queueForEmailDigest(user.id, [email("m1", "Sarah <sarah@example.com>", "Hi")]);
+
+    setLocalTime("21:05");
+    await flushEmailDigestIfDue(user.id);
+
+    expect(lastCall!.facts).not.toMatch(/calendar|weather|markets|headline/i);
+    expect(lastCall!.system).toContain("This is only about who emailed");
+  });
+});
+
+describe("staticDigestMessage", () => {
+  it("is still the old list, so the fallback is predictable", () => {
+    const user = newUser("digest-static");
+    setSetting(user.id, "user_name", "Jake");
+    const text = staticDigestMessage(user.id, [
+      email("m1", "Sarah Jones <sarah@example.com>", "Lunch on Sunday?"),
+      email("m2", "Dr Patel <patel@example.com>", "Your results"),
+    ]);
+    expect(text).toContain("📬 Jake, 2 new emails from people:");
+    expect(text).toContain("• Sarah Jones (Lunch on Sunday?)");
+    expect(text).toContain("• Dr Patel (Your results)");
   });
 });

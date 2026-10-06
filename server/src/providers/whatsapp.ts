@@ -178,6 +178,45 @@ export async function sendWhatsAppReplyButtons(
   return extractSentWamid(res);
 }
 
+// A "Send location" button under a short prompt. Tapping it opens WhatsApp's own share-location
+// screen; the pin comes back as an ordinary inbound location message (IncomingLocationMessage),
+// which chatDispatch.handleLocation already turns into a new assistant turn. Like every
+// interactive message it can only be sent within 24h of the user's last message — it's only ever
+// sent as a reply, so that always holds.
+export async function sendWhatsAppLocationRequest(to: string, bodyText: string): Promise<string | undefined> {
+  if (isSimulatedPhone(to)) {
+    recordSimMessage(to, { role: "assistant", text: bodyText, locationRequest: true });
+    return `sim-wamid-${crypto.randomUUID()}`;
+  }
+  const phoneNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID;
+  const token = process.env.WHATSAPP_TOKEN;
+  const res = await fetch(
+    `https://graph.facebook.com/${GRAPH_VERSION}/${phoneNumberId}/messages`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        messaging_product: "whatsapp",
+        recipient_type: "individual",
+        to,
+        type: "interactive",
+        interactive: {
+          type: "location_request_message",
+          body: { text: bodyText },
+          action: { name: "send_location" },
+        },
+      }),
+    }
+  );
+  if (!res.ok) {
+    throw await buildSendError("WhatsApp location-request send failed", res);
+  }
+  return extractSentWamid(res);
+}
+
 // A single tappable link button under a text prompt — used instead of a plain "here's a link"
 // message. Unlike a reply button, tapping this opens the URL directly and never produces an
 // inbound webhook event of its own.
@@ -623,6 +662,11 @@ interface WebhookPayload {
   entry?: Array<{
     changes?: Array<{
       value?: {
+        // Which of our WhatsApp numbers Meta delivered this to. Meta configures a webhook URL
+        // per *app*, not per number, so once a second number (Joyce — see src/joyce/) shares
+        // this app, every number's messages arrive at every endpoint. This field is the only
+        // thing that distinguishes them.
+        metadata?: { phone_number_id?: string };
         messages?: Array<{
           from?: string;
           id?: string;
@@ -646,10 +690,22 @@ interface WebhookPayload {
 
 const HANDLED_TYPES = new Set(["text", "image", "document", "interactive", "reaction", "location"]);
 
-export function extractIncomingMessages(payload: WebhookPayload): IncomingWhatsAppMessage[] {
+/**
+ * `onlyForPhoneNumberId`, when given, drops anything addressed to a different one of our numbers
+ * — the guard that stops Marlowe answering messages meant for Joyce once both numbers sit on one
+ * Meta app. A payload with no metadata at all is kept: older captured fixtures and the in-app
+ * simulator don't carry the field, and silently dropping real traffic would be far worse than
+ * the case this guards against.
+ */
+export function extractIncomingMessages(
+  payload: WebhookPayload,
+  onlyForPhoneNumberId?: string
+): IncomingWhatsAppMessage[] {
   const messages: IncomingWhatsAppMessage[] = [];
   for (const entry of payload.entry ?? []) {
     for (const change of entry.changes ?? []) {
+      const deliveredTo = change.value?.metadata?.phone_number_id;
+      if (onlyForPhoneNumberId && deliveredTo && deliveredTo !== onlyForPhoneNumberId) continue;
       for (const m of change.value?.messages ?? []) {
         // Present on any inbound message type whose sender swipe-replied to (context.id) or
         // forwarded (context.forwarded) it — spread in below so a message with no context keeps
