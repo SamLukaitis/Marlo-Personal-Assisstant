@@ -5,6 +5,10 @@ import {
   selectUnreadSinceMidnight,
   describeLocationStreak,
   describeEventTime,
+  attentionFactLines,
+  briefingSystemPrompt,
+  briefingFactBlock,
+  isQuietDay,
   type BriefingSettings,
 } from "./briefing.js";
 import { findOrCreateUserByEmail } from "../db/store.js";
@@ -160,5 +164,51 @@ describe("describeEventTime", () => {
   // A provider can hand back something unparseable; a stiff line beats a confidently wrong day.
   it("falls back to the raw start when it can't be parsed", () => {
     expect(describeEventTime({ ...base, start: "not-a-date" }, "Europe/London")).toBe("Offsite at not-a-date");
+  });
+});
+
+describe("attentionFactLines", () => {
+  const empty = { noted: [], needsAttention: [], upcoming: [] };
+  it("adds nothing when there's nothing to say", () => {
+    expect(attentionFactLines(undefined)).toEqual([]);
+    expect(attentionFactLines(empty)).toEqual([]);
+  });
+  it("labels each kind of item so the model keeps them apart, upcoming first", () => {
+    const lines = attentionFactLines({
+      noted: ["Noted: your *Netflix* renewal — I'll remind you Wed 30 Sep."],
+      needsAttention: ["Your *Amazon* refund of *£24* was approved."],
+      upcoming: ["🏨 Reminder: Your *Hilton* stay. Check-in is today."],
+    });
+    expect(lines[0]).toMatch(/^Coming up soon/);
+    expect(lines[0]).toContain("*Hilton*");
+    expect(lines.join("\n")).toContain("Noted since the last briefing");
+    expect(lines.join("\n")).toContain("Worth knowing");
+  });
+});
+
+describe("briefing with attention items", () => {
+  const voice = { assistantName: "Marlowe", userName: "Sam", persona: "" };
+  it("tells the model how to voice upcoming, worth-knowing and noted items", () => {
+    const prompt = briefingSystemPrompt(voice);
+    expect(prompt).toMatch(/"Coming up soon" items lead/);
+    expect(prompt).toMatch(/say when you'll bring each one up again/);
+  });
+  it("puts attention items in the facts, and a day with them is not a quiet day", () => {
+    const day = {
+      localTime: "07:30",
+      localWeekday: "Friday",
+      location: "",
+      weather: null,
+      quotes: [],
+      unread: { count: 0, shown: [] },
+      todayEvents: [],
+      upcomingEvents: [],
+      flagged: [],
+      news: [],
+      attention: { upcoming: [], needsAttention: [], noted: ["Noted: your *Netflix* renewal — I'll remind you Wed 30 Sep."] },
+    };
+    expect(isQuietDay(day)).toBe(false);
+    expect(briefingFactBlock(day)).toContain("Noted since the last briefing");
+    expect(isQuietDay({ ...day, attention: undefined })).toBe(true);
   });
 });

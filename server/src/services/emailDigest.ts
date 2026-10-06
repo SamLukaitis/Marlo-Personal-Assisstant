@@ -30,6 +30,13 @@ import {
   realPersonAlertsEnabled,
 } from "./emailAlertSettings.js";
 import { userLocalClock } from "./userTimezone.js";
+import { getBriefingSettings } from "./briefing.js";
+import {
+  collectAttentionForDigest,
+  commitAttentionBundle,
+  isEmptyBundle,
+  type AttentionBundle,
+} from "./attention.js";
 
 // Real-person emails held back for the user's once-a-day summary (emailAlertSettings.ts's "digest"
 // mode). Stored as JSON in the settings table — a short-lived list that is emptied every day.
@@ -38,6 +45,9 @@ export interface DigestEmail {
   accountId: number;
   from: string;
   subject: string;
+  // From realPersonTriage.ts: what the sender wants, and whether they are waiting on a reply.
+  gist?: string;
+  needsReply?: boolean;
 }
 
 const QUEUE_KEY = "email_digest_queue";
@@ -67,7 +77,7 @@ export function queueForEmailDigest(ownerId: number, emails: DigestEmail[]): voi
   if (emails.length === 0) return;
   writeQueue(ownerId, [
     ...readQueue(ownerId),
-    ...emails.map(({ id, accountId, from, subject }) => ({ id, accountId, from, subject })),
+    ...emails.map(({ id, accountId, from, subject, gist, needsReply }) => ({ id, accountId, from, subject, gist, needsReply })),
   ]);
 }
 
@@ -82,18 +92,21 @@ function shorten(subject: string, max = MAX_SUBJECT_LENGTH): string {
 
 // Same sender replying on the same thread (a chain of "Re:"s) collapses into one line with a
 // count, instead of repeating an identical name/subject pair for every reply in the queue.
-function groupBySenderAndSubject(queue: DigestEmail[]): { name: string; subject: string; count: number }[] {
-  const groups: { name: string; subject: string; count: number }[] = [];
+function groupBySenderAndSubject(queue: DigestEmail[]): DigestSender[] {
+  const groups: DigestSender[] = [];
   const indexByKey = new Map<string, number>();
   for (const m of queue) {
     const name = senderDisplayName(m.from);
     const subject = m.subject.replace(/\s+/g, " ").trim();
     const key = `${name}\u0000${subject}`;
     const existing = indexByKey.get(key);
-    if (existing !== undefined) groups[existing].count += 1;
-    else {
+    if (existing !== undefined) {
+      groups[existing].count += 1;
+      // The newest reply on a thread says what they want now.
+      if (m.gist) groups[existing] = { ...groups[existing], gist: m.gist, needsReply: !!m.needsReply };
+    } else {
       indexByKey.set(key, groups.length);
-      groups.push({ name, subject, count: 1 });
+      groups.push({ name, subject, count: 1, ...(m.gist ? { gist: m.gist, needsReply: !!m.needsReply } : {}) });
     }
   }
   return groups;
@@ -102,21 +115,23 @@ function groupBySenderAndSubject(queue: DigestEmail[]): { name: string; subject:
 // The old hardcoded digest, kept as the fallback for when the model call fails. A recap that
 // reads like a machine still beats no recap at all — the queue has already been held all day and
 // is cleared on a successful send, so silently skipping would lose it.
-export function staticDigestMessage(ownerId: number, queue: DigestEmail[]): string {
+export function staticDigestMessage(ownerId: number, queue: DigestEmail[], attention?: DigestAttention): string {
   const userName = getSetting(ownerId, "user_name");
   const greeting = userName ? `${userName}, ` : "";
   const shown = groupBySenderAndSubject(queue).slice(0, MAX_NAMED);
   const bullets = shown.map((g) => {
-    const label = `${shorten(g.name, MAX_NAME_LENGTH)} (${shorten(g.subject)})`;
+    const label = g.gist
+      ? `${shorten(g.name, MAX_NAME_LENGTH)} — ${g.gist}${g.needsReply ? "; needs a reply" : ""}`
+      : `${shorten(g.name, MAX_NAME_LENGTH)} (${shorten(g.subject)})`;
     return `• ${g.count > 1 ? `${label} x${g.count}` : label}`;
   });
   const rest = queue.length - shown.reduce((sum, g) => sum + g.count, 0);
   if (rest > 0) bullets.push(`• ${rest} more`);
-  return (
-    `📬 ${greeting}${queue.length} new email${queue.length === 1 ? "" : "s"} from people:\n` +
-    `${bullets.join("\n")}\n` +
-    `Ask me about any of them.`
-  );
+  const extra = [...(attention?.needsAttention ?? []), ...(attention?.noted ?? [])].map((l) => `• ${l}`);
+  const people = queue.length
+    ? `📬 ${greeting}${queue.length} new email${queue.length === 1 ? "" : "s"} from people:\n${bullets.join("\n")}\n`
+    : `📬 ${greeting}today's round-up:\n`;
+  return `${people}${extra.length ? `${extra.join("\n")}\n` : ""}Ask me about any of them.`;
 }
 
 // The model that writes the recap — same tier as the briefing, since this is the same job (turn a
@@ -130,7 +145,14 @@ export interface DigestSender {
   name: string;
   subject: string;
   count: number;
+  /** From realPersonTriage.ts: what they want, and whether they're waiting on the user. */
+  gist?: string;
+  needsReply?: boolean;
 }
+
+// What the attention gate (attention.ts) is holding for this message: non-urgent things worth
+// knowing, and what Marlowe quietly filed with when it will bring each up.
+export type DigestAttention = Pick<AttentionBundle, "needsAttention" | "noted">;
 
 export interface DigestDay {
   /** "21:00" in the user's own zone — what the greeting and sign-off are pitched to. */
@@ -140,6 +162,7 @@ export interface DigestDay {
   /** Total emails held for today, which can exceed `senders` once threads are grouped. */
   total: number;
   senders: DigestSender[];
+  attention?: DigestAttention;
 }
 
 export function digestSystemPrompt(voice: ProactiveVoice): string {
@@ -163,6 +186,8 @@ export function digestSystemPrompt(voice: ProactiveVoice): string {
 
     `This is only about who emailed. You have no calendar, no weather and no news here, so don't reach for any — and don't imply you know what else their day held.`,
 
+    `The one exception: some facts may be things you've been keeping track of for them. "Worth knowing" items get a few words each. "Noted" items are things you've quietly filed — mention them briefly so they know you've got it, and say when you'll bring each one up again. Keep the specifics that matter (who or what, the date, the amount) and drop the rest. They don't count toward the three-person limit; fold several into one sentence, and with these the message may run to about 80 words. If nobody emailed, just cover these.`,
+
     `Don't ask them a question and don't offer to do anything. Something else may be appended after your message, so end on a complete thought rather than a lead-in.`,
 
     voiceTimeOfDay(),
@@ -175,24 +200,38 @@ export function digestSystemPrompt(voice: ProactiveVoice): string {
 
 export function digestFactBlock(day: DigestDay): string {
   const people = day.senders.length;
+  const what = (g: DigestSender) =>
+    g.gist ? ` — what they want: ${g.gist}${g.needsReply ? " (waiting on a reply)" : ""}` : "";
   return [
     `Right now it is ${day.localTime} on ${day.localWeekday} for them — ${timeOfDayBand(day.localTime)}.`,
-    `${day.total} email${day.total === 1 ? "" : "s"} from ${people} ${people === 1 ? "person" : "people"} today, newest last:`,
+    day.total
+      ? `${day.total} email${day.total === 1 ? "" : "s"} from ${people} ${people === 1 ? "person" : "people"} today, newest last:`
+      : "No emails from people today.",
     day.senders
-      .map((g) => `- ${g.name}: "${g.subject}"${g.count > 1 ? ` (and ${g.count - 1} more on the same thread)` : ""}`)
+      .map(
+        (g) =>
+          `- ${g.name}: "${g.subject}"${g.count > 1 ? ` (and ${g.count - 1} more on the same thread)` : ""}${what(g)}`
+      )
       .join("\n"),
-  ].join("\n\n");
+    day.attention?.needsAttention.length ? `Worth knowing: ${day.attention.needsAttention.join(" | ")}` : "",
+    day.attention?.noted.length
+      ? `Noted, each with when you'll bring it up again: ${day.attention.noted.join(" | ")}`
+      : "",
+  ]
+    .filter(Boolean)
+    .join("\n\n");
 }
 
 // Turns the held queue into what actually gets sent. Falls back to the old hardcoded list if the
 // model call fails for any reason: the queue is cleared on a successful send, so skipping would
 // lose a day of mail the user was told they'd hear about.
-async function digestText(ownerId: number, queue: DigestEmail[]): Promise<string> {
+async function digestText(ownerId: number, queue: DigestEmail[], attention?: DigestAttention): Promise<string> {
   const day: DigestDay = {
     localTime: userLocalClock(ownerId).hhmm,
     localWeekday: DateTime.fromISO(userLocalClock(ownerId).dateKey).toFormat("cccc"),
     total: queue.length,
     senders: groupBySenderAndSubject(queue).slice(0, MAX_NAMED_TO_MODEL),
+    attention,
   };
   const voice: ProactiveVoice = {
     assistantName: getSetting(ownerId, "assistant_name") ?? "Marlowe",
@@ -203,7 +242,7 @@ async function digestText(ownerId: number, queue: DigestEmail[]): Promise<string
     return await renderDigest(ownerId, voice, day, "email_digest");
   } catch (err) {
     console.error(`emailDigest: falling back to the plain digest for user ${ownerId}`, err);
-    return staticDigestMessage(ownerId, queue);
+    return staticDigestMessage(ownerId, queue, attention);
   }
 }
 
@@ -243,9 +282,9 @@ export async function renderDigest(
 function introExplanation(digestTime: string): string {
   return (
     `\n\nWe're trying something new: instead of pinging you every time someone emails, I now send ` +
-    `one summary of people's emails each day at ${formatDigestTime(digestTime)}. Anything important, like ` +
-    `flights, bookings and deliveries, still comes through straight away. Want to keep the daily ` +
-    `summary?`
+    `one summary of people's emails each day at ${formatDigestTime(digestTime)}. Urgent things like ` +
+    `flight changes still come straight away, and bookings and bills become reminders when they ` +
+    `matter. Want to keep the daily summary?`
   );
 }
 
@@ -286,7 +325,11 @@ export async function flushEmailDigestIfDue(ownerId: number): Promise<void> {
   if (!realPersonAlertsEnabled(ownerId)) writeQueue(ownerId, []);
 
   const queue = readQueue(ownerId);
-  if (queue.length === 0) {
+  const now = Date.now();
+  // Held (over-cap) attention items always ride along; acknowledgements and other non-urgent items
+  // only when there's no morning briefing to carry them. Independent of the people's-email setting.
+  const attention = collectAttentionForDigest(ownerId, now, !getBriefingSettings(ownerId).proactive);
+  if (queue.length === 0 && isEmptyBundle(attention)) {
     setSetting(ownerId, LAST_SENT_KEY, dateKey);
     return;
   }
@@ -296,12 +339,13 @@ export async function flushEmailDigestIfDue(ownerId: number): Promise<void> {
   if (numbers.length === 0) return;
 
   // Ids go in chat history only (see emailReference.ts), so "reply to Sarah's" resolves to a message.
-  const askToKeep = getSetting(ownerId, INTRO_SENT_KEY) === null && !realPersonAlertModeChosen(ownerId);
+  const askToKeep =
+    queue.length > 0 && getSetting(ownerId, INTRO_SENT_KEY) === null && !realPersonAlertModeChosen(ownerId);
   const historyNote = [
     ...queue.slice(0, MAX_NAMED).map((m) => emailReferenceNote(m)),
     ...(askToKeep ? [INTRO_HISTORY_NOTE] : []),
   ].join("\n");
-  const digest = await digestText(ownerId, queue);
+  const digest = await digestText(ownerId, queue, attention);
   const digestTime = emailDigestTime(ownerId);
   let send: ((phone: string) => Promise<void>) | undefined;
   if (askToKeep) {
@@ -332,11 +376,12 @@ export async function flushEmailDigestIfDue(ownerId: number): Promise<void> {
     askToKeep ? digest + introTyped(digestTime) : digest,
     "alert",
     "emailDigest",
-    historyNote,
+    historyNote || undefined,
     send
   );
   if (sent) {
     writeQueue(ownerId, []);
+    commitAttentionBundle(ownerId, attention, now);
     setSetting(ownerId, LAST_SENT_KEY, dateKey);
     if (askToKeep) setSetting(ownerId, INTRO_SENT_KEY, "true");
   }

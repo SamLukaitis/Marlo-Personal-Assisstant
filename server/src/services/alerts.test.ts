@@ -32,6 +32,7 @@ const {
   setSetting,
   setPendingSetup,
   getWhatsAppHistory,
+  getSetting,
 } = await import("../db/store.js");
 const { resolveQuotedMessageContext } = await import("./quotedMessage.js");
 const { checkForNewImportantMessages } = await import("./alerts.js");
@@ -39,7 +40,8 @@ const { setRealPersonAlertsEnabled, realPersonAlertsEnabledSince, setRealPersonA
   "./emailAlertSettings.js"
 );
 const { queuedEmailDigestCount } = await import("./emailDigest.js");
-const { takeSuppressedOnboardingAlertCount } = await import("./onboardingAlertSuppression.js");
+const { markOnboardingConnected } = await import("./onboardingAlertSuppression.js");
+const { setUserTimezone } = await import("./userTimezone.js");
 
 let counter = 0;
 function uniqueEmail(prefix: string): string {
@@ -58,6 +60,7 @@ function freshPhone(): string {
 // into instant. The digest tests switch back to "digest" explicitly.
 function registerActivePhone(ownerId: number): string {
   setRealPersonAlertMode(ownerId, "instant");
+  setUserTimezone(ownerId, "Europe/London");
   const phone = freshPhone();
   addPhoneNumberForUser(ownerId, phone);
   recordInboundMessage(phone);
@@ -98,7 +101,14 @@ beforeEach(() => {
   vi.mocked(sendWhatsAppMessage).mockReset();
   vi.mocked(isWhatsAppConfigured).mockReset().mockReturnValue(true);
   mockHubListNewMessages.mockReset();
-  mockTriage.mockReset().mockResolvedValue(new Map());
+  mockTriage.mockReset().mockResolvedValue({ skips: new Map(), gists: new Map() });
+  // Midday London, outside quiet hours, so instant pings go out at once.
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(new Date("2026-10-01T11:00:00Z"));
+});
+
+afterEach(() => {
+  vi.useRealTimers();
 });
 
 describe("checkForNewImportantMessages", () => {
@@ -182,7 +192,7 @@ describe("checkForNewImportantMessages", () => {
     registerActivePhone(user.id);
     await baseline(user.id);
     setRealPersonAlertMode(user.id, "digest");
-    mockTriage.mockResolvedValueOnce(new Map([[0, "not_personal"]]));
+    mockTriage.mockResolvedValueOnce({ skips: new Map([[0, "not_personal"]]), gists: new Map() });
 
     mockHubListNewMessages.mockResolvedValueOnce([fakeMessage({ id: "promo", from: "Shop <hi@shop.com>" })]);
     await checkForNewImportantMessages(user.id);
@@ -258,65 +268,89 @@ describe("checkForNewImportantMessages", () => {
     expect(sendWhatsAppMessage).toHaveBeenCalledTimes(1);
   });
 
-  it("greets the user by name and shows the sender's display name, never a raw email address", async () => {
-    const user = findOrCreateUserByEmail(uniqueEmail("alerts-format"));
-    registerActivePhone(user.id);
-    setSetting(user.id, "user_name", "Sam");
-    await baseline(user.id);
 
-    mockHubListNewMessages.mockResolvedValueOnce([
-      fakeMessage({
-        id: "fmt-1",
-        from: '"Jane Doe" <jane@example.com>',
-        subject: "Quick question",
-        snippet: "Are you free Thursday?",
-      }),
-    ]);
 
-    await checkForNewImportantMessages(user.id);
+});
 
-    const [, text] = vi.mocked(sendWhatsAppMessage).mock.calls[0];
-    expect(text).toContain("Sam");
-    expect(text).toContain("Jane Doe");
-    expect(text).not.toContain("@");
-    expect(text).toContain("Quick question");
-    expect(text).toContain("Are you free Thursday?");
-  });
-
-  it("omits the greeting when no name is known yet", async () => {
-    const user = findOrCreateUserByEmail(uniqueEmail("alerts-format-noname"));
+describe("people's emails are concrete", () => {
+  it("puts mail into the digest instead of pinging while onboarding is still in progress", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("alerts-onboarding-digest"));
     registerActivePhone(user.id);
     await baseline(user.id);
-
-    mockHubListNewMessages.mockResolvedValueOnce([fakeMessage({ id: "fmt-2", from: "jane@example.com" })]);
-
-    await checkForNewImportantMessages(user.id);
-
-    const [, text] = vi.mocked(sendWhatsAppMessage).mock.calls[0];
-    expect(text).not.toContain("@");
-    expect(text).toContain("jane"); // local-part fallback display name
-  });
-
-  // Same onboarding-window suppression as importantEmailAlerts.ts (see that file's test of the
-  // same name for the full rationale) — a real bug where a fresh connection's mail backlog got
-  // pushed as separate WhatsApp alerts interleaved with onboarding's own questions.
-  it("records but does not send while onboarding is still in progress", async () => {
-    const user = findOrCreateUserByEmail(uniqueEmail("alerts-mid-onboarding"));
-    registerActivePhone(user.id);
-    await baseline(user.id);
-    setPendingSetup(user.id, "ask_briefing");
-
-    mockHubListNewMessages.mockResolvedValueOnce([
-      fakeMessage({ id: "onb-1", from: "jane@example.com" }),
-      fakeMessage({ id: "onb-2", from: "bob@example.com" }),
-    ]);
+    markOnboardingConnected(user.id);
+    mockHubListNewMessages.mockResolvedValueOnce([fakeMessage({ id: "p1", from: "Jane <jane@x.com>", subject: "Hi" })]);
 
     await checkForNewImportantMessages(user.id);
 
     expect(sendWhatsAppMessage).not.toHaveBeenCalled();
-    expect(hasAlerted(user.id, "1:onb-1")).toBe(true);
-    expect(hasAlerted(user.id, "1:onb-2")).toBe(true);
-    expect(takeSuppressedOnboardingAlertCount(user.id)).toBe(2);
+    expect(queuedEmailDigestCount(user.id)).toBe(1);
+    expect(hasAlerted(user.id, "1:p1")).toBe(true);
+  });
+
+  it("instant mode sends one concrete line: bold sender, what they want, whether to reply", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("instant-gist"));
+    registerActivePhone(user.id);
+    await baseline(user.id);
+    mockHubListNewMessages.mockResolvedValueOnce([
+      fakeMessage({ id: "g1", from: '"Sarah Kim" <sarah@x.com>', subject: "Thursday" }),
+    ]);
+    mockTriage.mockResolvedValueOnce({
+      skips: new Map(),
+      gists: new Map([[0, { gist: "wants to move Thursday's call to Friday", needsReply: true }]]),
+    });
+
+    await checkForNewImportantMessages(user.id);
+
+    expect(vi.mocked(sendWhatsAppMessage).mock.calls[0][1]).toBe(
+      "📬 *Sarah Kim* — wants to move Thursday's call to Friday; needs a reply"
+    );
+  });
+
+  it("without a gist, names the sender and subject — never a raw address or snippet", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("instant-nogist"));
+    registerActivePhone(user.id);
+    await baseline(user.id);
+    mockHubListNewMessages.mockResolvedValueOnce([
+      fakeMessage({ id: "n1", from: "dave@example.com", subject: "Quote &amp; plans", snippet: "raw &lt;html&gt;" }),
+    ]);
+
+    await checkForNewImportantMessages(user.id);
+
+    expect(vi.mocked(sendWhatsAppMessage).mock.calls[0][1]).toBe('📬 *dave* emailed: "Quote & plans"');
+  });
+
+  it("in instant mode, mail past the per-check limit goes to the digest, not an 'and N more' line", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("instant-overflow"));
+    registerActivePhone(user.id);
+    await baseline(user.id);
+    mockHubListNewMessages.mockResolvedValueOnce(
+      Array.from({ length: 7 }, (_, i) => fakeMessage({ id: `o${i}`, from: `P${i} <p${i}@x.com>`, subject: `S${i}` }))
+    );
+
+    await checkForNewImportantMessages(user.id);
+
+    expect(sendWhatsAppMessage).toHaveBeenCalledTimes(5);
+    expect(queuedEmailDigestCount(user.id)).toBe(2);
+    for (const [, text] of vi.mocked(sendWhatsAppMessage).mock.calls) expect(text).not.toMatch(/more/);
+  });
+
+  it("digest mode stores the gist on the queued email", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("digest-gist"));
+    registerActivePhone(user.id);
+    setRealPersonAlertMode(user.id, "digest");
+    await baseline(user.id);
+    mockHubListNewMessages.mockResolvedValueOnce([fakeMessage({ id: "dg", from: "Sarah <s@x.com>", subject: "Thu" })]);
+    mockTriage.mockResolvedValueOnce({
+      skips: new Map(),
+      gists: new Map([[0, { gist: "wants to move the call", needsReply: true }]]),
+    });
+
+    await checkForNewImportantMessages(user.id);
+
+    expect(JSON.parse(getSetting(user.id, "email_digest_queue") ?? "[]")[0]).toMatchObject({
+      gist: "wants to move the call",
+      needsReply: true,
+    });
   });
 });
 
@@ -383,7 +417,7 @@ describe("checkForNewImportantMessages diagnostics", () => {
 
     await checkForNewImportantMessages(user.id);
 
-    expect(scanLogs().join("\n")).toMatch(new RegExp(`owner ${user.id}.*suppressed by onboarding.*1`));
+    expect(scanLogs().join("\n")).toMatch(new RegExp(`owner ${user.id}.*onboarding: queued 1 for the digest`));
   });
 
   it("names the missing registered number when there is nowhere to send", async () => {
@@ -428,7 +462,7 @@ describe("checkForNewImportantMessages triage", () => {
     const user = findOrCreateUserByEmail(uniqueEmail("triage-skip"));
     registerActivePhone(user.id);
     await baseline(user.id);
-    mockTriage.mockResolvedValueOnce(new Map([[0, "not_personal"]]));
+    mockTriage.mockResolvedValueOnce({ skips: new Map([[0, "not_personal"]]), gists: new Map() });
     mockHubListNewMessages.mockResolvedValue([
       fakeMessage({ id: "promo", from: "UNiDAYS <hello@myunidays.com>", subject: "VIP access" }),
     ]);
@@ -445,7 +479,7 @@ describe("checkForNewImportantMessages triage", () => {
     const user = findOrCreateUserByEmail(uniqueEmail("triage-partial"));
     registerActivePhone(user.id);
     await baseline(user.id);
-    mockTriage.mockResolvedValueOnce(new Map([[0, "not_personal"]]));
+    mockTriage.mockResolvedValueOnce({ skips: new Map([[0, "not_personal"]]), gists: new Map() });
     mockHubListNewMessages.mockResolvedValueOnce([
       fakeMessage({ id: "promo", subject: "Big sale" }),
       fakeMessage({ id: "friend", subject: "Dinner?" }),
@@ -486,18 +520,4 @@ describe("checkForNewImportantMessages triage", () => {
     expect(sendWhatsAppMessage).toHaveBeenCalledTimes(1);
   });
 
-  it("sends a tidied preview: entities decoded", async () => {
-    const user = findOrCreateUserByEmail(uniqueEmail("triage-tidy"));
-    registerActivePhone(user.id);
-    await baseline(user.id);
-    mockHubListNewMessages.mockResolvedValueOnce([
-      fakeMessage({ id: "t-1", snippet: "Room type: everyone&#39;s favourite Pod-Style." }),
-    ]);
-
-    await checkForNewImportantMessages(user.id);
-
-    const text = vi.mocked(sendWhatsAppMessage).mock.calls[0][1] as string;
-    expect(text).toContain("everyone's favourite Pod-Style.");
-    expect(text).not.toContain("&#39;");
-  });
 });

@@ -109,12 +109,8 @@ async function askTeams(ownerId: number, phone: string): Promise<void> {
   setPendingSetup(ownerId, "ask_teams");
 }
 
-// Note: this does NOT mention any important-mail backlog the proactive scanners may have found
-// but held back (see onboardingAlertSuppression.ts) — an earlier version of this fix tried to
-// report that here, but by the time this runs the backlog usually hasn't been discovered yet
-// (the onboarding chain above typically finishes in well under a minute, while the scanners run
-// on a global 5-minute tick unrelated to this moment). flushOnboardingAlertSummaryIfDue
-// (scheduler.ts) reports it later instead, as its own message, once it's actually known.
+// Note: this never mentions mail found while setting up — people's emails go to the evening
+// digest and everything else through the attention gate (attention.ts), each concretely.
 async function sendClosingMessage(phone: string): Promise<void> {
   await reply(
     phone,

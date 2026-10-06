@@ -29,6 +29,7 @@ import {
   appendWhatsAppMessage,
   setMemoryExtractionCursor,
   getMemoryExtractionCursor,
+  insertAttentionItem,
 } from "./store.js";
 
 let counter = 0;
@@ -38,6 +39,23 @@ function uniqueEmail(prefix: string): string {
 }
 
 describe("deleteUserCompletely", () => {
+  it("does not throw when the owner has an attention_items row", () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("attention-item"));
+    insertAttentionItem(user.id, {
+      eventKey: "ref:DEL123",
+      source: "email",
+      category: "reservation_confirmed",
+      tier: "scheduled",
+      status: "pending",
+      details: { summary: "Your *Hilton* stay." },
+      surfaceAt: Date.now(),
+    });
+
+    expect(() => deleteUserCompletely(user.id)).not.toThrow();
+    expect(getUser(user.id)).toBeNull();
+    expect(findRemainingOwnerReferences(user.id)).toEqual([]);
+  });
+
   // Regression test: pending_setup and pending_actions both declare
   // `owner_id INTEGER NOT NULL REFERENCES users(id)`. Before this fix, deleteUserCompletely never
   // cleared either table, so deleting a user who'd gone through post-connect setup (pending_setup)

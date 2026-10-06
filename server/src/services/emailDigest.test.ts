@@ -47,6 +47,8 @@ const {
 const { queueForEmailDigest, flushEmailDigestIfDue, queuedEmailDigestCount, staticDigestMessage } = await import(
   "./emailDigest.js"
 );
+const { submitAttentionItem } = await import("./attention.js");
+const { saveBriefingSettings } = await import("./briefing.js");
 const { setEmailDigestTime, setRealPersonAlertMode, setRealPersonAlertsEnabled } = await import(
   "./emailAlertSettings.js"
 );
@@ -244,6 +246,86 @@ describe("flushEmailDigestIfDue", () => {
     expect(lastCall!.facts).toContain('Markos, Steven: "RE: Compliance Follow-up" (and 1 more on the same thread)');
   });
 
+  it("hands the model each sender's gist and whether they're waiting on a reply", async () => {
+    const user = newUser("digest-gist");
+    registerActivePhone(user.id);
+    queueForEmailDigest(user.id, [
+      { ...email("m1", "Sarah Kim <s@x.com>", "Thu"), gist: "wants to move Thursday's call", needsReply: true },
+    ]);
+
+    setLocalTime("21:05");
+    await flushEmailDigestIfDue(user.id);
+
+    expect(lastCall!.facts).toContain(
+      'Sarah Kim: "Thu" — what they want: wants to move Thursday\'s call (waiting on a reply)'
+    );
+  });
+
+  it("carries attention items when the morning briefing is off, then marks them done", async () => {
+    const user = newUser("digest-attention");
+    registerActivePhone(user.id);
+    setLocalTime("12:00");
+    await submitAttentionItem(user.id, {
+      source: "email",
+      category: "refund_dispute",
+      details: { summary: "Your *Amazon* refund of *£24* was approved." },
+      fallbackKey: "msg:1:refund",
+    });
+    setLocalTime("21:05");
+    await flushEmailDigestIfDue(user.id);
+    expect(sendWhatsAppMessage).toHaveBeenCalledTimes(1);
+    expect(lastCall!.facts).toContain("No emails from people today.");
+    expect(lastCall!.facts).toContain("Worth knowing: Your *Amazon* refund of *£24* was approved.");
+
+    vi.mocked(sendWhatsAppMessage).mockClear();
+    setLocalTime("21:05", 11);
+    await flushEmailDigestIfDue(user.id);
+    expect(sendWhatsAppMessage).not.toHaveBeenCalled();
+  });
+
+  it("leaves non-urgent items for the morning briefing when it's on", async () => {
+    const user = newUser("digest-briefing-on");
+    registerActivePhone(user.id);
+    saveBriefingSettings(user.id, {
+      enabled: true,
+      includeNews: false,
+      topics: [],
+      includeMarkets: false,
+      tickers: [],
+      includeWeather: false,
+      weatherLocation: "",
+      proactive: true,
+      sendTime: "07:30",
+    });
+    setLocalTime("12:00");
+    await submitAttentionItem(user.id, {
+      source: "email",
+      category: "refund_dispute",
+      details: { summary: "Your *Amazon* refund of *£24* was approved." },
+      fallbackKey: "msg:1:refund2",
+    });
+    setLocalTime("21:05");
+    await flushEmailDigestIfDue(user.id);
+    expect(sendWhatsAppMessage).not.toHaveBeenCalled();
+  });
+
+  it("still sends attention items when people's email alerts are off", async () => {
+    const user = newUser("digest-people-off");
+    registerActivePhone(user.id);
+    setRealPersonAlertsEnabled(user.id, false);
+    setLocalTime("12:00");
+    await submitAttentionItem(user.id, {
+      source: "email",
+      category: "refund_dispute",
+      details: { summary: "Your *Amazon* refund of *£24* was approved." },
+      fallbackKey: "msg:1:refund3",
+    });
+    setLocalTime("21:05");
+    await flushEmailDigestIfDue(user.id);
+    expect(sendWhatsAppMessage).toHaveBeenCalledTimes(1);
+    expect(lastCall!.facts).toContain("*Amazon*");
+  });
+
   it("keeps the queue and retries when WhatsApp isn't configured or there is no number", async () => {
     const user = newUser("digest-undeliverable");
     queueForEmailDigest(user.id, [email("m1", "Sarah <sarah@example.com>", "Hi")]);
@@ -319,7 +401,7 @@ describe("flushEmailDigestIfDue", () => {
     expect(body).toContain("Sarah");
     expect(body).toContain("trying something new");
     expect(body).toContain("9pm");
-    expect(body).toContain("flights");
+    expect(body).toContain("flight changes");
     // The buttons carry the answer, so the text doesn't tell them to type one.
     expect(body).not.toContain("Reply");
     expect(buttons.map((b) => b.title)).toEqual(["Keep daily summary", "Ping me instantly", "Different time"]);

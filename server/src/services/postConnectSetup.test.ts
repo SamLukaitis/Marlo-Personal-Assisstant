@@ -37,8 +37,7 @@ const { findOrCreateUserByEmail, getPendingSetup, getEnabledTools, getSetting, s
   await import("../db/store.js");
 const { getBriefingSettings, saveBriefingSettings } = await import("./briefing.js");
 const { userLocalClock } = await import("./userTimezone.js");
-const { incrementSuppressedOnboardingAlerts, takeSuppressedOnboardingAlertCount, isOnboardingSuppressionActive } =
-  await import("./onboardingAlertSuppression.js");
+const { isOnboardingSuppressionActive } = await import("./onboardingAlertSuppression.js");
 
 let counter = 0;
 function uniqueEmail(prefix: string): string {
@@ -603,16 +602,11 @@ describe("handlePostConnectSetupReply", () => {
     expect(getPendingSetup(ownerId)).toBeNull();
   });
 
-  // The closing message deliberately does NOT report a suppressed-alert backlog itself anymore —
-  // see the comment on sendClosingMessage. By the time this runs, the backlog usually hasn't even
-  // been discovered yet (the chain above typically finishes in well under a minute; the scanners
-  // run on scheduler.ts's own 5-minute tick, unrelated to this moment) — an earlier version of
-  // this fix reported it here and that mismatch was itself a bug. scheduler.ts's
-  // flushOnboardingAlertSummaryIfDue reports it later instead, as its own message.
-  it("never mentions a suppressed-alert backlog in the closing message, even if one exists at this moment", async () => {
+  // The closing message never reports mail found during setup — that goes to the digest (people)
+  // or the attention gate (everything else), each concretely.
+  it("never mentions an inbox backlog in the closing message", async () => {
     const ownerId = newOwnerId();
     await pastFirstTask(ownerId);
-    incrementSuppressedOnboardingAlerts(ownerId, 3);
 
     await handlePostConnectSetupReply(ownerId, tap("briefing_no"));
 
@@ -621,7 +615,6 @@ describe("handlePostConnectSetupReply", () => {
     // message's own feedback line ("any request I can't meet already gets flagged") is about
     // feature requests, not mail, and must not trip this.
     expect(closingCall?.[1]).not.toMatch(/inbox|unread|already (found|seen|spotted|noticed)/i);
-    expect(takeSuppressedOnboardingAlertCount(ownerId)).toBe(3); // left untouched for the scheduler to report
   });
 });
 

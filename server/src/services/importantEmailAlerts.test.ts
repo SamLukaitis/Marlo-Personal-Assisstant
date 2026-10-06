@@ -1,5 +1,5 @@
 // server/src/services/importantEmailAlerts.test.ts
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 vi.mock("../providers/whatsapp.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../providers/whatsapp.js")>();
@@ -32,6 +32,11 @@ vi.mock("./importantEmailClassifier.js", async (importOriginal) => {
   return { ...actual, classifyImportantEmails: (...args: unknown[]) => mockClassify(...args) };
 });
 
+const mockEnrich = vi.fn();
+vi.mock("./importantEmailEnrichment.js", () => ({
+  enrichImportantEmail: (...args: unknown[]) => mockEnrich(...args),
+}));
+
 const { sendWhatsAppMessage, sendWhatsAppTemplate, isWhatsAppConfigured } = await import("../providers/whatsapp.js");
 const {
   findOrCreateUserByEmail,
@@ -43,11 +48,12 @@ const {
   setPendingSetup,
   clearPendingSetup,
   getWhatsAppHistory,
+  getAttentionItem,
 } = await import("../db/store.js");
+const { setUserTimezone } = await import("./userTimezone.js");
 const { markOnboardingConnected } = await import("./onboardingAlertSuppression.js");
 const {
   checkForImportantEmails,
-  formatImportantEmailAlert,
   scanAndCurateImportantEmailsForOnboarding,
   IMPORTANT_EMAIL_ENTITY_TYPE,
 } = await import("./importantEmailAlerts.js");
@@ -77,6 +83,7 @@ function registerActivePhone(ownerId: number): string {
   const phone = freshPhone();
   addPhoneNumberForUser(ownerId, phone);
   recordInboundMessage(phone);
+  setUserTimezone(ownerId, "Europe/London");
   return phone;
 }
 
@@ -117,9 +124,17 @@ beforeEach(() => {
   vi.mocked(isWhatsAppConfigured).mockReset().mockReturnValue(true);
   mockHubListNewMessages.mockReset();
   mockHubListMessages.mockReset();
-  mockHubGetMessage.mockReset();
+  mockHubGetMessage.mockReset().mockResolvedValue({ body: "email body" });
+  mockEnrich.mockReset().mockResolvedValue(null);
+  // Midday London, outside quiet hours, so interrupts send at once.
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(new Date("2026-10-01T11:00:00Z"));
   mockHoldCheckpoint.mockReset();
   mockClassify.mockReset().mockResolvedValue(new Map());
+});
+
+afterEach(() => {
+  vi.useRealTimers();
 });
 
 describe("checkForImportantEmails", () => {
@@ -238,7 +253,7 @@ describe("checkForImportantEmails", () => {
     mockHubListNewMessages.mockResolvedValueOnce([
       fakeMessage({ id: "flight-ref-1", accountId: 9, subject: "Your flight changed" }),
     ]);
-    mockClassify.mockResolvedValueOnce(new Map([[0, { category: "flight_change", summary: "Gate moved." }]]));
+    mockClassify.mockResolvedValueOnce(new Map([[0, { category: "flight_change", summary: "Your gate moved to *B12*." }]]));
 
     await checkForImportantEmails(user.id);
 
@@ -247,6 +262,79 @@ describe("checkForImportantEmails", () => {
     const last = getWhatsAppHistory(phone).at(-1)!;
     expect(last.content).toContain("account_id=9");
     expect(last.content).toContain("message_id=flight-ref-1");
+  });
+
+  it("interrupts at once for a flight change, using the enriched summary", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("ie-flight"));
+    registerActivePhone(user.id);
+    await baseline(user.id);
+    mockHubListNewMessages.mockResolvedValueOnce([fakeMessage({ id: "f1", subject: "Schedule change" })]);
+    mockClassify.mockResolvedValueOnce(
+      new Map([[0, { category: "flight_change", summary: "Flight changed", needsAction: false }]])
+    );
+    mockEnrich.mockResolvedValueOnce({
+      summary: "Your *BA 432* now leaves *09:55*.",
+      flightNumber: "BA432",
+      eventStart: "2026-10-03T09:55:00+01:00",
+    });
+
+    await checkForImportantEmails(user.id);
+
+    expect(sendWhatsAppMessage).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(sendWhatsAppMessage).mock.calls[0][1]).toBe("✈️ Your *BA 432* now leaves *09:55*.");
+    expect(hasAlerted(user.id, "important-email:1:f1")).toBe(true);
+  });
+
+  it("stays silent for a booking confirmation and schedules a reminder instead", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("ie-booking"));
+    registerActivePhone(user.id);
+    await baseline(user.id);
+    mockHubListNewMessages.mockResolvedValueOnce([fakeMessage({ id: "h1", subject: "Booking confirmed" })]);
+    mockClassify.mockResolvedValueOnce(
+      new Map([[0, { category: "reservation_confirmed", summary: "Booked", needsAction: false }]])
+    );
+    mockEnrich.mockResolvedValueOnce({
+      summary: "Your *Hilton Lisbon* stay, *12–15 Dec*.",
+      kind: "hotel",
+      eventStart: "2099-12-12",
+      reference: "HLT999",
+    });
+
+    await checkForImportantEmails(user.id);
+
+    expect(sendWhatsAppMessage).not.toHaveBeenCalled();
+    expect(getAttentionItem(user.id, "ref:HLT999")?.tier).toBe("scheduled");
+    expect(hasAlerted(user.id, "important-email:1:h1")).toBe(true);
+  });
+
+  it("drops routine delivery updates without enriching them", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("ie-delivery"));
+    registerActivePhone(user.id);
+    await baseline(user.id);
+    mockHubListNewMessages.mockResolvedValueOnce([fakeMessage({ id: "d1", subject: "Out for delivery" })]);
+    mockClassify.mockResolvedValueOnce(
+      new Map([[0, { category: "delivery_notification", summary: "Out for delivery", needsAction: false }]])
+    );
+
+    await checkForImportantEmails(user.id);
+
+    expect(mockEnrich).not.toHaveBeenCalled();
+    expect(sendWhatsAppMessage).not.toHaveBeenCalled();
+  });
+
+  it("falls back to the classifier's summary when enrichment fails", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("ie-enrich-fail"));
+    registerActivePhone(user.id);
+    await baseline(user.id);
+    mockHubListNewMessages.mockResolvedValueOnce([fakeMessage({ id: "s1", subject: "New sign-in" })]);
+    mockClassify.mockResolvedValueOnce(
+      new Map([[0, { category: "security_alert", summary: "New sign-in to your *Google* account.", needsAction: false }]])
+    );
+    mockEnrich.mockRejectedValueOnce(new Error("boom"));
+
+    await checkForImportantEmails(user.id);
+
+    expect(vi.mocked(sendWhatsAppMessage).mock.calls[0][1]).toBe("🔐 New sign-in to your *Google* account.");
   });
 
   it("sends a WhatsApp alert for a classified match, formatted with the category", async () => {
@@ -258,7 +346,7 @@ describe("checkForImportantEmails", () => {
       fakeMessage({ id: "flight-1", subject: "Your flight changed" }),
     ]);
     mockClassify.mockResolvedValueOnce(
-      new Map([[0, { category: "flight_change", summary: "Your gate moved to B12." }]])
+      new Map([[0, { category: "flight_change", summary: "Your gate moved to *B12*." }]])
     );
 
     await checkForImportantEmails(user.id);
@@ -267,27 +355,11 @@ describe("checkForImportantEmails", () => {
     const [sentTo, text] = vi.mocked(sendWhatsAppMessage).mock.calls[0];
     expect(sentTo).toBe(phone);
     expect(text).toContain("✈️");
-    expect(text).toContain("Your gate moved to B12.");
+    expect(text).toContain("Your gate moved to *B12*.");
     expect(text).not.toContain("@"); // never a raw email address in the visible text
     expect(hasAlerted(user.id, "important-email:1:flight-1")).toBe(true);
   });
 
-  it("greets the user by their saved name when one is set", async () => {
-    const user = findOrCreateUserByEmail(uniqueEmail("named"));
-    registerActivePhone(user.id);
-    setSetting(user.id, "user_name", "Sam");
-    await baseline(user.id);
-
-    mockHubListNewMessages.mockResolvedValueOnce([fakeMessage({ id: "flight-named" })]);
-    mockClassify.mockResolvedValueOnce(
-      new Map([[0, { category: "flight_change", summary: "Your gate moved to B12." }]])
-    );
-
-    await checkForImportantEmails(user.id);
-
-    const [, text] = vi.mocked(sendWhatsAppMessage).mock.calls[0];
-    expect(text).toBe("✈️ Sam, Your gate moved to B12.");
-  });
 
   it("does not re-classify or re-alert the same message on a later tick", async () => {
     const user = findOrCreateUserByEmail(uniqueEmail("dedup"));
@@ -295,7 +367,7 @@ describe("checkForImportantEmails", () => {
     await baseline(user.id);
 
     mockHubListNewMessages.mockResolvedValue([fakeMessage({ id: "flight-2" })]);
-    mockClassify.mockResolvedValue(new Map([[0, { category: "flight_change", summary: "" }]]));
+    mockClassify.mockResolvedValue(new Map([[0, { category: "flight_change", summary: "Your gate moved to *B12*." }]]));
 
     await checkForImportantEmails(user.id);
     await checkForImportantEmails(user.id);
@@ -349,19 +421,6 @@ describe("checkForImportantEmails", () => {
     expect(mockHoldCheckpoint).toHaveBeenCalledWith(user.id);
   });
 
-  it("holds the mail checkpoint when an alert fails to deliver", async () => {
-    const user = findOrCreateUserByEmail(uniqueEmail("deliver-fail-hold"));
-    registerActivePhone(user.id);
-    await baseline(user.id);
-
-    mockHubListNewMessages.mockResolvedValueOnce([fakeMessage({ id: "fail-hold-1" })]);
-    mockClassify.mockResolvedValueOnce(new Map([[0, { category: "invoice_due", summary: "" }]]));
-    vi.mocked(sendWhatsAppMessage).mockRejectedValueOnce(new Error("network down"));
-
-    await checkForImportantEmails(user.id);
-
-    expect(mockHoldCheckpoint).toHaveBeenCalledWith(user.id);
-  });
 
   it("does not hold the checkpoint when everything was handled", async () => {
     const user = findOrCreateUserByEmail(uniqueEmail("all-handled-no-hold"));
@@ -377,44 +436,7 @@ describe("checkForImportantEmails", () => {
     expect(mockHoldCheckpoint).not.toHaveBeenCalled();
   });
 
-  it("leaves a matched message unmarked (retriable) when delivery fails", async () => {
-    const user = findOrCreateUserByEmail(uniqueEmail("deliver-fail"));
-    const phone = registerActivePhone(user.id);
-    await baseline(user.id);
 
-    mockHubListNewMessages.mockResolvedValueOnce([fakeMessage({ id: "fail-1" })]);
-    mockClassify.mockResolvedValueOnce(new Map([[0, { category: "invoice_due", summary: "" }]]));
-    vi.mocked(sendWhatsAppMessage).mockRejectedValueOnce(new Error("network down"));
-
-    await checkForImportantEmails(user.id);
-
-    expect(hasAlerted(user.id, "important-email:1:fail-1")).toBe(false);
-  });
-
-  it("on retry after a partial failure, only resends to the number that missed it", async () => {
-    const user = findOrCreateUserByEmail(uniqueEmail("deliver-partial"));
-    registerActivePhone(user.id);
-    const second = registerActivePhone(user.id);
-    await baseline(user.id);
-
-    const msg = fakeMessage({ id: "partial-1" });
-    const classified = new Map([[0, { category: "invoice_due", summary: "" }]]);
-    mockHubListNewMessages.mockResolvedValueOnce([msg]);
-    mockClassify.mockResolvedValueOnce(classified);
-    vi.mocked(sendWhatsAppMessage).mockImplementation(async (to: string) => {
-      if (to === second) throw new Error("network down");
-    });
-    await checkForImportantEmails(user.id);
-    expect(hasAlerted(user.id, "important-email:1:partial-1")).toBe(false);
-
-    vi.mocked(sendWhatsAppMessage).mockReset().mockResolvedValue(undefined);
-    mockHubListNewMessages.mockResolvedValueOnce([msg]);
-    mockClassify.mockResolvedValueOnce(classified);
-    await checkForImportantEmails(user.id);
-
-    expect(vi.mocked(sendWhatsAppMessage).mock.calls.map((c) => c[0])).toEqual([second]);
-    expect(hasAlerted(user.id, "important-email:1:partial-1")).toBe(true);
-  });
 
   it("leaves a matched message unmarked when WhatsApp isn't configured", async () => {
     const user = findOrCreateUserByEmail(uniqueEmail("not-configured"));
@@ -452,7 +474,7 @@ describe("checkForImportantEmails", () => {
       fakeMessage({ id: "flight-entity", subject: "Your flight changed", from: "no-reply@delta.com" }),
     ]);
     mockClassify.mockResolvedValueOnce(
-      new Map([[0, { category: "flight_change", summary: "Your gate moved to B12." }]])
+      new Map([[0, { category: "flight_change", summary: "Your gate moved to *B12*." }]])
     );
 
     await checkForImportantEmails(user.id);
@@ -466,53 +488,11 @@ describe("checkForImportantEmails", () => {
       category: "flight_change",
       subject: "Your flight changed",
       from: "no-reply@delta.com",
-      summary: "Your gate moved to B12.",
+      summary: "Your gate moved to *B12*.",
     });
   });
 
-  it("does not store an entity when delivery fails", async () => {
-    const user = findOrCreateUserByEmail(uniqueEmail("entity-deliver-fail"));
-    registerActivePhone(user.id);
-    await baseline(user.id);
 
-    mockHubListNewMessages.mockResolvedValueOnce([fakeMessage({ id: "fail-entity" })]);
-    mockClassify.mockResolvedValueOnce(new Map([[0, { category: "invoice_due", summary: "" }]]));
-    vi.mocked(sendWhatsAppMessage).mockRejectedValueOnce(new Error("network down"));
-
-    await checkForImportantEmails(user.id);
-
-    expect(listEntities(user.id, { type: IMPORTANT_EMAIL_ENTITY_TYPE })).toHaveLength(0);
-  });
-
-  it("caps alerts per tick and sends a summary for the overflow", async () => {
-    const user = findOrCreateUserByEmail(uniqueEmail("cap"));
-    const phone = registerActivePhone(user.id);
-    await baseline(user.id);
-
-    // MAX_ALERTS_PER_CHECK is 5 — six matches means the sixth goes into the overflow summary.
-    const messages = Array.from({ length: 6 }, (_, i) =>
-      fakeMessage({ id: `cap-${i}`, subject: `Notice ${i}` })
-    );
-    mockHubListNewMessages.mockResolvedValueOnce(messages);
-    const classified = new Map<number, { category: "invoice_due"; summary: string }>();
-    for (let i = 0; i < 6; i++) classified.set(i, { category: "invoice_due", summary: "" });
-    mockClassify.mockResolvedValueOnce(classified);
-
-    await checkForImportantEmails(user.id);
-
-    // 5 individual alerts + 1 overflow summary = 6 sends.
-    expect(sendWhatsAppMessage).toHaveBeenCalledTimes(6);
-    const lastCall = vi.mocked(sendWhatsAppMessage).mock.calls[5];
-    expect(lastCall[1]).toContain("1 more");
-    // Marlowe offers to go through it — never sends the user off to do it themselves.
-    expect(lastCall[1]).toContain("just ask and I'll run through it");
-    expect(lastCall[1]).not.toMatch(/check your inbox/i);
-    for (let i = 0; i < 6; i++) {
-      expect(hasAlerted(user.id, `important-email:1:cap-${i}`)).toBe(true);
-    }
-    // The overflow email is stored too, so list_flagged_emails can answer "what was the other one?"
-    expect(listEntities(user.id, { type: IMPORTANT_EMAIL_ENTITY_TYPE })).toHaveLength(6);
-  });
 
   // Alerts must never interleave with postConnectSetup's own questions — they wait (unmarked,
   // checkpoint held) until the closing message, then go out individually as normal.
@@ -526,7 +506,7 @@ describe("checkForImportantEmails", () => {
 
     const msg = fakeMessage({ id: "mid-chain", subject: "Flight changed" });
     mockHubListNewMessages.mockResolvedValueOnce([msg]);
-    mockClassify.mockResolvedValue(new Map([[0, { category: "flight_change", summary: "Gate moved." }]]));
+    mockClassify.mockResolvedValue(new Map([[0, { category: "flight_change", summary: "Your gate moved to *B12*." }]]));
 
     await checkForImportantEmails(user.id);
 
@@ -552,7 +532,7 @@ describe("checkForImportantEmails", () => {
     markOnboardingConnected(user.id);
 
     mockHubListNewMessages.mockResolvedValueOnce([fakeMessage({ id: "early", subject: "Flight changed" })]);
-    mockClassify.mockResolvedValueOnce(new Map([[0, { category: "flight_change", summary: "Gate moved." }]]));
+    mockClassify.mockResolvedValueOnce(new Map([[0, { category: "flight_change", summary: "Your gate moved to *B12*." }]]));
 
     await checkForImportantEmails(user.id);
 
@@ -569,7 +549,7 @@ describe("checkForImportantEmails", () => {
     expect(await scanAndCurateImportantEmailsForOnboarding(user.id)).toBeNull();
 
     mockHubListNewMessages.mockResolvedValueOnce([fakeMessage({ id: "first-real", subject: "Flight changed" })]);
-    mockClassify.mockResolvedValueOnce(new Map([[0, { category: "flight_change", summary: "Gate moved." }]]));
+    mockClassify.mockResolvedValueOnce(new Map([[0, { category: "flight_change", summary: "Your gate moved to *B12*." }]]));
     await checkForImportantEmails(user.id);
 
     expect(sendWhatsAppMessage).toHaveBeenCalledTimes(1);
@@ -583,7 +563,7 @@ describe("checkForImportantEmails", () => {
     setPendingSetup(user.id, "ask_briefing");
 
     mockHubListNewMessages.mockResolvedValueOnce([fakeMessage({ id: "late", subject: "Flight changed" })]);
-    mockClassify.mockResolvedValueOnce(new Map([[0, { category: "flight_change", summary: "Gate moved." }]]));
+    mockClassify.mockResolvedValueOnce(new Map([[0, { category: "flight_change", summary: "Your gate moved to *B12*." }]]));
 
     await checkForImportantEmails(user.id);
 
@@ -719,7 +699,7 @@ describe("scanAndCurateImportantEmailsForOnboarding", () => {
     const user = findOrCreateUserByEmail(uniqueEmail("onboard-no-repeat"));
     const msg = fakeMessage({ id: "seen-1", subject: "Flight changed" });
     mockHubListMessages.mockResolvedValueOnce([msg]);
-    mockClassify.mockResolvedValueOnce(new Map([[0, { category: "flight_change", summary: "Gate moved." }]]));
+    mockClassify.mockResolvedValueOnce(new Map([[0, { category: "flight_change", summary: "Your gate moved to *B12*." }]]));
     await scanAndCurateImportantEmailsForOnboarding(user.id);
 
     mockClassify.mockClear();
@@ -796,7 +776,7 @@ describe("checkForImportantEmails — invoice forward offer", () => {
     mockHubListNewMessages.mockResolvedValueOnce([
       fakeMessage({ id: "inv-1", subject: "Invoice from Acme" }),
     ]);
-    mockClassify.mockResolvedValueOnce(new Map([[0, { category: "invoice_due", summary: "" }]]));
+    mockClassify.mockResolvedValueOnce(new Map([[0, { category: "invoice_due", summary: "Your *Acme* invoice for *£120* is due.", needsAction: true }]]));
     mockHubGetMessage.mockResolvedValueOnce({
       attachments: [{ id: "att-1", filename: "invoice.pdf", mimeType: "application/pdf", size: 100 }],
     });
@@ -818,11 +798,10 @@ describe("checkForImportantEmails — invoice forward offer", () => {
     await baseline(user.id);
 
     mockHubListNewMessages.mockResolvedValueOnce([fakeMessage({ id: "inv-2" })]);
-    mockClassify.mockResolvedValueOnce(new Map([[0, { category: "invoice_due", summary: "" }]]));
+    mockClassify.mockResolvedValueOnce(new Map([[0, { category: "invoice_due", summary: "Your *Acme* invoice for *£120* is due.", needsAction: true }]]));
 
     await checkForImportantEmails(user.id);
 
-    expect(mockHubGetMessage).not.toHaveBeenCalled();
     const [, text] = vi.mocked(sendWhatsAppMessage).mock.calls[0];
     expect(text).not.toContain("Reply");
     expect(getPendingInvoiceForward(user.id)).toBeNull();
@@ -835,7 +814,7 @@ describe("checkForImportantEmails — invoice forward offer", () => {
     await baseline(user.id);
 
     mockHubListNewMessages.mockResolvedValueOnce([fakeMessage({ id: "inv-3" })]);
-    mockClassify.mockResolvedValueOnce(new Map([[0, { category: "invoice_due", summary: "" }]]));
+    mockClassify.mockResolvedValueOnce(new Map([[0, { category: "invoice_due", summary: "Your *Acme* invoice for *£120* is due.", needsAction: true }]]));
     mockHubGetMessage.mockResolvedValueOnce({ attachments: [] });
 
     await checkForImportantEmails(user.id);
@@ -854,7 +833,7 @@ describe("checkForImportantEmails — invoice forward offer", () => {
     await baseline(user.id);
 
     mockHubListNewMessages.mockResolvedValueOnce([fakeMessage({ id: "inv-text", subject: "Your receipt" })]);
-    mockClassify.mockResolvedValueOnce(new Map([[0, { category: "invoice_due", summary: "" }]]));
+    mockClassify.mockResolvedValueOnce(new Map([[0, { category: "invoice_due", summary: "Your *Acme* invoice for *£120* is due.", needsAction: true }]]));
     mockHubGetMessage.mockResolvedValueOnce({ attachments: [], body: "Thanks for your payment of £22.80." });
 
     await checkForImportantEmails(user.id);
@@ -864,8 +843,9 @@ describe("checkForImportantEmails — invoice forward offer", () => {
     expect(getPendingInvoiceForward(user.id)).toMatchObject({ messageId: "inv-text" });
   });
 
-  it("only offers the CTA once per tick even with multiple invoice_due matches", async () => {
-    const user = findOrCreateUserByEmail(uniqueEmail("invoice-single-slot"));
+
+  it("offers each invoice as it's sent; the single pending slot holds the latest", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("invoice-latest-slot"));
     registerActivePhone(user.id);
     setXeroForwardingEmail(user.id, "abc123@bills.xero.com");
     await baseline(user.id);
@@ -876,8 +856,8 @@ describe("checkForImportantEmails — invoice forward offer", () => {
     ]);
     mockClassify.mockResolvedValueOnce(
       new Map([
-        [0, { category: "invoice_due", summary: "" }],
-        [1, { category: "invoice_due", summary: "" }],
+        [0, { category: "invoice_due", summary: "Your *Acme* invoice for *£120* is due.", needsAction: true }],
+        [1, { category: "invoice_due", summary: "Your *Beta* invoice for *£80* is due.", needsAction: true }],
       ])
     );
     mockHubGetMessage.mockResolvedValue({
@@ -886,10 +866,9 @@ describe("checkForImportantEmails — invoice forward offer", () => {
 
     await checkForImportantEmails(user.id);
 
-    expect(mockHubGetMessage).toHaveBeenCalledTimes(1);
-    const secondText = vi.mocked(sendWhatsAppMessage).mock.calls[1][1];
-    expect(secondText).not.toContain("Reply");
-    expect(getPendingInvoiceForward(user.id)).toMatchObject({ messageId: "inv-a" });
+    expect(sendWhatsAppMessage).toHaveBeenCalledTimes(2);
+    for (const [, text] of vi.mocked(sendWhatsAppMessage).mock.calls) expect(text).toContain('Reply "yes"');
+    expect(getPendingInvoiceForward(user.id)).toMatchObject({ messageId: "inv-b" });
   });
 
   it("does not set pending state when delivery of the offer fails", async () => {
@@ -899,7 +878,7 @@ describe("checkForImportantEmails — invoice forward offer", () => {
     await baseline(user.id);
 
     mockHubListNewMessages.mockResolvedValueOnce([fakeMessage({ id: "inv-4" })]);
-    mockClassify.mockResolvedValueOnce(new Map([[0, { category: "invoice_due", summary: "" }]]));
+    mockClassify.mockResolvedValueOnce(new Map([[0, { category: "invoice_due", summary: "Your *Acme* invoice for *£120* is due.", needsAction: true }]]));
     mockHubGetMessage.mockResolvedValueOnce({
       attachments: [{ id: "att-1", filename: "invoice.pdf", mimeType: "application/pdf", size: 100 }],
     });
@@ -911,41 +890,3 @@ describe("checkForImportantEmails — invoice forward offer", () => {
   });
 });
 
-describe("formatImportantEmailAlert", () => {
-  it("greets the user by name, leads with the emoji, and shows no email address or robotic label/subject", () => {
-    const text = formatImportantEmailAlert(
-      fakeMessage({ subject: "Your invoice is due", from: "billing@vendor.com", snippet: "£120 due 1 Sep" }),
-      "invoice_due",
-      "Sam"
-    );
-    expect(text).toBe("💳 Sam, £120 due 1 Sep");
-    expect(text).not.toContain("@");
-    expect(text).not.toContain("Invoice/payment due");
-    expect(text).not.toContain("Your invoice is due"); // the raw subject line, not the summary/snippet
-  });
-
-  it("omits the greeting entirely when no name is known yet", () => {
-    const text = formatImportantEmailAlert(
-      fakeMessage({ snippet: "£120 due 1 Sep" }),
-      "invoice_due",
-      null
-    );
-    expect(text).toBe("💳 £120 due 1 Sep");
-  });
-
-  it("falls back to the raw snippet when no summary is given", () => {
-    const text = formatImportantEmailAlert(fakeMessage({ snippet: "£120 due 1 Sep" }), "invoice_due", "Sam");
-    expect(text).toContain("£120 due 1 Sep");
-  });
-
-  it("prefers the model-written summary (which may carry *bold* markers) over the raw snippet", () => {
-    const text = formatImportantEmailAlert(
-      fakeMessage({ snippet: "You&#39;ve got an invoice&hellip; view it here..." }),
-      "invoice_due",
-      "Sam",
-      "*£120* is due on *1 September*."
-    );
-    expect(text).toContain("*£120* is due on *1 September*.");
-    expect(text).not.toContain("&#39;");
-  });
-});
