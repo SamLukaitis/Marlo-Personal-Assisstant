@@ -94,22 +94,12 @@ export async function sendJoyceTypingIndicator(messageId: string): Promise<void>
   });
 }
 
-/** A photo or file attached to an inbound message. The bytes are fetched separately. */
-export interface JoyceInboundMedia {
-  mediaId: string;
-  mimeType: string;
-  /** Only documents carry one; WhatsApp photos arrive unnamed. */
-  filename?: string;
-}
-
 export interface JoyceInboundMessage {
   /** The number that sent it. */
   from: string;
   /** Meta's id for this message, used for dedupe and the typing indicator. */
   messageId: string;
-  /** The message text, or a photo/file's caption ("" when it has none). */
   text: string;
-  media?: JoyceInboundMedia;
   /** Which of our numbers it was addressed to — see extractJoyceMessages. */
   toPhoneNumberId: string | undefined;
 }
@@ -124,8 +114,6 @@ interface WebhookPayload {
           id?: string;
           type?: string;
           text?: { body?: string };
-          image?: { id?: string; mime_type?: string; caption?: string };
-          document?: { id?: string; mime_type?: string; filename?: string; caption?: string };
           interactive?: {
             type?: string;
             button_reply?: { id?: string; title?: string };
@@ -148,8 +136,8 @@ interface WebhookPayload {
  * would answer people trying to reach Marlowe. Both handlers therefore drop anything not
  * addressed to their own number. See the same guard in routes/whatsappRoutes.ts.
  *
- * Text, button/list replies, photos and documents are extracted. Anything else (voice notes,
- * stickers, locations) is ignored rather than half-handled.
+ * Only plain text and button/list replies are extracted for now: the prototype's onboarding and
+ * assistant are text-driven, and silently ignoring a photo is better than half-handling it.
  */
 export function extractJoyceMessages(payload: WebhookPayload): JoyceInboundMessage[] {
   const out: JoyceInboundMessage[] = [];
@@ -164,85 +152,9 @@ export function extractJoyceMessages(payload: WebhookPayload): JoyceInboundMessa
           const title =
             m.interactive?.button_reply?.title ?? m.interactive?.list_reply?.title;
           if (title) out.push({ from: m.from, messageId: m.id, text: title, toPhoneNumberId });
-        } else if (m.type === "image" && m.image?.id && m.image.mime_type) {
-          out.push({
-            from: m.from,
-            messageId: m.id,
-            text: m.image.caption ?? "",
-            media: { mediaId: m.image.id, mimeType: m.image.mime_type },
-            toPhoneNumberId,
-          });
-        } else if (m.type === "document" && m.document?.id && m.document.mime_type) {
-          out.push({
-            from: m.from,
-            messageId: m.id,
-            text: m.document.caption ?? "",
-            media: {
-              mediaId: m.document.id,
-              mimeType: m.document.mime_type,
-              filename: m.document.filename,
-            },
-            toPhoneNumberId,
-          });
         }
       }
     }
   }
   return out;
-}
-
-/**
- * Meta's media download is two steps: resolve the short-lived CDN URL from the media id, then
- * fetch the bytes from it. Both calls need the bearer token.
- */
-export async function downloadJoyceMedia(mediaId: string): Promise<Buffer> {
-  const auth = { Authorization: `Bearer ${token()}` };
-  const metaRes = await fetch(`https://graph.facebook.com/${GRAPH_VERSION}/${mediaId}`, {
-    headers: auth,
-  });
-  if (!metaRes.ok) {
-    throw new Error(`Joyce media lookup failed (${metaRes.status}): ${await metaRes.text()}`);
-  }
-  const { url } = (await metaRes.json()) as { url?: string };
-  if (!url) throw new Error("Joyce media lookup returned no URL");
-
-  const fileRes = await fetch(url, { headers: auth });
-  if (!fileRes.ok) {
-    throw new Error(`Joyce media download failed (${fileRes.status}): ${await fileRes.text()}`);
-  }
-  return Buffer.from(await fileRes.arrayBuffer());
-}
-
-/**
- * Sends a saved file back. JPEG and PNG go out as an inline photo, the only two image types
- * WhatsApp renders that way; everything else goes as a downloadable document.
- */
-export async function sendJoyceMedia(
-  to: string,
-  buffer: Buffer,
-  mimeType: string,
-  filename: string
-): Promise<void> {
-  const form = new FormData();
-  form.append("messaging_product", "whatsapp");
-  form.append("file", new Blob([new Uint8Array(buffer)], { type: mimeType }), filename);
-  const uploadRes = await fetch(
-    `https://graph.facebook.com/${GRAPH_VERSION}/${joycePhoneNumberId()}/media`,
-    { method: "POST", headers: { Authorization: `Bearer ${token()}` }, body: form }
-  );
-  if (!uploadRes.ok) {
-    throw new JoyceSendError(
-      `Joyce media upload failed (${uploadRes.status}): ${await uploadRes.text()}`
-    );
-  }
-  const { id } = (await uploadRes.json()) as { id?: string };
-  if (!id) throw new JoyceSendError("Joyce media upload returned no id");
-
-  const asImage = mimeType === "image/jpeg" || mimeType === "image/png";
-  await post({
-    messaging_product: "whatsapp",
-    to,
-    type: asImage ? "image" : "document",
-    ...(asImage ? { image: { id } } : { document: { id, filename } }),
-  });
 }

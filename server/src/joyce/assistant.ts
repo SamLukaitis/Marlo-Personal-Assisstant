@@ -2,8 +2,6 @@ import Anthropic from "@anthropic-ai/sdk";
 import type { FamilySession } from "./familyDb.js";
 import { requestLeave, rotateJoinCode } from "./registry.js";
 import { LEAVE_WARNING } from "./leaving.js";
-import { loadFamilyFile } from "./files.js";
-import { sendJoyceMedia } from "./whatsapp.js";
 import {
   appendMessage,
   claimDueReminders,
@@ -86,27 +84,6 @@ const TOOLS: Anthropic.Tool[] = [
       type: "object",
       properties: { query: { type: "string" } },
       required: ["query"],
-      additionalProperties: false,
-    },
-  },
-  {
-    name: "list_recent_documents",
-    description:
-      "List the photos and files family members have sent most recently, with who sent each " +
-      "and when. Use this when someone refers to a file by when it was sent rather than by " +
-      "what's in it.",
-    input_schema: { type: "object", properties: {}, additionalProperties: false },
-  },
-  {
-    name: "send_document",
-    description:
-      "Send the original photo or file back to the person you're talking to, e.g. 'send me " +
-      "that passport photo again'. Find its id with search_documents or list_recent_documents " +
-      "first. It only ever goes to the person you're talking to.",
-    input_schema: {
-      type: "object",
-      properties: { document_id: { type: "integer" } },
-      required: ["document_id"],
       additionalProperties: false,
     },
   },
@@ -226,12 +203,12 @@ interface TurnState {
   forcedReply: string | null;
 }
 
-async function runTool(
+function runTool(
   ctx: JoyceTurnContext,
   state: TurnState,
   name: string,
   input: Record<string, unknown>
-): Promise<string> {
+): string {
   const { session } = ctx;
   switch (name) {
     case "save_note": {
@@ -267,28 +244,9 @@ async function runTool(
         .map(
           (d) =>
             `[${d.id}] ${d.filename ?? d.caption ?? "document"} — sent by ${d.sentByName ?? "someone"}: ` +
-            d.extractedText.slice(0, 2000)
+            d.extractedText.slice(0, 600)
         )
         .join("\n");
-    }
-    case "list_recent_documents": {
-      const docs = listDocuments(session, 10);
-      if (docs.length === 0) return "Nobody has sent any documents yet.";
-      return docs
-        .map(
-          (d) =>
-            `[${d.id}] ${d.filename ?? d.caption ?? "untitled"} — sent by ${d.sentByName ?? "someone"} ` +
-            `on ${new Date(d.createdAt).toISOString().slice(0, 10)}: ${d.extractedText.slice(0, 300)}`
-        )
-        .join("\n");
-    }
-    case "send_document": {
-      // Looked up in this family's database only, and sent only to the phone this turn came
-      // from — the model picks which file, never who receives it.
-      const file = loadFamilyFile(session, Number(input.document_id));
-      if (!file) return "There's no saved file with that id. Search for it again.";
-      await sendJoyceMedia(ctx.normalizedPhone, file.buffer, file.mimeType, file.filename);
-      return "Sent.";
     }
     case "who_is_in_the_family": {
       return listMembers(session)
@@ -362,25 +320,15 @@ async function runTool(
 
 export interface JoyceTurnContext {
   session: FamilySession;
-  /**
-   * Used by new_family_id, which must address the registry rather than the family db, and by
-   * send_document as the only place a file can be sent.
-   */
+  /** Only used by new_family_id, which must address the registry rather than the family db. */
   normalizedPhone: string;
 }
 
 /**
  * Runs one inbound message through the model, executing tools until it settles on a reply.
  * Persists both sides of the exchange to the family's shared history.
- *
- * `attachedFile` is for a message that carried a photo or file: the history keeps only the short
- * `userText` line, while this turn's model also sees what was read out of the file.
  */
-export async function runJoyceTurn(
-  ctx: JoyceTurnContext,
-  userText: string,
-  attachedFile?: { documentId: number; extractedText: string }
-): Promise<string> {
+export async function runJoyceTurn(ctx: JoyceTurnContext, userText: string): Promise<string> {
   const { session } = ctx;
   appendMessage(session, "user", userText);
 
@@ -392,13 +340,6 @@ export async function runJoyceTurn(
     ),
     ...claimDueReminders(session).map((r) => `Reminder now due: ${r.body}`),
   ];
-  if (attachedFile) {
-    waiting.unshift(
-      `Their message came with a file, now saved for the family as document ` +
-        `[${attachedFile.documentId}]. Confirm briefly what it is and that it's saved, and do ` +
-        `whatever their caption asks. What's in it:\n${attachedFile.extractedText.slice(0, 4000)}`
-    );
-  }
 
   const history = recentHistory(session, 30);
   const messages: Anthropic.MessageParam[] = history.map((h) => ({
@@ -439,22 +380,26 @@ export async function runJoyceTurn(
     if (toolUses.length === 0) break;
 
     messages.push({ role: "assistant", content: response.content });
-    // One at a time, in the order the model asked: send_document has a real side effect.
-    const results: Anthropic.ToolResultBlockParam[] = [];
-    for (const use of toolUses) {
-      let result: string;
-      try {
-        result = await runTool(ctx, state, use.name, (use.input ?? {}) as Record<string, unknown>);
-      } catch (err) {
-        // A decryption failure here would mean the isolation barriers caught something badly
-        // wrong. Surface it to the model as an error and let the run fail loudly in the log,
-        // rather than returning an empty result that reads like "nothing found".
-        console.error(`joyce: tool ${use.name} failed`, err);
-        result = "That failed. Tell the user something went wrong and you couldn't do it.";
-      }
-      results.push({ type: "tool_result", tool_use_id: use.id, content: result });
-    }
-    messages.push({ role: "user", content: results });
+    messages.push({
+      role: "user",
+      content: toolUses.map((use) => {
+        let result: string;
+        try {
+          result = runTool(ctx, state, use.name, (use.input ?? {}) as Record<string, unknown>);
+        } catch (err) {
+          // A decryption failure here would mean the isolation barriers caught something badly
+          // wrong. Surface it to the model as an error and let the run fail loudly in the log,
+          // rather than returning an empty result that reads like "nothing found".
+          console.error(`joyce: tool ${use.name} failed`, err);
+          result = "That failed. Tell the user something went wrong and you couldn't do it.";
+        }
+        return {
+          type: "tool_result" as const,
+          tool_use_id: use.id,
+          content: result,
+        };
+      }),
+    });
 
     // Nothing the model says after this point can be used, so don't pay for another round trip.
     if (state.forcedReply) break;

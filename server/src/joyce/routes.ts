@@ -6,9 +6,7 @@ import { appendMessage } from "./store.js";
 import { applyName, handleOnboarding, needsName } from "./onboarding.js";
 import { handlePendingLeave } from "./leaving.js";
 import { runJoyceTurn } from "./assistant.js";
-import { saveFamilyFile } from "./files.js";
 import {
-  downloadJoyceMedia,
   extractJoyceMessages,
   isJoyceWhatsAppConfigured,
   joycePhoneNumberId,
@@ -73,66 +71,8 @@ export async function handleJoyceIncoming(message: JoyceInboundMessage): Promise
   );
 
   const phone = normalizeJoycePhone(message.from);
-  const media = message.media;
-  const reply = media
-    ? await composeMediaReply(phone, {
-        caption: message.text,
-        mimeType: media.mimeType,
-        filename: media.filename,
-        download: () => downloadJoyceMedia(media.mediaId),
-      })
-    : await composeReply(phone, message.text);
+  const reply = await composeReply(phone, message.text);
   if (reply) await sendJoyceMessage(message.from, reply);
-}
-
-/**
- * A photo or file. Saved for the family, then handed to the model along with what was read out
- * of it, so a caption like "remind everyone about this on Friday" gets acted on in the same turn.
- * `download` is only called once we know there's a family to save it into.
- */
-export async function composeMediaReply(
-  normalizedPhone: string,
-  media: {
-    caption: string;
-    mimeType: string;
-    filename?: string;
-    download: () => Promise<Buffer>;
-  }
-): Promise<string | null> {
-  // A file is still "the next message", so it spends a pending leave request like anything
-  // else would. The caption is what gets matched; a file with no caption never confirms. The
-  // file isn't kept: they were mid-way through leaving, so where it belongs is unclear.
-  const leaveOutcome = handlePendingLeave(normalizedPhone, media.caption);
-  if (leaveOutcome) {
-    return leaveOutcome.left
-      ? leaveOutcome.reply
-      : `${leaveOutcome.reply} I haven't kept that file — send it again if you want it saved.`;
-  }
-
-  const session = openFamilySessionForPhone(normalizedPhone);
-  if (!session) {
-    // Nowhere to keep it. Onboarding is driven by what they type, so a file doesn't advance it —
-    // it just gets them the current question again.
-    const outcome = handleOnboarding(normalizedPhone, "");
-    const prompt = outcome.done ? "" : `\n\n${outcome.reply}`;
-    return `I can only keep files once you're in a family group.${prompt}`;
-  }
-
-  const saved = await saveFamilyFile(session, {
-    buffer: await media.download(),
-    mimeType: media.mimeType,
-    filename: media.filename,
-    caption: media.caption,
-  });
-
-  if (needsName(session)) {
-    return "Got it — that's saved for the family. Before anything else, what should I call you?";
-  }
-
-  const kind = media.mimeType.startsWith("image/") ? "a photo" : "a file";
-  const label = media.filename ? ` "${media.filename}"` : "";
-  const userText = `[Sent ${kind}${label}]${media.caption ? ` ${media.caption}` : ""}`;
-  return runJoyceTurn({ session, normalizedPhone }, userText, saved);
 }
 
 /**

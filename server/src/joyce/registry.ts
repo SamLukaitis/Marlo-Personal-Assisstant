@@ -26,9 +26,6 @@ if (!fs.existsSync(joyceDir)) fs.mkdirSync(joyceDir, { recursive: true });
 export const FAMILY_DB_DIR = path.join(joyceDir, "families");
 if (!fs.existsSync(FAMILY_DB_DIR)) fs.mkdirSync(FAMILY_DB_DIR, { recursive: true });
 
-// Photos and files family members send, one subfolder per family — see joyce/files.ts.
-export const FAMILY_FILES_DIR = path.join(joyceDir, "files");
-
 const registry = new Database(path.join(joyceDir, "registry.db"));
 registry.pragma("foreign_keys = ON");
 
