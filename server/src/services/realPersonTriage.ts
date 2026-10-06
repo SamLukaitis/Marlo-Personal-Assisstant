@@ -18,6 +18,18 @@ export interface TriageCandidate {
 
 export type TriageSkipReason = "not_personal" | "duplicate";
 
+// A few words on what the sender wants, so the digest or ping says "Sarah — wants to move the call"
+// instead of just "Sarah emailed you".
+export interface TriageGist {
+  gist: string;
+  needsReply: boolean;
+}
+
+export interface TriageResult {
+  skips: Map<number, TriageSkipReason>;
+  gists: Map<number, TriageGist>;
+}
+
 export function buildTriagePrompt(candidates: TriageCandidate[], recentAlerts: string[]): string {
   const recent = recentAlerts.length
     ? `Alerts the user was already sent in the last two days:\n${recentAlerts.map((a) => `- ${a}`).join("\n")}\n\n`
@@ -34,7 +46,11 @@ export function buildTriagePrompt(candidates: TriageCandidate[], recentAlerts: s
     "order, flight or payment, e.g. the venue's own confirmation of a booking a booking site already " +
     "confirmed). Only when it is clearly the same event and adds nothing new.\n" +
     "A real person writing to the user, or any email that needs their attention and isn't covered by an " +
-    "earlier alert, must NOT be skipped. When unsure, do not skip. Omit indices that should alert.\n\n" +
+    "earlier alert, must NOT be skipped. When unsure, do not skip.\n" +
+    "For every email you do NOT skip, add it to `kept` with a gist: a few words on what the sender " +
+    "wants or says, written to follow their name (e.g. \"wants to move Thursday's call to Friday\", " +
+    "\"sent the signed contract\") — concrete, no greeting, no quotes — and needs_reply: true if they " +
+    "are waiting on an answer from the user.\n\n" +
     emailList
   );
 }
@@ -51,6 +67,18 @@ export function parseTriageSkips(skips: unknown): Map<number, TriageSkipReason> 
   return result;
 }
 
+export function parseTriageGists(kept: unknown): Map<number, TriageGist> {
+  const result = new Map<number, TriageGist>();
+  if (!Array.isArray(kept)) return result;
+  for (const entry of kept) {
+    const e = entry as { index?: unknown; gist?: unknown; needs_reply?: unknown } | null;
+    if (e && typeof e.index === "number" && typeof e.gist === "string" && e.gist.trim()) {
+      result.set(e.index, { gist: e.gist.trim(), needsReply: e.needs_reply === true });
+    }
+  }
+  return result;
+}
+
 const TRIAGE_MODEL = process.env.ASSISTANT_MODEL_SIMPLE ?? "claude-haiku-4-5";
 
 let client: Anthropic | null = null;
@@ -60,8 +88,8 @@ function getClient(): Anthropic {
 }
 
 const TRIAGE_TOOL: Anthropic.Tool = {
-  name: "skip_emails",
-  description: "Report which of the numbered emails should NOT trigger an alert. Omit every other index.",
+  name: "triage_emails",
+  description: "Report which numbered emails should NOT alert, and a gist for every one that should.",
   input_schema: {
     type: "object",
     properties: {
@@ -76,25 +104,37 @@ const TRIAGE_TOOL: Anthropic.Tool = {
           required: ["index", "reason"],
         },
       },
+      kept: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: {
+            index: { type: "number", description: "The email's number from the list above" },
+            gist: { type: "string", description: "A few words on what the sender wants or says" },
+            needs_reply: { type: "boolean" },
+          },
+          required: ["index", "gist"],
+        },
+      },
     },
-    required: ["skips"],
+    required: ["skips", "kept"],
   },
 };
 
 // Not unit-tested directly — same as importantEmailClassifier.ts, this repo doesn't mock the
-// Anthropic SDK. The prompt builder and parser above are.
+// Anthropic SDK. The prompt builder and parsers above are.
 export async function triageRealPersonEmails(
   candidates: TriageCandidate[],
   recentAlerts: string[],
   ownerId: number
-): Promise<Map<number, TriageSkipReason>> {
-  if (candidates.length === 0) return new Map();
+): Promise<TriageResult> {
+  if (candidates.length === 0) return { skips: new Map(), gists: new Map() };
 
   const response = await getClient().messages.create({
     model: TRIAGE_MODEL,
     max_tokens: 1024,
     tools: [TRIAGE_TOOL],
-    tool_choice: { type: "tool", name: "skip_emails" },
+    tool_choice: { type: "tool", name: "triage_emails" },
     messages: [{ role: "user", content: buildTriagePrompt(candidates, recentAlerts) }],
   });
   recordApiUsage(
@@ -109,7 +149,8 @@ export async function triageRealPersonEmails(
   );
 
   const toolUse = response.content.find(
-    (b): b is Anthropic.ToolUseBlock => b.type === "tool_use" && b.name === "skip_emails"
+    (b): b is Anthropic.ToolUseBlock => b.type === "tool_use" && b.name === "triage_emails"
   );
-  return parseTriageSkips((toolUse?.input as { skips?: unknown } | undefined)?.skips);
+  const input = toolUse?.input as { skips?: unknown; kept?: unknown } | undefined;
+  return { skips: parseTriageSkips(input?.skips), gists: parseTriageGists(input?.kept) };
 }

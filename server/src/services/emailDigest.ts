@@ -19,6 +19,9 @@ export interface DigestEmail {
   accountId: number;
   from: string;
   subject: string;
+  // From realPersonTriage.ts: what the sender wants, and whether they are waiting on a reply.
+  gist?: string;
+  needsReply?: boolean;
 }
 
 const QUEUE_KEY = "email_digest_queue";
@@ -48,7 +51,7 @@ export function queueForEmailDigest(ownerId: number, emails: DigestEmail[]): voi
   if (emails.length === 0) return;
   writeQueue(ownerId, [
     ...readQueue(ownerId),
-    ...emails.map(({ id, accountId, from, subject }) => ({ id, accountId, from, subject })),
+    ...emails.map(({ id, accountId, from, subject, gist, needsReply }) => ({ id, accountId, from, subject, gist, needsReply })),
   ]);
 }
 
