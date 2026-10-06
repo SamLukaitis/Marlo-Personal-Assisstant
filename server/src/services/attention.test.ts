@@ -349,3 +349,75 @@ describe("early briefing absorbs quiet-hours deferrals", () => {
     expect(getAttentionItem(ownerId, "msg:1:gov")?.surfaceAt).toBe(at("2026-10-02T07:45").getTime());
   });
 });
+
+describe("final review fixes", () => {
+  it("a second, different change to the same flight is sent too; an identical repeat is not", async () => {
+    const ownerId = newUser();
+    const change = (summary: string, id: string) => ({
+      source: "email" as const,
+      category: "flight_change",
+      details: { summary, kind: "flight" as const, flightNumber: "BA432", eventStart: "2026-10-03" },
+      fallbackKey: `msg:1:${id}`,
+    });
+    expect(await submitAttentionItem(ownerId, change("Your *BA 432* is delayed to *09:55*.", "c1"))).toBe("sent");
+    expect(await submitAttentionItem(ownerId, change("Your *BA 432* is now *cancelled*.", "c2"))).toBe("sent");
+    expect(await submitAttentionItem(ownerId, change("Your *BA 432* is now *cancelled*.", "c3"))).toBe("merged");
+    expect(sentTexts()).toEqual(["✈️ Your *BA 432* is delayed to *09:55*.", "✈️ Your *BA 432* is now *cancelled*."]);
+  });
+
+  it("several items deferred overnight go out as one message in the morning", async () => {
+    vi.setSystemTime(at("2026-10-01T23:30"));
+    const ownerId = newUser();
+    await submitAttentionItem(ownerId, {
+      source: "email",
+      category: "government_mail",
+      details: { summary: "*HMRC* needs your tax return by *31 Oct*.", needsAction: true },
+      fallbackKey: "msg:1:gov",
+    });
+    await submitAttentionItem(ownerId, {
+      source: "email",
+      category: "security_alert",
+      details: { summary: "New sign-in to your *Google* account from *Paris*." },
+      fallbackKey: "msg:1:sec",
+    });
+    vi.setSystemTime(at("2026-10-02T07:02"));
+    await deliverDueAttentionItems(ownerId);
+    expect(sentTexts()).toEqual([
+      "🏛️ *HMRC* needs your tax return by *31 Oct*.\n\n🔐 New sign-in to your *Google* account from *Paris*.",
+    ]);
+    expect(getAttentionItem(ownerId, "msg:1:gov")?.status).toBe("sent");
+    expect(getAttentionItem(ownerId, "msg:1:sec")?.status).toBe("sent");
+    await deliverDueAttentionItems(ownerId);
+    expect(sendWhatsAppMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it("an early briefing absorbs items deferred overnight instead of pinging separately", async () => {
+    vi.setSystemTime(at("2026-10-01T23:30"));
+    const ownerId = newUser();
+    saveBriefingSettings(ownerId, {
+      enabled: true,
+      includeNews: false,
+      topics: [],
+      includeMarkets: false,
+      tickers: [],
+      includeWeather: false,
+      weatherLocation: "",
+      proactive: true,
+      sendTime: "07:45",
+    });
+    await submitAttentionItem(ownerId, {
+      source: "email",
+      category: "government_mail",
+      details: { summary: "*HMRC* needs your tax return by *31 Oct*.", needsAction: true },
+      fallbackKey: "msg:1:gov",
+    });
+    const now = at("2026-10-02T07:45").getTime();
+    vi.setSystemTime(now);
+    const bundle = collectAttentionForBriefing(ownerId, now);
+    expect(bundle.upcoming).toEqual(["🏛️ *HMRC* needs your tax return by *31 Oct*."]);
+    commitAttentionBundle(ownerId, bundle, now);
+    messagedJustNow(ownerId);
+    await deliverDueAttentionItems(ownerId);
+    expect(sendWhatsAppMessage).not.toHaveBeenCalled();
+  });
+});

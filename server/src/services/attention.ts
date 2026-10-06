@@ -88,22 +88,30 @@ function historyNoteFor(details: AttentionDetails): string | undefined {
   });
 }
 
-// Sends one due item now, if quiet hours and the day's cap allow. Leaves it pending on a send
-// failure so the next tick retries it; it only counts against the cap once actually delivered.
-async function deliverItem(ownerId: number, item: AttentionItemRow, now: number): Promise<SubmitOutcome> {
+interface PreparedItem {
+  item: AttentionItemRow;
+  text: string;
+  offer: { accountId: number; messageId: string; subject: string } | null;
+}
+
+// Decides whether a due item may go out now — quiet hours, the day's cap (`cappedSent` already
+// sent or about to be today), and the concreteness check — and builds its text. Anything that
+// can't go now is re-filed (deferred, held, or downgraded to the briefing) and returns an outcome.
+function prepareItem(
+  ownerId: number,
+  item: AttentionItemRow,
+  now: number,
+  cappedSent: number
+): PreparedItem | SubmitOutcome {
   const zone = getUserTimezone(ownerId);
   if (inQuietHours(now, zone) && !QUIET_HOURS_EXEMPT_CATEGORIES.includes(item.category)) {
     updateAttentionItem(ownerId, item.id, { surfaceAt: nextAllowedTime(now, zone, briefingTimeFor(ownerId)) });
     return "deferred";
   }
-  if (
-    !CAP_EXEMPT_CATEGORIES.includes(item.category) &&
-    countCappedAttentionSentSince(ownerId, localDayStart(now, zone), CAP_EXEMPT_CATEGORIES) >= DAILY_CAP
-  ) {
+  if (!CAP_EXEMPT_CATEGORIES.includes(item.category) && cappedSent >= DAILY_CAP) {
     updateAttentionItem(ownerId, item.id, { status: "held" });
     return "held";
   }
-
   let text =
     item.tier === "interrupt"
       ? interruptText(item.category, item.details, false)
@@ -117,22 +125,45 @@ async function deliverItem(ownerId: number, item: AttentionItemRow, now: number)
       ? item.details.xeroOffer
       : null;
   if (offer) text += `\n\nReply "yes" and I'll forward it to Xero.`;
+  return { item, text, offer };
+}
 
+function cappedSentToday(ownerId: number, now: number): number {
+  return countCappedAttentionSentSince(ownerId, localDayStart(now, getUserTimezone(ownerId)), CAP_EXEMPT_CATEGORIES);
+}
+
+// Sends one or more prepared items as a single WhatsApp message — several things falling due at
+// once (typically the morning after quiet hours) arrive together rather than as a burst of pings.
+// Leaves them pending on a send failure so the next tick retries; only a delivered item counts
+// against the cap.
+async function sendPrepared(ownerId: number, ready: PreparedItem[], now: number): Promise<SubmitOutcome> {
   const numbers = reachableNumbers(ownerId);
   if (numbers.length === 0) return "failed";
+  const key =
+    ready.length === 1
+      ? `attention:${ready[0].item.id}:${ready[0].item.tier}:${ready[0].item.surfaceAt ?? 0}`
+      : `attention:batch:${ready.map((r) => `${r.item.id}@${r.item.surfaceAt ?? 0}`).join(",")}`;
+  const notes = ready.map((r) => historyNoteFor(r.item.details)).filter((n): n is string => !!n);
   const delivered = await sendToAllNumbers(
     ownerId,
-    `attention:${item.id}:${item.tier}:${item.surfaceAt ?? 0}`,
+    key,
     numbers,
-    text,
+    ready.map((r) => r.text).join("\n\n"),
     "alert",
     "attention",
-    historyNoteFor(item.details)
+    notes.length ? notes.join("\n") : undefined
   );
   if (!delivered) return "failed";
-  updateAttentionItem(ownerId, item.id, { status: "sent", sentAt: now });
+  for (const r of ready) updateAttentionItem(ownerId, r.item.id, { status: "sent", sentAt: now });
+  // One pending-confirmation slot per owner (xeroInvoiceConfirmation.ts): the latest offer wins.
+  const offer = ready.map((r) => r.offer).filter(Boolean).at(-1);
   if (offer) setPendingInvoiceForward(ownerId, offer);
   return "sent";
+}
+
+async function deliverItem(ownerId: number, item: AttentionItemRow, now: number): Promise<SubmitOutcome> {
+  const prepared = prepareItem(ownerId, item, now, cappedSentToday(ownerId, now));
+  return typeof prepared === "string" ? prepared : sendPrepared(ownerId, [prepared], now);
 }
 
 // A change to an event we already know about (a flight moved): one message now, while the row
@@ -186,8 +217,15 @@ export async function submitAttentionItem(ownerId: number, candidate: AttentionC
       patch.surfaceAt = surface === null ? null : Math.max(surface, now);
     }
     const updated = updateAttentionItem(ownerId, existing.id, patch);
-    // Same event and the same kind of news: a repeat, not something new to say.
-    if (tier !== "interrupt" || candidate.category === existing.category) return "merged";
+    if (tier !== "interrupt") return "merged";
+    // The same news again (the same email seen twice): a repeat, not something new to say. A second,
+    // different change to the same flight is news, and goes out.
+    if (
+      candidate.category === existing.category &&
+      candidate.details.summary.trim() === existing.details.summary.trim()
+    ) {
+      return "merged";
+    }
     return sendChange(ownerId, updated, candidate.category, candidate.details, moved, now);
   }
 
@@ -224,7 +262,15 @@ export async function deliverDueAttentionItems(ownerId: number): Promise<void> {
   const due = listAttentionItems(ownerId, { statuses: ["pending"], dueBefore: now }).filter(
     (r) => r.tier === "interrupt" || r.tier === "scheduled"
   );
-  for (const item of due) await deliverItem(ownerId, item, now);
+  let cappedSent = cappedSentToday(ownerId, now);
+  const ready: PreparedItem[] = [];
+  for (const item of due) {
+    const prepared = prepareItem(ownerId, item, now, cappedSent);
+    if (typeof prepared === "string") continue;
+    if (!CAP_EXEMPT_CATEGORIES.includes(item.category)) cappedSent++;
+    ready.push(prepared);
+  }
+  if (ready.length) await sendPrepared(ownerId, ready, now);
 }
 
 export interface AttentionBundle {
@@ -249,6 +295,12 @@ function collect(
   for (const item of listAttentionItems(ownerId, { statuses: ["pending", "held"] })) {
     if (item.status === "held" || (item.tier === "brief" && opts.brief)) {
       bundle.needsAttention.push(briefLine(item.details));
+      bundle.foldIds.push(item.id);
+      continue;
+    }
+    // An interrupt held overnight for an early briefing goes into that briefing, not a ping after it.
+    if (item.tier === "interrupt" && opts.upcoming && item.surfaceAt !== null && item.surfaceAt <= now + BRIEFING_LOOKAHEAD_MS) {
+      bundle.upcoming.push(interruptText(item.category, item.details, false));
       bundle.foldIds.push(item.id);
       continue;
     }
