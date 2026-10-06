@@ -22,7 +22,11 @@ const {
   setSetting,
   consumePendingAction,
 } = await import("../db/store.js");
-const { queueForEmailDigest, flushEmailDigestIfDue, queuedEmailDigestCount } = await import("./emailDigest.js");
+const { queueForEmailDigest, flushEmailDigestIfDue, queuedEmailDigestCount, digestMessage } = await import(
+  "./emailDigest.js"
+);
+const { submitAttentionItem } = await import("./attention.js");
+const { saveBriefingSettings } = await import("./briefing.js");
 const { setEmailDigestTime, setRealPersonAlertMode, setRealPersonAlertsEnabled } = await import(
   "./emailAlertSettings.js"
 );
@@ -94,11 +98,9 @@ describe("flushEmailDigestIfDue", () => {
     expect(sendWhatsAppMessage).toHaveBeenCalledTimes(1);
     const [sentTo, text] = vi.mocked(sendWhatsAppMessage).mock.calls[0];
     expect(sentTo).toBe(phone);
-    expect(text).toContain("Your 9pm email summary");
-    expect(text).toContain("2 new emails");
-    expect(text).toContain("Sarah Jones");
-    expect(text).toContain("Lunch on Sunday?");
-    expect(text).toContain("Dr Patel");
+    expect(text).toContain("9pm summary");
+    expect(text).toContain('*Sarah Jones* emailed: "Lunch on Sunday?"');
+    expect(text).toContain('*Dr Patel* emailed: "Your results"');
     expect(queuedEmailDigestCount(user.id)).toBe(0);
   });
 
@@ -140,7 +142,7 @@ describe("flushEmailDigestIfDue", () => {
 
     expect(sendWhatsAppMessage).toHaveBeenCalledTimes(1);
     const [, text] = vi.mocked(sendWhatsAppMessage).mock.calls[0];
-    expect(text).toContain("6pm email summary");
+    expect(text).toContain("6pm summary");
     expect(text).not.toContain("9pm");
   });
 
@@ -177,23 +179,94 @@ describe("flushEmailDigestIfDue", () => {
     expect(sendWhatsAppMessage).toHaveBeenCalledTimes(1);
   });
 
-  it("names the first few and counts the rest", async () => {
-    const user = newUser("digest-overflow");
+  it("names everyone concretely and never says 'and N more'", async () => {
+    const user = newUser("digest-many");
     registerActivePhone(user.id);
     queueForEmailDigest(
       user.id,
-      Array.from({ length: 8 }, (_, i) => email(`m${i}`, `Person${i} <p${i}@example.com>`, `Subject ${i}`))
+      Array.from({ length: 8 }, (_, i) => email(`m${i}`, `Person ${i} <p${i}@x.com>`, `Subject ${i}`))
     );
 
     setLocalTime("21:05");
     await flushEmailDigestIfDue(user.id);
 
     const [, text] = vi.mocked(sendWhatsAppMessage).mock.calls[0];
-    expect(text).toContain("8 new emails");
-    expect(text).toContain("Person0");
-    expect(text).toContain("Person4");
-    expect(text).not.toContain("Person5");
-    expect(text).toContain("3 more");
+    expect(text).not.toMatch(/and \d+ more/);
+    expect(text).toContain('*Person 4* emailed: "Subject 4"');
+    expect(text).toContain("Also from *Person 5*, *Person 6*, *Person 7*.");
+  });
+
+  it("uses the triage gist and flags replies", () => {
+    const text = digestMessage(
+      null,
+      [{ id: "a", accountId: 1, from: "Sarah Kim <s@x.com>", subject: "Thu", gist: "wants to move Thursday's call", needsReply: true }],
+      { noted: [], needsAttention: [], upcoming: [], ackIds: [], foldIds: [] },
+      "21:00"
+    );
+    expect(text).toContain("*Sarah Kim* — wants to move Thursday's call; needs a reply");
+  });
+
+  it("carries attention items when the morning briefing is off, then marks them done", async () => {
+    const user = newUser("digest-attention");
+    registerActivePhone(user.id);
+    setLocalTime("12:00");
+    await submitAttentionItem(user.id, {
+      source: "email",
+      category: "refund_dispute",
+      details: { summary: "Your *Amazon* refund of *£24* was approved." },
+      fallbackKey: "msg:1:refund",
+    });
+    setLocalTime("21:05");
+    await flushEmailDigestIfDue(user.id);
+    const [, text] = vi.mocked(sendWhatsAppMessage).mock.calls[0];
+    expect(text).toContain("Your *Amazon* refund of *£24* was approved.");
+
+    vi.mocked(sendWhatsAppMessage).mockClear();
+    setLocalTime("21:05", 11);
+    await flushEmailDigestIfDue(user.id);
+    expect(sendWhatsAppMessage).not.toHaveBeenCalled();
+  });
+
+  it("leaves non-urgent items for the morning briefing when it's on", async () => {
+    const user = newUser("digest-briefing-on");
+    registerActivePhone(user.id);
+    saveBriefingSettings(user.id, {
+      enabled: true,
+      includeNews: false,
+      topics: [],
+      includeMarkets: false,
+      tickers: [],
+      includeWeather: false,
+      weatherLocation: "",
+      proactive: true,
+      sendTime: "07:30",
+    });
+    setLocalTime("12:00");
+    await submitAttentionItem(user.id, {
+      source: "email",
+      category: "refund_dispute",
+      details: { summary: "Your *Amazon* refund of *£24* was approved." },
+      fallbackKey: "msg:1:refund2",
+    });
+    setLocalTime("21:05");
+    await flushEmailDigestIfDue(user.id);
+    expect(sendWhatsAppMessage).not.toHaveBeenCalled();
+  });
+
+  it("still sends attention lines when people's email alerts are off", async () => {
+    const user = newUser("digest-people-off");
+    registerActivePhone(user.id);
+    setRealPersonAlertsEnabled(user.id, false);
+    setLocalTime("12:00");
+    await submitAttentionItem(user.id, {
+      source: "email",
+      category: "refund_dispute",
+      details: { summary: "Your *Amazon* refund of *£24* was approved." },
+      fallbackKey: "msg:1:refund3",
+    });
+    setLocalTime("21:05");
+    await flushEmailDigestIfDue(user.id);
+    expect(vi.mocked(sendWhatsAppMessage).mock.calls[0][1]).toContain("*Amazon*");
   });
 
   it("keeps the queue and retries when WhatsApp isn't configured or there is no number", async () => {
@@ -271,7 +344,7 @@ describe("flushEmailDigestIfDue", () => {
     expect(body).toContain("Sarah");
     expect(body).toContain("trying something new");
     expect(body).toContain("9pm");
-    expect(body).toContain("flights");
+    expect(body).toContain("flight changes");
     // The buttons carry the answer, so the text doesn't tell them to type one.
     expect(body).not.toContain("Reply");
     expect(buttons.map((b) => b.title)).toEqual(["Keep daily summary", "Ping me instantly", "Different time"]);

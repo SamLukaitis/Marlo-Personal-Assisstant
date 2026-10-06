@@ -11,6 +11,14 @@ import {
   realPersonAlertsEnabled,
 } from "./emailAlertSettings.js";
 import { userLocalClock } from "./userTimezone.js";
+import { personLine } from "./personLine.js";
+import { getBriefingSettings } from "./briefing.js";
+import {
+  collectAttentionForDigest,
+  commitAttentionBundle,
+  isEmptyBundle,
+  type AttentionBundle,
+} from "./attention.js";
 
 // Real-person emails held back for the user's once-a-day summary (emailAlertSettings.ts's "digest"
 // mode). Stored as JSON in the settings table — a short-lived list that is emptied every day.
@@ -29,10 +37,11 @@ const LAST_SENT_KEY = "last_email_digest_date";
 const INTRO_SENT_KEY = "email_digest_intro_sent";
 // Bounds the queue for a user whose digest can't be delivered (no number, WhatsApp off).
 const MAX_QUEUED = 200;
-const MAX_NAMED = 5;
-const MAX_SUBJECT_LENGTH = 40;
-// Keeps the first digest, check-in question included, inside a template's 1000-character limit.
-const MAX_NAME_LENGTH = 30;
+const MAX_LINES = 5;
+// A template body is capped at 1000 characters. The first digest also carries the ~420-character
+// check-in question, so it gets a smaller budget (see flushEmailDigestIfDue).
+const MAX_DIGEST_CHARS = 950;
+const MAX_DIGEST_CHARS_WITH_INTRO = 550;
 
 function readQueue(ownerId: number): DigestEmail[] {
   try {
@@ -59,22 +68,29 @@ export function queuedEmailDigestCount(ownerId: number): number {
   return readQueue(ownerId).length;
 }
 
-function shorten(subject: string, max = MAX_SUBJECT_LENGTH): string {
-  const flat = subject.replace(/\s+/g, " ").trim();
-  return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
-}
-
-// Names the user's own digest time, so a one-email summary doesn't read like an instant ping.
-function digestMessage(ownerId: number, queue: DigestEmail[], digestTime: string): string {
-  const userName = getSetting(ownerId, "user_name");
-  const greeting = userName ? `${userName}, your` : "Your";
-  const named = queue.slice(0, MAX_NAMED).map((m) => `${shorten(senderDisplayName(m.from), MAX_NAME_LENGTH)} (${shorten(m.subject)})`);
-  const rest = queue.length - named.length;
-  return (
-    `📬 ${greeting} ${formatDigestTime(digestTime)} email summary: ` +
-    `${queue.length} new email${queue.length === 1 ? "" : "s"} from people — ` +
-    `${named.join(", ")}${rest > 0 ? `, and ${rest} more` : ""}. Ask me about any of them.`
-  );
+// One line per person (what they want, if triage said) plus anything the attention gate held for
+// this evening. Names the user's own digest time, so a one-line summary doesn't read like a ping.
+export function digestMessage(
+  userName: string | null,
+  queue: DigestEmail[],
+  attention: AttentionBundle,
+  digestTime: string,
+  maxChars = MAX_DIGEST_CHARS
+): string {
+  const lead = `📬 ${userName ? `${userName}, here's` : "Here's"} your ${formatDigestTime(digestTime)} summary:`;
+  const sections: string[] = [];
+  if (queue.length) {
+    const lines = queue
+      .slice(0, MAX_LINES)
+      .map((m) => `• ${personLine(m.from, m.subject, m.gist ? { gist: m.gist, needsReply: !!m.needsReply } : undefined)}`);
+    const others = queue.slice(MAX_LINES).map((m) => `*${senderDisplayName(m.from)}*`);
+    if (others.length) lines.push(`Also from ${others.join(", ")}.`);
+    sections.push(lines.join("\n"));
+  }
+  if (attention.needsAttention.length) sections.push(attention.needsAttention.map((l) => `• ${l}`).join("\n"));
+  if (attention.noted.length) sections.push(attention.noted.map((l) => `• ${l}`).join("\n"));
+  const text = `${lead}\n${sections.join("\n\n")}`;
+  return text.length > maxChars ? `${text.slice(0, maxChars - 1).replace(/\s+\S*$/, "")}…` : text;
 }
 
 // Shown once, on a user's first digest, when they never picked this mode themselves — it became the
@@ -82,9 +98,9 @@ function digestMessage(ownerId: number, queue: DigestEmail[], digestTime: string
 function introExplanation(digestTime: string): string {
   return (
     `\n\nWe're trying something new: instead of pinging you every time someone emails, I now send ` +
-    `one summary of people's emails each day at ${formatDigestTime(digestTime)}. Anything important, like ` +
-    `flights, bookings and deliveries, still comes through straight away. Want to keep the daily ` +
-    `summary?`
+    `one summary of people's emails each day at ${formatDigestTime(digestTime)}. Urgent things like ` +
+    `flight changes still come straight away, and bookings and bills become reminders when they ` +
+    `matter. Want to keep the daily summary?`
   );
 }
 
@@ -125,7 +141,11 @@ export async function flushEmailDigestIfDue(ownerId: number): Promise<void> {
   if (!realPersonAlertsEnabled(ownerId)) writeQueue(ownerId, []);
 
   const queue = readQueue(ownerId);
-  if (queue.length === 0) {
+  const now = Date.now();
+  // Held (over-cap) attention items always ride along; acknowledgements and other non-urgent items
+  // only when there's no morning briefing to carry them. Independent of the people's-email setting.
+  const attention = collectAttentionForDigest(ownerId, now, !getBriefingSettings(ownerId).proactive);
+  if (queue.length === 0 && isEmptyBundle(attention)) {
     setSetting(ownerId, LAST_SENT_KEY, dateKey);
     return;
   }
@@ -135,13 +155,20 @@ export async function flushEmailDigestIfDue(ownerId: number): Promise<void> {
   if (numbers.length === 0) return;
 
   // Ids go in chat history only (see emailReference.ts), so "reply to Sarah's" resolves to a message.
-  const askToKeep = getSetting(ownerId, INTRO_SENT_KEY) === null && !realPersonAlertModeChosen(ownerId);
+  const askToKeep =
+    queue.length > 0 && getSetting(ownerId, INTRO_SENT_KEY) === null && !realPersonAlertModeChosen(ownerId);
   const historyNote = [
-    ...queue.slice(0, MAX_NAMED).map((m) => emailReferenceNote(m)),
+    ...queue.slice(0, MAX_LINES).map((m) => emailReferenceNote(m)),
     ...(askToKeep ? [INTRO_HISTORY_NOTE] : []),
   ].join("\n");
   const digestTime = emailDigestTime(ownerId);
-  const digest = digestMessage(ownerId, queue, digestTime);
+  const digest = digestMessage(
+    getSetting(ownerId, "user_name"),
+    queue,
+    attention,
+    digestTime,
+    askToKeep ? MAX_DIGEST_CHARS_WITH_INTRO : MAX_DIGEST_CHARS
+  );
   let send: ((phone: string) => Promise<void>) | undefined;
   if (askToKeep) {
     // One row shared by the three buttons, so the first tap answers it and a second tap (or a tap
@@ -171,11 +198,12 @@ export async function flushEmailDigestIfDue(ownerId: number): Promise<void> {
     askToKeep ? digest + introTyped(digestTime) : digest,
     "alert",
     "emailDigest",
-    historyNote,
+    historyNote || undefined,
     send
   );
   if (sent) {
     writeQueue(ownerId, []);
+    commitAttentionBundle(ownerId, attention, now);
     setSetting(ownerId, LAST_SENT_KEY, dateKey);
     if (askToKeep) setSetting(ownerId, INTRO_SENT_KEY, "true");
   }
