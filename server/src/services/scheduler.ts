@@ -19,10 +19,9 @@ import { importantEmailAlertsEnabled, realPersonAlertsEnabled } from "./emailAle
 import { checkNewEmailsAgainstRecentDocuments } from "./reconciliation.js";
 import { checkForImportantEmails } from "./importantEmailAlerts.js";
 import { flushEmailDigestIfDue } from "./emailDigest.js";
-import { flushOnboardingAlertSummaryIfDue } from "./onboardingAlertSuppression.js";
 import { syncBookingReminders } from "./tripPrep.js";
 import { userLocalClock } from "./userTimezone.js";
-import { collectAttentionForBriefing, commitAttentionBundle } from "./attention.js";
+import { collectAttentionForBriefing, commitAttentionBundle, deliverDueAttentionItems } from "./attention.js";
 
 const CHECK_INTERVAL_MS = 5 * 60 * 1000;
 const SCHENGEN_WARN_AT = 80;
@@ -116,7 +115,7 @@ async function runTripPrepCheckForUser(ownerId: number): Promise<void> {
   try {
     await syncBookingReminders(ownerId);
   } catch (err) {
-    console.error(`scheduler: trip-prep check failed for user ${ownerId}`, err);
+    console.error(`scheduler: trip-prep sync failed for user ${ownerId}`, err);
   }
 }
 
@@ -126,20 +125,6 @@ async function runImportantEmailAlertsCheckForUser(ownerId: number): Promise<voi
     await checkForImportantEmails(ownerId);
   } catch (err) {
     console.error(`scheduler: important-email check failed for user ${ownerId}`, err);
-  }
-}
-
-// Reports (once) any important-mail backlog the three checks above held back while
-// onboardingAlertSuppression.ts's suppression window was active — see that file's own comment.
-// Deliberately outside runAlertsCheckForUser/runImportantEmailAlertsCheckForUser's "enabled"
-// gates: those gates decide whether *ongoing* alerts are wanted, but a backlog can only have been
-// suppressed if the relevant check ran and matched something while it was still enabled, so
-// there's nothing to leak past a disabled setting here.
-async function runOnboardingAlertSummaryFlushForUser(ownerId: number): Promise<void> {
-  try {
-    await flushOnboardingAlertSummaryIfDue(ownerId);
-  } catch (err) {
-    console.error(`scheduler: onboarding alert summary flush failed for user ${ownerId}`, err);
   }
 }
 
@@ -179,10 +164,12 @@ async function tick(): Promise<void> {
       await runReconciliationCheckForUser(ownerId).catch((err) =>
         console.error(`scheduler: reconciliation check failed for user ${ownerId}`, err)
       );
-      await runOnboardingAlertSummaryFlushForUser(ownerId).catch((err) =>
-        console.error(`scheduler: onboarding alert summary flush failed for user ${ownerId}`, err)
-      );
     });
+    // After every source has submitted this tick, so a reminder or deferred alert that fell due
+    // goes out once, in order, under the day's cap.
+    await deliverDueAttentionItems(ownerId).catch((err) =>
+      console.error(`scheduler: attention delivery failed for user ${ownerId}`, err)
+    );
     // After the alert scan so mail that arrived just before the digest time is in it. Not gated on
     // the digest mode: a user who switches back to instant with mail still queued still gets it.
     await flushEmailDigestIfDue(ownerId).catch((err) =>
