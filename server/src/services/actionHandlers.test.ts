@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 
 vi.mock("../db/store.js", () => ({
   consumePendingAction: vi.fn(),
+  createPendingAction: vi.fn().mockReturnValue("new-456"),
   appendWhatsAppMessage: vi.fn(),
   getWhatsAppHistory: vi.fn().mockReturnValue([]),
 }));
@@ -12,6 +13,10 @@ vi.mock("../ai/assistant.js", () => ({
 }));
 vi.mock("../providers/whatsapp.js", () => ({
   sendWhatsAppMessage: vi.fn().mockResolvedValue(undefined),
+  sendChoiceMessage: vi.fn().mockResolvedValue(undefined),
+}));
+vi.mock("./hub.js", () => ({
+  hubHasSentTo: vi.fn(),
 }));
 vi.mock("./whatsappReply.js", () => ({
   sendAssistantReply: vi.fn().mockResolvedValue(undefined),
@@ -20,9 +25,12 @@ vi.mock("./connectMailboxLink.js", () => ({
   sendConnectLink: vi.fn().mockResolvedValue("sent"),
 }));
 
-const { consumePendingAction, appendWhatsAppMessage, getWhatsAppHistory } = await import("../db/store.js");
+const { consumePendingAction, createPendingAction, appendWhatsAppMessage, getWhatsAppHistory } = await import(
+  "../db/store.js"
+);
+const { hubHasSentTo } = await import("./hub.js");
 const { runTool, runAssistantChat } = await import("../ai/assistant.js");
-const { sendWhatsAppMessage } = await import("../providers/whatsapp.js");
+const { sendWhatsAppMessage, sendChoiceMessage } = await import("../providers/whatsapp.js");
 const { sendAssistantReply } = await import("./whatsappReply.js");
 const { sendConnectLink } = await import("./connectMailboxLink.js");
 const { handlePendingActionReply } = await import("./actionHandlers.js");
@@ -35,6 +43,9 @@ beforeEach(() => {
   vi.mocked(runAssistantChat).mockReset();
   vi.mocked(sendWhatsAppMessage).mockClear();
   vi.mocked(sendAssistantReply).mockClear();
+  vi.mocked(sendChoiceMessage).mockClear();
+  vi.mocked(createPendingAction).mockClear();
+  vi.mocked(hubHasSentTo).mockReset().mockResolvedValue(true);
 });
 
 describe("handlePendingActionReply", () => {
@@ -205,6 +216,85 @@ describe("handlePendingActionReply", () => {
       "44700"
     );
     expect(sendWhatsAppMessage).toHaveBeenCalledWith("44700", "✓ Sent.");
+  });
+
+  describe("send_email to someone never emailed before", () => {
+    const input = { account_id: 1, to: "jane@x.com", subject: "Hi", body: "..." };
+    function pendingSend(extra: Record<string, unknown> = {}) {
+      vi.mocked(consumePendingAction).mockReturnValue({
+        id: "abc-123",
+        ownerId: 1,
+        mode: "confirm",
+        question: "Ready to send this?",
+        contextJson: JSON.stringify({
+          tool: "send_email",
+          input,
+          declineTool: "create_email_draft",
+          declineInput: input,
+          ...extra,
+        }),
+      });
+    }
+    const sendTap = { kind: "interactive" as const, from: "44700", messageId: "m10", buttonId: "pa:abc-123:yes" };
+
+    it("warns with the address instead of sending, and stores a second confirm that skips the check", async () => {
+      pendingSend();
+      vi.mocked(hubHasSentTo).mockResolvedValue(false);
+
+      const result = await handlePendingActionReply(1, sendTap);
+
+      expect(result).toBe(true);
+      expect(hubHasSentTo).toHaveBeenCalledWith(1, 1, "jane@x.com");
+      expect(runTool).not.toHaveBeenCalled();
+      const warning =
+        "⚠️ Warning — you haven't emailed this person before. Are you sure jane@x.com is the correct email?";
+      expect(sendChoiceMessage).toHaveBeenCalledWith("44700", warning, [
+        { id: "pa:new-456:yes", title: "Yes, send" },
+        { id: "pa:new-456:no", title: "No, keep as draft" },
+      ]);
+      expect(appendWhatsAppMessage).toHaveBeenCalledWith(1, "44700", "assistant", warning);
+      const [, mode, , contextJson] = vi.mocked(createPendingAction).mock.calls[0];
+      expect(mode).toBe("confirm");
+      expect(JSON.parse(contextJson)).toMatchObject({
+        tool: "send_email",
+        input,
+        declineTool: "create_email_draft",
+        recipientChecked: true,
+      });
+    });
+
+    it("sends on the Yes tap of the warning without checking again", async () => {
+      pendingSend({ recipientChecked: true });
+      vi.mocked(runTool).mockResolvedValue({ messageId: "m1" });
+
+      await handlePendingActionReply(1, sendTap);
+
+      expect(hubHasSentTo).not.toHaveBeenCalled();
+      expect(runTool).toHaveBeenCalledWith(1, "send_email", input, "44700");
+      expect(sendWhatsAppMessage).toHaveBeenCalledWith("44700", "✓ Sent.");
+    });
+
+    it("warns when the Sent folder can't be checked", async () => {
+      pendingSend();
+      vi.mocked(hubHasSentTo).mockRejectedValue(new Error("Gmail quota"));
+      const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+      await handlePendingActionReply(1, sendTap);
+
+      expect(runTool).not.toHaveBeenCalled();
+      expect(sendChoiceMessage).toHaveBeenCalledTimes(1);
+      errorSpy.mockRestore();
+    });
+
+    it("sends straight away when the address is in the Sent folder", async () => {
+      pendingSend();
+      vi.mocked(runTool).mockResolvedValue({ messageId: "m1" });
+
+      await handlePendingActionReply(1, sendTap);
+
+      expect(sendChoiceMessage).not.toHaveBeenCalled();
+      expect(runTool).toHaveBeenCalledWith(1, "send_email", input, "44700");
+    });
   });
 
   it("confirm + yes on an Outlook account without send permission: saves a draft and sends the reconnect link", async () => {

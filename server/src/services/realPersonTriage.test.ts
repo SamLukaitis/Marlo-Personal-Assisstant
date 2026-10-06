@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { buildTriagePrompt, parseTriageSkips } from "./realPersonTriage.js";
+import { buildTriagePrompt, parseTriageSkips, parseTriageGists } from "./realPersonTriage.js";
 
 describe("buildTriagePrompt", () => {
   it("lists each email and the recently sent alerts", () => {
@@ -36,5 +36,24 @@ describe("parseTriageSkips", () => {
 
   it("treats a non-array as no skips", () => {
     expect(parseTriageSkips(undefined).size).toBe(0);
+  });
+});
+
+describe("parseTriageGists", () => {
+  it("keeps well-formed gists and drops the rest", () => {
+    const gists = parseTriageGists([
+      { index: 0, gist: "wants to move Thursday's call to Friday", needs_reply: true },
+      { index: 1, gist: "" },
+      { index: "2", gist: "x" },
+      { index: 3, gist: "sent the signed contract" },
+    ]);
+    expect(gists.get(0)).toEqual({ gist: "wants to move Thursday's call to Friday", needsReply: true });
+    expect(gists.has(1)).toBe(false);
+    expect(gists.has(2)).toBe(false);
+    expect(gists.get(3)).toEqual({ gist: "sent the signed contract", needsReply: false });
+  });
+
+  it("asks for a gist of what the sender wants", () => {
+    expect(buildTriagePrompt([{ index: 0, from: "a", subject: "b", snippet: "c" }], [])).toMatch(/gist/);
   });
 });

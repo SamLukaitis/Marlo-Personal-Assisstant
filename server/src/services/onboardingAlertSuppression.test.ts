@@ -11,13 +11,7 @@ vi.mock("../providers/whatsapp.js", async (importOriginal) => {
 });
 
 const { sendWhatsAppMessage, isWhatsAppConfigured } = await import("../providers/whatsapp.js");
-const {
-  incrementSuppressedOnboardingAlerts,
-  takeSuppressedOnboardingAlertCount,
-  markOnboardingConnected,
-  isOnboardingSuppressionActive,
-  flushOnboardingAlertSummaryIfDue,
-} = await import("./onboardingAlertSuppression.js");
+const { markOnboardingConnected, isOnboardingSuppressionActive } = await import("./onboardingAlertSuppression.js");
 const { findOrCreateUserByEmail, setPendingSetup, addPhoneNumberForUser, recordInboundMessage } = await import(
   "../db/store.js"
 );
@@ -43,37 +37,6 @@ beforeEach(() => {
   vi.mocked(isWhatsAppConfigured).mockReset().mockReturnValue(true);
 });
 
-describe("onboarding alert suppression counter", () => {
-  it("starts at zero for a fresh owner", () => {
-    const ownerId = newOwnerId();
-    expect(takeSuppressedOnboardingAlertCount(ownerId)).toBe(0);
-  });
-
-  it("accumulates increments from multiple scanners", () => {
-    const ownerId = newOwnerId();
-    incrementSuppressedOnboardingAlerts(ownerId, 2);
-    incrementSuppressedOnboardingAlerts(ownerId); // default by=1
-    incrementSuppressedOnboardingAlerts(ownerId, 3);
-
-    expect(takeSuppressedOnboardingAlertCount(ownerId)).toBe(6);
-  });
-
-  it("resets to zero after being read", () => {
-    const ownerId = newOwnerId();
-    incrementSuppressedOnboardingAlerts(ownerId, 4);
-
-    expect(takeSuppressedOnboardingAlertCount(ownerId)).toBe(4);
-    expect(takeSuppressedOnboardingAlertCount(ownerId)).toBe(0);
-  });
-
-  it("ignores a non-positive increment", () => {
-    const ownerId = newOwnerId();
-    incrementSuppressedOnboardingAlerts(ownerId, 0);
-    incrementSuppressedOnboardingAlerts(ownerId, -1);
-
-    expect(takeSuppressedOnboardingAlertCount(ownerId)).toBe(0);
-  });
-});
 
 describe("isOnboardingSuppressionActive", () => {
   afterEach(() => {
@@ -115,72 +78,3 @@ describe("isOnboardingSuppressionActive", () => {
   });
 });
 
-describe("flushOnboardingAlertSummaryIfDue", () => {
-  it("does nothing while suppression is still active", async () => {
-    const ownerId = newOwnerId();
-    registerActivePhone(ownerId);
-    setPendingSetup(ownerId, "ask_briefing");
-    incrementSuppressedOnboardingAlerts(ownerId, 2);
-
-    await flushOnboardingAlertSummaryIfDue(ownerId);
-
-    expect(sendWhatsAppMessage).not.toHaveBeenCalled();
-    expect(takeSuppressedOnboardingAlertCount(ownerId)).toBe(2); // left untouched
-  });
-
-  it("does nothing when suppression has lapsed but nothing was suppressed", async () => {
-    const ownerId = newOwnerId();
-    registerActivePhone(ownerId);
-
-    await flushOnboardingAlertSummaryIfDue(ownerId);
-
-    expect(sendWhatsAppMessage).not.toHaveBeenCalled();
-  });
-
-  it("sends a one-line summary and resets the count once suppression has lapsed", async () => {
-    const ownerId = newOwnerId();
-    const phone = registerActivePhone(ownerId);
-    incrementSuppressedOnboardingAlerts(ownerId, 3);
-
-    await flushOnboardingAlertSummaryIfDue(ownerId);
-
-    expect(sendWhatsAppMessage).toHaveBeenCalledTimes(1);
-    const [sentTo, text] = vi.mocked(sendWhatsAppMessage).mock.calls[0];
-    expect(sentTo).toBe(phone);
-    expect(text).toContain("3");
-    expect(takeSuppressedOnboardingAlertCount(ownerId)).toBe(0);
-  });
-
-  it("is naturally idempotent — a later tick with nothing new to report stays silent", async () => {
-    const ownerId = newOwnerId();
-    registerActivePhone(ownerId);
-    incrementSuppressedOnboardingAlerts(ownerId, 3);
-
-    await flushOnboardingAlertSummaryIfDue(ownerId);
-    await flushOnboardingAlertSummaryIfDue(ownerId);
-
-    expect(sendWhatsAppMessage).toHaveBeenCalledTimes(1);
-  });
-
-  it("does not send (or consume the count) when WhatsApp isn't configured", async () => {
-    const ownerId = newOwnerId();
-    registerActivePhone(ownerId);
-    incrementSuppressedOnboardingAlerts(ownerId, 1);
-    vi.mocked(isWhatsAppConfigured).mockReturnValue(false);
-
-    await flushOnboardingAlertSummaryIfDue(ownerId);
-
-    expect(sendWhatsAppMessage).not.toHaveBeenCalled();
-    expect(takeSuppressedOnboardingAlertCount(ownerId)).toBe(1);
-  });
-
-  it("does not send (or consume the count) when the owner has no registered phone numbers", async () => {
-    const ownerId = newOwnerId();
-    incrementSuppressedOnboardingAlerts(ownerId, 1);
-
-    await flushOnboardingAlertSummaryIfDue(ownerId);
-
-    expect(sendWhatsAppMessage).not.toHaveBeenCalled();
-    expect(takeSuppressedOnboardingAlertCount(ownerId)).toBe(1);
-  });
-});

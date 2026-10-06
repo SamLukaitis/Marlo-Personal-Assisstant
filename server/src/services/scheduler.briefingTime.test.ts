@@ -115,3 +115,25 @@ describe("morning briefing send time", () => {
     expect(sendWhatsAppMessage).toHaveBeenCalledTimes(1);
   });
 });
+
+describe("morning briefing carries attention items", () => {
+  it("passes this morning's attention items to the briefing and marks them done once sent", async () => {
+    const { user } = newSubscriber("Europe/London");
+    vi.setSystemTime(new Date("2026-10-01T10:00:00Z"));
+    const { submitAttentionItem, collectAttentionForBriefing } = await import("./attention.js");
+    await submitAttentionItem(user.id, {
+      source: "email",
+      category: "refund_dispute",
+      details: { summary: "Your *Amazon* refund of *£24* was approved." },
+      fallbackKey: "msg:1:refund-bt",
+    });
+    const { getTodaysBriefing } = await import("./briefing.js");
+
+    vi.setSystemTime(new Date("2026-10-02T06:45:00Z")); // 07:45 London
+    await runDailyCheckForUser(user.id);
+
+    const attention = vi.mocked(getTodaysBriefing).mock.calls.at(-1)?.[1];
+    expect(attention?.needsAttention).toEqual(["Your *Amazon* refund of *£24* was approved."]);
+    expect(collectAttentionForBriefing(user.id, Date.now()).needsAttention).toEqual([]);
+  });
+});

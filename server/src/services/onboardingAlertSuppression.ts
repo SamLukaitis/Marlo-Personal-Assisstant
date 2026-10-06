@@ -1,17 +1,9 @@
-// Shared suppression for the post-connect onboarding window (see postConnectSetup.ts's
-// startPostConnectSetup). alerts.ts (real-person mail) and reconciliation.ts (matches against
-// saved documents) call isOnboardingSuppressionActive before pushing a WhatsApp message, and
-// record-but-don't-send (incrementSuppressedOnboardingAlerts) while it's true — a user who is
-// mid-onboarding, answering its own yes/no questions, must not also get hit with a burst of
-// separate alerts about a backlog of mail that was already sitting in their inbox before they
-// connected.
-//
-// importantEmailAlerts.ts (flagged categories: flight change, reservation confirmed, security
-// alert, etc.) doesn't use the count-and-flush path — its pre-connect mail is surfaced by
-// scanAndCurateImportantEmailsForOnboarding's curated preview in the "Connected!" message, and it
-// only uses isPostConnectChainInProgress below to hold post-connect alerts until the chain ends.
-// alerts.ts/reconciliation.ts still need the rest of this module because neither has a
-// classifier to curate a preview from.
+// Keeps proactive messages out of the post-connect onboarding conversation (see postConnectSetup.ts's
+// startPostConnectSetup). alerts.ts routes people's mail to the evening digest while
+// isOnboardingSuppressionActive is true; the attention gate (attention.ts) holds its sends while
+// isPostConnectChainInProgress is true and delivers them once the question chain has finished.
+// Pre-connect important mail is surfaced by importantEmailAlerts.ts's curated preview in the
+// "Connected!" message. Nothing found during setup is ever summarised as a bare count.
 //
 // isOnboardingSuppressionActive is true for two overlapping reasons:
 //  1. postConnectSetup.ts's own question chain is still in progress (getPendingSetup non-null).
@@ -27,15 +19,8 @@
 // tick. The grace period below keeps suppression active long enough to guarantee that first tick
 // falls inside it, however fast the chain itself finishes.
 //
-// flushOnboardingAlertSummaryIfDue (called once per user per scheduler tick) reports whatever was
-// suppressed, exactly once, right when suppression stops applying — a single "I found N
-// important-looking emails" message instead of relaying each one individually. Real-time alerting
-// resumes normally for anything that shows up after that point.
-import { getSetting, setSetting, getPendingSetup, listPhoneNumbersForUser } from "../db/store.js";
-import { isWhatsAppConfigured } from "../providers/whatsapp.js";
-import { sendProactiveMessage } from "./outbound.js";
+import { getSetting, setSetting, getPendingSetup } from "../db/store.js";
 
-const COUNT_KEY = "onboarding_suppressed_alerts";
 const CONNECTED_AT_KEY = "onboarding_connected_at";
 
 // 2x scheduler.ts's CHECK_INTERVAL_MS (5 min) — comfortably covers the first tick after
@@ -83,51 +68,4 @@ export function isPostConnectChainInProgress(ownerId: number): boolean {
 
 export function isOnboardingSuppressionActive(ownerId: number): boolean {
   return getPendingSetup(ownerId) !== null || isWithinConnectionGracePeriod(ownerId);
-}
-
-export function incrementSuppressedOnboardingAlerts(ownerId: number, by = 1): void {
-  if (by <= 0) return;
-  const current = Number(getSetting(ownerId, COUNT_KEY) ?? "0") || 0;
-  setSetting(ownerId, COUNT_KEY, String(current + by));
-}
-
-// Reads the current count and resets it to zero. Call exactly once, right when the total is
-// about to be reported, so a straggler scanner tick landing later starts a fresh count instead
-// of the same backlog being mentioned twice.
-export function takeSuppressedOnboardingAlertCount(ownerId: number): number {
-  const current = Number(getSetting(ownerId, COUNT_KEY) ?? "0") || 0;
-  if (current > 0) setSetting(ownerId, COUNT_KEY, "0");
-  return current;
-}
-
-// Called once per user on every scheduler tick (scheduler.ts). No-ops while suppression is still
-// active (chain in progress, or still within the connection grace period) — more may still
-// arrive, so it's not time to report yet. Once suppression has lapsed, reports whatever built up
-// in a single message and resets the counter; takeSuppressedOnboardingAlertCount's reset makes
-// this naturally idempotent, so a tick that finds nothing new to flush is silent, not a duplicate.
-export async function flushOnboardingAlertSummaryIfDue(ownerId: number): Promise<void> {
-  if (isOnboardingSuppressionActive(ownerId)) return;
-  // Deliverability gates checked BEFORE consuming the count — same precedent as the scanners
-  // themselves — so an owner with nothing to deliver to (yet) keeps its count intact for a later
-  // tick to actually report, instead of the backlog being silently lost.
-  if (!isWhatsAppConfigured()) return;
-  const numbers = listPhoneNumbersForUser(ownerId).map((r) => r.phone);
-  if (numbers.length === 0) return;
-  const count = takeSuppressedOnboardingAlertCount(ownerId);
-  if (count === 0) return;
-
-  // Only mail that arrived after connecting can be counted here (hub.ts's connected_at floor), so
-  // this is "while we were setting up", not a pre-connect backlog.
-  const text = `Also — *${count}* important-looking email${count === 1 ? "" : "s"} came in while we were setting up. Just ask and I'll run through ${count === 1 ? "it" : "them"}.`;
-  // Fire-and-forget on delivery failure, same precedent as alerts.ts's notify() — this is a
-  // friendly one-line heads-up, not the durable record itself (every suppressed match is already
-  // saved via markAlerted/saveEntity by the scanner that found it), so losing just this summary
-  // to a transient send failure isn't worth re-queuing the count for a retry.
-  for (const number of numbers) {
-    try {
-      await sendProactiveMessage(number, text, "alert");
-    } catch (err) {
-      console.error("onboardingAlertSuppression: failed to send summary", err);
-    }
-  }
 }

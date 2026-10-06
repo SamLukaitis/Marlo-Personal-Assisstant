@@ -14,8 +14,19 @@ import { fetchWeather, type WeatherReport } from "../providers/weather.js";
 import { fetchQuotes, DEFAULT_SYMBOLS, type Quote } from "../providers/markets.js";
 import { DateTime } from "luxon";
 import { getUserTimezone, userLocalClock } from "./userTimezone.js";
+import {
+  voiceOpening,
+  voiceTimeOfDay,
+  VOICE_FACTS_ONLY,
+  VOICE_FORM,
+  VOICE_PEOPLE_NOT_SUBJECTS,
+  VOICE_SINGLE_LINE,
+  type ProactiveVoice,
+} from "./proactiveVoice.js";
 import { eventLocalDateKey } from "./eventTime.js";
 import type { CalendarEvent, UnifiedMessage } from "../providers/types.js";
+// Type-only: attention.ts imports this module at runtime, so a value import here would be a cycle.
+import type { AttentionBundle } from "./attention.js";
 
 // Briefing synthesis is a once-a-day, moderately complex writeup — the richer assistant tier
 // is the right fit, same as assistant.ts's routing, rather than the flat Opus default this
@@ -162,15 +173,30 @@ export function describeEventTime(e: CalendarEvent, zone?: string | null): strin
   return e.allDay ? `${e.title} (all day, ${day})` : `${e.title} at ${at.toFormat("HH:mm")} on ${day}`;
 }
 
+// What the attention gate (attention.ts) is holding for this briefing: reminders due in the next
+// couple of hours, non-urgent things worth knowing, and what Marlowe quietly filed since yesterday
+// with when it will bring each up. Labelled so the model keeps the three apart.
+export type BriefingAttention = Pick<AttentionBundle, "upcoming" | "needsAttention" | "noted">;
+
+export function attentionFactLines(attention: BriefingAttention | undefined): string[] {
+  if (!attention) return [];
+  const lines: string[] = [];
+  if (attention.upcoming.length) {
+    lines.push(`Coming up soon — lead with these: ${attention.upcoming.join(" | ")}`);
+  }
+  if (attention.needsAttention.length) {
+    lines.push(`Worth knowing: ${attention.needsAttention.join(" | ")}`);
+  }
+  if (attention.noted.length) {
+    lines.push(`Noted since the last briefing, each with when you'll bring it up again: ${attention.noted.join(" | ")}`);
+  }
+  return lines;
+}
+
 // Everything the briefing's voice depends on that isn't a fact about the day. Split out from the
 // fetch so the Briefing Lab (briefingPreview.ts) renders synthetic profiles through this exact
 // prompt — a second copy of it would have drifted from the real one within a week.
-export interface BriefingVoice {
-  assistantName: string;
-  /** First name only, or "" if unknown — "Hey Jake" is the register this is written in. */
-  userName: string;
-  persona: string;
-}
+export type BriefingVoice = ProactiveVoice;
 
 // The facts the model is allowed to use, already reduced to display strings. Anything not in here
 // does not exist as far as the briefing is concerned (the prompt is emphatic about that), so this
@@ -195,44 +221,56 @@ export interface BriefingDay {
   /** `from` is a display name, as with `unread`. */
   flagged: { subject: string; from: string }[];
   news: { topic: string; title: string }[];
+  /** What the attention gate is holding for this briefing (attention.ts); absent or empty when nothing. */
+  attention?: BriefingAttention;
 }
 
 // Nothing on today, no new mail, nothing waiting on a reply. Decided here rather than left to the
 // model to infer from three separate "none" lines, because the quiet-day message is a different
 // message rather than a shorter one — the branch has to be reliable, not probabilistic.
+// Anything the attention gate is holding (a reminder, something noted) is news, so not quiet.
 export function isQuietDay(day: BriefingDay): boolean {
-  return day.unread.count === 0 && day.todayEvents.length === 0 && day.flagged.length === 0;
+  return (
+    day.unread.count === 0 &&
+    day.todayEvents.length === 0 &&
+    day.flagged.length === 0 &&
+    attentionFactLines(day.attention).length === 0
+  );
 }
 
-export function briefingSystemPrompt({ assistantName, userName, persona }: BriefingVoice): string {
-  return `You are ${assistantName}, ${
-    userName ? `${userName}'s` : "the user's"
-  } assistant, sending them a short message to start the day.${
-    persona ? ` They've told you how they want you to work with them: ${persona}` : ""
-  }
+export function briefingSystemPrompt(voice: BriefingVoice): string {
+  // Composed from proactiveVoice.ts's shared register so the briefing and the evening round-up
+  // can't drift on tone or on the facts-only rules. Only the bits that are genuinely specific to a
+  // morning briefing live here: its length, the quiet-day branch, and the opt-in feeds.
+  return [
+    voiceOpening(voice, "sending them a short message to start the day"),
 
-Write one short paragraph, the way you'd text someone you work for. Aim for about 45 words and never go past 70 — on the busiest day that means dropping things, not writing tighter. No labels, no headings, no bullets, no emoji, no markdown, no line breaks you're relying on.
+    `Write one short paragraph, the way you'd text someone you work for. Aim for about 45 words and never go past 70 — on the busiest day that means dropping things, not writing tighter. ${VOICE_FORM}`,
 
-Talk about PEOPLE and what they want, not about emails and their subject lines. "Sarah's chasing that invoice again" — never "Invoice 2291 overdue from Sarah Whitfield". First names where you have them. Never quote a subject line, not even part of one, and never in quotation marks. Never give a count of unread emails: "a few things waiting" and "nothing much in" are what a person would say.
+    VOICE_PEOPLE_NOT_SUBJECTS,
 
-Name at most two things. If there's more, describe the shape of the rest in a few words and stop — "a couple of others can wait", "rest is newsletters", "nothing else urgent". Being complete is the wrong instinct; they can ask you for the rest.
+    `Name at most two things. If there's more, describe the shape of the rest in a few words and stop — "a couple of others can wait", "rest is newsletters", "nothing else urgent". Being complete is the wrong instinct; they can ask you for the rest.`,
 
-USE ONLY THE FACTS GIVEN BELOW. Never add an email, an event, a headline, a price or a forecast that isn't there. If it isn't in the facts, it doesn't exist. Inventing any of it is a serious error. Don't invent advice or jobs for them either — no "maybe sort your packing", no "good chance to get ahead on admin" — unless a fact actually points at it. Don't dress a fact up as bigger or smaller than it is.
+    VOICE_FACTS_ONLY,
 
-If the facts say QUIET DAY, don't recite the emptiness back to them. Say something easy and short that makes clear there's nothing to worry about${
-    userName ? `, using their first name` : ""
-  } — one or two sentences, warm, worded differently each day rather than a stock line. Anything worth acting on from the next three days still gets a mention.
+    `Some facts are things you've been keeping track of for them. "Coming up soon" items lead the message. "Worth knowing" items get a few words each. "Noted since the last briefing" items are things you've quietly filed — mention them briefly so they know you've got it, and say when you'll bring each one up again. For all three keep the specifics that matter (who or what, the date or time, the amount, a booking reference) and drop the rest. They don't count toward the two-thing limit; fold several into one sentence, and on a day with these the message may run to about 100 words.`,
 
-Pitch the greeting and any sign-off to the time of day in the facts: "morning" only in the morning, "sleep well" or "have a good evening" only in the evening or at night. If the time would make a sign-off awkward, leave it off rather than guess.
+    `If the facts say QUIET DAY, don't recite the emptiness back to them. Say something easy and short that makes clear there's nothing to worry about${
+      voice.userName ? `, using their first name` : ""
+    } — one or two sentences, warm, worded differently each day rather than a stock line. Anything worth acting on from the next three days still gets a mention.`,
 
-Weather, markets and news are opt-in. Mention one ONLY if its fact line is present below, in a few words inside a sentence, and leave it out entirely otherwise — never a line saying there's none. For markets, say the direction in plain words, not a string of percentages.
+    voiceTimeOfDay(),
 
-It may arrive as one unbroken line, so it has to read correctly as flowing prose.`
+    `Weather, markets and news are opt-in. Mention one ONLY if its fact line is present below, in a few words inside a sentence, and leave it out entirely otherwise — never a line saying there's none. For markets, say the direction in plain words, not a string of percentages.`,
+
+    VOICE_SINGLE_LINE,
+  ].join("\n\n");
 }
 
 export function briefingFactBlock(day: BriefingDay): string {
   return [
     `Right now it is ${day.localTime} on ${day.localWeekday}, the user's own local time.`,
+    ...attentionFactLines(day.attention),
     isQuietDay(day)
       ? "QUIET DAY: nothing on their calendar today, no unread mail today, nothing waiting on a reply. Use the quiet-day check-in from your instructions. Anything worth acting on from the next-three-days list below still gets mentioned — a quiet day with a flight to pack for is still a quiet day, but they should hear about the flight."
       : "",
@@ -301,7 +339,7 @@ export async function renderBriefing(
 }
 
 // Gathers the real day for a real user, then hands it to the shared renderer above.
-async function buildBriefingText(ownerId: number): Promise<string> {
+async function buildBriefingText(ownerId: number, attention?: BriefingAttention): Promise<string> {
   const assistantName = getSetting(ownerId, "assistant_name") ?? "Marlowe";
   const persona = getSetting(ownerId, "persona") ?? "";
   const userName = (getSetting(ownerId, "user_name") ?? "").trim().split(/\s+/)[0] ?? "";
@@ -344,21 +382,30 @@ async function buildBriefingText(ownerId: number): Promise<string> {
       upcomingEvents: upcomingEvents.map((e) => describeEventTime(e, zone)),
       flagged: flagged.map((m) => ({ subject: m.subject, from: senderDisplayName(m.from) })),
       news: news.map((h) => ({ topic: h.topic, title: h.title })),
+      attention,
     },
     "daily_briefing"
   );
 }
 
-export async function getTodaysBriefing(ownerId: number): Promise<{ date: string; content: string }> {
+// A briefing cached earlier today (e.g. the Assistant page opened it) doesn't know about attention
+// items that arrived since, so the proactive send regenerates it whenever it has some to include.
+export async function getTodaysBriefing(
+  ownerId: number,
+  attention?: BriefingAttention
+): Promise<{ date: string; content: string }> {
   const date = userLocalClock(ownerId).dateKey;
   const existing = getBriefing(ownerId, date);
-  if (existing) return existing;
-  const content = await buildBriefingText(ownerId);
+  if (existing && attentionFactLines(attention).length === 0) return existing;
+  const content = await buildBriefingText(ownerId, attention);
   return saveBriefing(ownerId, date, content);
 }
 
-export async function refreshBriefing(ownerId: number): Promise<{ date: string; content: string }> {
+export async function refreshBriefing(
+  ownerId: number,
+  attention?: BriefingAttention
+): Promise<{ date: string; content: string }> {
   const date = userLocalClock(ownerId).dateKey;
-  const content = await buildBriefingText(ownerId);
+  const content = await buildBriefingText(ownerId, attention);
   return saveBriefing(ownerId, date, content);
 }

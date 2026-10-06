@@ -698,6 +698,16 @@ export class OutlookSendPermissionError extends Error {
 const MAX_INLINE_ATTACHMENT_BYTES = 3 * 1024 * 1024;
 
 /** Actually sends (as opposed to microsoftCreateDraft, which only stages an unsent draft). */
+/** Whether this mailbox's Sent Items folder holds at least one email to `address`. */
+export async function microsoftHasSentTo(account: AccountRow, address: string): Promise<boolean> {
+  const search = encodeURIComponent(`"to:${address.replace(/"/g, "")}"`);
+  const data = await graphGet<{ value: { id: string }[] }>(
+    account,
+    `/me/mailFolders/sentitems/messages?$search=${search}&$top=1&$select=id`
+  );
+  return data.value.length > 0;
+}
+
 export async function microsoftSendMessage(
   account: AccountRow,
   to: string,

@@ -21,8 +21,6 @@ import {
   saveEntity,
 } from "../db/store.js";
 import { isWhatsAppConfigured } from "../providers/whatsapp.js";
-import { createHash } from "node:crypto";
-import { sendToAllNumbers } from "./proactiveDelivery.js";
 import { isPostConnectChainInProgress } from "./onboardingAlertSuppression.js";
 import {
   classifyImportantEmails,
@@ -30,13 +28,13 @@ import {
   type ClassifyMatch,
   type ImportantEmailCategory,
 } from "./importantEmailClassifier.js";
-import { emailReferenceNote } from "./emailReference.js";
 import { tidySnippet } from "./htmlToText.js";
-import { getXeroForwardingEmail } from "./xero.js";
-import { setPendingInvoiceForward } from "./xeroInvoiceConfirmation.js";
+import { submitAttentionItem } from "./attention.js";
+import { enrichImportantEmail } from "./importantEmailEnrichment.js";
+import { getUserTimezone } from "./userTimezone.js";
+import type { AttentionDetails } from "../db/store.js";
 import type { UnifiedMessage } from "../providers/types.js";
 
-const MAX_ALERTS_PER_CHECK = 5;
 const BASELINE_KEY = "important_email_baseline_set";
 
 // Priority order for scanAndCurateImportantEmailsForOnboarding's preview — most-urgent-feeling
@@ -135,47 +133,11 @@ function messageKey(m: UnifiedMessage): string {
   return `important-email:${m.accountId}:${m.id}`;
 }
 
-// No account email, sender address, raw subject, or category label in the visible text — those
-// read as a machine-generated log line, not something a person would send. The classifier's
-// summary (buildClassifyPrompt) is written to already be a complete, natural sentence with key
-// specifics in *bold*, so it's the entire message body; this just adds the emoji and, when known,
-// a name-first greeting ("Sam, ...") so it reads like a text from someone who knows the user.
-export function formatImportantEmailAlert(
-  m: UnifiedMessage,
-  category: ImportantEmailCategory,
-  userName: string | null,
-  summary?: string
-): string {
-  const { emoji } = CATEGORY_INFO[category];
-  // Prefer the model's plain-English summary over the raw snippet — the snippet is
-  // HTML-entity-encoded and truncated mid-sentence straight from the Gmail/Graph API.
-  const body = summary?.trim() || tidySnippet(m.snippet);
-  const greeting = userName ? `${userName}, ` : "";
-  return `${emoji} ${greeting}${body}`;
-}
-
-// Returns whether every registered number actually got the message — callers must only mark a
-// message alerted when this is true. Same precedent as reminderScheduler.ts: a notification that
-// fails to deliver must stay retriable, unlike alerts.ts's fire-and-forget notify() (acceptable
-// there only because "another email will come"; not acceptable for a flight-cancellation alert).
-// A retry skips numbers that already got this `itemKey` (see proactiveDelivery.ts).
-function notifyAll(
-  ownerId: number,
-  itemKey: string,
-  numbers: string[],
-  text: string,
-  historyNote?: string
-): Promise<boolean> {
-  return sendToAllNumbers(ownerId, itemKey, numbers, text, "alert", "importantEmailAlerts", historyNote);
-}
-
 // Runs on the existing 5-minute scheduler tick, sibling to checkForNewImportantMessages and
 // checkNewEmailsAgainstRecentDocuments — but targets automated senders specifically (the inverse
 // of checkForNewImportantMessages's filter), since that's exactly the mail those two miss.
 //
-// Known overlap: an email that both matches a saved document (reconciliation.ts) and a fixed
-// category here can trigger two separate WhatsApp messages. Accepted for v1 — the two mechanisms
-// are deliberately decoupled; revisit only if this proves annoying in practice.
+// Dedupe with reconciliation.ts and tripPrep.ts happens in the attention gate, by event_key.
 export async function checkForImportantEmails(ownerId: number): Promise<void> {
   const messages = await hubListNewMessages(ownerId);
   // Deliberately NOT gated on m.unread — a user who opens a flight-booking/invoice notification
@@ -237,62 +199,59 @@ export async function checkForImportantEmails(ownerId: number): Promise<void> {
   const matches = unscanned
     .map((m, index) => ({ m, match: classified.get(index) }))
     .filter((x): x is { m: UnifiedMessage; match: ClassifyMatch } => !!x.match);
-  if (matches.length === 0) return;
 
-  const toSend = matches.slice(0, MAX_ALERTS_PER_CHECK);
-  const userName = getSetting(ownerId, "user_name");
-  // At most one invoice_due match per tick gets the "reply yes" offer — there's only one pending
-  // confirmation slot per owner (see xeroInvoiceConfirmation.ts), by design, not an oversight.
-  let offeredInvoiceConfirm = false;
-  for (const { m, match } of toSend) {
-    const { category, summary } = match;
-    let text = formatImportantEmailAlert(m, category, userName, summary);
-    let confirmable: { accountId: number; messageId: string; subject: string } | null = null;
-
-    if (category === "invoice_due" && !offeredInvoiceConfirm && getXeroForwardingEmail(ownerId)) {
-      const full = await hubGetMessage(ownerId, m.accountId, m.id).catch(() => null);
-      // An attachment or a real body is enough to offer — respond_to_invoice_forward_prompt
-      // handles both (ingestEmailAttachment for the former, ingestEmailBodyReceipt for a
-      // plain-text receipt with no attachment, e.g. a subscription renewal notice).
-      if (full?.attachments?.length || full?.body?.trim()) {
-        confirmable = { accountId: m.accountId, messageId: m.id, subject: m.subject };
-        text += `\n\nReply "yes" and I'll forward it to Xero.`;
-      }
-    }
-
-    const delivered = await notifyAll(ownerId, messageKey(m), numbers, text, emailReferenceNote(m));
-    if (delivered) {
-      markAlerted(ownerId, messageKey(m));
-      saveFlaggedEmail(ownerId, m, match);
-      if (confirmable) {
-        setPendingInvoiceForward(ownerId, confirmable);
-        offeredInvoiceConfirm = true;
-      }
-    } else {
-      holdNewMessageCheckpoint(ownerId); // left unmarked to retry — see the classification catch above
-    }
+  // Every match is handed to the attention gate (attention.ts), which decides whether it interrupts
+  // now, becomes a timed reminder, waits for the briefing, or is dropped as routine — and retries
+  // its own failed sends, so a match is fully handled once submitted.
+  for (const { m, match } of matches) {
+    const details = await detailsFor(ownerId, m, match);
+    await submitAttentionItem(ownerId, {
+      source: "email",
+      category: match.category,
+      details,
+      fallbackKey: `msg:${m.accountId}:${m.id}`,
+    });
+    markAlerted(ownerId, messageKey(m));
+    saveFlaggedEmail(ownerId, m, { ...match, summary: details.summary });
   }
+}
 
-  const rest = matches.slice(MAX_ALERTS_PER_CHECK);
-  if (rest.length > 0) {
-    // Marlowe offers to go through them itself rather than sending the user off to their inbox —
-    // each is saved as a flagged email below, so list_flagged_emails can answer the follow-up.
-    const summary = `I've also spotted ${rest.length} more important email${rest.length === 1 ? "" : "s"} — just ask and I'll run through ${rest.length === 1 ? "it" : "them"}.`;
-    // Keyed on the exact set of emails it covers, so a retry of the same overflow skips numbers
-    // that already have it.
-    const overflowKey = `important-email-overflow:${createHash("sha256")
-      .update(rest.map(({ m }) => messageKey(m)).sort().join("\n"))
-      .digest("hex")}`;
-    const delivered = await notifyAll(ownerId, overflowKey, numbers, summary);
-    if (delivered) {
-      for (const { m, match } of rest) {
-        markAlerted(ownerId, messageKey(m));
-        saveFlaggedEmail(ownerId, m, match);
-      }
-    } else {
-      holdNewMessageCheckpoint(ownerId);
-    }
+// Routine delivery progress is dropped by the gate anyway, so it isn't worth a body fetch or an
+// enrichment call; everything else gets both so reminders use the email's real dates.
+async function detailsFor(ownerId: number, m: UnifiedMessage, match: ClassifyMatch): Promise<AttentionDetails> {
+  const base: AttentionDetails = {
+    summary: match.summary?.trim() || tidySnippet(m.snippet),
+    needsAction: match.needsAction,
+    accountId: m.accountId,
+    messageId: m.id,
+    emailSubject: m.subject,
+    emailFrom: m.from,
+  };
+  if (match.category === "delivery_notification" && !match.needsAction) return base;
+
+  const full = await hubGetMessage(ownerId, m.accountId, m.id).catch(() => null);
+  const enriched = full?.body?.trim()
+    ? await enrichImportantEmail(
+        {
+          category: match.category,
+          subject: m.subject,
+          from: m.from,
+          body: full.body,
+          receivedAt: m.receivedAt,
+          zone: getUserTimezone(ownerId),
+        },
+        ownerId
+      ).catch((err) => {
+        console.error(`importantEmailAlerts: enrichment failed for owner ${ownerId}`, err);
+        return null;
+      })
+    : null;
+  const details: AttentionDetails = { ...base, ...(enriched ?? {}), summary: enriched?.summary || base.summary };
+  if (enriched?.needsAction === undefined) details.needsAction = base.needsAction;
+  if (match.category === "invoice_due" && (full?.attachments?.length || full?.body?.trim())) {
+    details.xeroOffer = { accountId: m.accountId, messageId: m.id, subject: m.subject };
   }
+  return details;
 }
 
 function saveFlaggedEmail(ownerId: number, m: UnifiedMessage, match: ClassifyMatch): void {

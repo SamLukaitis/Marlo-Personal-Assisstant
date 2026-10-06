@@ -14,7 +14,7 @@ Marlowe can be used from the web app and, optionally, through WhatsApp. It is de
 - **Local files:** Configure folders such as Documents or Desktop for local filename search; no OAuth connection is required.
 - **WhatsApp channel:** Message Marlowe through Meta's official WhatsApp Cloud API. Incoming messages are routed to the correct user by their registered phone number.
 - **Document capture:** Send supported images, PDFs, or Word documents through WhatsApp for extraction and later search.
-- **Briefings and reminders:** Generate daily briefings and schedule proactive WhatsApp notifications while the server is running.
+- **Briefings and reminders:** Generate daily briefings and schedule proactive WhatsApp notifications while the server is running. Unprompted messages go through one gate (`server/src/services/attention.ts`): only urgent things interrupt (max 4 a day, quiet hours 22:00–07:00), bookings, renewals and bills become reminders at the right moment, and the rest is acknowledged in the briefing or evening recap.
 - **Travel tools:** Record location check-ins, inspect travel history, and calculate country/Schengen/EU day counts from the check-in timeline.
 - **News, weather, and markets:** Optional external information providers are available through the assistant and briefing features.
 - **Places and travel times (optional):** With `GOOGLE_MAPS_API_KEY` set, the assistant finds real nearby places and driving/walking times through Google's Maps Grounding Lite MCP server. On WhatsApp it can ask for your location with a one-tap "Send location" button.

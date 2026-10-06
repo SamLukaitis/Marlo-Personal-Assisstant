@@ -661,6 +661,18 @@ export function buildRawEmail(
 }
 
 /** Actually sends (as opposed to googleCreateDraft, which only stages an unsent draft). */
+/** Whether this mailbox's Sent folder holds at least one email to `address`. */
+export async function googleHasSentTo(account: AccountRow, address: string): Promise<boolean> {
+  const gmail = google.gmail({ version: "v1", auth: authFor(account) });
+  const list = await gmail.users.messages.list({
+    userId: "me",
+    // Quoted so the address is one search term; quotes inside it would break out of that.
+    q: `in:sent to:"${address.replace(/"/g, "")}"`,
+    maxResults: 1,
+  });
+  return (list.data.messages ?? []).length > 0;
+}
+
 export async function googleSendMessage(
   account: AccountRow,
   to: string,
