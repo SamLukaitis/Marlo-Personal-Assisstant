@@ -20,7 +20,7 @@ import { checkNewEmailsAgainstRecentDocuments } from "./reconciliation.js";
 import { checkForImportantEmails } from "./importantEmailAlerts.js";
 import { flushEmailDigestIfDue } from "./emailDigest.js";
 import { flushOnboardingAlertSummaryIfDue } from "./onboardingAlertSuppression.js";
-import { checkTripPrepNudges } from "./tripPrep.js";
+import { syncBookingReminders } from "./tripPrep.js";
 import { userLocalClock } from "./userTimezone.js";
 
 const CHECK_INTERVAL_MS = 5 * 60 * 1000;
@@ -108,7 +108,7 @@ async function runReconciliationCheckForUser(ownerId: number): Promise<void> {
 async function runTripPrepCheckForUser(ownerId: number): Promise<void> {
   if (!getEnabledTools(ownerId).has("travel")) return;
   try {
-    await checkTripPrepNudges(ownerId);
+    await syncBookingReminders(ownerId);
   } catch (err) {
     console.error(`scheduler: trip-prep check failed for user ${ownerId}`, err);
   }
