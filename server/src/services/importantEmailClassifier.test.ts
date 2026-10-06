@@ -49,7 +49,7 @@ describe("buildClassifyPrompt", () => {
     expect(prompt).toContain("Does NOT include a notification/copy/receipt for an invoice the user's own business issued");
   });
 
-  // The classifier's summary IS the WhatsApp alert body (see formatImportantEmailAlert in
+  // The classifier's summary IS the WhatsApp alert body (see attentionRules.ts's interruptText, fed by
   // importantEmailAlerts.ts) — it has to read like a complete, human sentence with the key
   // specifics standing out, not a robotic fragment.
   it("instructs the model to bold key specifics in WhatsApp asterisk syntax and speak directly to the user", () => {

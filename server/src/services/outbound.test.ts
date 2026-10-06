@@ -278,7 +278,7 @@ describe("truncateForTemplate", () => {
   });
 
   // WhatsApp rejects a template parameter outright if it contains a newline, a tab, or a run of
-  // more than one space (Meta error #132000) — see formatImportantEmailAlert, which deliberately
+  // more than one space (Meta error #132000) — see attentionRules.ts's message builders, which deliberately
   // embeds "\n" and "\n\n" for the free-form chat bubble path.
   it("collapses newlines to a single space", () => {
     expect(truncateForTemplate("line one\nline two")).toBe("line one line two");

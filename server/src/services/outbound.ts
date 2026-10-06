@@ -32,7 +32,7 @@ const TEMPLATE_BY_KIND: Record<ProactiveMessageKind, WhatsAppTemplateName> = {
 const MAX_TEMPLATE_PARAM_LENGTH = 1000;
 
 // Unlike a free-form send, a template *parameter* value is rejected by Meta outright if it
-// contains a newline, a tab, or a run of more than one space — callers (formatImportantEmailAlert
+// contains a newline, a tab, or a run of more than one space — callers (attentionRules.ts's message builders
 // et al.) format their text assuming a normal chat bubble, so this is the one place that has to
 // flatten it back down before it can go in a template. Collapses any run of newlines/tabs to a
 // single space first (so "a\n\nb" doesn't become "a  b"), then collapses any remaining multi-space
