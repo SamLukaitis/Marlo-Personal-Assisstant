@@ -81,15 +81,15 @@ describe("parseClassifyMatches", () => {
     ]);
     expect(result).toEqual(
       new Map([
-        [0, { category: "flight_change", summary: "Your gate moved to B12." }],
-        [2, { category: "invoice_due", summary: "£120 is due 1 Sep." }],
+        [0, { category: "flight_change", summary: "Your gate moved to B12.", needsAction: false }],
+        [2, { category: "invoice_due", summary: "£120 is due 1 Sep.", needsAction: false }],
       ])
     );
   });
 
   it("defaults summary to an empty string when missing or non-string", () => {
     const result = parseClassifyMatches([{ index: 0, category: "flight_change" }]);
-    expect(result.get(0)).toEqual({ category: "flight_change", summary: "" });
+    expect(result.get(0)).toEqual({ category: "flight_change", summary: "", needsAction: false });
   });
 
   it("skips entries with an unknown category", () => {
@@ -106,5 +106,20 @@ describe("parseClassifyMatches", () => {
     expect(parseClassifyMatches(undefined).size).toBe(0);
     expect(parseClassifyMatches(null).size).toBe(0);
     expect(parseClassifyMatches("nope").size).toBe(0);
+  });
+});
+
+describe("needs_action", () => {
+  it("parses needs_action, defaulting to false", () => {
+    const parsed = parseClassifyMatches([
+      { index: 0, category: "delivery_notification", summary: "x", needs_action: true },
+      { index: 1, category: "delivery_notification", summary: "y" },
+    ]);
+    expect(parsed.get(0)?.needsAction).toBe(true);
+    expect(parsed.get(1)?.needsAction).toBe(false);
+  });
+
+  it("asks the model whether the user must do something", () => {
+    expect(buildClassifyPrompt([{ index: 0, subject: "s", snippet: "t" }])).toMatch(/needs_action/);
   });
 });

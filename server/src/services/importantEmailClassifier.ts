@@ -100,7 +100,10 @@ export function buildClassifyPrompt(candidates: ClassifyCandidate[]): string {
     "for 12–15 June.'), and wrap every concrete specific — vendor/airline/hotel name, flight or " +
     "confirmation number, amount, date, or place — in WhatsApp bold (*text*, single asterisks on " +
     "each side) so it stands out at a glance. Never copy the snippet verbatim — it may be " +
-    `truncated mid-sentence or contain raw HTML entities.\n\n${emailList}`
+    "truncated mid-sentence or contain raw HTML entities. Also set needs_action: true only when " +
+    "the user must do something themselves (pay, reply, reschedule, collect a parcel, respond by a " +
+    "deadline); false for confirmations, receipts and routine status updates." +
+    `\n\n${emailList}`
   );
 }
 
@@ -109,12 +112,15 @@ export interface ClassifyMatch {
   // One-sentence plain-English summary the model wrote from the subject/snippet, replacing the
   // raw Gmail/Outlook snippet (HTML-entity-encoded, truncated mid-sentence) in the WhatsApp alert.
   summary: string;
+  // True when the user must do something: pay, reply, reschedule, collect, respond by a deadline.
+  // Feeds the attention gate's tiering (attentionRules.ts).
+  needsAction: boolean;
 }
 
 // Pure — turns the tool call's raw `matches` input into a validated Map, dropping anything
 // malformed rather than throwing (an LLM tool call is not a type-checked boundary). An entry
-// with no usable summary still counts as a category match — formatImportantEmailAlert falls
-// back to the subject line rather than losing the alert entirely.
+// with no usable summary still counts as a category match — the caller falls back to the
+// snippet rather than losing it entirely.
 export function parseClassifyMatches(matches: unknown): Map<number, ClassifyMatch> {
   const result = new Map<number, ClassifyMatch>();
   if (!Array.isArray(matches)) return result;
@@ -131,6 +137,7 @@ export function parseClassifyMatches(matches: unknown): Map<number, ClassifyMatc
       result.set((entry as { index: number }).index, {
         category: (entry as { category: ImportantEmailCategory }).category,
         summary: typeof summary === "string" ? summary.trim() : "",
+        needsAction: (entry as { needs_action?: unknown }).needs_action === true,
       });
     }
   }
@@ -166,8 +173,9 @@ const CLASSIFY_TOOL: Anthropic.Tool = {
                 "One plain-English sentence summarizing what the email actually says — your own " +
                 "words, not the raw snippet.",
             },
+            needs_action: { type: "boolean", description: "Whether the user must do something themselves." },
           },
-          required: ["index", "category", "summary"],
+          required: ["index", "category", "summary", "needs_action"],
         },
       },
     },
