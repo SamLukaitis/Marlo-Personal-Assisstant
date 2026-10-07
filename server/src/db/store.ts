@@ -1071,6 +1071,15 @@ db.exec(`
   );
   CREATE INDEX IF NOT EXISTS idx_whatsapp_message_wamids_message ON whatsapp_message_wamids(message_id);
 `);
+// part_text: the exact text that went out under this wamid, when one history row was sent as
+// several WhatsApp messages. A swipe lands on one part, and resolving it to the whole row let the
+// model answer about a different part of the same message. Null for single-message rows.
+const wamidColumns = (db.prepare(`PRAGMA table_info(whatsapp_message_wamids)`).all() as { name: string }[]).map(
+  (c) => c.name
+);
+if (!wamidColumns.includes("part_text")) {
+  db.exec(`ALTER TABLE whatsapp_message_wamids ADD COLUMN part_text TEXT`);
+}
 
 // One rolling summary per WhatsApp conversation, covering everything older than the raw history
 // window (ai/assistant.ts's MAX_HISTORY_MESSAGES) sent to the model on each turn. See
@@ -1857,18 +1866,26 @@ export function getWhatsAppHistory(phone: string, limit = 20): WhatsAppMessageRo
   return rows.reverse();
 }
 
+// One WhatsApp message that went out (or came in) as part of a history row. `text` is that part's
+// own text, given when the row was sent as several messages, so a swipe on one part resolves to
+// that part rather than the whole row (see whatsapp_message_wamids.part_text).
+export interface SentPart {
+  wamid: string;
+  text?: string;
+}
+
 // wamids: the WhatsApp message id(s) this history row corresponds to — a single-element array for
-// an inbound message, or one element per chunk for an outbound reply split across several sends
-// (services/messageSplitting.ts). Optional and omitted by most existing callers (reactions,
-// short-circuit replies like "help"/version text) that don't need to be resolvable as a quote
-// target. Returns the new row's id — messageBatching.ts uses it to find this exact row again when
-// the batch flushes, rather than guessing by position.
+// an inbound message, or one element per part for an outbound message split across several sends
+// (services/messageSplitting.ts, a long choice prompt). Every send path should record these (see
+// whatsappReply.ts's sendTextAndRecord) so any message can be swipe-replied to. Returns the new
+// row's id — messageBatching.ts uses it to find this exact row again when the batch flushes,
+// rather than guessing by position.
 export function appendWhatsAppMessage(
   ownerId: number,
   phone: string,
   role: "user" | "assistant",
   content: string,
-  wamids?: string[]
+  wamids?: Array<string | SentPart>
 ): number {
   const info = db
     .prepare(
@@ -1877,9 +1894,12 @@ export function appendWhatsAppMessage(
     .run(ownerId, phone, role, content, Date.now());
   if (wamids?.length) {
     const insertWamid = db.prepare(
-      `INSERT OR IGNORE INTO whatsapp_message_wamids (wamid, message_id) VALUES (?, ?)`
+      `INSERT OR IGNORE INTO whatsapp_message_wamids (wamid, message_id, part_text) VALUES (?, ?, ?)`
     );
-    for (const wamid of wamids) insertWamid.run(wamid, info.lastInsertRowid);
+    for (const part of wamids) {
+      if (typeof part === "string") insertWamid.run(part, info.lastInsertRowid, null);
+      else insertWamid.run(part.wamid, info.lastInsertRowid, part.text ?? null);
+    }
   }
   return Number(info.lastInsertRowid);
 }
@@ -1887,16 +1907,23 @@ export function appendWhatsAppMessage(
 // Resolves a swipe-to-reply (Meta's `context.id`) back to the message it quoted, no matter how
 // long ago it was sent/received — whatsapp_message_wamids is never pruned, unlike seen_wamids.
 // Scoped by ownerId (defense in depth, same convention as searchWhatsAppHistory/getDocument) so a
-// lookup can never cross an owner boundary even on a wamid collision.
-export function getWhatsAppMessageByWamid(ownerId: number, wamid: string): WhatsAppMessageRow | undefined {
-  return db
+// lookup can never cross an owner boundary even on a wamid collision. partText is the one part
+// the wamid belongs to, when the row went out as several messages.
+export function getWhatsAppMessageByWamid(
+  ownerId: number,
+  wamid: string
+): (WhatsAppMessageRow & { partText?: string }) | undefined {
+  const row = db
     .prepare(
-      `SELECT w.id, w.phone, w.role, w.content, w.created_at AS createdAt
+      `SELECT w.id, w.phone, w.role, w.content, w.created_at AS createdAt, ww.part_text AS partText
        FROM whatsapp_message_wamids ww
        JOIN whatsapp_messages w ON w.id = ww.message_id
        WHERE ww.wamid = ? AND w.owner_id = ?`
     )
-    .get(wamid, ownerId) as WhatsAppMessageRow | undefined;
+    .get(wamid, ownerId) as (WhatsAppMessageRow & { partText: string | null }) | undefined;
+  if (!row) return undefined;
+  const { partText, ...message } = row;
+  return partText === null ? message : { ...message, partText };
 }
 
 // Reaches the full raw transcript, not just the MAX_HISTORY_MESSAGES window the assistant sees by

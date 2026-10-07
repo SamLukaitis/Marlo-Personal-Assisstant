@@ -5,7 +5,7 @@ vi.mock("../db/store.js", () => ({
 }));
 vi.mock("../providers/whatsapp.js", () => ({
   sendWhatsAppMessage: vi.fn().mockResolvedValue(undefined),
-  sendChoiceMessage: vi.fn().mockResolvedValue(undefined),
+  sendChoiceMessage: vi.fn().mockResolvedValue([]),
   sendWhatsAppReaction: vi.fn().mockResolvedValue(undefined),
   sendWhatsAppLocationRequest: vi.fn().mockResolvedValue("wamid.loc"),
 }));
@@ -14,7 +14,7 @@ vi.mock("./sleep.js", () => ({ sleep: vi.fn().mockResolvedValue(undefined) }));
 const { appendWhatsAppMessage } = await import("../db/store.js");
 const { sendWhatsAppMessage, sendChoiceMessage, sendWhatsAppReaction, sendWhatsAppLocationRequest } = await import("../providers/whatsapp.js");
 const { sleep } = await import("./sleep.js");
-const { sendAssistantReply } = await import("./whatsappReply.js");
+const { sendAssistantReply, sendTextAndRecord } = await import("./whatsappReply.js");
 
 beforeEach(() => {
   vi.mocked(appendWhatsAppMessage).mockClear();
@@ -103,7 +103,32 @@ describe("sendAssistantReply", () => {
 
     await sendAssistantReply(1, "44700", { text }, "wamid.in");
 
-    expect(appendWhatsAppMessage).toHaveBeenCalledWith(1, "44700", "assistant", text, ["wamid.chunk1", "wamid.chunk2"]);
+    expect(appendWhatsAppMessage).toHaveBeenCalledWith(1, "44700", "assistant", text, [
+      { wamid: "wamid.chunk1", text: "First paragraph." },
+      { wamid: "wamid.chunk2", text: "Second paragraph." },
+    ]);
+  });
+
+  // Reported: a swipe on a choice message (or the plain text sent before its buttons) couldn't be
+  // resolved — none of their wamids were kept.
+  it("records every part of a choice message with its wamid and text, after sending it", async () => {
+    vi.mocked(sendChoiceMessage).mockResolvedValueOnce([
+      { wamid: "wamid.p1", text: "Long draft..." },
+      { wamid: "wamid.p2", text: "Ready to send this?" },
+    ]);
+
+    await sendAssistantReply(1, "44700", {
+      text: "Long draft...\n\nReady to send this?",
+      choice: { actionId: "x", question: "Long draft...\n\nReady to send this?", mode: "confirm", buttons: [{ key: "yes", label: "Send" }] },
+    }, "wamid.in");
+
+    expect(appendWhatsAppMessage).toHaveBeenCalledWith(1, "44700", "assistant", "Long draft...\n\nReady to send this?", [
+      { wamid: "wamid.p1", text: "Long draft..." },
+      { wamid: "wamid.p2", text: "Ready to send this?" },
+    ]);
+    expect(vi.mocked(sendChoiceMessage).mock.invocationCallOrder[0]).toBeLessThan(
+      vi.mocked(appendWhatsAppMessage).mock.invocationCallOrder[0]
+    );
   });
 
   it("sends a reaction targeting the inbound message instead of text, and persists a readable history line", async () => {
@@ -121,5 +146,24 @@ describe("sendAssistantReply", () => {
     expect(sendWhatsAppLocationRequest).toHaveBeenCalledWith("44700", "Tap below to share where you are.");
     expect(sendWhatsAppMessage).not.toHaveBeenCalled();
     expect(appendWhatsAppMessage).toHaveBeenCalledWith(1, "44700", "assistant", "Tap below to share where you are.", ["wamid.loc"]);
+  });
+});
+
+describe("sendTextAndRecord", () => {
+  it("sends, then records the message with its wamid", async () => {
+    vi.mocked(sendWhatsAppMessage).mockResolvedValueOnce("wamid.sent");
+
+    await sendTextAndRecord(1, "44700", "Cancelled.");
+
+    expect(sendWhatsAppMessage).toHaveBeenCalledWith("44700", "Cancelled.");
+    expect(appendWhatsAppMessage).toHaveBeenCalledWith(1, "44700", "assistant", "Cancelled.", ["wamid.sent"]);
+  });
+
+  it("still records the message when the send fails, and rethrows", async () => {
+    vi.mocked(sendWhatsAppMessage).mockRejectedValueOnce(new Error("meta down"));
+
+    await expect(sendTextAndRecord(1, "44700", "Cancelled.")).rejects.toThrow("meta down");
+
+    expect(appendWhatsAppMessage).toHaveBeenCalledWith(1, "44700", "assistant", "Cancelled.");
   });
 });

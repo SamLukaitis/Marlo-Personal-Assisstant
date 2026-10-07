@@ -478,6 +478,39 @@ describe("sendChoiceMessage", () => {
     expect(bodies[bodies.length - 1].type).toBe("interactive");
   });
 
+  // Every part must come back with its wamid and text, so a swipe on any of them can be resolved
+  // to that part — these used to be thrown away.
+  it("returns the wamid and text of every part it sends, plain pieces and the buttons", async () => {
+    let n = 0;
+    global.fetch = vi.fn().mockImplementation(async () => {
+      n += 1;
+      return { ok: true, text: async () => JSON.stringify({ messages: [{ id: `wamid.${n}` }] }) };
+    }) as unknown as typeof fetch;
+    const draft = `${"Lots of words here. ".repeat(80)}\n\nReady to send this?`;
+
+    const parts = await sendChoiceMessage("447000000001", draft, [
+      { id: "pa:abc:yes", title: "Send" },
+      { id: "pa:abc:no", title: "No" },
+    ]);
+
+    expect(parts.length).toBe(n);
+    expect(parts.map((p) => p.wamid)).toEqual(Array.from({ length: n }, (_, i) => `wamid.${i + 1}`));
+    expect(parts[0].text).toContain("Lots of words here.");
+    expect(parts[parts.length - 1].text).toBe("Ready to send this?");
+  });
+
+  it("returns the list message's wamid too", async () => {
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      text: async () => JSON.stringify({ messages: [{ id: "wamid.list" }] }),
+    }) as unknown as typeof fetch;
+    const choices = Array.from({ length: 5 }, (_, i) => ({ id: `pa:abc:${i}`, title: `Option ${i}` }));
+
+    const parts = await sendChoiceMessage("447000000001", "Which one?", choices);
+
+    expect(parts).toEqual([{ wamid: "wamid.list", text: "Which one?" }]);
+  });
+
   it("falls back to a generic prompt when even the last paragraph is too long for the body", async () => {
     const fetchMock = mockFetchOk();
 

@@ -33,6 +33,30 @@ describe("getWhatsAppMessageByWamid", () => {
     expect(getWhatsAppMessageByWamid(user.id, second)?.content).toBe("full reply text");
   });
 
+  // Reported: a swipe on one part of a long, multi-part message (a list in the middle of a reply)
+  // resolved to the whole message, and the model answered about a different part of it.
+  it("remembers which part of a multi-part message each wamid was", () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("wamid-parts"));
+    const first = `wamid.part1-${Date.now()}`;
+    const second = `wamid.part2-${Date.now()}`;
+    appendWhatsAppMessage(user.id, "447900000005", "assistant", "Intro\n\n- Log Horizon\n- Megalobox", [
+      { wamid: first, text: "Intro" },
+      { wamid: second, text: "- Log Horizon\n- Megalobox" },
+    ]);
+
+    const found = getWhatsAppMessageByWamid(user.id, second);
+    expect(found?.content).toBe("Intro\n\n- Log Horizon\n- Megalobox");
+    expect(found?.partText).toBe("- Log Horizon\n- Megalobox");
+    expect(getWhatsAppMessageByWamid(user.id, first)?.partText).toBe("Intro");
+  });
+
+  it("has no part text for a wamid recorded without one", () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("wamid-nopart"));
+    const wamid = `wamid.nopart-${Date.now()}`;
+    appendWhatsAppMessage(user.id, "447900000006", "user", "hi", [wamid]);
+    expect(getWhatsAppMessageByWamid(user.id, wamid)?.partText).toBeUndefined();
+  });
+
   it("returns undefined for an unrecorded wamid", () => {
     const user = findOrCreateUserByEmail(uniqueEmail("wamid-miss"));
     expect(getWhatsAppMessageByWamid(user.id, "wamid.never-seen")).toBeUndefined();
