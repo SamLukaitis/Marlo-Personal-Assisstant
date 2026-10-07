@@ -8,7 +8,8 @@ vi.mock("../ai/assistant.js", () => ({
 vi.mock("../providers/whatsapp.js", () => ({
   sendWhatsAppMessage: vi.fn().mockResolvedValue(undefined),
 }));
-vi.mock("./whatsappReply.js", () => ({
+vi.mock("./whatsappReply.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./whatsappReply.js")>()),
   sendAssistantReply: vi.fn().mockResolvedValue(undefined),
 }));
 

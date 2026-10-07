@@ -28,7 +28,7 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 beforeEach(() => {
   vi.mocked(sendWhatsAppMessage).mockReset().mockResolvedValue(undefined);
   vi.mocked(sendWhatsAppTemplate).mockReset().mockResolvedValue(undefined);
-  vi.mocked(sendChoiceMessage).mockReset().mockResolvedValue("wamid.BUTTONS");
+  vi.mocked(sendChoiceMessage).mockReset().mockResolvedValue([{ wamid: "wamid.BUTTONS", text: "buttons" }]);
   vi.mocked(getLastInboundAt).mockReset();
   vi.mocked(resolveOwnerByPhone).mockReset().mockReturnValue(null);
   vi.mocked(appendWhatsAppMessage).mockReset();
@@ -48,7 +48,7 @@ describe("sendProactiveMessageWithButtons", () => {
 
     expect(sendChoiceMessage).toHaveBeenCalledWith(PHONE, "question?", buttons);
     expect(sendWhatsAppTemplate).not.toHaveBeenCalled();
-    expect(appendWhatsAppMessage).toHaveBeenCalledWith(7, PHONE, "assistant", "question?\n\n[note]", ["wamid.BUTTONS"]);
+    expect(appendWhatsAppMessage).toHaveBeenCalledWith(7, PHONE, "assistant", "question?\n\n[note]", [{ wamid: "wamid.BUTTONS", text: "buttons" }]);
   });
 
   // A template can't carry buttons, so the person is asked in words instead.

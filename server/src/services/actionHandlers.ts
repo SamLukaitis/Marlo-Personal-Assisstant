@@ -11,7 +11,7 @@ import {
 import { emailDigestTime, formatDigestTime, setRealPersonAlertMode } from "./emailAlertSettings.js";
 import { runTool, runAssistantChat, MAX_HISTORY_MESSAGES } from "../ai/assistant.js";
 import { sendWhatsAppMessage } from "../providers/whatsapp.js";
-import { sendAssistantReply } from "./whatsappReply.js";
+import { sendAssistantReply, sendTextAndRecord } from "./whatsappReply.js";
 import { sendConnectLink } from "./connectMailboxLink.js";
 import type { IncomingWhatsAppMessage } from "../providers/whatsapp.js";
 
@@ -44,8 +44,7 @@ async function handleOutlookSendPermission(
     `so it needs one quick reconnect.` +
     (savedDraft ? " I've saved your email in your Outlook Drafts in the meantime." : "") +
     " Once you've reconnected, just tell me to send it.";
-  appendWhatsAppMessage(ownerId, phone, "assistant", text);
-  await sendWhatsAppMessage(phone, text).catch(() => {});
+  await sendTextAndRecord(ownerId, phone, text).catch(() => {});
   await sendConnectLink(phone, "microsoft", "enable_send").catch((err) =>
     console.error("actionHandlers: couldn't send the Outlook reconnect link", err)
   );
@@ -93,6 +92,15 @@ function describeToolResult(tool: string, result: unknown): string {
   return describe ? describe(result) : "✓ Done.";
 }
 
+// Kept in history with the confirmation (never sent). Capped so a long email body doesn't bloat
+// every later turn's history.
+const MAX_TOOL_RUN_NOTE = 600;
+function describeToolRun(tool: string, input: Record<string, unknown>): string {
+  const details = JSON.stringify(input);
+  const capped = details.length > MAX_TOOL_RUN_NOTE ? `${details.slice(0, MAX_TOOL_RUN_NOTE)}…` : details;
+  return `[Ran ${tool} after the user's tap: ${capped}]`;
+}
+
 // A pending-action tap id is `pa:<uuid>:<key>` — see ai/assistant.ts's buildChoiceReply, which
 // generates these. Anything else (e.g. postConnectSetup.ts's plain "briefing_yes"-style ids)
 // doesn't match and falls through.
@@ -134,8 +142,7 @@ async function handleEmailDigestTap(
     await sendWhatsAppMessage(phone, EXPIRED_REPLY);
     return true;
   }
-  appendWhatsAppMessage(ownerId, phone, "assistant", reply);
-  await sendWhatsAppMessage(phone, reply);
+  await sendTextAndRecord(ownerId, phone, reply);
   return true;
 }
 
@@ -190,8 +197,7 @@ export async function handlePendingActionReply(
     // No a tool/input to run on decline (the common case): just cancel, unchanged from before.
     // A decline_tool (e.g. create_email_draft when declining to send) runs instead, below.
     if (parsed.key !== "yes" && !declineTool) {
-      appendWhatsAppMessage(ownerId, phone, "assistant", "Cancelled.");
-      await sendWhatsAppMessage(phone, "Cancelled.");
+      await sendTextAndRecord(ownerId, phone, "Cancelled.");
       return true;
     }
 
@@ -200,8 +206,9 @@ export async function handlePendingActionReply(
     try {
       const result = await runTool(ownerId, runTarget, runInput, phone);
       const confirmText = describeToolResult(runTarget, result);
-      appendWhatsAppMessage(ownerId, phone, "assistant", confirmText);
-      await sendWhatsAppMessage(phone, confirmText);
+      // A bare "✓ Sent." says nothing about what was sent — the note keeps it, so a later swipe
+      // ("why this address?") or follow-up can be answered from history.
+      await sendTextAndRecord(ownerId, phone, confirmText, describeToolRun(runTarget, runInput));
     } catch (err) {
       if (isOutlookSendPermissionError(err)) {
         await handleOutlookSendPermission(ownerId, phone, runInput, err.accountEmail);

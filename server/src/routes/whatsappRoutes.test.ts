@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 vi.mock("../providers/whatsapp.js", () => ({
-  sendWhatsAppMessage: vi.fn(),
+  sendWhatsAppMessage: vi.fn().mockResolvedValue(undefined),
   // Resolves by default (rather than plain vi.fn(), which returns undefined) — handleIncoming
   // calls .catch() on this fire-and-forget call, which throws on a non-promise return value.
   sendWhatsAppTypingIndicator: vi.fn().mockResolvedValue(undefined),
@@ -19,6 +19,7 @@ vi.mock("../db/store.js", () => ({
   appendWhatsAppMessage: vi.fn(),
   getDocumentByWamid: vi.fn(),
   getWhatsAppMessageByWamid: vi.fn(),
+  getRecentWhatsAppMessagesForOwner: vi.fn().mockReturnValue([]),
   // Needed by services/userTimezone.js, which a location message runs for real (via
   // chatDispatch.js's handleLocation, not mocked here) to resolve/store a timezone deterministically.
   getSetting: vi.fn(),
@@ -53,7 +54,8 @@ vi.mock("../services/postConnectSetup.js", () => ({
   handleFirstTaskReply: vi.fn().mockResolvedValue(false),
   handlePostConnectSetupReply: vi.fn().mockResolvedValue(false),
 }));
-vi.mock("../services/whatsappReply.js", () => ({
+vi.mock("../services/whatsappReply.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../services/whatsappReply.js")>()),
   sendAssistantReply: vi.fn(),
 }));
 vi.mock("../services/actionHandlers.js", () => ({
@@ -270,6 +272,7 @@ describe("handleIncoming — location messages", () => {
       "447900000020",
       "user",
       expect.stringMatching(/^\[User shared their location at \d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC: 51\.5074, -0\.1278 \(Big Ben, London SW1A 0AA\)\]$/),
+      ["m20"],
     ]);
     expect(runAssistantChat).toHaveBeenCalled();
     expect(sendAssistantReply).toHaveBeenCalledWith(
@@ -296,6 +299,7 @@ describe("handleIncoming — location messages", () => {
       "447900000021",
       "user",
       expect.stringMatching(/^\[User shared their location at \d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC: 51\.5, -0\.1\]$/),
+      ["m21"],
     ]);
   });
 });

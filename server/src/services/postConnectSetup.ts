@@ -307,7 +307,7 @@ async function forwardToAssistantThenAdvance(
     await next(ownerId, phone);
   };
   try {
-    await handleText(ownerId, phone, message.text, message.messageId, undefined, undefined, advance);
+    await handleText(ownerId, phone, message.text, message.messageId, message.quotedMessageId, message.forwarded, advance);
   } catch (err) {
     // Nothing was queued, so `advance` will never be called for us — don't strand the chain.
     console.error(`postConnectSetup: forwarding a setup-step message failed for owner ${ownerId}`, err);

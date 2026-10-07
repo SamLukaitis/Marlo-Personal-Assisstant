@@ -8,8 +8,8 @@ import { ingestWhatsAppLink } from "./documents.js";
 import { findSaveableUrl, type FetchFailureReason } from "./safeLinkFetcher.js";
 import { isHelpTrigger, MARLOWE_HELP_TEXT } from "./whatsappRegistration.js";
 import { isVersionTrigger, buildVersionText } from "./version.js";
-import { sendWhatsAppMessage } from "../providers/whatsapp.js";
 import { resolveQuotedMessageContext } from "./quotedMessage.js";
+import { sendTextAndRecord } from "./whatsappReply.js";
 import { queueForAssistant, looksComplete } from "./messageBatching.js";
 import { setUserTimezoneFromLocation } from "./userTimezone.js";
 
@@ -46,9 +46,7 @@ async function handleLink(
   const result = await ingestWhatsAppLink({ ownerId, phone: from, url });
 
   if (!result.ok) {
-    const reply = linkFailureMessage(result.reason);
-    appendWhatsAppMessage(ownerId, from, "assistant", reply);
-    await sendWhatsAppMessage(from, reply);
+    await sendTextAndRecord(ownerId, from, linkFailureMessage(result.reason));
     await afterReply?.();
     return;
   }
@@ -91,7 +89,7 @@ export async function handleLocation(
   // cache-stable. The Maps tools only use a pin from the last ~2 hours for "near me".
   const sharedAt = new Date().toISOString().slice(0, 16).replace("T", " ");
   const locationText = `[User shared their location at ${sharedAt} UTC: ${latitude}, ${longitude}${label ? ` (${label})` : ""}]`;
-  const rowId = appendWhatsAppMessage(ownerId, from, "user", locationText);
+  const rowId = appendWhatsAppMessage(ownerId, from, "user", locationText, [messageId]);
 
   // The persisted line is already exactly what the model should see, so no override — a dropped
   // pin is rarely followed by more, so it takes the short debounce path like a complete message.
@@ -109,14 +107,14 @@ export async function handleText(
   forwarded?: boolean,
   afterReply?: () => Promise<void>
 ): Promise<void> {
-  const rowId = appendWhatsAppMessage(ownerId, from, "user", text);
+  // The user's own wamid too, so a swipe on something they said earlier resolves as well.
+  const rowId = appendWhatsAppMessage(ownerId, from, "user", text, [messageId]);
 
   // "help"/"menu" short-circuits straight to the same canned overview used at first contact —
   // instant, free, and worded consistently regardless of how the model might otherwise phrase
   // "what can you do", instead of spending an assistant turn on it.
   if (isHelpTrigger(text)) {
-    appendWhatsAppMessage(ownerId, from, "assistant", MARLOWE_HELP_TEXT);
-    await sendWhatsAppMessage(from, MARLOWE_HELP_TEXT);
+    await sendTextAndRecord(ownerId, from, MARLOWE_HELP_TEXT);
     await afterReply?.();
     return;
   }
@@ -124,9 +122,7 @@ export async function handleText(
   // Same short-circuit shape as help, above — bypasses the model entirely so it works (and
   // tells the truth) even if the assistant/tool layer itself is what's broken or stale.
   if (isVersionTrigger(text)) {
-    const versionText = buildVersionText();
-    appendWhatsAppMessage(ownerId, from, "assistant", versionText);
-    await sendWhatsAppMessage(from, versionText);
+    await sendTextAndRecord(ownerId, from, buildVersionText());
     await afterReply?.();
     return;
   }
@@ -145,7 +141,7 @@ export async function handleText(
   // Same pattern as handleLink/handleMedia's docContext: override the persisted history line with
   // the real resolved content at flush time so the model answers from what the swipe-reply
   // actually pointed at instead of guessing — see quotedMessage.ts.
-  const quotedContext = resolveQuotedMessageContext(ownerId, quotedMessageId, forwarded);
+  const quotedContext = resolveQuotedMessageContext(ownerId, quotedMessageId, forwarded, from);
   const override = quotedContext ? `${quotedContext}\n\n${text}` : null;
   queueForAssistant(ownerId, from, messageId, rowId, override, looksComplete(text), afterReply);
 }
