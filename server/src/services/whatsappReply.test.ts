@@ -2,19 +2,24 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 
 vi.mock("../db/store.js", () => ({
   appendWhatsAppMessage: vi.fn(),
+  resolveOwnerByPhone: vi.fn().mockReturnValue(null),
 }));
 vi.mock("../providers/whatsapp.js", () => ({
   sendWhatsAppMessage: vi.fn().mockResolvedValue(undefined),
   sendChoiceMessage: vi.fn().mockResolvedValue([]),
   sendWhatsAppReaction: vi.fn().mockResolvedValue(undefined),
   sendWhatsAppLocationRequest: vi.fn().mockResolvedValue("wamid.loc"),
+  sendWhatsAppReplyButtons: vi.fn().mockResolvedValue("wamid.buttons"),
+  sendWhatsAppCtaUrl: vi.fn().mockResolvedValue("wamid.link"),
 }));
 vi.mock("./sleep.js", () => ({ sleep: vi.fn().mockResolvedValue(undefined) }));
 
-const { appendWhatsAppMessage } = await import("../db/store.js");
+const { appendWhatsAppMessage, resolveOwnerByPhone } = await import("../db/store.js");
 const { sendWhatsAppMessage, sendChoiceMessage, sendWhatsAppReaction, sendWhatsAppLocationRequest } = await import("../providers/whatsapp.js");
 const { sleep } = await import("./sleep.js");
-const { sendAssistantReply, sendTextAndRecord } = await import("./whatsappReply.js");
+const { sendAssistantReply, sendTextAndRecord, sendScriptedText, sendScriptedButtons, sendScriptedLink } = await import(
+  "./whatsappReply.js"
+);
 
 beforeEach(() => {
   vi.mocked(appendWhatsAppMessage).mockClear();
@@ -165,5 +170,67 @@ describe("sendTextAndRecord", () => {
     await expect(sendTextAndRecord(1, "44700", "Cancelled.")).rejects.toThrow("meta down");
 
     expect(appendWhatsAppMessage).toHaveBeenCalledWith(1, "44700", "assistant", "Cancelled.");
+  });
+});
+
+describe("earlier parts (the holding line)", () => {
+  it("records the holding line as the first part of the reply that follows it", async () => {
+    vi.mocked(sendWhatsAppMessage).mockResolvedValueOnce("wamid.reply");
+
+    await sendAssistantReply(1, "44700", { text: "Here you go." }, "wamid.in", [
+      { wamid: "wamid.holding", text: "One sec, working on it…" },
+    ]);
+
+    expect(appendWhatsAppMessage).toHaveBeenCalledWith(1, "44700", "assistant", "Here you go.", [
+      { wamid: "wamid.holding", text: "One sec, working on it…" },
+      "wamid.reply",
+    ]);
+  });
+});
+
+describe("scripted messages (onboarding, connect links, errors)", () => {
+  it("records a scripted text against the phone's owner, with its wamid", async () => {
+    vi.mocked(resolveOwnerByPhone).mockReturnValueOnce(9);
+    vi.mocked(sendWhatsAppMessage).mockResolvedValueOnce("wamid.s1");
+
+    await sendScriptedText("44700", "What should I call you?");
+
+    expect(appendWhatsAppMessage).toHaveBeenCalledWith(9, "44700", "assistant", "What should I call you?", ["wamid.s1"]);
+  });
+
+  it("just sends when the number has no account yet", async () => {
+    vi.mocked(resolveOwnerByPhone).mockReturnValueOnce(null);
+
+    await sendScriptedText("44700", "What's your email address?");
+
+    expect(sendWhatsAppMessage).toHaveBeenCalledWith("44700", "What's your email address?");
+    expect(appendWhatsAppMessage).not.toHaveBeenCalled();
+  });
+
+  it("records buttons with their wamid", async () => {
+    vi.mocked(resolveOwnerByPhone).mockReturnValueOnce(9);
+
+    await sendScriptedButtons("44700", "Want a daily update?", [{ id: "y", title: "Yes" }]);
+
+    expect(appendWhatsAppMessage).toHaveBeenCalledWith(9, "44700", "assistant", "Want a daily update?", ["wamid.buttons"]);
+  });
+
+  it("records a connect link's body text but never the link, which carries a sign-in token", async () => {
+    vi.mocked(resolveOwnerByPhone).mockReturnValueOnce(9);
+
+    await sendScriptedLink("44700", "Tap below to connect Gmail.", "Connect Gmail", "https://x/auth?token=SECRET");
+
+    const call = vi.mocked(appendWhatsAppMessage).mock.calls[0];
+    expect(call).toEqual([9, "44700", "assistant", "Tap below to connect Gmail.", ["wamid.link"]]);
+    expect(JSON.stringify(call)).not.toContain("SECRET");
+  });
+
+  it("never fails the send when recording does", async () => {
+    vi.mocked(resolveOwnerByPhone).mockImplementationOnce(() => {
+      throw new Error("db locked");
+    });
+    vi.spyOn(console, "error").mockImplementation(() => {});
+
+    await expect(sendScriptedText("44700", "hi")).resolves.toBeUndefined();
   });
 });

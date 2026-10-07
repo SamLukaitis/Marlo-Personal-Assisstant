@@ -19,6 +19,7 @@ vi.mock("../db/store.js", () => ({
   appendWhatsAppMessage: vi.fn(),
   getDocumentByWamid: vi.fn(),
   getWhatsAppMessageByWamid: vi.fn(),
+  getSentDocumentByWamid: vi.fn(),
   getRecentWhatsAppMessagesForOwner: vi.fn().mockReturnValue([]),
   // Needed by services/userTimezone.js, which a location message runs for real (via
   // chatDispatch.js's handleLocation, not mocked here) to resolve/store a timezone deterministically.

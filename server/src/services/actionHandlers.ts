@@ -10,7 +10,6 @@ import {
 } from "../db/store.js";
 import { emailDigestTime, formatDigestTime, setRealPersonAlertMode } from "./emailAlertSettings.js";
 import { runTool, runAssistantChat, MAX_HISTORY_MESSAGES } from "../ai/assistant.js";
-import { sendWhatsAppMessage } from "../providers/whatsapp.js";
 import { sendAssistantReply, sendTextAndRecord } from "./whatsappReply.js";
 import { sendConnectLink } from "./connectMailboxLink.js";
 import type { IncomingWhatsAppMessage } from "../providers/whatsapp.js";
@@ -139,7 +138,7 @@ async function handleEmailDigestTap(
     await sendAssistantReply(ownerId, phone, assistantReply, messageId);
     return true;
   } else {
-    await sendWhatsAppMessage(phone, EXPIRED_REPLY);
+    await sendTextAndRecord(ownerId, phone, EXPIRED_REPLY);
     return true;
   }
   await sendTextAndRecord(ownerId, phone, reply);
@@ -157,7 +156,7 @@ export async function handlePendingActionReply(
   const phone = message.from;
   const action = consumePendingAction(parsed.actionId, ownerId);
   if (!action) {
-    await sendWhatsAppMessage(phone, EXPIRED_REPLY);
+    await sendTextAndRecord(ownerId, phone, EXPIRED_REPLY);
     return true;
   }
 
@@ -215,10 +214,7 @@ export async function handlePendingActionReply(
         return true;
       }
       console.error("actionHandlers: confirmed tool call failed", err);
-      await sendWhatsAppMessage(
-        phone,
-        "Sorry, that didn't go through — check the server logs."
-      ).catch(() => {});
+      await sendTextAndRecord(ownerId, phone, "Sorry, that didn't go through — check the server logs.").catch(() => {});
     }
     return true;
   }
@@ -227,7 +223,7 @@ export async function handlePendingActionReply(
   const { options } = JSON.parse(action.contextJson) as { options: string[] };
   const label = options[Number(parsed.key)];
   if (label === undefined) {
-    await sendWhatsAppMessage(phone, EXPIRED_REPLY);
+    await sendTextAndRecord(ownerId, phone, EXPIRED_REPLY);
     return true;
   }
   appendWhatsAppMessage(ownerId, phone, "user", `(User selected: ${label})`);

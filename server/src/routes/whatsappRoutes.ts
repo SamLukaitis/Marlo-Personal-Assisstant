@@ -4,7 +4,6 @@ import {
   isWhatsAppSignatureConfigured,
   verifyWebhookChallenge,
   verifyWebhookSignature,
-  sendWhatsAppMessage,
   sendWhatsAppTypingIndicator,
   extractIncomingMessages,
   type IncomingWhatsAppMessage,
@@ -29,7 +28,7 @@ import { maybeExtractMemory } from "../services/memoryExtraction.js";
 import { handleText, handleLocation } from "../services/chatDispatch.js";
 import { resolveQuotedMessageContext } from "../services/quotedMessage.js";
 import { queueForAssistant, looksComplete } from "../services/messageBatching.js";
-import { sendTextAndRecord } from "../services/whatsappReply.js";
+import { sendTextAndRecord, sendScriptedText } from "../services/whatsappReply.js";
 
 export const whatsappRoutes = Router();
 
@@ -218,10 +217,7 @@ export async function handleIncoming(message: IncomingWhatsAppMessage): Promise<
     }
   } catch (err) {
     console.error("whatsapp: failed to handle message", err);
-    await sendWhatsAppMessage(
-      message.from,
-      "Sorry, I hit an error handling that — check the server logs."
-    ).catch(() => {});
+    await sendScriptedText(message.from, "Sorry, I hit an error handling that — check the server logs.").catch(() => {});
   }
 }
 

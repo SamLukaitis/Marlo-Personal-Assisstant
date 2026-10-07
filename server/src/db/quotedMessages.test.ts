@@ -5,6 +5,9 @@ import {
   getWhatsAppMessageByWamid,
   saveDocument,
   getDocumentByWamid,
+  recordSentDocumentWamid,
+  getSentDocumentByWamid,
+  deleteDocument,
 } from "./store.js";
 
 let counter = 0;
@@ -74,6 +77,43 @@ describe("getWhatsAppMessageByWamid", () => {
   it("appendWhatsAppMessage still works with no wamids given (existing callers)", () => {
     const user = findOrCreateUserByEmail(uniqueEmail("wamid-optional"));
     expect(() => appendWhatsAppMessage(user.id, "447900000004", "user", "no wamid here")).not.toThrow();
+  });
+});
+
+describe("getSentDocumentByWamid", () => {
+  function savePhoto(ownerId: number) {
+    return saveDocument(ownerId, {
+      phone: "447900000009",
+      filename: "bp.jpg",
+      mimeType: "image/jpeg",
+      storedPath: "/tmp/fake-sent-doc",
+      caption: null,
+      title: "Boarding pass",
+      extractedText: "Flight BA123, seat 14C",
+      category: "travel",
+    });
+  }
+
+  it("finds a document Marlowe sent back by the wamid of that send, for its owner only", () => {
+    const owner = findOrCreateUserByEmail(uniqueEmail("sent-doc"));
+    const other = findOrCreateUserByEmail(uniqueEmail("sent-doc-other"));
+    const doc = savePhoto(owner.id);
+    const wamid = `wamid.sent-doc-${Date.now()}`;
+    recordSentDocumentWamid(owner.id, doc.id, wamid);
+
+    expect(getSentDocumentByWamid(owner.id, wamid)?.extractedText).toBe("Flight BA123, seat 14C");
+    expect(getSentDocumentByWamid(other.id, wamid)).toBeUndefined();
+  });
+
+  it("stops resolving once the document is deleted", () => {
+    const owner = findOrCreateUserByEmail(uniqueEmail("sent-doc-deleted"));
+    const doc = savePhoto(owner.id);
+    const wamid = `wamid.sent-doc-del-${Date.now()}`;
+    recordSentDocumentWamid(owner.id, doc.id, wamid);
+
+    deleteDocument(owner.id, doc.id);
+
+    expect(getSentDocumentByWamid(owner.id, wamid)).toBeUndefined();
   });
 });
 

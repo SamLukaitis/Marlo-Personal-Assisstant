@@ -13,7 +13,12 @@
 // A message that went out as several WhatsApp messages resolves to the one part that was swiped,
 // with the full message as context. Resolving to the whole message let the model answer about a
 // different part of it (asked "what's this" about an anime list, it explained an email alert).
-import { getDocumentByWamid, getWhatsAppMessageByWamid, getRecentWhatsAppMessagesForOwner } from "../db/store.js";
+import {
+  getDocumentByWamid,
+  getSentDocumentByWamid,
+  getWhatsAppMessageByWamid,
+  getRecentWhatsAppMessagesForOwner,
+} from "../db/store.js";
 
 // How many of Marlowe's recent messages to offer when a swipe can't be resolved, and how much of
 // each — enough to recognise which one the user meant without bloating the turn.
@@ -30,7 +35,14 @@ export function resolveQuotedMessageContext(
 
   if (quotedMessageId) {
     const doc = getDocumentByWamid(ownerId, quotedMessageId);
-    if (doc) {
+    const sentDoc = doc ? undefined : getSentDocumentByWamid(ownerId, quotedMessageId);
+    if (sentDoc) {
+      const label = sentDoc.title ?? sentDoc.filename ?? "a file";
+      parts.push(
+        `[The user swipe-replied to a saved photo/document you sent them ("${label}"). Its ` +
+          `extracted content:\n${sentDoc.extractedText}]`
+      );
+    } else if (doc) {
       const label = doc.title ?? doc.filename ?? "a file";
       parts.push(
         `[The user swipe-replied to an earlier photo/document they sent ("${label}"). Its extracted ` +

@@ -3,15 +3,18 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 vi.mock("../db/store.js", () => ({
   getDocumentByWamid: vi.fn(),
   getWhatsAppMessageByWamid: vi.fn(),
+  getSentDocumentByWamid: vi.fn(),
   getRecentWhatsAppMessagesForOwner: vi.fn().mockReturnValue([]),
 }));
 
-const { getDocumentByWamid, getWhatsAppMessageByWamid, getRecentWhatsAppMessagesForOwner } = await import("../db/store.js");
+const { getDocumentByWamid, getSentDocumentByWamid, getWhatsAppMessageByWamid, getRecentWhatsAppMessagesForOwner } =
+  await import("../db/store.js");
 const { resolveQuotedMessageContext } = await import("./quotedMessage.js");
 
 beforeEach(() => {
   vi.mocked(getDocumentByWamid).mockReset();
   vi.mocked(getWhatsAppMessageByWamid).mockReset();
+  vi.mocked(getSentDocumentByWamid).mockReset();
   vi.mocked(getRecentWhatsAppMessagesForOwner).mockReset().mockReturnValue([]);
 });
 
@@ -96,6 +99,22 @@ describe("resolveQuotedMessageContext", () => {
     expect(swipedAt).toBeGreaterThan(-1);
     expect(fullAt).toBeGreaterThan(swipedAt);
     expect(context).toMatch(/about that part/i);
+  });
+
+  it("resolves a swipe on a file Marlowe sent back to that document's content", () => {
+    vi.mocked(getDocumentByWamid).mockReturnValue(undefined);
+    vi.mocked(getSentDocumentByWamid).mockReturnValue({
+      id: 7,
+      title: "Boarding pass",
+      filename: "bp.jpg",
+      extractedText: "Flight BA123, seat 14C",
+    } as never);
+
+    const context = resolveQuotedMessageContext(1, "wamid.sent-file", undefined, "44700");
+
+    expect(context).toContain("you sent them");
+    expect(context).toContain("Flight BA123, seat 14C");
+    expect(getWhatsAppMessageByWamid).not.toHaveBeenCalled();
   });
 
   it("says when the quoted message was the user's own", () => {

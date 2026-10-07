@@ -2,12 +2,15 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 vi.mock("../db/store.js", () => ({
   getWhatsAppHistory: vi.fn().mockReturnValue([]),
+  appendWhatsAppMessage: vi.fn(),
+  resolveOwnerByPhone: vi.fn().mockReturnValue(null),
 }));
 vi.mock("../ai/assistant.js", () => ({
   runAssistantChat: vi.fn(),
   MAX_HISTORY_MESSAGES: 12,
 }));
-vi.mock("./whatsappReply.js", () => ({
+vi.mock("./whatsappReply.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./whatsappReply.js")>()),
   sendAssistantReply: vi.fn().mockResolvedValue(undefined),
 }));
 vi.mock("../providers/whatsapp.js", () => ({
@@ -256,6 +259,22 @@ describe("holding message on slow replies", () => {
     await vi.advanceTimersByTimeAsync(HOLDING_MESSAGE_MS * 3);
     expect(sendWhatsAppMessage).toHaveBeenCalledTimes(1);
     expect(sendAssistantReply).toHaveBeenCalledTimes(1);
+  });
+
+  // The holding line isn't its own history row (the model never sees it), so its wamid travels with
+  // the reply — a swipe on "one sec…" then resolves to the answer it was waiting on.
+  it("hands the holding line's wamid and text to the reply, to be recorded as its first part", async () => {
+    const from = nextPhone();
+    slowReply(HOLDING_MESSAGE_MS * 3);
+    vi.mocked(sendWhatsAppMessage).mockResolvedValueOnce("wamid.holding");
+    queueForAssistant(1, from, "wamid1", undefined, null, true);
+
+    await vi.advanceTimersByTimeAsync(SHORT_DEBOUNCE_MS + HOLDING_MESSAGE_MS * 4);
+
+    const line = vi.mocked(sendWhatsAppMessage).mock.calls[0][1];
+    expect(sendAssistantReply).toHaveBeenCalledWith(1, from, { text: "reply" }, "wamid1", [
+      { wamid: "wamid.holding", text: line },
+    ]);
   });
 
   it("sends no holding line when the reply is quick", async () => {

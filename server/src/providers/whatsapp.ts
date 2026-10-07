@@ -225,10 +225,10 @@ export async function sendWhatsAppCtaUrl(
   bodyText: string,
   buttonText: string,
   url: string
-): Promise<void> {
+): Promise<string | undefined> {
   if (isSimulatedPhone(to)) {
     recordSimMessage(to, { role: "assistant", text: bodyText, link: { label: buttonText, url } });
-    return;
+    return `sim-wamid-${crypto.randomUUID()}`;
   }
   const phoneNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID;
   const token = process.env.WHATSAPP_TOKEN;
@@ -258,6 +258,7 @@ export async function sendWhatsAppCtaUrl(
   if (!res.ok) {
     throw await buildSendError("WhatsApp CTA-url send failed", res);
   }
+  return extractSentWamid(res);
 }
 
 // A tappable menu of up to 10 rows in one section — used for closed-set questions with more
@@ -424,11 +425,11 @@ export async function sendWhatsAppMediaFromBuffer(
   buffer: Buffer,
   mimeType: string,
   filename: string
-): Promise<void> {
+): Promise<string | undefined> {
   const asImage = mimeType === "image/jpeg" || mimeType === "image/png";
   if (isSimulatedPhone(to)) {
     recordSimMessage(to, { role: "assistant", text: `[${asImage ? "photo" : "document"}: ${filename}]` });
-    return;
+    return `sim-wamid-${crypto.randomUUID()}`;
   }
   const mediaId = await uploadWhatsAppMedia(buffer, mimeType, filename);
   const phoneNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID;
@@ -454,6 +455,7 @@ export async function sendWhatsAppMediaFromBuffer(
   if (!res.ok) {
     throw await buildSendError("WhatsApp media message send failed", res);
   }
+  return extractSentWamid(res);
 }
 
 // The two pre-approved utility templates outbound.ts falls back to once the 24h customer-service

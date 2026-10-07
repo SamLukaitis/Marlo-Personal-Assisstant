@@ -40,5 +40,22 @@ message. Three gaps undermined that:
   `quotedMessage: swipe-reply to an unrecorded message`, so any remaining gap shows up in the logs.
 - A reply sent during onboarding's free-text steps now keeps its swipe context too.
 
+### Every message now carries its wamid
+
+Every send, not just the conversational ones, now saves its wamid:
+
+- **Files Marlowe sends back** ("send me that boarding pass") are linked to the saved document in
+  a new `document_sent_wamids` table. A swipe on one resolves to the document's content, as a swipe
+  on a file you sent already did.
+- **Scripted messages** go through `sendScriptedText` / `sendScriptedButtons` / `sendScriptedLink`
+  (`whatsappReply.ts`). These cover onboarding and registration questions, connect/reconnect links,
+  OAuth-callback notices, error replies and "That option has expired". **Behaviour change:** these
+  now appear in chat history, so the model sees what was actually said to the user during
+  onboarding. A number with no account yet has no history, so its messages are only sent. A connect
+  link's history row holds the body text only, never the link, which carries a sign-in token.
+- **The "One sec, working on it…" holding line** still isn't its own history row; the model
+  deliberately never sees it. Its wamid is saved as the first part of the reply that follows, so a
+  swipe on it resolves to the answer it was waiting on.
+
 Messages sent before this change still have no saved wamid, so a swipe on one of them uses the
 fallback above.
