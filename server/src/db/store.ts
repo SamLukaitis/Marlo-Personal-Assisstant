@@ -1081,6 +1081,19 @@ if (!wamidColumns.includes("part_text")) {
   db.exec(`ALTER TABLE whatsapp_message_wamids ADD COLUMN part_text TEXT`);
 }
 
+// A saved photo/file Marlowe sent back to the user (documents.ts's sendSavedDocumentFile), by the
+// wamid of that send — so a swipe on it ("what's this?") resolves to the document's content. Kept
+// apart from documents.wamid, which is the user's own inbound message that first carried the file.
+// No foreign key, and owner_id carried, so deleteDocument/deleteUserCompletely clear it directly.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS document_sent_wamids (
+    wamid TEXT PRIMARY KEY,
+    document_id INTEGER NOT NULL,
+    owner_id INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_document_sent_wamids_document ON document_sent_wamids(document_id);
+`);
+
 // One rolling summary per WhatsApp conversation, covering everything older than the raw history
 // window (ai/assistant.ts's MAX_HISTORY_MESSAGES) sent to the model on each turn. See
 // services/conversationSummary.ts, which is the only writer; ai/assistant.ts's buildSystemPrompt
@@ -2355,11 +2368,28 @@ export function getDocumentByWamid(ownerId: number, wamid: string): DocumentRow 
     .get(ownerId, wamid) as DocumentRow | undefined;
 }
 
+export function recordSentDocumentWamid(ownerId: number, documentId: number, wamid: string): void {
+  db.prepare(`INSERT OR IGNORE INTO document_sent_wamids (wamid, document_id, owner_id) VALUES (?, ?, ?)`).run(
+    wamid,
+    documentId,
+    ownerId
+  );
+}
+
+// The saved document Marlowe sent back under this wamid — see document_sent_wamids.
+export function getSentDocumentByWamid(ownerId: number, wamid: string): DocumentRow | undefined {
+  const row = db
+    .prepare(`SELECT document_id AS documentId FROM document_sent_wamids WHERE wamid = ? AND owner_id = ?`)
+    .get(wamid, ownerId) as { documentId: number } | undefined;
+  return row ? getDocument(ownerId, row.documentId) : undefined;
+}
+
 // document_match_keys.document_id REFERENCES documents(id) — children first, same manual-cascade
 // order as deleteUserCompletely, or the documents delete fails the foreign key.
 export function deleteDocument(ownerId: number, id: number): void {
   const purge = db.transaction(() => {
     db.prepare(`DELETE FROM document_match_keys WHERE document_id = ? AND owner_id = ?`).run(id, ownerId);
+    db.prepare(`DELETE FROM document_sent_wamids WHERE document_id = ? AND owner_id = ?`).run(id, ownerId);
     db.prepare(`DELETE FROM documents WHERE id = ? AND owner_id = ?`).run(id, ownerId);
   });
   purge();
@@ -3913,6 +3943,7 @@ export function deleteUserCompletely(ownerId: number): { deletedDocumentPaths: s
     // document_match_keys.document_id REFERENCES documents(id) — must be deleted before
     // documents itself or the FK constraint rejects the documents delete.
     db.prepare(`DELETE FROM document_match_keys WHERE owner_id = ?`).run(ownerId);
+    db.prepare(`DELETE FROM document_sent_wamids WHERE owner_id = ?`).run(ownerId);
     db.prepare(`DELETE FROM documents WHERE owner_id = ?`).run(ownerId);
     db.prepare(`DELETE FROM travel_checkins WHERE owner_id = ?`).run(ownerId);
     db.prepare(`DELETE FROM entities WHERE owner_id = ?`).run(ownerId);

@@ -8,9 +8,9 @@
 // message's id. The delay is picked per message via looksComplete below — a message that reads as
 // a finished thought gets a short window, one that looks like it's still being typed out gets a
 // longer one, and the window keeps sliding on whichever message arrived most recently.
-import { getWhatsAppHistory, type WhatsAppMessageRow } from "../db/store.js";
+import { getWhatsAppHistory, type WhatsAppMessageRow, type SentPart } from "../db/store.js";
 import { runAssistantChat, MAX_HISTORY_MESSAGES, type ChatMessage } from "../ai/assistant.js";
-import { sendAssistantReply } from "./whatsappReply.js";
+import { sendAssistantReply, sendTextAndRecord } from "./whatsappReply.js";
 import { sendWhatsAppMessage, sendWhatsAppTypingIndicator } from "../providers/whatsapp.js";
 
 export const SHORT_DEBOUNCE_MS = Number(process.env.WHATSAPP_DEBOUNCE_SHORT_MS ?? 1500);
@@ -18,7 +18,8 @@ export const LONG_DEBOUNCE_MS = Number(process.env.WHATSAPP_DEBOUNCE_LONG_MS ?? 
 
 // A reply still not ready this long after the assistant call starts gets one short holding line, so
 // a slow tool round trip doesn't read as silence — WhatsApp's "..." indicator vanishes after ~25s.
-// Sent with sendWhatsAppMessage directly, never saved to history, so the model never sees it.
+// Never saved to history as a message of its own, so the model never sees it — its wamid is kept
+// as the first part of the reply that follows, so a swipe on it resolves to that answer.
 export const HOLDING_MESSAGE_MS = Number(process.env.WHATSAPP_HOLDING_MS ?? 10_000);
 export const HOLDING_MESSAGES = [
   "One sec, working on it…",
@@ -107,20 +108,36 @@ async function flush(from: string): Promise<void> {
   const ownerId = state.ownerId;
 
   const wait = { done: false };
-  const holdingTimer = setTimeout(() => void sendHoldingMessage(from, replyToMessageId, wait), HOLDING_MESSAGE_MS);
+  let holding: Promise<SentPart | undefined> | undefined;
+  const holdingTimer = setTimeout(() => {
+    holding = sendHoldingMessage(from, replyToMessageId, wait);
+  }, HOLDING_MESSAGE_MS);
+  // The holding line, if one went out, is recorded as the first part of whatever follows it.
+  const holdingParts = async (): Promise<SentPart[]> => {
+    const part = await holding;
+    return part ? [part] : [];
+  };
   try {
     const history = buildBatchHistory(getWhatsAppHistory(from, MAX_HISTORY_MESSAGES), entries);
     const reply = await runAssistantChat(ownerId, history, from);
     wait.done = true;
     clearTimeout(holdingTimer);
-    await sendAssistantReply(ownerId, from, reply, replyToMessageId);
+    const earlier = await holdingParts();
+    if (earlier.length) {
+      await sendAssistantReply(ownerId, from, reply, replyToMessageId, earlier);
+    } else {
+      await sendAssistantReply(ownerId, from, reply, replyToMessageId);
+    }
   } catch (err) {
     wait.done = true;
     clearTimeout(holdingTimer);
     console.error("whatsapp: batched assistant call failed", err);
-    await sendWhatsAppMessage(
+    await sendTextAndRecord(
+      ownerId,
       from,
-      "Sorry, I hit an error handling that — check the server logs."
+      "Sorry, I hit an error handling that — check the server logs.",
+      undefined,
+      await holdingParts()
     ).catch(() => {});
   }
   try {
@@ -137,16 +154,25 @@ async function flush(from: string): Promise<void> {
   }
 }
 
-async function sendHoldingMessage(from: string, replyToMessageId: string, wait: { done: boolean }): Promise<void> {
+// Never throws. Returns the line as sent, with its wamid, so the reply can record it as one of its
+// parts — see flush.
+async function sendHoldingMessage(
+  from: string,
+  replyToMessageId: string,
+  wait: { done: boolean }
+): Promise<SentPart | undefined> {
   const line = HOLDING_MESSAGES[Math.floor(Math.random() * HOLDING_MESSAGES.length)];
+  let sent: SentPart | undefined;
   try {
-    await sendWhatsAppMessage(from, line);
+    const wamid = await sendWhatsAppMessage(from, line);
+    if (wamid) sent = { wamid, text: line };
     // Sending a message clears the "..." dots; bring them back for the rest of the wait — unless
     // the real reply landed while this line was in flight.
     if (!wait.done) await sendWhatsAppTypingIndicator(replyToMessageId);
   } catch (err) {
     console.error("whatsapp: holding message failed", err);
   }
+  return sent;
 }
 
 async function runAfterReplyCallbacks(entries: BufferedEntry[]): Promise<void> {
