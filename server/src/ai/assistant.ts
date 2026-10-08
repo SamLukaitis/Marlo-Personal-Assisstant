@@ -901,7 +901,7 @@ const ALWAYS_ON_TOOLS: Anthropic.ToolUnion[] = [
   {
     name: "set_email_alerts",
     description:
-      "Turn the user's email pings on or off, or batch them into a daily digest. There are two independent kinds: `people` — a ping whenever a real person (not a newsletter or notification) emails them; `important` — pings about genuinely important automated mail (flight changes, reservations, deliveries, invoices due, security alerts, etc.), always instant. Both are on by default, and real people's emails are by default held for one summary message a day (people_mode \"digest\", sent at digest_time, default 21:00) while important mail comes through instantly; the morning briefing is separate and unaffected. Pass only what the user asked to change: \"stop telling me when people email me\" is people:false alone; \"stop all pings about emails\" / \"no more email alerts\" is both false. \"Ping me the moment someone emails me\" / \"I want every email straight away\" is people_mode:\"instant\"; \"go back to the daily summary\" is people_mode:\"digest\"; \"send the summary at 6pm\" is digest_time:\"18:00\". If it's unclear which they mean, ask rather than guessing.",
+      "Turn the user's email pings on or off, or batch them into a daily digest. There are two independent kinds: `people` — a ping whenever a real person (not a newsletter or notification) emails them; `important` — Marlowe watching automated mail (flights, bookings, bills, renewals, deliveries, security alerts): urgent changes like a flight change come straight away, bookings/bills/renewals become reminders at the right moment, and the rest goes into the briefing or evening summary. Both are on by default, and real people's emails are by default held for one summary message a day (people_mode \"digest\", sent at digest_time, default 21:00); the morning briefing is separate and unaffected. Pass only what the user asked to change: \"stop telling me when people email me\" is people:false alone; \"stop all pings about emails\" / \"no more email alerts\" is both false. \"Ping me the moment someone emails me\" / \"I want every email straight away\" is people_mode:\"instant\"; \"go back to the daily summary\" is people_mode:\"digest\"; \"send the summary at 6pm\" is digest_time:\"18:00\". If it's unclear which they mean, ask rather than guessing.",
     input_schema: {
       type: "object",
       properties: {
@@ -1888,12 +1888,19 @@ export interface AssistantReply {
 // intercepts ask_user_choice before it would otherwise reach runTool's generic dispatch (runTool
 // has no case for it and returns "unknown tool" if ever called directly — see its test).
 function buildChoiceReply(ownerId: number, input: Record<string, unknown>): AssistantReply {
-  const question = input.question as string;
   const mode = input.mode as "confirm" | "resume";
+  let question = input.question as string;
 
   if (mode === "confirm") {
     const tool = input.confirm_tool as string;
     const confirmInput = (input.confirm_input as Record<string, unknown>) ?? {};
+    // The question is the model's own wording, so it can't be trusted to name the real recipient
+    // (a prompt-injected email could have it say "send to Sarah?" over an attacker's address).
+    // This line is written from the exact input the Send tap will run, and goes last so it sits
+    // directly above the buttons even when a long draft is split across messages.
+    if (tool === "send_email") {
+      question = `${question}\n\n📧 Sending to: ${String(confirmInput.to ?? "(no address)")}`;
+    }
     const declineTool = input.decline_tool as string | undefined;
     const declineInput = (input.decline_input as Record<string, unknown>) ?? {};
     const editable = input.editable === true;

@@ -1,0 +1,186 @@
+/* ---------- Features page ---------- */
+.features-lede {
+  margin: -8px 0 20px;
+  max-width: 60ch;
+}
+
+.features-num {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 24px;
+  height: 24px;
+  border-radius: var(--radius-pill);
+  background: var(--accent);
+  color: var(--accent-foreground);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+/* Contents */
+.features-toc-chapters {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 20px;
+}
+
+@media (min-width: 768px) {
+  .features-toc-chapters {
+    grid-template-columns: 1fr 1fr;
+    gap: 24px 32px;
+  }
+}
+
+.features-toc a {
+  color: inherit;
+  text-decoration: none;
+}
+
+.features-toc a:hover {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.features-toc-chapter {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-weight: 600;
+  font-size: 15px;
+}
+
+.features-toc-topics {
+  list-style: none;
+  margin: 8px 0 0 34px;
+  padding: 0;
+  display: grid;
+  gap: 4px;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+/* Chapters */
+.features-chapter {
+  margin-top: 40px;
+  /* Keeps a jumped-to heading off the very top edge of the screen. */
+  scroll-margin-top: 16px;
+}
+
+.features-chapter-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.features-chapter-head .features-num {
+  margin-top: 2px;
+}
+
+/* Overrides the global h2, which is a small uppercase section label. */
+.features-chapter-title {
+  font-size: 20px;
+  font-weight: 700;
+  text-transform: none;
+  letter-spacing: -0.01em;
+  color: var(--text);
+  margin: 0;
+}
+
+.features-chapter-intro {
+  margin: 2px 0 0;
+}
+
+.features-topic {
+  padding: 18px 16px;
+  border-top: 1px solid var(--border-soft);
+  scroll-margin-top: 16px;
+}
+
+.features-topic:first-child {
+  border-top: none;
+}
+
+@media (min-width: 768px) {
+  .features-topic { padding: 20px 24px; }
+}
+
+.features-topic-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.features-topic h3 {
+  font-size: 15px;
+  font-weight: 600;
+  margin: 0;
+  color: var(--text);
+}
+
+.features-topic p {
+  margin: 0;
+  color: var(--text);
+  max-width: 65ch;
+}
+
+.features-tag {
+  font-size: 11px;
+  font-weight: 500;
+  padding: 1px 8px;
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  background: var(--bg);
+}
+
+.features-tag.on {
+  border-color: #d1fae5;
+  background: var(--success-soft);
+  color: #065f46;
+}
+
+.features-tool-note {
+  margin-top: 8px !important;
+  font-size: 13px;
+  color: var(--text-muted) !important;
+}
+
+.features-tool-note a {
+  color: var(--accent);
+  font-weight: 500;
+}
+
+.features-examples {
+  list-style: none;
+  margin: 12px 0 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.features-examples li {
+  font-size: 13px;
+  padding: 4px 10px;
+  border-radius: var(--radius-md);
+  background: var(--border-soft);
+  color: var(--text);
+}
+
+.features-back {
+  display: inline-block;
+  margin-top: 10px;
+  font-size: 12px;
+  color: var(--text-muted);
+  text-decoration: none;
+}
+
+.features-back:hover {
+  color: var(--text);
+}

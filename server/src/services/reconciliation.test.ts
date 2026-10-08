@@ -14,11 +14,15 @@ vi.mock("../providers/whatsapp.js", async (importOriginal) => {
 const mockHubListMessages = vi.fn();
 const mockHubListNewMessages = vi.fn();
 const mockHoldCheckpoint = vi.fn();
-vi.mock("./hub.js", () => ({
-  hubListMessages: (...args: unknown[]) => mockHubListMessages(...args),
-  hubListNewMessages: (...args: unknown[]) => mockHubListNewMessages(...args),
-  holdNewMessageCheckpoint: (...args: unknown[]) => mockHoldCheckpoint(...args),
-}));
+vi.mock("./hub.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./hub.js")>();
+  return {
+    ...actual,
+    hubListMessages: (...args: unknown[]) => mockHubListMessages(...args),
+    hubListNewMessages: (...args: unknown[]) => mockHubListNewMessages(...args),
+    holdNewMessageCheckpoint: (...args: unknown[]) => mockHoldCheckpoint(...args),
+  };
+});
 
 const { sendWhatsAppMessage, sendWhatsAppTemplate, isWhatsAppConfigured } = await import("../providers/whatsapp.js");
 const {
@@ -28,10 +32,11 @@ const {
   recordInboundMessage,
   hasAlerted,
   saveMatchKeys,
-  setPendingSetup,
+  getAttentionItem,
+  listAttentionItems,
 } = await import("../db/store.js");
-const { matchTier, buildMatchNotification, checkNewEmailsAgainstRecentDocuments } = await import("./reconciliation.js");
-const { takeSuppressedOnboardingAlertCount } = await import("./onboardingAlertSuppression.js");
+const { matchTier, checkNewEmailsAgainstRecentDocuments } = await import("./reconciliation.js");
+const { submitAttentionItem } = await import("./attention.js");
 
 let counter = 0;
 function uniqueEmail(prefix: string): string {
@@ -94,42 +99,39 @@ beforeEach(() => {
 });
 
 describe("checkNewEmailsAgainstRecentDocuments", () => {
-  it("notifies when a new email's subject contains a recent document's reference code, naming the email", async () => {
-    const { user, phoneNumber } = seedUserWithDocument("email-to-doc", "Hilton Booking", "H9ZZ21");
+
+
+  it("records a matching email against the document's event, without messaging", async () => {
+    const { user } = seedUserWithDocument("email-to-doc", "Hilton Booking", "H9ZZ21");
     mockHubListNewMessages.mockResolvedValue([fakeMessage({ id: "m10", subject: "Change to booking H9ZZ21" })]);
 
     await checkNewEmailsAgainstRecentDocuments(user.id);
 
-    expect(sendWhatsAppMessage).toHaveBeenCalledTimes(1);
-    const [phone, text] = vi.mocked(sendWhatsAppMessage).mock.calls[0];
-    expect(phone).toBe(phoneNumber);
-    expect(text).toContain("Hilton Booking");
-    expect(text).toContain("Change to booking H9ZZ21");
+    expect(sendWhatsAppMessage).not.toHaveBeenCalled();
+    const row = getAttentionItem(user.id, "ref:H9ZZ21");
+    expect(row?.category).toBe("document_match");
+    expect(row?.details.summary).toBe('*Hilton Booking* — new email: "Change to booking H9ZZ21"');
+    expect(hasAlerted(user.id, "recon-scan:1:m10")).toBe(true);
   });
 
-  // Regression (alert spam, 2026-09-15): an airline sends several emails per booking, and each one
-  // used to produce its own identical-looking alert.
-  it("sends one message for several matching emails in the same check, listing each email", async () => {
-    const { user } = seedUserWithDocument("email-to-doc-several", "JetSMART Boarding Pass", "V9MKMZ");
-    mockHubListNewMessages.mockResolvedValue([
-      fakeMessage({ id: "js-1", subject: "Your JetSMART booking V9MKMZ is confirmed" }),
-      fakeMessage({ id: "js-2", subject: "Check-in is open for V9MKMZ" }),
-      fakeMessage({ id: "js-3", subject: "Your boarding pass V9MKMZ" }),
-    ]);
+  it("merges into an existing item for the same booking instead of adding one", async () => {
+    const { user } = seedUserWithDocument("email-to-doc-merge", "Hotel Eva", "EVA12345");
+    await submitAttentionItem(user.id, {
+      source: "email",
+      category: "reservation_confirmed",
+      details: { summary: "Your *Hotel Eva* stay, ref *EVA12345*.", kind: "hotel", eventStart: "2099-01-01", reference: "EVA12345" },
+      fallbackKey: "msg:1:orig",
+    });
+    mockHubListNewMessages.mockResolvedValue([fakeMessage({ id: "e2", subject: "EVA12345 — see you soon" })]);
 
     await checkNewEmailsAgainstRecentDocuments(user.id);
 
-    expect(sendWhatsAppMessage).toHaveBeenCalledTimes(1);
-    const [, text] = vi.mocked(sendWhatsAppMessage).mock.calls[0];
-    expect(text).toContain("Your JetSMART booking V9MKMZ is confirmed");
-    expect(text).toContain("Check-in is open for V9MKMZ");
-    expect(text).toContain("Your boarding pass V9MKMZ");
-    for (const id of ["js-1", "js-2", "js-3"]) {
-      expect(hasAlerted(user.id, `recon-scan:1:${id}`)).toBe(true);
-    }
+    expect(listAttentionItems(user.id)).toHaveLength(1);
+    expect(getAttentionItem(user.id, "ref:EVA12345")?.details.summary).toBe("Your *Hotel Eva* stay, ref *EVA12345*.");
+    expect(sendWhatsAppMessage).not.toHaveBeenCalled();
   });
 
-  it("alerts about an email once, even when more than one saved document matches it", async () => {
+  it("records an email once, even when more than one saved document matches it", async () => {
     const { user, phoneNumber } = seedUserWithDocument("email-to-doc-two-docs", "Boarding Pass", "V9TWO1");
     const secondDoc = saveDocument(user.id, {
       phone: phoneNumber,
@@ -147,9 +149,8 @@ describe("checkNewEmailsAgainstRecentDocuments", () => {
     await checkNewEmailsAgainstRecentDocuments(user.id);
     await checkNewEmailsAgainstRecentDocuments(user.id);
 
-    expect(sendWhatsAppMessage).toHaveBeenCalledTimes(1);
-    const [, text] = vi.mocked(sendWhatsAppMessage).mock.calls[0];
-    expect(text.match(/Gate change for V9TWO1/g)).toHaveLength(1);
+    expect(sendWhatsAppMessage).not.toHaveBeenCalled();
+    expect(listAttentionItems(user.id)).toHaveLength(1);
   });
 
   it("only scans each email once across repeated ticks, regardless of match outcome", async () => {
@@ -172,76 +173,10 @@ describe("checkNewEmailsAgainstRecentDocuments", () => {
     expect(sendWhatsAppMessage).not.toHaveBeenCalled();
   });
 
-  it("does not notify twice for the same email across ticks", async () => {
-    const { user } = seedUserWithDocument("email-to-doc-dedup", "Hilton Booking", "H9ZZ22");
-    mockHubListNewMessages.mockResolvedValue([fakeMessage({ id: "m12", subject: "Change to booking H9ZZ22" })]);
 
-    await checkNewEmailsAgainstRecentDocuments(user.id);
-    await checkNewEmailsAgainstRecentDocuments(user.id);
 
-    expect(sendWhatsAppMessage).toHaveBeenCalledTimes(1);
-  });
 
-  it("leaves matched emails unscanned and holds the mail checkpoint when delivery fails, then delivers once on retry", async () => {
-    const { user } = seedUserWithDocument("email-to-doc-delivery-fail", "Hilton Booking", "H9ZZ23");
-    mockHubListNewMessages.mockResolvedValue([fakeMessage({ id: "m13", subject: "Change to booking H9ZZ23" })]);
-    vi.mocked(sendWhatsAppMessage).mockRejectedValue(new Error("network down"));
 
-    await checkNewEmailsAgainstRecentDocuments(user.id);
-
-    expect(sendWhatsAppMessage).toHaveBeenCalledTimes(1);
-    // On Gmail the later tick only re-lists this email if the history checkpoint was held.
-    expect(mockHoldCheckpoint).toHaveBeenCalledWith(user.id);
-    expect(hasAlerted(user.id, "recon-scan:1:m13")).toBe(false);
-
-    vi.mocked(sendWhatsAppMessage).mockReset().mockResolvedValue(undefined);
-    await checkNewEmailsAgainstRecentDocuments(user.id);
-
-    expect(sendWhatsAppMessage).toHaveBeenCalledTimes(1);
-    expect(hasAlerted(user.id, "recon-scan:1:m13")).toBe(true);
-  });
-
-  it("lists at most five emails in one message and summarizes the rest", async () => {
-    const { user } = seedUserWithDocument("email-to-doc-many", "Big Trip", "MANYCODE1");
-    mockHubListNewMessages.mockResolvedValue(
-      Array.from({ length: 7 }, (_, i) => fakeMessage({ id: `many-${i}`, subject: `Update ${i} on MANYCODE1` }))
-    );
-
-    await checkNewEmailsAgainstRecentDocuments(user.id);
-
-    expect(sendWhatsAppMessage).toHaveBeenCalledTimes(1);
-    const [, text] = vi.mocked(sendWhatsAppMessage).mock.calls[0];
-    expect(text).toContain("Update 4 on MANYCODE1");
-    expect(text).not.toContain("Update 5 on MANYCODE1");
-    expect(text).toContain("2 more");
-    for (let i = 0; i < 7; i++) expect(hasAlerted(user.id, `recon-scan:1:many-${i}`)).toBe(true);
-  });
-
-  it("leaves everything unscanned (without holding the checkpoint) when WhatsApp isn't configured", async () => {
-    const { user } = seedUserWithDocument("email-to-doc-not-configured", "Hilton Booking", "H9ZZ24");
-    mockHubListNewMessages.mockResolvedValue([fakeMessage({ id: "m14", subject: "Change to booking H9ZZ24" })]);
-    vi.mocked(isWhatsAppConfigured).mockReturnValue(false);
-
-    await checkNewEmailsAgainstRecentDocuments(user.id);
-
-    expect(sendWhatsAppMessage).not.toHaveBeenCalled();
-    expect(hasAlerted(user.id, "recon-scan:1:m14")).toBe(false);
-    expect(mockHoldCheckpoint).not.toHaveBeenCalled();
-  });
-
-  // Same onboarding-window suppression as alerts.ts (see onboardingAlertSuppression.ts).
-  it("records but does not send while onboarding is still in progress", async () => {
-    const { user } = seedUserWithDocument("email-to-doc-mid-onboarding", "Hilton Booking", "ONBOARDCODE1");
-    setPendingSetup(user.id, "ask_briefing");
-    mockHubListNewMessages.mockResolvedValue([fakeMessage({ id: "onb-1", subject: "Change to booking ONBOARDCODE1" })]);
-
-    await checkNewEmailsAgainstRecentDocuments(user.id);
-
-    expect(sendWhatsAppMessage).not.toHaveBeenCalled();
-    expect(hasAlerted(user.id, "recon-scan:1:onb-1")).toBe(true);
-    expect(takeSuppressedOnboardingAlertCount(user.id)).toBe(1);
-    expect(mockHoldCheckpoint).not.toHaveBeenCalled();
-  });
 
   // It runs on the scheduler tick and only acts on mail it hasn't scanned before, so it shares
   // hub.ts's incremental hubListNewMessages rather than re-listing a fixed window of old mail.
@@ -287,56 +222,3 @@ describe("matchTier", () => {
   });
 });
 
-describe("buildMatchNotification", () => {
-  const match = (subject: string, docTitle: string, keys: MatchKeys) => ({ subject, docTitle, keys });
-
-  it("for one email, names the email, the document, and the identifier (title and identifier bolded)", () => {
-    const msg = buildMatchNotification(
-      [match("Gate change for DL1234", "Delta Boarding Pass", { flightNumber: "DL1234", eventDate: "2026-09-12" })],
-      null
-    );
-    expect(msg).toContain('"Gate change for DL1234"');
-    expect(msg).toContain("*Delta Boarding Pass*");
-    expect(msg).toContain("*DL1234*");
-    expect(msg).toContain("2026-09-12");
-  });
-
-  it("prefers referenceCode over flightNumber when both are present", () => {
-    const msg = buildMatchNotification(
-      [match("Update", "Hotel Booking", { referenceCode: "K4X9QP", flightNumber: "DL1234" })],
-      null
-    );
-    expect(msg).toContain("K4X9QP");
-    expect(msg).not.toContain("DL1234");
-  });
-
-  it("omits a stray date segment when eventDate is absent", () => {
-    const msg = buildMatchNotification([match("Update", "Hotel Booking", { referenceCode: "K4X9QP" })], null);
-    expect(msg).not.toContain("undefined");
-  });
-
-  it("greets the user by name when one is known", () => {
-    const msg = buildMatchNotification([match("Update", "Hotel Booking", { referenceCode: "K4X9QP" })], "Sam");
-    expect(msg).toContain("Sam");
-  });
-
-  it("omits the greeting, and never shows a raw email address, when no name is known", () => {
-    const msg = buildMatchNotification([match("Update", "Hotel Booking", { referenceCode: "K4X9QP" })], null);
-    expect(msg).not.toContain("@");
-    expect(msg.startsWith("[")).toBe(false);
-  });
-
-  it("for several emails, lists one line per email in a single message", () => {
-    const msg = buildMatchNotification(
-      [
-        match("Booking confirmed", "JetSMART Boarding Pass", { referenceCode: "V9MKMZ" }),
-        match("Check-in open", "JetSMART Boarding Pass", { referenceCode: "V9MKMZ" }),
-      ],
-      "Sam"
-    );
-    expect(msg).toContain("2 emails");
-    expect(msg).toContain('"Booking confirmed"');
-    expect(msg).toContain('"Check-in open"');
-    expect(msg.split("\n").filter((line) => line.startsWith("•"))).toHaveLength(2);
-  });
-});

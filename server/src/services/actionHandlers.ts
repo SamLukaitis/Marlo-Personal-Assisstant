@@ -5,12 +5,14 @@
 import {
   consumePendingAction,
   consumePendingActionsByMode,
+  createPendingAction,
   appendWhatsAppMessage,
   getWhatsAppHistory,
 } from "../db/store.js";
 import { emailDigestTime, formatDigestTime, setRealPersonAlertMode } from "./emailAlertSettings.js";
 import { runTool, runAssistantChat, MAX_HISTORY_MESSAGES } from "../ai/assistant.js";
-import { sendAssistantReply, sendTextAndRecord } from "./whatsappReply.js";
+import { hubHasSentTo } from "./hub.js";
+import { sendAssistantReply, sendTextAndRecord, sendChoiceAndRecord } from "./whatsappReply.js";
 import { sendConnectLink } from "./connectMailboxLink.js";
 import type { IncomingWhatsAppMessage } from "../providers/whatsapp.js";
 
@@ -47,6 +49,47 @@ async function handleOutlookSendPermission(
   await sendConnectLink(phone, "microsoft", "enable_send").catch((err) =>
     console.error("actionHandlers: couldn't send the Outlook reconnect link", err)
   );
+}
+
+interface ConfirmContext {
+  tool: string;
+  input: Record<string, unknown>;
+  declineTool?: string;
+  declineInput?: Record<string, unknown>;
+  // Set on the second question asked by askAboutNewRecipient, so its Yes tap sends rather than
+  // checking the recipient again.
+  recipientChecked?: boolean;
+}
+
+// Looks in the sending mailbox's own Sent folder. A lookup failure counts as "not emailed
+// before": the cost is one extra tap, whereas skipping the warning is the unsafe direction.
+async function hasEmailedBefore(ownerId: number, accountId: number, to: string): Promise<boolean> {
+  try {
+    return await hubHasSentTo(ownerId, accountId, to);
+  } catch (err) {
+    console.error("actionHandlers: couldn't check the Sent folder for a previous email", err);
+    return false;
+  }
+}
+
+// Asked after the Send tap, before anything is sent, when the mailbox has never emailed this
+// address. A wrong or look-alike address is exactly what a mistyped contact or a prompt-injected
+// email would produce, and the user hasn't necessarily read the address closely the first time.
+async function askAboutNewRecipient(ownerId: number, phone: string, to: string, context: ConfirmContext): Promise<void> {
+  const text = `⚠️ Warning — you haven't emailed this person before. Are you sure ${to} is the correct email?`;
+  const actionId = createPendingAction(
+    ownerId,
+    "confirm",
+    text,
+    JSON.stringify({ ...context, recipientChecked: true })
+  );
+  await sendChoiceAndRecord(ownerId, phone, text, text, [
+    { id: `pa:${actionId}:yes`, title: "Yes, send" },
+    {
+      id: `pa:${actionId}:no`,
+      title: context.declineTool === "create_email_draft" ? "No, keep as draft" : "No, don't send",
+    },
+  ]);
 }
 
 // Friendly per-tool confirmation text for a zero-LLM confirm execution — falls back to a generic
@@ -168,17 +211,8 @@ export async function handlePendingActionReply(
   }
 
   if (action.mode === "confirm") {
-    const {
-      tool,
-      input,
-      declineTool,
-      declineInput,
-    } = JSON.parse(action.contextJson) as {
-      tool: string;
-      input: Record<string, unknown>;
-      declineTool?: string;
-      declineInput?: Record<string, unknown>;
-    };
+    const context = JSON.parse(action.contextJson) as ConfirmContext;
+    const { tool, input, declineTool, declineInput } = context;
 
     // Edit isn't a yes/no outcome at all — nothing runs. Route the tap back through the model as
     // a normal follow-up, same pattern as a resume tap below, so it can ask what to change.
@@ -198,6 +232,14 @@ export async function handlePendingActionReply(
     if (parsed.key !== "yes" && !declineTool) {
       await sendTextAndRecord(ownerId, phone, "Cancelled.");
       return true;
+    }
+
+    if (parsed.key === "yes" && tool === "send_email" && !context.recipientChecked) {
+      const to = String(input.to ?? "");
+      if (!(await hasEmailedBefore(ownerId, input.account_id as number, to))) {
+        await askAboutNewRecipient(ownerId, phone, to, context);
+        return true;
+      }
     }
 
     const runTarget = parsed.key === "yes" ? tool : (declineTool as string);

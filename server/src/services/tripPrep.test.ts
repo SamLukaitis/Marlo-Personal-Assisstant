@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 vi.mock("../providers/whatsapp.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../providers/whatsapp.js")>();
@@ -10,200 +10,127 @@ vi.mock("../providers/whatsapp.js", async (importOriginal) => {
   };
 });
 
-const { sendWhatsAppMessage, sendWhatsAppTemplate, isWhatsAppConfigured } = await import("../providers/whatsapp.js");
-const { findOrCreateUserByEmail, addPhoneNumberForUser, recordInboundMessage, saveEntity, getEntity } = await import(
-  "../db/store.js"
-);
-const { checkTripPrepNudges, isTripPrepDue } = await import("./tripPrep.js");
+const { sendWhatsAppMessage } = await import("../providers/whatsapp.js");
+const {
+  findOrCreateUserByEmail,
+  addPhoneNumberForUser,
+  recordInboundMessage,
+  saveEntity,
+  getEntity,
+  getAttentionItem,
+  listAttentionItems,
+} = await import("../db/store.js");
+const { setUserTimezone } = await import("./userTimezone.js");
+const { syncBookingReminders, flightNumberFrom, bookingSummary } = await import("./tripPrep.js");
+const { submitAttentionItem, deliverDueAttentionItems } = await import("./attention.js");
+const { DateTime } = await import("luxon");
 import type { BookingData } from "./entityValidation.js";
 
+const ZONE = "Europe/London";
+const at = (iso: string) => DateTime.fromISO(iso, { zone: ZONE }).toJSDate();
+
 let counter = 0;
-function uniqueEmail(prefix: string): string {
-  counter += 1;
-  return `${prefix}-${Date.now()}-${counter}@example.com`;
-}
-
+const phones = new Map<number, string>();
 // See reminderScheduler.test.ts for why the prefix must be file-unique across the whole test run
-// (user_phone_numbers.phone is UNIQUE). "44700007" is unclaimed as of this file's creation.
-function registerActivePhone(ownerId: number): string {
+// (user_phone_numbers.phone is UNIQUE). This file keeps its historical "447000070".
+function newUser() {
   counter += 1;
+  const user = findOrCreateUserByEmail(`trip-prep-${Date.now()}-${counter}@example.com`);
   const phone = `447000070${String(counter).padStart(3, "0")}`;
-  addPhoneNumberForUser(ownerId, phone);
+  addPhoneNumberForUser(user.id, phone);
   recordInboundMessage(phone);
-  return phone;
-}
-
-function todayKey(): string {
-  const now = new Date();
-  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
-}
-
-function dateKeyPlusDays(days: number): string {
-  const d = new Date();
-  d.setDate(d.getDate() + days);
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  setUserTimezone(user.id, ZONE);
+  phones.set(user.id, phone);
+  return user.id;
 }
 
 function booking(overrides: Partial<BookingData>): BookingData {
-  return {
-    kind: "flight",
-    name: "FR1234 LIS→FAO",
-    reference: null,
-    startDate: dateKeyPlusDays(1),
-    endDate: null,
-    ...overrides,
-  };
+  return { kind: "flight", name: "FR1234 LIS→FAO", reference: null, startDate: "2026-10-05", endDate: null, ...overrides };
 }
 
 beforeEach(() => {
-  vi.mocked(sendWhatsAppMessage).mockReset();
-  vi.mocked(sendWhatsAppTemplate).mockReset();
-  vi.mocked(isWhatsAppConfigured).mockReturnValue(true);
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(at("2026-10-01T12:00"));
+  vi.mocked(sendWhatsAppMessage).mockReset().mockResolvedValue("wamid");
 });
 
-describe("isTripPrepDue", () => {
-  const today = todayKey();
-  const tomorrow = dateKeyPlusDays(1);
+afterEach(() => vi.useRealTimers());
 
-  it("flight is due the day before departure", () => {
-    expect(isTripPrepDue(booking({ kind: "flight", startDate: tomorrow }), today, tomorrow)).toBe(true);
+describe("flightNumberFrom", () => {
+  it("pulls the flight number out of a booking name", () => {
+    expect(flightNumberFrom("FR1234 LIS→FAO")).toBe("FR1234");
+    expect(flightNumberFrom("BA 432 to Lisbon")).toBe("BA432");
+    expect(flightNumberFrom("Hotel Eva, Faro")).toBeNull();
   });
+});
 
-  it("flight catches up same-day if not yet notified", () => {
-    expect(isTripPrepDue(booking({ kind: "flight", startDate: today }), today, tomorrow)).toBe(true);
-  });
-
-  it("flight is not due more than a day out", () => {
-    expect(isTripPrepDue(booking({ kind: "flight", startDate: dateKeyPlusDays(2) }), today, tomorrow)).toBe(false);
-  });
-
-  it("flight already notified is never due again", () => {
+describe("bookingSummary", () => {
+  it("bolds the name, date and reference", () => {
+    expect(bookingSummary(booking({ reference: "X7KQ2P" }))).toBe("Your flight *FR1234 LIS→FAO* on *5 Oct*, ref *X7KQ2P*.");
     expect(
-      isTripPrepDue(booking({ kind: "flight", startDate: tomorrow, tripPrepNotifiedAt: Date.now() }), today, tomorrow)
-    ).toBe(false);
-  });
-
-  it("hotel is due on check-in day", () => {
-    expect(isTripPrepDue(booking({ kind: "hotel", startDate: today }), today, tomorrow)).toBe(true);
-  });
-
-  it("hotel is not due the day before check-in", () => {
-    expect(isTripPrepDue(booking({ kind: "hotel", startDate: tomorrow }), today, tomorrow)).toBe(false);
+      bookingSummary(booking({ kind: "hotel", name: "Hotel Eva, Faro", startDate: "2026-10-12", endDate: "2026-10-15" }))
+    ).toBe("Your stay at *Hotel Eva, Faro* from *12 Oct* to *15 Oct*.");
   });
 });
 
-describe("checkTripPrepNudges", () => {
-  it("sends a flight nudge and stamps the booking so it doesn't fire twice", async () => {
-    const user = findOrCreateUserByEmail(uniqueEmail("tripprep-flight"));
-    const phone = registerActivePhone(user.id);
-    const entity = saveEntity<BookingData>(user.id, {
-      type: "booking",
-      data: booking({ kind: "flight", startDate: dateKeyPlusDays(1) }),
-    });
+describe("syncBookingReminders", () => {
+  it("turns a future booking into a silent, already-acknowledged reminder", async () => {
+    const ownerId = newUser();
+    const entity = saveEntity<BookingData>(ownerId, { type: "booking", data: booking({}) });
 
-    await checkTripPrepNudges(user.id);
-
-    expect(sendWhatsAppMessage).toHaveBeenCalledTimes(1);
-    const [sentPhone, text] = vi.mocked(sendWhatsAppMessage).mock.calls[0];
-    expect(sentPhone).toBe(phone);
-    expect(text).toContain("FR1234 LIS→FAO");
-
-    const updated = getEntity<BookingData>(user.id, entity.id)!;
-    expect(updated.data.tripPrepNotifiedAt).toBeTypeOf("number");
-
-    await checkTripPrepNudges(user.id);
-    expect(sendWhatsAppMessage).toHaveBeenCalledTimes(1); // no second send
-  });
-
-  it("sends a hotel nudge on check-in day", async () => {
-    const user = findOrCreateUserByEmail(uniqueEmail("tripprep-hotel"));
-    registerActivePhone(user.id);
-    saveEntity<BookingData>(user.id, {
-      type: "booking",
-      data: booking({ kind: "hotel", name: "Hotel Eva, Faro", startDate: todayKey(), endDate: dateKeyPlusDays(3) }),
-    });
-
-    await checkTripPrepNudges(user.id);
-
-    expect(sendWhatsAppMessage).toHaveBeenCalledTimes(1);
-    const [, text] = vi.mocked(sendWhatsAppMessage).mock.calls[0];
-    expect(text).toContain("Hotel Eva, Faro");
-  });
-
-  it("does nothing when no booking is due", async () => {
-    const user = findOrCreateUserByEmail(uniqueEmail("tripprep-none"));
-    registerActivePhone(user.id);
-    saveEntity<BookingData>(user.id, {
-      type: "booking",
-      data: booking({ kind: "flight", startDate: dateKeyPlusDays(5) }),
-    });
-
-    await checkTripPrepNudges(user.id);
+    await syncBookingReminders(ownerId);
 
     expect(sendWhatsAppMessage).not.toHaveBeenCalled();
+    const row = getAttentionItem(ownerId, "flight:FR1234:2026-10-05");
+    expect(row?.tier).toBe("scheduled");
+    expect(row?.acknowledgedAt).not.toBeNull();
+    expect(row?.surfaceAt).toBe(at("2026-10-04T09:00").getTime());
+    expect(getEntity<BookingData>(ownerId, entity.id)?.data.tripPrepNotifiedAt).toBeTypeOf("number");
   });
 
-  it("on retry after a partial failure, only resends to the number that missed it", async () => {
-    const user = findOrCreateUserByEmail(uniqueEmail("tripprep-partial"));
-    const first = registerActivePhone(user.id);
-    const second = registerActivePhone(user.id);
-    const entity = saveEntity<BookingData>(user.id, {
-      type: "booking",
-      data: booking({ kind: "flight", startDate: dateKeyPlusDays(1) }),
-    });
-    vi.mocked(sendWhatsAppMessage).mockImplementation(async (to: string) => {
-      if (to === second) throw new Error("network error");
-    });
-
-    await checkTripPrepNudges(user.id);
-    expect(getEntity<BookingData>(user.id, entity.id)!.data.tripPrepNotifiedAt).toBeUndefined();
-
-    vi.mocked(sendWhatsAppMessage).mockReset().mockResolvedValue(undefined);
-    await checkTripPrepNudges(user.id);
-
-    expect(vi.mocked(sendWhatsAppMessage).mock.calls.map((c) => c[0])).toEqual([second]);
-    expect(first).not.toBe(second);
-    expect(getEntity<BookingData>(user.id, entity.id)!.data.tripPrepNotifiedAt).toBeDefined();
+  it("is idempotent across ticks", async () => {
+    const ownerId = newUser();
+    saveEntity<BookingData>(ownerId, { type: "booking", data: booking({}) });
+    await syncBookingReminders(ownerId);
+    await syncBookingReminders(ownerId);
+    expect(listAttentionItems(ownerId)).toHaveLength(1);
   });
 
-  it("does not stamp the booking if the send fails, so it retries next tick", async () => {
-    const user = findOrCreateUserByEmail(uniqueEmail("tripprep-fail"));
-    registerActivePhone(user.id);
-    const entity = saveEntity<BookingData>(user.id, {
-      type: "booking",
-      data: booking({ kind: "flight", startDate: dateKeyPlusDays(1) }),
+  it("merges with the same booking already learned from email", async () => {
+    const ownerId = newUser();
+    await submitAttentionItem(ownerId, {
+      source: "email",
+      category: "reservation_confirmed",
+      details: { summary: "Your *Hotel Eva* stay, ref *EVA12345*.", kind: "hotel", eventStart: "2026-10-12", reference: "EVA12345" },
+      fallbackKey: "msg:1:eva",
     });
-    vi.mocked(sendWhatsAppMessage).mockRejectedValueOnce(new Error("network error"));
+    saveEntity<BookingData>(ownerId, {
+      type: "booking",
+      data: booking({ kind: "hotel", name: "Hotel Eva, Faro", reference: "EVA12345", startDate: "2026-10-12" }),
+    });
 
-    await checkTripPrepNudges(user.id);
+    await syncBookingReminders(ownerId);
 
-    const updated = getEntity<BookingData>(user.id, entity.id)!;
-    expect(updated.data.tripPrepNotifiedAt).toBeUndefined();
+    expect(listAttentionItems(ownerId)).toHaveLength(1);
+    expect(getAttentionItem(ownerId, "ref:EVA12345")?.details.summary).toBe("Your *Hotel Eva* stay, ref *EVA12345*.");
   });
 
-  it("does nothing when WhatsApp isn't configured", async () => {
-    const user = findOrCreateUserByEmail(uniqueEmail("tripprep-unconfigured"));
-    registerActivePhone(user.id);
-    saveEntity<BookingData>(user.id, {
-      type: "booking",
-      data: booking({ kind: "flight", startDate: dateKeyPlusDays(1) }),
-    });
-    vi.mocked(isWhatsAppConfigured).mockReturnValue(false);
-
-    await checkTripPrepNudges(user.id);
-
-    expect(sendWhatsAppMessage).not.toHaveBeenCalled();
+  it("ignores bookings in the past, using the user's own date", async () => {
+    const ownerId = newUser();
+    saveEntity<BookingData>(ownerId, { type: "booking", data: booking({ startDate: "2026-09-30" }) });
+    await syncBookingReminders(ownerId);
+    expect(listAttentionItems(ownerId)).toHaveLength(0);
   });
 
-  it("does nothing when the user has no registered WhatsApp number", async () => {
-    const user = findOrCreateUserByEmail(uniqueEmail("tripprep-nophone"));
-    saveEntity<BookingData>(user.id, {
-      type: "booking",
-      data: booking({ kind: "flight", startDate: dateKeyPlusDays(1) }),
-    });
-
-    await checkTripPrepNudges(user.id);
-
-    expect(sendWhatsAppMessage).not.toHaveBeenCalled();
+  it("sends the reminder when it falls due", async () => {
+    const ownerId = newUser();
+    saveEntity<BookingData>(ownerId, { type: "booking", data: booking({ reference: "X7KQ2P" }) });
+    await syncBookingReminders(ownerId);
+    vi.setSystemTime(at("2026-10-04T09:05"));
+    recordInboundMessage(phones.get(ownerId)!); // inside the 24h window, so a plain message is sent
+    await deliverDueAttentionItems(ownerId);
+    expect(vi.mocked(sendWhatsAppMessage).mock.calls[0][1]).toBe(
+      "✈️ Reminder: Your flight *FR1234 LIS→FAO* on *5 Oct*, ref *X7KQ2P*. Online check-in should be open now."
+    );
   });
 });

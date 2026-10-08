@@ -1123,6 +1123,30 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_proactive_deliveries_delivered_at ON proactive_deliveries(delivered_at);
 `);
 
+// One row per real-world event Marlowe might bring up unprompted (a booking, a bill, a flight
+// change...), keyed by event_key so the booking email, the venue's own confirmation and a saved
+// document about the same thing collapse into one row. services/attention.ts is the only writer.
+// See docs/superpowers/specs/2026-09-28-attention-gate-design.md.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS attention_items (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    owner_id        INTEGER NOT NULL REFERENCES users(id),
+    event_key       TEXT NOT NULL,
+    source          TEXT NOT NULL,
+    category        TEXT NOT NULL,
+    tier            TEXT NOT NULL,
+    status          TEXT NOT NULL,
+    details         TEXT NOT NULL,
+    surface_at      INTEGER,
+    acknowledged_at INTEGER,
+    sent_at         INTEGER,
+    created_at      INTEGER NOT NULL,
+    updated_at      INTEGER NOT NULL,
+    UNIQUE (owner_id, event_key)
+  );
+  CREATE INDEX IF NOT EXISTS idx_attention_owner_status_surface ON attention_items(owner_id, status, surface_at);
+`);
+
 // Which provider account a person actually signed in with, keyed on the provider's own immutable
 // ids — for Microsoft, "<tenant id>:<object id>" from the id_token. Microsoft sign-in used to find
 // the user by Graph's `mail`, which any Entra tenant admin can set to someone else's address; see
@@ -2548,6 +2572,202 @@ export function recordProactiveDelivery(ownerId: number, itemKey: string, phone:
   db.prepare(`DELETE FROM proactive_deliveries WHERE delivered_at < ?`).run(now - PROACTIVE_DELIVERY_RETENTION_MS);
 }
 
+export type AttentionTier = "interrupt" | "scheduled" | "brief" | "drop";
+export type AttentionStatus = "pending" | "sent" | "held" | "folded" | "dropped";
+export type AttentionSource = "email" | "document" | "booking" | "reconciliation";
+
+export interface AttentionDetails {
+  summary: string; // one concrete sentence, specifics in *bold*
+  kind?: "flight" | "hotel" | "restaurant" | "other";
+  eventStart?: string | null; // "YYYY-MM-DD" or ISO date-time (with offset if known)
+  dueDate?: string | null; // "YYYY-MM-DD"
+  reference?: string | null;
+  flightNumber?: string | null;
+  merchant?: string | null;
+  amount?: string | null;
+  needsAction?: boolean;
+  accountId?: number; // source email, for the chat-history reference note
+  messageId?: string;
+  emailSubject?: string;
+  emailFrom?: string;
+  bookingEntityId?: number;
+  xeroOffer?: { accountId: number; messageId: string; subject: string };
+}
+
+export interface AttentionItemRow {
+  id: number;
+  ownerId: number;
+  eventKey: string;
+  source: AttentionSource;
+  category: string;
+  tier: AttentionTier;
+  status: AttentionStatus;
+  details: AttentionDetails;
+  surfaceAt: number | null;
+  acknowledgedAt: number | null;
+  sentAt: number | null;
+  createdAt: number;
+  updatedAt: number;
+}
+
+interface AttentionItemDbRow {
+  id: number;
+  owner_id: number;
+  event_key: string;
+  source: AttentionSource;
+  category: string;
+  tier: AttentionTier;
+  status: AttentionStatus;
+  details: string;
+  surface_at: number | null;
+  acknowledged_at: number | null;
+  sent_at: number | null;
+  created_at: number;
+  updated_at: number;
+}
+
+function attentionFromDb(r: AttentionItemDbRow): AttentionItemRow {
+  let details: AttentionDetails;
+  try {
+    details = JSON.parse(r.details) as AttentionDetails;
+  } catch {
+    details = { summary: "" };
+  }
+  return {
+    id: r.id,
+    ownerId: r.owner_id,
+    eventKey: r.event_key,
+    source: r.source,
+    category: r.category,
+    tier: r.tier,
+    status: r.status,
+    details,
+    surfaceAt: r.surface_at,
+    acknowledgedAt: r.acknowledged_at,
+    sentAt: r.sent_at,
+    createdAt: r.created_at,
+    updatedAt: r.updated_at,
+  };
+}
+
+function getAttentionItemById(ownerId: number, id: number): AttentionItemRow {
+  const row = db.prepare(`SELECT * FROM attention_items WHERE owner_id = ? AND id = ?`).get(ownerId, id) as
+    | AttentionItemDbRow
+    | undefined;
+  if (!row) throw new Error(`attention item ${id} not found`);
+  return attentionFromDb(row);
+}
+
+export function getAttentionItem(ownerId: number, eventKey: string): AttentionItemRow | null {
+  const row = db
+    .prepare(`SELECT * FROM attention_items WHERE owner_id = ? AND event_key = ?`)
+    .get(ownerId, eventKey) as AttentionItemDbRow | undefined;
+  return row ? attentionFromDb(row) : null;
+}
+
+export function insertAttentionItem(
+  ownerId: number,
+  item: {
+    eventKey: string;
+    source: AttentionSource;
+    category: string;
+    tier: AttentionTier;
+    status: AttentionStatus;
+    details: AttentionDetails;
+    surfaceAt: number | null;
+    acknowledgedAt?: number | null;
+  }
+): AttentionItemRow {
+  const now = Date.now();
+  const info = db
+    .prepare(
+      `INSERT INTO attention_items
+         (owner_id, event_key, source, category, tier, status, details, surface_at, acknowledged_at, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    )
+    .run(
+      ownerId,
+      item.eventKey,
+      item.source,
+      item.category,
+      item.tier,
+      item.status,
+      JSON.stringify(item.details),
+      item.surfaceAt,
+      item.acknowledgedAt ?? null,
+      now,
+      now
+    );
+  return getAttentionItemById(ownerId, Number(info.lastInsertRowid));
+}
+
+export function updateAttentionItem(
+  ownerId: number,
+  id: number,
+  patch: Partial<{
+    tier: AttentionTier;
+    status: AttentionStatus;
+    details: AttentionDetails;
+    surfaceAt: number | null;
+    acknowledgedAt: number | null;
+    sentAt: number | null;
+  }>
+): AttentionItemRow {
+  const columns: Record<string, string> = {
+    tier: "tier",
+    status: "status",
+    details: "details",
+    surfaceAt: "surface_at",
+    acknowledgedAt: "acknowledged_at",
+    sentAt: "sent_at",
+  };
+  const sets: string[] = [];
+  const params: unknown[] = [];
+  for (const [key, column] of Object.entries(columns)) {
+    if (!(key in patch)) continue;
+    const value = (patch as Record<string, unknown>)[key];
+    sets.push(`${column} = ?`);
+    params.push(key === "details" ? JSON.stringify(value) : value);
+  }
+  sets.push("updated_at = ?");
+  params.push(Date.now());
+  db.prepare(`UPDATE attention_items SET ${sets.join(", ")} WHERE owner_id = ? AND id = ?`).run(...params, ownerId, id);
+  return getAttentionItemById(ownerId, id);
+}
+
+export function listAttentionItems(
+  ownerId: number,
+  filter: { statuses?: AttentionStatus[]; dueBefore?: number } = {}
+): AttentionItemRow[] {
+  const conditions = ["owner_id = ?"];
+  const params: unknown[] = [ownerId];
+  if (filter.statuses?.length) {
+    conditions.push(`status IN (${filter.statuses.map(() => "?").join(", ")})`);
+    params.push(...filter.statuses);
+  }
+  if (filter.dueBefore !== undefined) {
+    conditions.push("surface_at IS NOT NULL AND surface_at <= ?");
+    params.push(filter.dueBefore);
+  }
+  const rows = db
+    .prepare(
+      `SELECT * FROM attention_items WHERE ${conditions.join(" AND ")}
+       ORDER BY surface_at IS NULL, surface_at ASC, created_at ASC, id ASC`
+    )
+    .all(...params) as AttentionItemDbRow[];
+  return rows.map(attentionFromDb);
+}
+
+export function countCappedAttentionSentSince(ownerId: number, sinceMs: number, exemptCategories: string[]): number {
+  const exempt = exemptCategories.length ? `AND category NOT IN (${exemptCategories.map(() => "?").join(", ")})` : "";
+  const row = db
+    .prepare(
+      `SELECT COUNT(*) AS c FROM attention_items WHERE owner_id = ? AND sent_at IS NOT NULL AND sent_at >= ? ${exempt}`
+    )
+    .get(ownerId, sinceMs, ...exemptCategories) as { c: number };
+  return row.c;
+}
+
 export function markAlerted(ownerId: number, key: string): void {
   db.prepare(
     `INSERT OR IGNORE INTO alerted_messages (owner_id, key, alerted_at) VALUES (?, ?, ?)`
@@ -3730,6 +3950,7 @@ export function deleteUserCompletely(ownerId: number): { deletedDocumentPaths: s
     db.prepare(`DELETE FROM links WHERE owner_id = ?`).run(ownerId);
     db.prepare(`DELETE FROM alerted_messages WHERE owner_id = ?`).run(ownerId);
     db.prepare(`DELETE FROM proactive_deliveries WHERE owner_id = ?`).run(ownerId);
+    db.prepare(`DELETE FROM attention_items WHERE owner_id = ?`).run(ownerId);
     db.prepare(`DELETE FROM read_emails WHERE owner_id = ?`).run(ownerId);
     db.prepare(`DELETE FROM user_enabled_tools WHERE owner_id = ?`).run(ownerId);
     db.prepare(`DELETE FROM pending_setup WHERE owner_id = ?`).run(ownerId);
