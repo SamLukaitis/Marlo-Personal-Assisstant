@@ -225,10 +225,10 @@ export async function sendWhatsAppCtaUrl(
   bodyText: string,
   buttonText: string,
   url: string
-): Promise<void> {
+): Promise<string | undefined> {
   if (isSimulatedPhone(to)) {
     recordSimMessage(to, { role: "assistant", text: bodyText, link: { label: buttonText, url } });
-    return;
+    return `sim-wamid-${crypto.randomUUID()}`;
   }
   const phoneNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID;
   const token = process.env.WHATSAPP_TOKEN;
@@ -258,6 +258,7 @@ export async function sendWhatsAppCtaUrl(
   if (!res.ok) {
     throw await buildSendError("WhatsApp CTA-url send failed", res);
   }
+  return extractSentWamid(res);
 }
 
 // A tappable menu of up to 10 rows in one section — used for closed-set questions with more
@@ -269,10 +270,10 @@ export async function sendWhatsAppListMessage(
   bodyText: string,
   buttonLabel: string,
   rows: { id: string; title: string; description?: string }[]
-): Promise<void> {
+): Promise<string | undefined> {
   if (isSimulatedPhone(to)) {
     recordSimMessage(to, { role: "assistant", text: bodyText, choices: rows.map(({ id, title }) => ({ id, title })) });
-    return;
+    return `sim-wamid-${crypto.randomUUID()}`;
   }
   const phoneNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID;
   const token = process.env.WHATSAPP_TOKEN;
@@ -310,6 +311,7 @@ export async function sendWhatsAppListMessage(
   if (!res.ok) {
     throw await buildSendError("WhatsApp list-message send failed", res);
   }
+  return extractSentWamid(res);
 }
 
 // Meta's hard limits for interactive messages — anything over these is rejected outright, not
@@ -350,15 +352,23 @@ function splitForTextMessages(text: string): string[] {
 // message first, with the buttons following under its last paragraph (usually the actual
 // question, "Ready to send this?"). Labels that don't fit a button use a list instead, where the
 // full label can go in the row description.
+//
+// Returns the wamid and text of every message it sent (plain pieces, then the buttons/list), so
+// the caller can record them and a swipe-reply on any part resolves to that part.
 export async function sendChoiceMessage(
   to: string,
   bodyText: string,
   choices: { id: string; title: string }[]
-): Promise<string | undefined> {
+): Promise<{ wamid: string; text: string }[]> {
+  const parts: { wamid: string; text: string }[] = [];
+  const keep = (wamid: string | undefined, text: string) => {
+    if (wamid) parts.push({ wamid, text });
+  };
+
   let prompt = bodyText;
   if (bodyText.length > MAX_INTERACTIVE_BODY) {
     for (const piece of splitForTextMessages(bodyText)) {
-      await sendWhatsAppMessage(to, piece);
+      keep(await sendWhatsAppMessage(to, piece), piece);
     }
     const lastParagraph = bodyText.trim().split(/\n\s*\n/).pop()?.trim() ?? "";
     prompt = lastParagraph && lastParagraph.length <= MAX_INTERACTIVE_BODY ? lastParagraph : FALLBACK_CHOICE_PROMPT;
@@ -366,7 +376,8 @@ export async function sendChoiceMessage(
 
   const labelsFitButtons = choices.every((c) => c.title.length <= MAX_BUTTON_TITLE);
   if (choices.length <= MAX_BUTTONS && labelsFitButtons) {
-    return sendWhatsAppReplyButtons(to, prompt, choices);
+    keep(await sendWhatsAppReplyButtons(to, prompt, choices), prompt);
+    return parts;
   }
 
   const rows = choices.slice(0, MAX_LIST_ROWS).map((c) =>
@@ -378,7 +389,8 @@ export async function sendChoiceMessage(
           description: truncateLabel(c.title, MAX_LIST_ROW_DESCRIPTION),
         }
   );
-  await sendWhatsAppListMessage(to, prompt, "Choose", rows);
+  keep(await sendWhatsAppListMessage(to, prompt, "Choose", rows), prompt);
+  return parts;
 }
 
 // Uploads raw bytes to Meta so they can be referenced by media id in a subsequent send call —
@@ -413,11 +425,11 @@ export async function sendWhatsAppMediaFromBuffer(
   buffer: Buffer,
   mimeType: string,
   filename: string
-): Promise<void> {
+): Promise<string | undefined> {
   const asImage = mimeType === "image/jpeg" || mimeType === "image/png";
   if (isSimulatedPhone(to)) {
     recordSimMessage(to, { role: "assistant", text: `[${asImage ? "photo" : "document"}: ${filename}]` });
-    return;
+    return `sim-wamid-${crypto.randomUUID()}`;
   }
   const mediaId = await uploadWhatsAppMedia(buffer, mimeType, filename);
   const phoneNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID;
@@ -443,6 +455,7 @@ export async function sendWhatsAppMediaFromBuffer(
   if (!res.ok) {
     throw await buildSendError("WhatsApp media message send failed", res);
   }
+  return extractSentWamid(res);
 }
 
 // The two pre-approved utility templates outbound.ts falls back to once the 24h customer-service
