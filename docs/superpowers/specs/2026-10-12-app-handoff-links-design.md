@@ -38,7 +38,7 @@ Having the user do the final tap is also the safer default for anything that cos
 - "Play something chill": an `open.spotify.com/search/...` link.
 - "Find me an Airbnb in Lisbon 3–6 Nov for 2": an Airbnb search link with those dates and guests.
 - If the user asks Marlowe to actually complete the booking or payment, it explains that it opens
-  the app ready to go and the user confirms there. It also calls `log_capability_gap`, so we can
+  the app ready to go and the user confirms there. It also calls `flag_unmet_request`, so we can
   see how often people want full booking, which is the signal for the browser-automation phase.
 
 ## Components
@@ -130,7 +130,7 @@ attached link). We'll leave that for later, once the links have proven themselve
    connected, with connect links only when a user first needs an app (per the lazy-reconnect
    rule). It gets its own spec when productivity apps become the priority.
 2. **Browser automation** (Stagehand + Browserbase, idea #8 in `docs/integration-ideas.md`) for
-   finishing bookings without a partnership. We'll only build it if `log_capability_gap` shows
+   finishing bookings without a partnership. We'll only build it if `flag_unmet_request` shows
    real demand.
 3. Using a CTA button to deliver links.
 4. Anthropic tool search (`defer_loading`) to slim down the existing core tools.
