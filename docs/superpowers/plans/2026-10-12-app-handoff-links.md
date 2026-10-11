@@ -96,6 +96,11 @@ describe("makeAppLink — input", () => {
     expect(q.length).toBe(200);
     expect(q.startsWith("chill vibes")).toBe(true);
   });
+
+  it("encodes a dot-only path segment so the URL parser can't resolve it away", () => {
+    const { url } = ok(makeAppLink({ app: "spotify", query: ".." }, ctx));
+    expect(new URL(url).pathname).toBe("/search/%2E%2E");
+  });
 });
 
 describe("makeAppLink — uber", () => {
@@ -191,8 +196,9 @@ describe("makeAppLink — google_maps", () => {
     expect(u.searchParams.get("travelmode")).toBe("transit");
   });
 
-  it("rejects an unknown travel_mode", () => {
+  it("rejects an unknown travel_mode, including Object.prototype keys", () => {
     expect(err(makeAppLink({ app: "google_maps", destination: { name: "X" }, travel_mode: "teleport" }, ctx))).toMatch(/travel_mode/);
+    expect(err(makeAppLink({ app: "google_maps", destination: { name: "X" }, travel_mode: "constructor" }, ctx))).toMatch(/travel_mode/);
   });
 });
 ```
@@ -211,7 +217,6 @@ Expected: FAIL. The import fails because `./appLinks.js` doesn't exist.
 // so every URL format lives here and is pinned by appLinks.test.ts. Each builder starts from its
 // own fixed host; model input only ever goes in through URLSearchParams/encodeURIComponent, so it
 // can't redirect the link anywhere else. See docs/superpowers/specs/2026-10-12-app-handoff-links-design.md.
-import { DateTime } from "luxon";
 
 export type AppName = "uber" | "lyft" | "google_maps" | "opentable" | "resy" | "spotify" | "airbnb" | "booking_com";
 export const APP_NAMES: readonly AppName[] = ["uber", "lyft", "google_maps", "opentable", "resy", "spotify", "airbnb", "booking_com"];
@@ -271,6 +276,12 @@ function place(value: unknown, field: string): Place | undefined {
   const p: Place = { name: text(raw.name, `${field}.name`), address: text(raw.address, `${field}.address`), latitude, longitude };
   if (!p.name && !p.address && p.latitude === undefined) return undefined;
   return p;
+}
+
+// One URL path segment from model text. encodeURIComponent leaves "." alone, and a bare ".."
+// segment would be resolved by the URL parser into a different path, so dots are encoded too.
+function pathSegment(value: string): string {
+  return encodeURIComponent(value).replace(/\./g, "%2E");
 }
 
 function hasCoords(p: Place): p is Place & { latitude: number; longitude: number } {
@@ -337,7 +348,7 @@ function googleMaps(raw: Record<string, unknown>): AppLinkResult {
   const origin = place(raw.origin, "origin");
   const dest = requiredDestination(raw);
   const mode = text(raw.travel_mode, "travel_mode");
-  if (mode && !TRAVEL_MODES[mode]) throw new InputError(`travel_mode must be one of: ${Object.keys(TRAVEL_MODES).join(", ")}.`);
+  if (mode && !Object.hasOwn(TRAVEL_MODES, mode)) throw new InputError(`travel_mode must be one of: ${Object.keys(TRAVEL_MODES).join(", ")}.`);
   const u = new URL("https://www.google.com/maps/dir/");
   u.searchParams.set("api", "1");
   if (origin) u.searchParams.set("origin", mapsPoint(origin));
@@ -348,7 +359,7 @@ function googleMaps(raw: Record<string, unknown>): AppLinkResult {
 
 function spotify(raw: Record<string, unknown>): AppLinkResult {
   const query = requiredText(raw.query, "query");
-  return { url: `https://open.spotify.com/search/${encodeURIComponent(query)}`, label: "Open in Spotify" };
+  return { url: `https://open.spotify.com/search/${pathSegment(query)}`, label: "Open in Spotify" };
 }
 
 // Task 2 adds opentable, resy, airbnb and booking_com to this table.
@@ -370,12 +381,7 @@ export function makeAppLink(raw: Record<string, unknown>, ctx: Ctx): AppLinkResu
     throw e;
   }
 }
-
-// Used by Task 2's builders; exported only for them (same module), so keep it unexported.
-void DateTime;
 ```
-
-(The trailing `void DateTime;` only keeps the import used until Task 2 needs it. Task 2 removes that line.)
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
@@ -513,7 +519,7 @@ Note: Airbnb, Booking.com and Resy all use the `city` field, the area to search.
 Run: `cd server && npx vitest run src/services/appLinks.test.ts`
 Expected: the new tests FAIL with `app must be one of` errors (builders missing); the Task 1 tests still PASS.
 
-- [ ] **Step 3: Implement.** In `appLinks.ts`, remove the `void DateTime;` lines and their comment, and add these above `BUILDERS`:
+- [ ] **Step 3: Implement.** In `appLinks.ts`, add `import { DateTime } from "luxon";` below the header comment, and add these above `BUILDERS`:
 
 ```ts
 function count(value: unknown, field: string): number | undefined {
@@ -578,7 +584,7 @@ function resy(raw: Record<string, unknown>, ctx: Ctx): AppLinkResult {
 
 function airbnb(raw: Record<string, unknown>, ctx: Ctx): AppLinkResult {
   const s = stay(raw, ctx);
-  const u = new URL(`https://www.airbnb.com/s/${encodeURIComponent(s.city)}/homes`);
+  const u = new URL(`https://www.airbnb.com/s/${pathSegment(s.city)}/homes`);
   if (s.checkIn && s.checkOut) {
     u.searchParams.set("checkin", s.checkIn);
     u.searchParams.set("checkout", s.checkOut);
@@ -616,7 +622,7 @@ const BUILDERS: Record<AppName, (raw: Record<string, unknown>, ctx: Ctx) => AppL
 };
 ```
 
-and in `makeAppLink` change `const build = APP_NAMES.includes(app) ? BUILDERS[app] : undefined;` to stay as it is (it still works with the full `Record`).
+`makeAppLink` needs no change.
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
