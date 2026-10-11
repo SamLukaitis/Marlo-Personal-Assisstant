@@ -3,6 +3,7 @@
 // so every URL format lives here and is pinned by appLinks.test.ts. Each builder starts from its
 // own fixed host; model input only ever goes in through URLSearchParams/encodeURIComponent, so it
 // can't redirect the link anywhere else. See docs/superpowers/specs/2026-10-12-app-handoff-links-design.md.
+import { DateTime } from "luxon";
 
 export type AppName = "uber" | "lyft" | "google_maps" | "opentable" | "resy" | "spotify" | "airbnb" | "booking_com";
 export const APP_NAMES: readonly AppName[] = ["uber", "lyft", "google_maps", "opentable", "resy", "spotify", "airbnb", "booking_com"];
@@ -149,12 +150,99 @@ function spotify(raw: Record<string, unknown>): AppLinkResult {
   return { url: `https://open.spotify.com/search/${pathSegment(query, "query")}`, label: "Open in Spotify" };
 }
 
-// Task 2 adds opentable, resy, airbnb and booking_com to this table.
-const BUILDERS: Partial<Record<AppName, (raw: Record<string, unknown>, ctx: Ctx) => AppLinkResult>> = {
+function count(value: unknown, field: string): number | undefined {
+  if (value === undefined || value === null || value === "") return undefined;
+  const n = typeof value === "string" && /^\d+$/.test(value.trim()) ? Number(value) : value;
+  if (typeof n !== "number" || !Number.isInteger(n) || n < 1 || n > 20) {
+    throw new InputError(`${field} must be a whole number from 1 to 20.`);
+  }
+  return n;
+}
+
+function date(value: unknown, field: string, ctx: Ctx): string | undefined {
+  const t = text(value, field);
+  if (!t) return undefined;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(t) || !DateTime.fromISO(t).isValid) throw new InputError(`${field} must be a date as YYYY-MM-DD.`);
+  if (t < ctx.today) throw new InputError(`${field} is in the past (today is ${ctx.today}).`);
+  return t;
+}
+
+function time(value: unknown): string | undefined {
+  const t = text(value, "time");
+  if (!t) return undefined;
+  if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(t)) throw new InputError("time must be 24-hour HH:MM, e.g. 20:00.");
+  return t;
+}
+
+function stay(raw: Record<string, unknown>, ctx: Ctx): { city: string; checkIn?: string; checkOut?: string; guests?: number } {
+  const city = requiredText(raw.city, "city");
+  const checkIn = date(raw.check_in, "check_in", ctx);
+  const checkOut = date(raw.check_out, "check_out", ctx);
+  if ((checkIn === undefined) !== (checkOut === undefined)) throw new InputError("Give both check_in and check_out, or neither.");
+  if (checkIn && checkOut && checkOut <= checkIn) throw new InputError("check_out must be after check_in.");
+  return { city, checkIn, checkOut, guests: count(raw.guests, "guests") };
+}
+
+function opentable(raw: Record<string, unknown>, ctx: Ctx): AppLinkResult {
+  const query = requiredText(raw.query, "query");
+  const partySize = count(raw.party_size, "party_size");
+  const d = date(raw.date, "date", ctx);
+  const t = time(raw.time);
+  if (t && !d) throw new InputError("Give a date with the time.");
+  const u = new URL("https://www.opentable.com/s");
+  u.searchParams.set("term", query);
+  if (partySize) u.searchParams.set("covers", String(partySize));
+  if (d) u.searchParams.set("dateTime", `${d}T${t ?? "19:00"}`);
+  return { url: u.toString(), label: "Open in OpenTable" };
+}
+
+function resy(raw: Record<string, unknown>, ctx: Ctx): AppLinkResult {
+  const city = requiredText(raw.city, "city");
+  const slug = city.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+  if (!slug) throw new InputError("city must contain letters, e.g. 'New York, NY'.");
+  const query = text(raw.query, "query");
+  const seats = count(raw.party_size, "party_size");
+  const d = date(raw.date, "date", ctx);
+  const u = new URL(`https://resy.com/cities/${slug}`);
+  if (d) u.searchParams.set("date", d);
+  if (seats) u.searchParams.set("seats", String(seats));
+  if (query) u.searchParams.set("query", query);
+  return { url: u.toString(), label: "Open in Resy" };
+}
+
+function airbnb(raw: Record<string, unknown>, ctx: Ctx): AppLinkResult {
+  const s = stay(raw, ctx);
+  const u = new URL(`https://www.airbnb.com/s/${pathSegment(s.city, "city")}/homes`);
+  if (s.checkIn && s.checkOut) {
+    u.searchParams.set("checkin", s.checkIn);
+    u.searchParams.set("checkout", s.checkOut);
+  }
+  if (s.guests) u.searchParams.set("adults", String(s.guests));
+  return { url: u.toString(), label: "Open in Airbnb" };
+}
+
+function bookingCom(raw: Record<string, unknown>, ctx: Ctx): AppLinkResult {
+  const s = stay(raw, ctx);
+  const u = new URL("https://www.booking.com/searchresults.html");
+  u.searchParams.set("ss", s.city);
+  if (s.checkIn && s.checkOut) {
+    u.searchParams.set("checkin", s.checkIn);
+    u.searchParams.set("checkout", s.checkOut);
+  }
+  if (s.guests) u.searchParams.set("group_adults", String(s.guests));
+  u.searchParams.set("no_rooms", "1");
+  return { url: u.toString(), label: "Open in Booking.com" };
+}
+
+const BUILDERS: Record<AppName, (raw: Record<string, unknown>, ctx: Ctx) => AppLinkResult> = {
   uber,
   lyft,
   google_maps: googleMaps,
+  opentable,
+  resy,
   spotify,
+  airbnb,
+  booking_com: bookingCom,
 };
 
 export function makeAppLink(raw: Record<string, unknown>, ctx: Ctx): AppLinkResult {
