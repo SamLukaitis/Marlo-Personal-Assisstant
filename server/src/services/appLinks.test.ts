@@ -236,3 +236,28 @@ describe("makeAppLink — booking_com", () => {
     expect(u.searchParams.get("no_rooms")).toBe("1");
   });
 });
+
+describe("makeAppLink — review fixes", () => {
+  it("treats blank coordinate strings as missing, not 0,0", () => {
+    expect(err(makeAppLink({ app: "lyft", destination: { latitude: "", longitude: " " } }, ctx))).toMatch(/destination is required/);
+    const { url } = ok(makeAppLink({ app: "uber", destination: { name: "X", latitude: "", longitude: "" } }, ctx));
+    expect(new URL(url).searchParams.get("dropoff[latitude]")).toBeNull();
+  });
+
+  it("rejects non-decimal coordinate strings like hex or exponents", () => {
+    expect(err(makeAppLink({ app: "uber", destination: { latitude: "0x1F", longitude: "1e1" } }, ctx))).toMatch(/coordinates/);
+  });
+
+  it("accepts plain decimal coordinate strings", () => {
+    const { url } = ok(makeAppLink({ app: "lyft", destination: { latitude: "40.64", longitude: "-73.78" } }, ctx));
+    expect(new URL(url).searchParams.get("destination[latitude]")).toBe("40.64");
+  });
+
+  it("never splits an emoji when capping at 200 characters", () => {
+    const query = "a".repeat(199) + "😀😀";
+    const { url } = ok(makeAppLink({ app: "spotify", query }, ctx));
+    const q = decodeURIComponent(new URL(url).pathname.replace("/search/", ""));
+    expect(Array.from(q).length).toBe(200);
+    expect(q.endsWith("a😀")).toBe(true);
+  });
+});

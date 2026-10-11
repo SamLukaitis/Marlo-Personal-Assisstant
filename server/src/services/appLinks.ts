@@ -30,7 +30,9 @@ function text(value: unknown, field: string): string | undefined {
   if (value === undefined || value === null || value === "") return undefined;
   if (typeof value !== "string") throw new InputError(`${field} must be text.`);
   // eslint-disable-next-line no-control-regex
-  const cleaned = value.replace(/[\u0000-\u001f\u007f]+/g, " ").replace(/\s+/g, " ").trim().slice(0, MAX_TEXT);
+  const collapsed = value.replace(/[\u0000-\u001f\u007f]+/g, " ").replace(/\s+/g, " ").trim();
+  // Cut by code point, not UTF-16 unit: a half emoji makes encodeURIComponent throw.
+  const cleaned = Array.from(collapsed).slice(0, MAX_TEXT).join("");
   return cleaned || undefined;
 }
 
@@ -42,8 +44,13 @@ function requiredText(value: unknown, field: string): string {
 
 function coordinate(value: unknown): number | undefined {
   if (value === undefined || value === null) return undefined;
-  const n = typeof value === "string" ? Number(value) : value;
-  return typeof n === "number" && Number.isFinite(n) ? n : NaN;
+  if (typeof value === "string") {
+    // Number("") is 0, and Number() also takes hex/exponents — only plain decimals count.
+    const s = value.trim();
+    if (!s) return undefined;
+    return /^-?\d+(\.\d+)?$/.test(s) ? Number(s) : NaN;
+  }
+  return typeof value === "number" && Number.isFinite(value) ? value : NaN;
 }
 
 function place(value: unknown, field: string): Place | undefined {

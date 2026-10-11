@@ -17,6 +17,7 @@ Sample links generated on 2026-10-12:
 | App | Link | iOS app | iOS web | Android app | Android web |
 |---|---|---|---|---|---|
 | Uber | https://m.uber.com/ul/?action=setPickup&pickup=my_location&dropoff%5Blatitude%5D=51.4723&dropoff%5Blongitude%5D=-0.488&dropoff%5Bnickname%5D=Heathrow+Terminal+5&dropoff%5Bformatted_address%5D=Wallis+Rd%2C+Hounslow+TW6+2GA | | | | |
+| Uber (name only — does Uber find the place?) | https://m.uber.com/ul/?action=setPickup| Lyft |pickup=my_location| Lyft |dropoff%5Bnickname%5D=Dishoom+Shoreditch| Lyft |dropoff%5Bformatted_address%5D=Dishoom+Shoreditch | | | | |
 | Lyft | https://lyft.com/ride?id=lyft&destination%5Blatitude%5D=40.6413&destination%5Blongitude%5D=-73.7781 | | | | |
 | Google Maps | https://www.google.com/maps/dir/?api=1&destination=Borough+Market%2C+London&travelmode=walking | | | | |
 | OpenTable | https://www.opentable.com/s?term=Dishoom+Shoreditch+London&covers=4&dateTime=2026-10-15T20%3A00 | | | | |
