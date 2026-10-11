@@ -18,6 +18,7 @@ Marlowe can be used from the web app and, optionally, through WhatsApp. It is de
 - **Travel tools:** Record location check-ins, inspect travel history, and calculate country/Schengen/EU day counts from the check-in timeline.
 - **News, weather, and markets:** Optional external information providers are available through the assistant and briefing features.
 - **Places and travel times (optional):** With `GOOGLE_MAPS_API_KEY` set, the assistant finds real nearby places and driving/walking times through Google's Maps Grounding Lite MCP server. On WhatsApp it can ask for your location with a one-tap "Send location" button.
+- **App hand-off links:** Marlowe sends links that open Uber, Lyft, Google Maps, OpenTable, Resy, Spotify, Airbnb or Booking.com already filled in (`server/src/services/appLinks.ts`); you confirm in the app. There's no setup and no API keys.
 - **Administration:** Admin users have access to a separate portal for operational tools, logs, user administration, and application health information.
 
 ## Safety and privacy boundaries
