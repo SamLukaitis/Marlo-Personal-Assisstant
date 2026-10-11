@@ -69,7 +69,8 @@ import { isMapsConfigured, searchPlaces, computeRoute } from "../providers/maps.
 import { fetchQuotes, DEFAULT_SYMBOLS } from "../providers/markets.js";
 import { countTravelDays } from "../services/travelDays.js";
 import { resolveReminderTime, ReminderTimeError, type ReminderTimeInput } from "../services/reminderTime.js";
-import { resolveUserTimezone } from "../services/userTimezone.js";
+import { resolveUserTimezone, userLocalClock } from "../services/userTimezone.js";
+import { makeAppLink, APP_NAMES } from "../services/appLinks.js";
 
 // Added to a tool result when the user's timezone is only inferred from their phone number, so the
 // reply names the zone it used instead of silently acting on a guess.
@@ -748,6 +749,50 @@ const ALWAYS_ON_TOOLS: Anthropic.ToolUnion[] = [
         summary: { type: "string", description: "One sentence: what they wanted and why you couldn't help" },
       },
       required: ["summary"],
+    },
+  },
+  {
+    name: "make_app_link",
+    description:
+      "Make a link that opens an app already filled in, for things you can't do yourself: rides (uber, lyft), directions (google_maps), restaurant tables (opentable, resy), music (spotify) and stays (airbnb, booking_com). The user taps it and confirms in that app — you have NOT booked, ordered or started anything, so never say you have. " +
+      "Fields per app: uber/google_maps — destination (required), origin (omit for the user's current location), google_maps also travel_mode. lyft — same, but every place needs latitude+longitude (from a recent location pin or a places result; never invent coordinates — if you only have a name, use uber or google_maps). " +
+      "opentable — query (restaurant name + area, required), party_size, date, time. resy — city (required, e.g. 'New York, NY'), query, party_size, date. spotify — query (song, artist, playlist or mood). airbnb/booking_com — city (required), check_in + check_out together, guests. " +
+      "Dates are YYYY-MM-DD in the user's local calendar; times are 24-hour HH:MM. If it returns an error, ask the user for what's missing rather than guessing. Put the returned url on its own line in your reply.",
+    input_schema: {
+      type: "object",
+      properties: {
+        app: { type: "string", enum: [...APP_NAMES] },
+        origin: {
+          type: "object",
+          description: "Start point. Omit for the user's current location.",
+          properties: {
+            name: { type: "string" },
+            address: { type: "string" },
+            latitude: { type: "number" },
+            longitude: { type: "number" },
+          },
+        },
+        destination: {
+          type: "object",
+          description: "Where they're going: a name, an address, and/or coordinates.",
+          properties: {
+            name: { type: "string" },
+            address: { type: "string" },
+            latitude: { type: "number" },
+            longitude: { type: "number" },
+          },
+        },
+        travel_mode: { type: "string", enum: ["drive", "walk", "transit", "bike"], description: "google_maps only." },
+        query: { type: "string", description: "opentable: restaurant + area. resy: restaurant name. spotify: what to search for." },
+        city: { type: "string", description: "resy, airbnb, booking_com: the city or area to search." },
+        party_size: { type: "number", description: "opentable/resy: number of diners, 1–20." },
+        date: { type: "string", description: "opentable/resy: YYYY-MM-DD." },
+        time: { type: "string", description: "opentable: HH:MM, 24-hour." },
+        check_in: { type: "string", description: "airbnb/booking_com: YYYY-MM-DD." },
+        check_out: { type: "string", description: "airbnb/booking_com: YYYY-MM-DD, after check_in." },
+        guests: { type: "number", description: "airbnb/booking_com: number of adults, 1–20." },
+      },
+      required: ["app"],
     },
   },
   {
@@ -1523,6 +1568,8 @@ export async function runTool(
     case "flag_unmet_request":
       addUnmetRequest(ownerId, input.summary as string, phone ? "whatsapp" : "web");
       return { ok: true };
+    case "make_app_link":
+      return makeAppLink(input, { today: userLocalClock(ownerId).dateKey });
     case "list_needs_attention":
       return hubFlaggedMessages(ownerId);
     case "search_documents":
@@ -1966,6 +2013,7 @@ function buildRules(enabled: Set<ToolKey>): string {
   const base = [
     "- Always look up real data with your tools before answering questions about email, calendar, or files — never invent contents.",
     "- ask_user_choice renders real tappable buttons/a list on WhatsApp instead of asking in prose — use it for confirm-before-destructive-action and for disambiguating between candidates (see the archive and search_contacts rules below for the two concrete cases). Call it alone, as the only tool call in your turn.",
+    "- For a ride, directions, a restaurant table, music or a place to stay, use make_app_link to give the user a link that opens the app already filled in — never hand-write Uber/Lyft/OpenTable/Resy/Spotify/Airbnb/Booking.com links. Never say or claim you've booked, ordered or started playing anything: say it's ready for them to confirm in the app. If they want you to complete the booking or payment yourself, explain that you set it up and they confirm in the app, and call flag_unmet_request in the same turn.",
     "- Never state that something does NOT exist (no booking, no email, nothing on file, calendar is empty, etc.) without calling the relevant tool in THIS turn first. You do not retain tool results from earlier turns — only your own past reply text — so a memory of having checked before is not verification. If a user pushes back on something you said, that is a signal to re-run the tool, not to just apologize or reverse yourself from reasoning alone.",
     "- Before answering a question about a flight change, reservation, invoice/payment due, government mail, delivery, security alert, subscription renewal, or refund/dispute you or an earlier proactive alert may have flagged, call list_flagged_emails first — it's the real stored record (exact subject, sender, summary), not your memory of a past reply. Never state a specific value (a date, an amount, a confirmation code) about a previously flagged email from recollection alone; get it from list_flagged_emails or, if it isn't there, from search_messages/get_message.",
     "- More generally, for ANY email discussed earlier in this conversation (flagged or not), call search_read_emails before restating a specific detail from it — it durably holds every email you've ever listed or opened, so it survives even after the conversation itself has moved on and your only other record is your own paraphrase. If it comes back empty, the email may simply never have been listed/opened yet — fall back to search_messages/get_message rather than assuming the detail doesn't exist.",
