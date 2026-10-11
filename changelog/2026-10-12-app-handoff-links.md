@@ -19,6 +19,7 @@ Portal's Unmet Requests tab. That tells us whether to build browser automation n
 
 - Lyft links need exact coordinates. For a place known only by name, Marlowe uses Uber or Google Maps.
 - Text the URL parser would resolve away (".", "..") is refused rather than encoded.
+- Invisible formatting characters (bidi overrides, zero-width) are stripped from text, and an OpenTable time that has already passed today is refused.
 - **Device check not done yet.** The URL formats are covered by tests, but nobody has tapped them on a
   phone yet. Use the checklist in `docs/app-handoff-links-device-check.md`, and drop any app whose
   link doesn't pre-fill (Resy is the least certain).

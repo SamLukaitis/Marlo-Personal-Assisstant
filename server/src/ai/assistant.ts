@@ -757,7 +757,7 @@ const ALWAYS_ON_TOOLS: Anthropic.ToolUnion[] = [
       "Make a link that opens an app already filled in, for things you can't do yourself: rides (uber, lyft), directions (google_maps), restaurant tables (opentable, resy), music (spotify) and stays (airbnb, booking_com). The user taps it and confirms in that app — you have NOT booked, ordered or started anything, so never say you have. " +
       "Fields per app: uber/google_maps — destination (required), origin (omit for the user's current location), google_maps also travel_mode. lyft — same, but every place needs latitude+longitude (from a recent location pin or a places result; never invent coordinates — if you only have a name, use uber or google_maps). " +
       "opentable — query (restaurant name + area, required), party_size, date, time. resy — city (required, e.g. 'New York, NY'), query, party_size, date. spotify — query (song, artist, playlist or mood). airbnb/booking_com — city (required), check_in + check_out together, guests. " +
-      "Dates are YYYY-MM-DD in the user's local calendar; times are 24-hour HH:MM. If it returns an error, ask the user for what's missing rather than guessing. Put the returned url on its own line in your reply.",
+      "Dates are YYYY-MM-DD in the user's local calendar; times are 24-hour HH:MM. For relative days ('tonight', 'Friday', 'next weekend'), call get_current_time first unless you already know today's date. If it returns an error, ask the user for what's missing rather than guessing. Put the returned url on its own line in your reply.",
     input_schema: {
       type: "object",
       properties: {
@@ -1568,8 +1568,10 @@ export async function runTool(
     case "flag_unmet_request":
       addUnmetRequest(ownerId, input.summary as string, phone ? "whatsapp" : "web");
       return { ok: true };
-    case "make_app_link":
-      return makeAppLink(input, { today: userLocalClock(ownerId).dateKey });
+    case "make_app_link": {
+      const clock = userLocalClock(ownerId);
+      return makeAppLink(input, { today: clock.dateKey, now: clock.hhmm });
+    }
     case "list_needs_attention":
       return hubFlaggedMessages(ownerId);
     case "search_documents":

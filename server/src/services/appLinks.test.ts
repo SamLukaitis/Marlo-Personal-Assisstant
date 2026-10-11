@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { makeAppLink } from "./appLinks.js";
 
-const ctx = { today: "2026-10-12" };
+const ctx = { today: "2026-10-12", now: "12:00" };
 
 function ok(result: ReturnType<typeof makeAppLink>): { url: string; label: string } {
   if ("error" in result) throw new Error(`expected a link, got error: ${result.error}`);
@@ -259,5 +259,32 @@ describe("makeAppLink — review fixes", () => {
     const q = decodeURIComponent(new URL(url).pathname.replace("/search/", ""));
     expect(Array.from(q).length).toBe(200);
     expect(q.endsWith("a😀")).toBe(true);
+  });
+});
+
+describe("makeAppLink — deferred minors", () => {
+  it("strips C1 controls, line/paragraph separators and bidi overrides", () => {
+    const { url } = ok(makeAppLink({ app: "spotify", query: "ab c d‮e⁦f‏g​h" }, ctx));
+    const q = decodeURIComponent(new URL(url).pathname.replace("/search/", ""));
+    expect(q).toBe("a b c defgh");
+  });
+
+  it("doesn't leave a trailing space when the 200-char cut lands on one", () => {
+    const { url } = ok(makeAppLink({ app: "spotify", query: "a".repeat(199) + " bcd" }, ctx));
+    const q = decodeURIComponent(new URL(url).pathname.replace("/search/", ""));
+    expect(q).toBe("a".repeat(199));
+  });
+
+  it("rejects an OpenTable time that has already passed today", () => {
+    expect(err(makeAppLink({ app: "opentable", query: "X", date: "2026-10-12", time: "11:30" }, ctx))).toMatch(/already passed/);
+  });
+
+  it("rejects today's default 19:00 slot once it's later than that", () => {
+    expect(err(makeAppLink({ app: "opentable", query: "X", date: "2026-10-12" }, { today: "2026-10-12", now: "21:00" }))).toMatch(/already passed/);
+  });
+
+  it("allows an earlier clock time on a later day", () => {
+    const { url } = ok(makeAppLink({ app: "opentable", query: "X", date: "2026-10-13", time: "11:30" }, ctx));
+    expect(new URL(url).searchParams.get("dateTime")).toBe("2026-10-13T11:30");
   });
 });

@@ -18,7 +18,8 @@ interface Place {
 }
 
 interface Ctx {
-  today: string;
+  today: string; // the user's local date, YYYY-MM-DD
+  now: string; // the user's local time, HH:MM
 }
 
 const MAX_TEXT = 200;
@@ -29,10 +30,16 @@ class InputError extends Error {}
 function text(value: unknown, field: string): string | undefined {
   if (value === undefined || value === null || value === "") return undefined;
   if (typeof value !== "string") throw new InputError(`${field} must be text.`);
-  // eslint-disable-next-line no-control-regex
-  const collapsed = value.replace(/[\u0000-\u001f\u007f]+/g, " ").replace(/\s+/g, " ").trim();
+  const collapsed = value
+    // Invisible formatting (bidi overrides/isolates, LRM/RLM, zero-width chars) is dropped outright...
+    .replace(/[\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]/g, "")
+    // ...while control characters and line/paragraph separators become word breaks.
+    // eslint-disable-next-line no-control-regex
+    .replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
   // Cut by code point, not UTF-16 unit: a half emoji makes encodeURIComponent throw.
-  const cleaned = Array.from(collapsed).slice(0, MAX_TEXT).join("");
+  const cleaned = Array.from(collapsed).slice(0, MAX_TEXT).join("").trimEnd();
   return cleaned || undefined;
 }
 
@@ -199,7 +206,13 @@ function opentable(raw: Record<string, unknown>, ctx: Ctx): AppLinkResult {
   const u = new URL("https://www.opentable.com/s");
   u.searchParams.set("term", query);
   if (partySize) u.searchParams.set("covers", String(partySize));
-  if (d) u.searchParams.set("dateTime", `${d}T${t ?? "19:00"}`);
+  if (d) {
+    const slot = t ?? "19:00";
+    if (d === ctx.today && slot < ctx.now) {
+      throw new InputError(`${slot} has already passed today (it's ${ctx.now} for the user now). Ask for a later time.`);
+    }
+    u.searchParams.set("dateTime", `${d}T${slot}`);
+  }
   return { url: u.toString(), label: "Open in OpenTable" };
 }
 

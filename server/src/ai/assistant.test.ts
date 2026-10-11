@@ -1910,8 +1910,24 @@ describe("make_app_link", () => {
     setUserTimezone(user.id, "Pacific/Kiritimati"); // UTC+14: usually already 'tomorrow' vs the server
     const { DateTime } = await import("luxon");
     const localToday = DateTime.now().setZone("Pacific/Kiritimati").toFormat("yyyy-MM-dd");
-    const result = (await runTool(user.id, "make_app_link", { app: "opentable", query: "X", date: localToday })) as { url?: string };
-    expect(result.url).toContain(`dateTime=${localToday}T19%3A00`);
+    const result = (await runTool(user.id, "make_app_link", { app: "opentable", query: "X", date: localToday, time: "23:59" })) as { url?: string };
+    expect(result.url).toContain(`dateTime=${localToday}T23%3A59`);
+  });
+
+  it("judges 'already passed today' by the user's own clock", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("applink-now"));
+    setUserTimezone(user.id, "Pacific/Kiritimati");
+    const { DateTime } = await import("luxon");
+    const local = DateTime.now().setZone("Pacific/Kiritimati");
+    if (local.toFormat("HH:mm") === "00:00") return; // nothing earlier today to test against
+    const result = (await runTool(user.id, "make_app_link", { app: "opentable", query: "X", date: local.toFormat("yyyy-MM-dd"), time: "00:00" })) as { error?: string };
+    expect(result.error).toMatch(/already passed/);
+  });
+
+  it("tells the model to check the date for relative days like 'tonight' or 'Friday'", () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("applink-reldate"));
+    const tool = buildToolsForOwner(user.id).find((t) => t.name === "make_app_link") as { description?: string };
+    expect(tool.description).toMatch(/get_current_time/);
   });
 
   it("system prompt tells the model to use make_app_link and never claim a booking", () => {
