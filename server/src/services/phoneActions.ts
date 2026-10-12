@@ -122,10 +122,16 @@ export function fetchPhoneAction(code: string, version: number, now = Date.now()
   return { kind: "steps", steps: row.steps, reportUrl: `${actionFetchUrl(code)}/report` };
 }
 
+// Only a free-text `ask` answer can legitimately run long. Cutting a JSON string would hand the model
+// corrupt data, so strings are cut as text and anything else that is too large is dropped instead.
 function clampValue(value: unknown): unknown {
+  if (typeof value === "string") {
+    const chars = Array.from(value);
+    return chars.length > MAX_VALUE_JSON ? `${chars.slice(0, MAX_VALUE_JSON).join("")}…` : value;
+  }
   const json = JSON.stringify(value);
   if (json === undefined) return undefined;
-  return json.length > MAX_VALUE_JSON ? json.slice(0, MAX_VALUE_JSON) : value;
+  return json.length > MAX_VALUE_JSON ? undefined : value;
 }
 
 async function finish(row: PhoneActionRow, status: "done" | "failed", results: PhoneStepResult[], now: number): Promise<void> {

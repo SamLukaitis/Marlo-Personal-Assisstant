@@ -117,6 +117,27 @@ describe("reportPhoneStep", () => {
     expect(handleFinishedPhoneAction).toHaveBeenCalledTimes(1);
   });
 
+  it("stores a small object value as-is", async () => {
+    const u = user();
+    const code = fetched(u.id);
+    await pa.reportPhoneStep(code, { index: 0, ok: true, value: { latitude: 51.5, longitude: -0.12 } }, T0 + 1);
+    expect(getPhoneActionByCodeHash(pa.hashCode(code))!.results[0].value).toEqual({ latitude: 51.5, longitude: -0.12 });
+  });
+
+  it("cuts a long string value to 2000 characters and marks it", async () => {
+    const u = user();
+    const code = fetched(u.id);
+    await pa.reportPhoneStep(code, { index: 0, ok: true, value: "a".repeat(2500) }, T0 + 1);
+    expect(getPhoneActionByCodeHash(pa.hashCode(code))!.results[0].value).toBe("a".repeat(2000) + "…");
+  });
+
+  it("drops an over-long non-string value rather than storing broken JSON", async () => {
+    const u = user();
+    const code = fetched(u.id);
+    await pa.reportPhoneStep(code, { index: 0, ok: true, value: { blob: "b".repeat(2500) } }, T0 + 1);
+    expect(getPhoneActionByCodeHash(pa.hashCode(code))!.results[0]).not.toHaveProperty("value");
+  });
+
   it("a failed step finishes the run as failed with the error", async () => {
     const u = user();
     const code = fetched(u.id);
