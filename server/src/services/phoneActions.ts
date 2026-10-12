@@ -9,14 +9,16 @@ import {
   getPhoneActionByCodeHash,
   updatePhoneAction,
   listStalledPhoneActions,
+  getShortcutStatus,
+  listRecentFinishedPhoneActions,
   recordShortcutSeen,
   type PhoneActionRow,
   type PhoneActionSource,
   type PhoneStepJson,
   type PhoneStepResult,
 } from "../db/store.js";
-import { describeStep, unsupportedSteps, type PhoneStep } from "./phoneSteps.js";
-import { handleFinishedPhoneAction } from "./phoneActionFollowups.js";
+import { describeStep, unsupportedSteps, STEP_TYPES, type PhoneStep } from "./phoneSteps.js";
+import { handleFinishedPhoneAction, formatReportedValue, PROBLEM_TTL_MS } from "./phoneActionFollowups.js";
 
 const HOUR = 60 * 60 * 1000;
 export const CHAT_TTL_MS = 24 * HOUR;
@@ -191,4 +193,38 @@ export async function sweepStalledPhoneActions(now = Date.now()): Promise<void> 
       now
     );
   }
+}
+
+const RECENT_RESULTS_MS = 2 * HOUR;
+
+// Per-user context for the chat system prompt. Empty when the feature is off, so nothing about
+// phone actions reaches the model on servers without the Shortcut configured.
+export function phonePromptSection(ownerId: number, now = Date.now()): string {
+  if (!isPhoneActionsConfigured()) return "";
+  const lines = [
+    "Phone actions: with make_phone_action you can send a one-tap link that runs steps on the user's iPhone through the Marlowe Shortcut " +
+      `(${STEP_TYPES.join(", ")}). Offer one whenever it saves them effort, not only when asked — e.g. an alarm before an early flight, ` +
+      "a Focus during a long meeting, a text to say they're running late. Combine related steps into one link. Never say it's done — say \"tap to …\". " +
+      "Put the link on its own line. iPhone only.",
+  ];
+  const status = getShortcutStatus(ownerId);
+  if (!status) {
+    lines.push("The user hasn't run the Marlowe Shortcut yet: make_phone_action returns an install_url — send it first (\"first time: add the Marlowe Shortcut\"), then the action link.");
+  } else {
+    lines.push(`Their Marlowe Shortcut is version ${status.version}.`);
+    const problems = status.knownProblems.filter((p) => now - p.at <= PROBLEM_TTL_MS);
+    if (problems.length) {
+      lines.push(`Known problems on their phone — don't repeat these unless they say it's fixed: ${problems.map((p) => `${p.detail} (${p.error})`).join("; ")}.`);
+    }
+  }
+  const recent = listRecentFinishedPhoneActions(ownerId, now - RECENT_RESULTS_MS).map((a) => {
+    const steps = a.steps as unknown as PhoneStep[];
+    const values = a.results
+      .filter((r) => steps[r.index])
+      .map((r) => (r.ok ? formatReportedValue(steps[r.index], r.value) : `failed to ${describeStep(steps[r.index])}: ${r.error ?? "unknown"}`))
+      .filter(Boolean);
+    return `${new Date(a.finishedAt!).toISOString().slice(11, 16)} UTC "${a.label}" ${a.status}${values.length ? ` — ${values.join("; ")}` : ""}`;
+  });
+  if (recent.length) lines.push(`Recent phone actions: ${recent.join(" | ")}.`);
+  return lines.join("\n");
 }

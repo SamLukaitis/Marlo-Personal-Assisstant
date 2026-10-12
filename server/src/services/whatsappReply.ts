@@ -17,7 +17,8 @@ export async function sendAssistantReply(
   reply: AssistantReply,
   inboundMessageId: string
 ): Promise<void> {
-  if (reply.reaction) {
+  // Synthetic turns (phone-action report-back) have no inbound wamid to react to — fall through to text.
+  if (reply.reaction && inboundMessageId) {
     // A reaction replaces the text reply entirely (see assistant.ts's react_to_message) —
     // persist a readable history line rather than an empty row, and target the message that
     // triggered this turn (the wamid the caller passed in), not one of Marlowe's own messages.
