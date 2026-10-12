@@ -72,8 +72,13 @@ export async function handleFinishedPhoneAction(row: PhoneActionRow, now: number
     if (phone) {
       const hint = step.type === "focus" ? " Is there a Focus with exactly that name on your phone?" : "";
       const text = `Couldn't ${describeStep(step)}: ${error}.${hint}`;
-      await sendWhatsAppMessage(phone, text);
-      appendWhatsAppMessage(row.ownerId, phone, "assistant", text);
+      // A transient send failure must not drop the report-back values further down.
+      try {
+        await sendWhatsAppMessage(phone, text);
+        appendWhatsAppMessage(row.ownerId, phone, "assistant", text);
+      } catch (err) {
+        console.error("phoneActionFollowups: failure message not sent", err);
+      }
     }
   }
 

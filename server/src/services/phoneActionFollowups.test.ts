@@ -84,6 +84,28 @@ describe("handleFinishedPhoneAction", () => {
     expect(store.listCheckins(id, 1)[0]).toMatchObject({ latitude: 51.5, longitude: -0.12 });
   });
 
+  it("a failed WhatsApp send does not lose the rest of the run's results", async () => {
+    const id = owner();
+    vi.mocked(sendWhatsAppMessage).mockRejectedValueOnce(new Error("transient"));
+    const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    await handleFinishedPhoneAction(
+      row(
+        id,
+        [{ type: "get_location" }, { type: "focus", name: "Work", on: true }],
+        [
+          { index: 0, ok: true, value: { latitude: 51.5, longitude: -0.12 }, at: T0 },
+          { index: 1, ok: false, error: "Focus not found", at: T0 },
+        ],
+        "failed"
+      ),
+      T0
+    );
+    errSpy.mockRestore();
+    expect(store.listCheckins(id, 1)[0]).toMatchObject({ latitude: 51.5, longitude: -0.12 });
+    expect(queueForAssistant).toHaveBeenCalled();
+    expect(store.getShortcutStatus(id)!.knownProblems).toHaveLength(1);
+  });
+
   it("no phone on the row falls back to the user's first number; none at all sends nothing", async () => {
     const id = owner();
     await handleFinishedPhoneAction(row(id, [{ type: "get_battery" }], [{ index: 0, ok: true, value: 54, at: T0 }], "done", null), T0);
