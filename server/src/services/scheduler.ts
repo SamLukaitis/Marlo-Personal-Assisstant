@@ -19,6 +19,7 @@ import { importantEmailAlertsEnabled, realPersonAlertsEnabled } from "./emailAle
 import { checkNewEmailsAgainstRecentDocuments } from "./reconciliation.js";
 import { checkForImportantEmails } from "./importantEmailAlerts.js";
 import { flushEmailDigestIfDue } from "./emailDigest.js";
+import { sweepStalledPhoneActions } from "./phoneActions.js";
 import { syncBookingReminders } from "./tripPrep.js";
 import { userLocalClock } from "./userTimezone.js";
 import {
@@ -201,6 +202,9 @@ async function tick(): Promise<void> {
       console.error(`scheduler: email digest failed for user ${ownerId}`, err)
     );
   }
+  // Not per-owner: a stalled Shortcut run is found across all users in one pass. The tick runs
+  // every 5 minutes, so a stalled run is reported 5-10 minutes after the tap.
+  await sweepStalledPhoneActions().catch((err) => console.error("scheduler: phone action sweep failed", err));
   console.log(
     `scheduler: tick finished — ${ownerIds.length} user${ownerIds.length === 1 ? "" : "s"}, ` +
       `real-person alerts off for ${realPersonAlertsOff}, ${Date.now() - startedAt}ms`
