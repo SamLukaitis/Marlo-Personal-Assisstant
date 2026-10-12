@@ -78,6 +78,16 @@ describe("validateSteps — fields", () => {
     expect(err([{ type: "ask" }])).toMatch(/prompt is required/);
   });
 
+  it("rejects over-length values in fields that name a target, instead of cutting them", () => {
+    expect(err([{ type: "open_url", url: `https://e.co/${"a".repeat(2001)}` }])).toMatch(/url is too long \(max 2000\)/);
+    expect(err([{ type: "text", to: "x".repeat(101), body: "hi" }])).toMatch(/to is too long \(max 100\)/);
+  });
+
+  it("rejects a time or datetime with extra characters, instead of cutting them", () => {
+    expect(err([{ type: "alarm", time: "05:15xyz" }])).toMatch(/step 1: time must be HH:MM/);
+    expect(err([{ type: "calendar_event", title: "Gym", start: "2026-10-13T07:00:00Z", end: "2026-10-13T08:00" }])).toMatch(/start must be YYYY-MM-DDTHH:MM/);
+  });
+
   it("drops unknown extra fields", () => {
     expect(ok([{ type: "get_battery", evil: "x" }])).toEqual([{ type: "get_battery" }]);
   });

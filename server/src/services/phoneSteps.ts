@@ -49,13 +49,22 @@ const LOCAL_DATETIME = /^\d{4}-\d{2}-\d{2}T([01]\d|2[0-3]):[0-5]\d$/;
 
 type Raw = Record<string, unknown>;
 
-function req(raw: Raw, field: string, max = 200): string {
-  const t = cleanText(raw[field], field, max);
+// Free text is cut to `max` characters; `strict` fields are rejected instead, because a cut URL or
+// contact name would still look valid but point somewhere the user never asked for.
+function read(raw: Raw, field: string, max: number, strict: boolean): string | undefined {
+  const cleaned = cleanText(raw[field], field, strict ? Infinity : max);
+  if (strict && cleaned !== undefined && Array.from(cleaned).length > max) {
+    throw new InputError(`${field} is too long (max ${max}).`);
+  }
+  return cleaned;
+}
+function req(raw: Raw, field: string, max = 200, strict = false): string {
+  const t = read(raw, field, max, strict);
   if (!t) throw new InputError(`${field} is required for this step.`);
   return t;
 }
-function opt(raw: Raw, field: string, max = 200): string | undefined {
-  return cleanText(raw[field], field, max);
+function opt(raw: Raw, field: string, max = 200, strict = false): string | undefined {
+  return read(raw, field, max, strict);
 }
 function bool(raw: Raw, field: string): boolean {
   if (typeof raw[field] !== "boolean") throw new InputError(`${field} must be true or false.`);
@@ -71,14 +80,16 @@ function int(raw: Raw, field: string, min: number, max: number): number {
 function hhmm(raw: Raw, field: string, required: true): string;
 function hhmm(raw: Raw, field: string, required: false): string | undefined;
 function hhmm(raw: Raw, field: string, required: boolean): string | undefined {
-  const v = required ? req(raw, field, 5) : opt(raw, field, 5);
+  // No length cap here: the pattern rejects anything that isn't exactly HH:MM, including suffixes.
+  const v = required ? req(raw, field, Infinity) : opt(raw, field, Infinity);
   if (v !== undefined && !HHMM.test(v)) throw new InputError(`${field} must be HH:MM, 24-hour.`);
   return v;
 }
 function localDateTime(raw: Raw, field: string, required: true): string;
 function localDateTime(raw: Raw, field: string, required: false): string | undefined;
 function localDateTime(raw: Raw, field: string, required: boolean): string | undefined {
-  const v = required ? req(raw, field, 16) : opt(raw, field, 16);
+  // No length cap here: the pattern rejects a trailing "Z" or seconds rather than cutting them off.
+  const v = required ? req(raw, field, Infinity) : opt(raw, field, Infinity);
   if (v !== undefined && !LOCAL_DATETIME.test(v)) throw new InputError(`${field} must be YYYY-MM-DDTHH:MM in the user's local time.`);
   return v;
 }
@@ -91,7 +102,7 @@ function oneOf<T extends string>(raw: Raw, field: string, options: readonly T[],
   return v as T;
 }
 function httpsUrl(raw: Raw, field: string): string {
-  const v = req(raw, field, 2000);
+  const v = req(raw, field, 2000, true);
   let parsed: URL;
   try {
     parsed = new URL(v);
@@ -114,7 +125,7 @@ function parseStep(raw: Raw): PhoneStep {
     case "timer":
       return { type, minutes: int(raw, "minutes", 1, 1440) };
     case "reminder":
-      return withOptional({ type, title: req(raw, "title") }, { due: localDateTime(raw, "due", false), list: opt(raw, "list", 80) });
+      return withOptional({ type, title: req(raw, "title") }, { due: localDateTime(raw, "due", false), list: opt(raw, "list", 80, true) });
     case "calendar_event": {
       const start = localDateTime(raw, "start", true);
       const end = localDateTime(raw, "end", true);
@@ -122,7 +133,7 @@ function parseStep(raw: Raw): PhoneStep {
       return withOptional({ type, title: req(raw, "title"), start, end }, { location: opt(raw, "location") });
     }
     case "focus":
-      return withOptional({ type, name: req(raw, "name", 60), on: bool(raw, "on") }, { until: hhmm(raw, "until", false) });
+      return withOptional({ type, name: req(raw, "name", 60, true), on: bool(raw, "on") }, { until: hhmm(raw, "until", false) });
     case "low_power":
     case "wifi":
     case "bluetooth":
@@ -131,20 +142,20 @@ function parseStep(raw: Raw): PhoneStep {
     case "brightness":
       return { type, percent: int(raw, "percent", 0, 100) };
     case "text":
-      return { type, to: req(raw, "to", 100), body: req(raw, "body", 500) };
+      return { type, to: req(raw, "to", 100, true), body: req(raw, "body", 500) };
     case "call":
     case "facetime":
-      return { type, to: req(raw, "to", 100) };
+      return { type, to: req(raw, "to", 100, true) };
     case "open_url":
       return { type, url: httpsUrl(raw, "url") };
     case "directions":
-      return withOptional({ type, destination: req(raw, "destination") }, { mode: oneOf(raw, "mode", DIRECTION_MODES, false) });
+      return withOptional({ type, destination: req(raw, "destination", 200, true) }, { mode: oneOf(raw, "mode", DIRECTION_MODES, false) });
     case "note":
       return { type, title: req(raw, "title"), body: req(raw, "body", 2000) };
     case "clipboard":
       return { type, text: req(raw, "text", 2000) };
     case "run_shortcut":
-      return { type, name: req(raw, "name", 100) };
+      return { type, name: req(raw, "name", 100, true) };
     case "get_location":
     case "get_battery":
       return { type };
