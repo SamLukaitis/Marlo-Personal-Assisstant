@@ -38,7 +38,9 @@ import {
   reminderText,
   ackLine,
   briefLine,
+  phoneStepsFor,
 } from "./attentionRules.js";
+import { createPhoneAction, phoneSuggestionsEnabled, PROACTIVE_TTL_MS } from "./phoneActions.js";
 
 export interface AttentionCandidate {
   source: AttentionSource;
@@ -125,6 +127,21 @@ function prepareItem(
       ? item.details.xeroOffer
       : null;
   if (offer) text += `\n\nReply "yes" and I'll forward it to Xero.`;
+  // Created now, when the reminder actually goes out, so its expiry runs from when they see it.
+  // Only scheduled reminders: an interrupt is about something that changed, not something to set up.
+  if (item.tier !== "interrupt" && phoneSuggestionsEnabled(ownerId)) {
+    const suggestion = phoneStepsFor(item.details, zone, now);
+    if (suggestion) {
+      const { url } = createPhoneAction(ownerId, suggestion.steps, {
+        source: "reminder",
+        label: suggestion.label,
+        ttlMs: PROACTIVE_TTL_MS,
+        notAfter: suggestion.notAfter,
+        now,
+      });
+      text += `\n\n${suggestion.label}: ${url}`;
+    }
+  }
   return { item, text, offer };
 }
 
