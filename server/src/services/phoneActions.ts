@@ -17,7 +17,8 @@ import {
   type PhoneStepJson,
   type PhoneStepResult,
 } from "../db/store.js";
-import { describeStep, unsupportedSteps, STEP_TYPES, type PhoneStep } from "./phoneSteps.js";
+import { describeStep, unsupportedSteps, validateSteps, STEP_TYPES, type PhoneStep } from "./phoneSteps.js";
+import { cleanText, InputError } from "./appLinks.js";
 import { handleFinishedPhoneAction, formatReportedValue, PROBLEM_TTL_MS } from "./phoneActionFollowups.js";
 
 const HOUR = 60 * 60 * 1000;
@@ -227,4 +228,28 @@ export function phonePromptSection(ownerId: number, now = Date.now()): string {
   });
   if (recent.length) lines.push(`Recent phone actions: ${recent.join(" | ")}.`);
   return lines.join("\n");
+}
+
+export function makePhoneActionForChat(
+  ownerId: number,
+  input: Record<string, unknown>,
+  phone: string | null,
+  now = Date.now()
+): { url: string; summary: string[]; install_url?: string } | { error: string } {
+  const status = getShortcutStatus(ownerId);
+  const validated = validateSteps(input.steps, status?.version ?? currentShortcutVersion());
+  if ("error" in validated) {
+    return status && validated.error.includes("can't do")
+      ? { error: `${validated.error} Ask them to add the updated Marlowe Shortcut: ${shortcutInstallUrl()}` }
+      : validated;
+  }
+  let label: string;
+  try {
+    label = cleanText(input.label, "label", 80) ?? "Phone action";
+  } catch (e) {
+    if (e instanceof InputError) return { error: e.message };
+    throw e;
+  }
+  const { url, summary } = createPhoneAction(ownerId, validated.steps, { source: "chat", label, phone, ttlMs: CHAT_TTL_MS, now });
+  return status ? { url, summary } : { url, summary, install_url: shortcutInstallUrl() };
 }

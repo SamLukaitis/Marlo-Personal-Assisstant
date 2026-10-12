@@ -68,6 +68,8 @@ import { fetchWeather } from "../providers/weather.js";
 import { isMapsConfigured, searchPlaces, computeRoute } from "../providers/maps.js";
 import { fetchQuotes, DEFAULT_SYMBOLS } from "../providers/markets.js";
 import { countTravelDays } from "../services/travelDays.js";
+import { isPhoneActionsConfigured, makePhoneActionForChat, phonePromptSection } from "../services/phoneActions.js";
+import { STEP_TYPES } from "../services/phoneSteps.js";
 import { resolveReminderTime, ReminderTimeError, type ReminderTimeInput } from "../services/reminderTime.js";
 import { resolveUserTimezone, userLocalClock } from "../services/userTimezone.js";
 import { makeAppLink, APP_NAMES } from "../services/appLinks.js";
@@ -1196,6 +1198,38 @@ const MAPS_TOOLS: Anthropic.Tool[] = [
 export const MAX_MAPS_CALLS_PER_MESSAGE = 5;
 const MAPS_CALL_TOOLS = new Set(["find_places", "get_route"]);
 
+// Only sent when MARLOWE_SHORTCUT_ICLOUD_URL is set (see services/phoneActions.ts) — one tool for
+// every on-phone step, so the step list grows without adding tools.
+const PHONE_ACTION_TOOLS: Anthropic.Tool[] = [
+  {
+    name: "make_phone_action",
+    description:
+      "Make a one-tap link that runs steps on the user's iPhone through the Marlowe Shortcut. Nothing happens until they tap it — never say it's done. " +
+      "Step fields: alarm {time HH:MM, label?} · timer {minutes} · reminder {title, due? YYYY-MM-DDTHH:MM, list?} · calendar_event {title, start, end (YYYY-MM-DDTHH:MM local), location?} · " +
+      "focus {name e.g. Work/Sleep/Do Not Disturb, on, until? HH:MM} · low_power/wifi/bluetooth {on} · volume/brightness {percent} · " +
+      "text {to (contact name or number), body} · call/facetime {to} · open_url {url https} · directions {destination, mode? drive|walk|transit} · note {title, body} · clipboard {text} · " +
+      "run_shortcut {name} (must be last) · get_location · get_battery · get_health {metric sleep_last_night|steps_today} · ask {prompt}. " +
+      "The get_*/ask steps send the answer back to you; it arrives as a [From your phone …] message. Max 8 steps. Call get_current_time first for relative days. " +
+      "If the result has install_url, send that first (one-time setup), then the link. Put each link on its own line.",
+    input_schema: {
+      type: "object",
+      properties: {
+        label: { type: "string", description: "A few words for what this does, e.g. 'Early flight setup'." },
+        steps: {
+          type: "array",
+          description: "Steps in the order to run them.",
+          items: {
+            type: "object",
+            properties: { type: { type: "string", enum: [...STEP_TYPES] } },
+            required: ["type"],
+          },
+        },
+      },
+      required: ["label", "steps"],
+    },
+  },
+];
+
 export function buildToolsForOwner(ownerId: number): Anthropic.ToolUnion[] {
   const enabled = getEnabledTools(ownerId);
   const result = [...ALWAYS_ON_TOOLS];
@@ -1203,6 +1237,7 @@ export function buildToolsForOwner(ownerId: number): Anthropic.ToolUnion[] {
     if (enabled.has(key)) result.push(...CONDITIONAL_TOOLS[key]);
   }
   if (isMapsConfigured()) result.push(...MAPS_TOOLS);
+  if (isPhoneActionsConfigured()) result.push(...PHONE_ACTION_TOOLS);
   // Cache breakpoint must be on the LAST tool schema in the array — which tool that is now
   // depends on which conditional tools are enabled, so it's set dynamically here rather than
   // hardcoded on one specific tool definition like before.
@@ -1572,6 +1607,9 @@ export async function runTool(
       const clock = userLocalClock(ownerId);
       return makeAppLink(input, { today: clock.dateKey, now: clock.hhmm });
     }
+    case "make_phone_action":
+      if (!isPhoneActionsConfigured()) return { error: "Phone actions aren't set up on this server." };
+      return makePhoneActionForChat(ownerId, input, phone ?? null);
     case "list_needs_attention":
       return hubFlaggedMessages(ownerId);
     case "search_documents":
@@ -2151,6 +2189,7 @@ export function buildSystemPrompt(ownerId: number, conversationSummary?: string)
       : "",
     onboardingNote,
     buildRules(getEnabledTools(ownerId)),
+    phonePromptSection(ownerId),
   ]
     .filter(Boolean)
     .join("\n\n");
