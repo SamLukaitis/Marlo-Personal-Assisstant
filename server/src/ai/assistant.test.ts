@@ -1885,3 +1885,55 @@ describe("buildSystemPrompt ask_user_choice rule", () => {
     expect(prompt).toContain("ask_user_choice");
   });
 });
+
+describe("make_app_link", () => {
+  it("is offered to every user with no env or toggles", () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("applink-tool"));
+    const names = buildToolsForOwner(user.id).map((t) => t.name);
+    expect(names).toContain("make_app_link");
+  });
+
+  it("returns the built link", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("applink-run"));
+    const result = await runTool(user.id, "make_app_link", { app: "spotify", query: "lofi beats" });
+    expect(result).toEqual({ url: "https://open.spotify.com/search/lofi%20beats", label: "Open in Spotify" });
+  });
+
+  it("returns validation errors to the model rather than throwing", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("applink-err"));
+    const result = (await runTool(user.id, "make_app_link", { app: "opentable" })) as { error?: string };
+    expect(result.error).toMatch(/query/);
+  });
+
+  it("judges 'today' by the user's own timezone", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("applink-tz"));
+    setUserTimezone(user.id, "Pacific/Kiritimati"); // UTC+14: usually already 'tomorrow' vs the server
+    const { DateTime } = await import("luxon");
+    const localToday = DateTime.now().setZone("Pacific/Kiritimati").toFormat("yyyy-MM-dd");
+    const result = (await runTool(user.id, "make_app_link", { app: "opentable", query: "X", date: localToday, time: "23:59" })) as { url?: string };
+    expect(result.url).toContain(`dateTime=${localToday}T23%3A59`);
+  });
+
+  it("judges 'already passed today' by the user's own clock", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("applink-now"));
+    setUserTimezone(user.id, "Pacific/Kiritimati");
+    const { DateTime } = await import("luxon");
+    const local = DateTime.now().setZone("Pacific/Kiritimati");
+    if (local.toFormat("HH:mm") === "00:00") return; // nothing earlier today to test against
+    const result = (await runTool(user.id, "make_app_link", { app: "opentable", query: "X", date: local.toFormat("yyyy-MM-dd"), time: "00:00" })) as { error?: string };
+    expect(result.error).toMatch(/already passed/);
+  });
+
+  it("tells the model to check the date for relative days like 'tonight' or 'Friday'", () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("applink-reldate"));
+    const tool = buildToolsForOwner(user.id).find((t) => t.name === "make_app_link") as { description?: string };
+    expect(tool.description).toMatch(/get_current_time/);
+  });
+
+  it("system prompt tells the model to use make_app_link and never claim a booking", () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("applink-prompt"));
+    const prompt = buildSystemPrompt(user.id);
+    expect(prompt).toContain("make_app_link");
+    expect(prompt).toMatch(/never (say|claim).*(booked|ordered|playing)/i);
+  });
+});
