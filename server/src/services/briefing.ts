@@ -24,6 +24,7 @@ import {
   type ProactiveVoice,
 } from "./proactiveVoice.js";
 import { eventLocalDateKey } from "./eventTime.js";
+import { phoneSuggestionsEnabled, PHONE_SUGGESTION_PROMPT, expandPhoneMarkers } from "./phoneActions.js";
 import type { CalendarEvent, UnifiedMessage } from "../providers/types.js";
 // Type-only: attention.ts imports this module at runtime, so a value import here would be a cycle.
 import type { AttentionBundle } from "./attention.js";
@@ -315,13 +316,17 @@ export async function renderBriefing(
   ownerId: number,
   voice: BriefingVoice,
   day: BriefingDay,
-  purpose: string
+  purpose: string,
+  // Only the real morning send passes this (phone suggestions); Briefing Lab never does.
+  extraSystem?: string
 ): Promise<string> {
   const anthropic = getClient();
   const response = await anthropic.messages.create({
     model: MODEL,
     max_tokens: 1024,
-    system: briefingSystemPrompt(voice),
+    system: extraSystem ? `${briefingSystemPrompt(voice)}
+
+${extraSystem}` : briefingSystemPrompt(voice),
     messages: [{ role: "user", content: briefingFactBlock(day) }],
   });
   recordApiUsage(
@@ -362,7 +367,8 @@ async function buildBriefingText(ownerId: number, attention?: BriefingAttention)
   const upcomingEvents = events.filter((e) => eventLocalDateKey(e.start, zone) !== clock.dateKey);
   const { headlines: news, quotes, weather } = await getBriefingFeed(ownerId);
 
-  return renderBriefing(
+  const suggest = phoneSuggestionsEnabled(ownerId);
+  const text = await renderBriefing(
     ownerId,
     { assistantName, userName, persona },
     {
@@ -384,8 +390,10 @@ async function buildBriefingText(ownerId: number, attention?: BriefingAttention)
       news: news.map((h) => ({ topic: h.topic, title: h.title })),
       attention,
     },
-    "daily_briefing"
+    "daily_briefing",
+    suggest ? PHONE_SUGGESTION_PROMPT : undefined
   );
+  return expandPhoneMarkers(ownerId, text, "briefing");
 }
 
 // A briefing cached earlier today (e.g. the Assistant page opened it) doesn't know about attention

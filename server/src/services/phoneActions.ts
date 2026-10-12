@@ -253,3 +253,45 @@ export function makePhoneActionForChat(
   const { url, summary } = createPhoneAction(ownerId, validated.steps, { source: "chat", label, phone, ttlMs: CHAT_TTL_MS, now });
   return status ? { url, summary } : { url, summary, install_url: shortcutInstallUrl() };
 }
+
+const MAX_SUGGESTIONS = 3;
+// [[phone|<label>|<steps JSON array>]] — the array is captured up to the "]" that's followed by the
+// closing "]]", so a "]" inside the JSON can't end it early. Step values never contain "]]]".
+const MARKER = /\[\[phone\|([^|\n\]]{1,80})\|(\[[\s\S]*?\])\]\]/g;
+
+export function phoneSuggestionsEnabled(ownerId: number): boolean {
+  return isPhoneActionsConfigured() && getShortcutStatus(ownerId) !== null;
+}
+
+export const PHONE_SUGGESTION_PROMPT = [
+  "The user has the Marlowe Shortcut on their iPhone, so you can offer up to 3 one-tap actions — but only when the calendar or bookings give a concrete reason:",
+  "an early start or flight (an alarm, a Sleep Focus the night before), a long meeting (a Focus for its length), travel to an address (directions). No reason, no suggestion.",
+  'Write each one on its own line exactly as [[phone|<what tapping does, a few words starting "Tap to">|<JSON array of steps>]], e.g.',
+  '[[phone|Tap to set a 05:15 alarm and Sleep Focus at 22:30|[{"type":"alarm","time":"05:15","label":"Flight BA117"},{"type":"focus","name":"Sleep","on":true}]]]',
+  "Step types: alarm {time HH:MM, label?}, timer {minutes}, reminder {title, due? YYYY-MM-DDTHH:MM}, focus {name, on, until? HH:MM}, directions {destination}, low_power {on}.",
+  "Never say the action is done. The lines don't count toward your word limit.",
+].join("\n");
+
+export function expandPhoneMarkers(ownerId: number, text: string, source: "briefing" | "digest", now = Date.now()): string {
+  const enabled = phoneSuggestionsEnabled(ownerId);
+  const version = getShortcutStatus(ownerId)?.version ?? currentShortcutVersion();
+  let made = 0;
+  const out = text.replace(MARKER, (_whole, rawLabel: string, json: string) => {
+    if (!enabled || made >= MAX_SUGGESTIONS) return "";
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(json);
+    } catch {
+      return "";
+    }
+    const validated = validateSteps(parsed, version);
+    if ("error" in validated) return "";
+    const label = cleanText(rawLabel, "label", 80);
+    if (!label) return "";
+    made++;
+    const { url } = createPhoneAction(ownerId, validated.steps, { source, label, ttlMs: PROACTIVE_TTL_MS, now });
+    return `${label}: ${url}`;
+  });
+  // Dropped markers leave doubled spaces / blank lines behind.
+  return out.replace(/[ \t]{2,}/g, " ").replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
+}
