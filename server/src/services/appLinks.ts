@@ -25,9 +25,9 @@ interface Ctx {
 const MAX_TEXT = 200;
 const TRAVEL_MODES: Record<string, string> = { drive: "driving", walk: "walking", transit: "transit", bike: "bicycling" };
 
-class InputError extends Error {}
+export class InputError extends Error {}
 
-function text(value: unknown, field: string): string | undefined {
+function text(value: unknown, field: string, max: number = MAX_TEXT): string | undefined {
   if (value === undefined || value === null || value === "") return undefined;
   if (typeof value !== "string") throw new InputError(`${field} must be text.`);
   const collapsed = value
@@ -39,9 +39,12 @@ function text(value: unknown, field: string): string | undefined {
     .replace(/\s+/g, " ")
     .trim();
   // Cut by code point, not UTF-16 unit: a half emoji makes encodeURIComponent throw.
-  const cleaned = Array.from(collapsed).slice(0, MAX_TEXT).join("").trimEnd();
+  const cleaned = Array.from(collapsed).slice(0, max).join("").trimEnd();
   return cleaned || undefined;
 }
+
+// Shared with phoneSteps.ts so model text reaching the phone is cleaned exactly like link text.
+export { text as cleanText };
 
 function requiredText(value: unknown, field: string): string {
   const t = text(value, field);
