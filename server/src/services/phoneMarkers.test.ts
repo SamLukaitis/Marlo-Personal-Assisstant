@@ -37,4 +37,10 @@ describe("expandPhoneMarkers", () => {
     expect(phoneSuggestionsEnabled(id)).toBe(false);
     expect(expandPhoneMarkers(id, 'Hi [[phone|A|[{"type":"get_battery"}]]]', "digest")).toBe("Hi");
   });
+  it("returns text with no marker byte-identical, whether or not the Shortcut ran", () => {
+    const text = "Hi  there \n\n\n\nBye  ";
+    for (const seen of [true, false]) {
+      expect(expandPhoneMarkers(owner(seen), text, "briefing")).toBe(text);
+    }
+  });
 });

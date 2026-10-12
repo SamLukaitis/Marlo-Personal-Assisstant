@@ -276,7 +276,9 @@ export function expandPhoneMarkers(ownerId: number, text: string, source: "brief
   const enabled = phoneSuggestionsEnabled(ownerId);
   const version = getShortcutStatus(ownerId)?.version ?? currentShortcutVersion();
   let made = 0;
+  let matched = false;
   const out = text.replace(MARKER, (_whole, rawLabel: string, json: string) => {
+    matched = true;
     if (!enabled || made >= MAX_SUGGESTIONS) return "";
     let parsed: unknown;
     try {
@@ -292,6 +294,8 @@ export function expandPhoneMarkers(ownerId: number, text: string, source: "brief
     const { url } = createPhoneAction(ownerId, validated.steps, { source, label, ttlMs: PROACTIVE_TTL_MS, now });
     return `${label}: ${url}`;
   });
+  // No marker: hand the text back untouched, so feature-off output stays exactly as it was.
+  if (!matched) return text;
   // Dropped markers leave doubled spaces / blank lines behind.
   return out.replace(/[ \t]{2,}/g, " ").replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
 }
