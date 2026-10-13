@@ -130,16 +130,21 @@ function prepareItem(
   // Created now, when the reminder actually goes out, so its expiry runs from when they see it.
   // Only scheduled reminders: an interrupt is about something that changed, not something to set up.
   if (item.tier !== "interrupt" && phoneSuggestionsEnabled(ownerId)) {
-    const suggestion = phoneStepsFor(item.details, zone, now);
-    if (suggestion) {
-      const { url } = createPhoneAction(ownerId, suggestion.steps, {
-        source: "reminder",
-        label: suggestion.label,
-        ttlMs: PROACTIVE_TTL_MS,
-        notAfter: suggestion.notAfter,
-        now,
-      });
-      text += `\n\n${suggestion.label}: ${url}`;
+    // A failed link must not cost the reminder itself, nor stop the other due items in this run.
+    try {
+      const suggestion = phoneStepsFor(item.details, zone, now);
+      if (suggestion) {
+        const { url } = createPhoneAction(ownerId, suggestion.steps, {
+          source: "reminder",
+          label: suggestion.label,
+          ttlMs: PROACTIVE_TTL_MS,
+          notAfter: suggestion.notAfter,
+          now,
+        });
+        text += `\n\n${suggestion.label}: ${url}`;
+      }
+    } catch (err) {
+      console.error("attention: phone link failed; sending the reminder without it", err);
     }
   }
   return { item, text, offer };
