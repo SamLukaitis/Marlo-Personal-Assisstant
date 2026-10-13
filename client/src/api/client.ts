@@ -826,6 +826,19 @@ export const addUnmetRequestNote = (id: number, text: string, includeResolved = 
     { text }
   );
 
+export interface PortalPhoneAction {
+  id: number;
+  email: string | null;
+  source: "chat" | "briefing" | "digest" | "reminder";
+  label: string;
+  status: "offered" | "fetched" | "done" | "failed";
+  steps: string[];
+  failure: string | null;
+  createdAt: number;
+  finishedAt: number | null;
+}
+export const fetchPhoneActions = () => getJson<PortalPhoneAction[]>("/api/portal/phone-actions");
+
 export interface ServerLog {
   id: number;
   level: string;

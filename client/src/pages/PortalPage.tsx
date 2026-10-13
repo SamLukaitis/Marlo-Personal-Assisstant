@@ -5,6 +5,7 @@ import {
   grantAdmin,
   revokeAdmin,
   fetchUnmetRequests,
+  fetchPhoneActions,
   resolveUnmetRequest,
   addUnmetRequestNote,
   fetchServerLogs,
@@ -24,6 +25,7 @@ import {
   fetchPortalVersion,
   type AdminCandidate,
   type UnmetRequest,
+  type PortalPhoneAction,
   type ServerLog,
   type ApiUsageRow,
   type ApiUsageByPurposeRow,
@@ -40,6 +42,7 @@ const SECTIONS = [
   { key: "todos", label: "To-Do" },
   { key: "notes", label: "Poster Board" },
   { key: "requests", label: "Unmet Requests" },
+  { key: "phone", label: "Phone Actions" },
   { key: "logs", label: "Logs" },
   { key: "usage", label: "Usage" },
   { key: "admins", label: "Admins" },
@@ -165,6 +168,7 @@ export function PortalPage() {
             {section === "todos" && <TodosTab />}
             {section === "notes" && <NotesTab />}
             {section === "requests" && <RequestsTab />}
+            {section === "phone" && <PhoneActionsTab />}
             {section === "logs" && <LogsTab />}
             {section === "usage" && <UsageTab />}
             {section === "admins" && <AdminsTab currentUserId={user.id} />}
@@ -557,6 +561,64 @@ function RequestsTab() {
       ) : (
         requests.map((r) => (
           <RequestRow key={r.id} request={r} onResolve={handleResolve} onAddNote={handleAddNote} />
+        ))
+      )}
+    </>
+  );
+}
+
+const PHONE_STATUS_LABEL: Record<PortalPhoneAction["status"], string> = {
+  offered: "Not tapped",
+  fetched: "Running",
+  done: "Done",
+  failed: "Failed",
+};
+
+function PhoneActionsTab() {
+  const [rows, setRows] = useState<PortalPhoneAction[]>([]);
+  const [loaded, setLoaded] = useState(false);
+
+  function load() {
+    setLoaded(false);
+    fetchPhoneActions()
+      .then(setRows)
+      .finally(() => setLoaded(true));
+  }
+
+  useEffect(load, []);
+
+  return (
+    <>
+      <h2>Phone actions</h2>
+      <p className="settings-section-intro">
+        One-tap actions Marlowe offered through the Marlowe Shortcut: what people tapped, and what broke on their phone.
+      </p>
+      <div className="row" style={{ marginBottom: 14, justifyContent: "flex-end" }}>
+        <button className="btn-secondary" onClick={load}>
+          <IconRefresh /> Refresh
+        </button>
+      </div>
+      {!loaded ? (
+        <p className="muted">Loading…</p>
+      ) : rows.length === 0 ? (
+        <p className="muted">None offered yet.</p>
+      ) : (
+        rows.map((r) => (
+          <div key={r.id} className="data-row">
+            <div className="row" style={{ justifyContent: "space-between", gap: 8 }}>
+              <strong>{r.label}</strong>
+              <span className="muted">{PHONE_STATUS_LABEL[r.status]}</span>
+            </div>
+            <div className="muted" style={{ fontSize: 13 }}>
+              {r.email ?? "deleted user"} · {r.source} · {timeAgo(r.createdAt)}
+            </div>
+            <ul style={{ margin: "8px 0 0", paddingLeft: 18 }}>
+              {r.steps.map((s, i) => (
+                <li key={i}>{s}</li>
+              ))}
+            </ul>
+            {r.failure && <p style={{ color: "var(--danger, #b42318)", margin: "8px 0 0" }}>{r.failure}</p>}
+          </div>
         ))
       )}
     </>
