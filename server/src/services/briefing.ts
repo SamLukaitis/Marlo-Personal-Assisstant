@@ -24,7 +24,7 @@ import {
   type ProactiveVoice,
 } from "./proactiveVoice.js";
 import { eventLocalDateKey } from "./eventTime.js";
-import { phoneSuggestionsEnabled, PHONE_SUGGESTION_PROMPT, expandPhoneMarkers } from "./phoneActions.js";
+import { phoneSuggestionsEnabled, PHONE_SUGGESTION_PROMPT, expandPhoneMarkers, stripPhoneMarkers } from "./phoneActions.js";
 import type { CalendarEvent, UnifiedMessage } from "../providers/types.js";
 // Type-only: attention.ts imports this module at runtime, so a value import here would be a cycle.
 import type { AttentionBundle } from "./attention.js";
@@ -393,7 +393,13 @@ async function buildBriefingText(ownerId: number, attention?: BriefingAttention)
     "daily_briefing",
     suggest ? PHONE_SUGGESTION_PROMPT : undefined
   );
-  return expandPhoneMarkers(ownerId, text, "briefing");
+  try {
+    return expandPhoneMarkers(ownerId, text, "briefing");
+  } catch (err) {
+    // The briefing is the product; a phone-link failure must not cost the user their morning.
+    console.error("briefing: phone marker expansion failed, sending without links", err);
+    return stripPhoneMarkers(text);
+  }
 }
 
 // A briefing cached earlier today (e.g. the Assistant page opened it) doesn't know about attention

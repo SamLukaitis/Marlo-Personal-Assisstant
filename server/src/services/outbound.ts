@@ -51,7 +51,7 @@ export function truncateForTemplate(text: string, continuation?: string): string
   return sanitizeForTemplateParam(truncated);
 }
 
-function isWithinCustomerServiceWindow(phone: string): boolean {
+export function isWithinCustomerServiceWindow(phone: string): boolean {
   const lastInboundAt = getLastInboundAt(phone);
   // No recorded inbound message (never messaged us, or predates last_inbound_at) is treated as
   // outside the window — the safe default, since the alternative is a free-form send that risks

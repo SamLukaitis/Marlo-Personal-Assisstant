@@ -5,10 +5,14 @@ vi.mock("../providers/whatsapp.js", async (importOriginal) => ({
   isWhatsAppConfigured: () => true,
   sendWhatsAppMessage: vi.fn(async () => "wamid.x"),
 }));
+vi.mock("./outbound.js", () => ({
+  sendProactiveMessage: vi.fn(async () => {}),
+  isWithinCustomerServiceWindow: vi.fn(() => true),
+}));
 vi.mock("./messageBatching.js", () => ({ queueForAssistant: vi.fn() }));
 
 process.env.MARLOWE_SHORTCUT_ICLOUD_URL = "https://www.icloud.com/shortcuts/test";
-const { sendWhatsAppMessage } = await import("../providers/whatsapp.js");
+const { sendProactiveMessage, isWithinCustomerServiceWindow } = await import("./outbound.js");
 const { queueForAssistant } = await import("./messageBatching.js");
 const { handleFinishedPhoneAction, formatReportedValue, PROBLEM_TTL_MS } = await import("./phoneActionFollowups.js");
 const { phonePromptSection } = await import("./phoneActions.js");
@@ -29,7 +33,9 @@ function row(ownerId: number, steps: store.PhoneStepJson[], results: store.Phone
 }
 
 beforeEach(() => {
-  vi.mocked(sendWhatsAppMessage).mockClear();
+  vi.mocked(sendProactiveMessage).mockClear();
+  vi.mocked(isWithinCustomerServiceWindow).mockReset();
+  vi.mocked(isWithinCustomerServiceWindow).mockReturnValue(true);
   vi.mocked(queueForAssistant).mockClear();
 });
 
@@ -37,7 +43,7 @@ describe("handleFinishedPhoneAction", () => {
   it("all do-steps ok: no message", async () => {
     const id = owner();
     await handleFinishedPhoneAction(row(id, [{ type: "alarm", time: "05:15" }], [{ index: 0, ok: true, at: T0 }], "done"), T0);
-    expect(sendWhatsAppMessage).not.toHaveBeenCalled();
+    expect(sendProactiveMessage).not.toHaveBeenCalled();
     expect(queueForAssistant).not.toHaveBeenCalled();
   });
 
@@ -47,7 +53,7 @@ describe("handleFinishedPhoneAction", () => {
       row(id, [{ type: "focus", name: "Work", on: true }], [{ index: 0, ok: false, error: "Focus not found", at: T0 }], "failed"),
       T0
     );
-    expect(sendWhatsAppMessage).toHaveBeenCalledWith("+447700900001", expect.stringMatching(/Couldn't turn Work Focus on: Focus not found/));
+    expect(sendProactiveMessage).toHaveBeenCalledWith("+447700900001", expect.stringMatching(/Couldn't turn Work Focus on: Focus not found/), "alert");
     expect(store.getShortcutStatus(id)!.knownProblems).toEqual([
       { type: "focus", detail: "turn Work Focus on", error: "Focus not found", at: T0 },
     ]);
@@ -86,7 +92,7 @@ describe("handleFinishedPhoneAction", () => {
 
   it("a failed WhatsApp send does not lose the rest of the run's results", async () => {
     const id = owner();
-    vi.mocked(sendWhatsAppMessage).mockRejectedValueOnce(new Error("transient"));
+    vi.mocked(sendProactiveMessage).mockRejectedValueOnce(new Error("transient"));
     const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
     await handleFinishedPhoneAction(
       row(
@@ -104,6 +110,27 @@ describe("handleFinishedPhoneAction", () => {
     expect(store.listCheckins(id, 1)[0]).toMatchObject({ latitude: 51.5, longitude: -0.12 });
     expect(queueForAssistant).toHaveBeenCalled();
     expect(store.getShortcutStatus(id)!.knownProblems).toHaveLength(1);
+  });
+
+  it("report-back is not queued when the WhatsApp window is closed, and is when open", async () => {
+    const id = owner();
+    const r = () => row(id, [{ type: "get_battery" }], [{ index: 0, ok: true, value: 54, at: T0 }], "done");
+    vi.mocked(isWithinCustomerServiceWindow).mockReturnValue(false);
+    await handleFinishedPhoneAction(r(), T0);
+    expect(queueForAssistant).not.toHaveBeenCalled();
+    vi.mocked(isWithinCustomerServiceWindow).mockReturnValue(true);
+    await handleFinishedPhoneAction(r(), T0);
+    expect(queueForAssistant).toHaveBeenCalledTimes(1);
+  });
+
+  it("a web-chat action (source chat, no phone) never starts a WhatsApp reply, but a briefing action does", async () => {
+    const id = owner();
+    store.addPhoneNumberForUser(id, "+447700900077");
+    const base = row(id, [{ type: "get_battery" }], [{ index: 0, ok: true, value: 54, at: T0 }], "done", null);
+    await handleFinishedPhoneAction({ ...base, source: "chat" }, T0);
+    expect(queueForAssistant).not.toHaveBeenCalled();
+    await handleFinishedPhoneAction({ ...base, source: "briefing" }, T0);
+    expect(queueForAssistant).toHaveBeenCalledWith(id, "447700900077", "", expect.any(Number), null, true);
   });
 
   it("no phone on the row falls back to the user's first number; none at all sends nothing", async () => {

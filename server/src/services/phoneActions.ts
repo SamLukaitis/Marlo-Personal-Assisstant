@@ -259,6 +259,11 @@ const MAX_SUGGESTIONS = 3;
 // closing "]]", so a "]" inside the JSON can't end it early. Step values never contain "]]]".
 const MARKER = /\[\[phone\|([^|\n\]]{1,80})\|(\[[\s\S]*?\])\]\]/g;
 
+// Briefing/digest models read outsider-controlled text (calendar titles, email senders/subjects), so a
+// marker they emit is untrusted. Only the benign, prompt-listed step types may become a link; anything
+// else (run_shortcut, open_url, text, report-back steps…) is dropped, whatever label it carries.
+export const PROACTIVE_STEP_TYPES = ["alarm", "timer", "reminder", "focus", "directions", "low_power"] as const;
+
 export function phoneSuggestionsEnabled(ownerId: number): boolean {
   return isPhoneActionsConfigured() && getShortcutStatus(ownerId) !== null;
 }
@@ -288,6 +293,7 @@ export function expandPhoneMarkers(ownerId: number, text: string, source: "brief
     }
     const validated = validateSteps(parsed, version);
     if ("error" in validated) return "";
+    if (validated.steps.some((st) => !(PROACTIVE_STEP_TYPES as readonly string[]).includes(st.type))) return "";
     const label = cleanText(rawLabel, "label", 80);
     if (!label) return "";
     made++;
@@ -296,6 +302,16 @@ export function expandPhoneMarkers(ownerId: number, text: string, source: "brief
   });
   // No marker: hand the text back untouched, so feature-off output stays exactly as it was.
   if (!matched) return text;
-  // Dropped markers leave doubled spaces / blank lines behind.
-  return out.replace(/[ \t]{2,}/g, " ").replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
+  return tidyAfterMarkers(out);
+}
+
+// Dropped markers leave doubled spaces / blank lines behind.
+function tidyAfterMarkers(text: string): string {
+  return text.replace(/[ \t]{2,}/g, " ").replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
+}
+
+// Marker removal with no link creation — the fallback when expansion itself fails, so a briefing still goes out.
+export function stripPhoneMarkers(text: string): string {
+  const out = text.replace(MARKER, "");
+  return out === text ? text : tidyAfterMarkers(out);
 }

@@ -11,7 +11,8 @@ import {
   type PhoneActionRow,
   type ShortcutKnownProblem,
 } from "../db/store.js";
-import { isWhatsAppConfigured, sendWhatsAppMessage } from "../providers/whatsapp.js";
+import { isWhatsAppConfigured } from "../providers/whatsapp.js";
+import { sendProactiveMessage, isWithinCustomerServiceWindow } from "./outbound.js";
 import { queueForAssistant } from "./messageBatching.js";
 import { setUserTimezoneFromLocation } from "./userTimezone.js";
 import { describeStep, REPORT_STEP_TYPES, type PhoneStep } from "./phoneSteps.js";
@@ -74,8 +75,8 @@ export async function handleFinishedPhoneAction(row: PhoneActionRow, now: number
       const text = `Couldn't ${describeStep(step)}: ${error}.${hint}`;
       // A transient send failure must not drop the report-back values further down.
       try {
-        await sendWhatsAppMessage(phone, text);
-        appendWhatsAppMessage(row.ownerId, phone, "assistant", text);
+        // Template fallback when the 24h window is closed; sendProactiveMessage records the history itself.
+        await sendProactiveMessage(phone, text, "alert");
       } catch (err) {
         console.error("phoneActionFollowups: failure message not sent", err);
       }
@@ -95,7 +96,11 @@ export async function handleFinishedPhoneAction(row: PhoneActionRow, now: number
       setUserTimezoneFromLocation(row.ownerId, loc.latitude, loc.longitude);
     }
   }
-  if (lines.length && phone) {
+  // A web-chat tap (no phone, source "chat") already has its answer on the web; briefing/digest/reminder
+  // actions are WhatsApp deliveries. Outside the 24h window a free-form assistant turn can't be sent —
+  // the values still reach the model via phonePromptSection "Recent phone actions".
+  const fromWhatsApp = row.phone !== null || row.source !== "chat";
+  if (lines.length && phone && fromWhatsApp && isWithinCustomerServiceWindow(phone)) {
     const at = new Date(now).toISOString().slice(11, 16);
     const rowId = appendWhatsAppMessage(row.ownerId, phone, "user", `[From your phone at ${at} UTC, after tapping "${row.label}": ${lines.join("; ")}]`);
     // No inbound wamid to react to or quote — this turn came from the Shortcut, not a WhatsApp message.
