@@ -36,7 +36,8 @@ import {
   hasIdentity,
   type UserRow,
 } from "../db/store.js";
-import { isSimulatedPhone, sendWhatsAppMessage } from "../providers/whatsapp.js";
+import { isSimulatedPhone } from "../providers/whatsapp.js";
+import { sendScriptedText } from "../services/whatsappReply.js";
 import { clearConnectLinkCooldown } from "../services/connectMailboxLink.js";
 import { sendFirstValueAndBriefingPrompt } from "../services/whatsappRegistration.js";
 import { requireAuth, SESSION_COOKIE_NAME, type AuthedRequest } from "../middleware/auth.js";
@@ -273,7 +274,7 @@ function notifyRegistrationFailure(phone: string | null): void {
   // link issued moments ago is still inside the resend cooldown and their retry comes back as
   // "still working on it" — about an attempt that has already failed.
   clearConnectLinkCooldown(phone);
-  sendWhatsAppMessage(phone, REGISTRATION_RETRY_WHATSAPP_TEXT).catch(() => {});
+  sendScriptedText(phone, REGISTRATION_RETRY_WHATSAPP_TEXT).catch(() => {});
 }
 
 function setNonceCookie(res: Response, nonce: string): void {
@@ -434,7 +435,7 @@ authRoutes.get("/auth/google/callback", async (req, res) => {
       // defense-in-depth shape the email version used.
       if (!isPhoneInvited(reg.phone)) {
         res.redirect(`${CLIENT_URL}/connected?error=not_invited`);
-        sendWhatsAppMessage(
+        sendScriptedText(
           reg.phone,
           "This number isn't invited yet — ask whoever's running the beta to add it, then message again."
         ).catch(() => {});
@@ -443,7 +444,7 @@ authRoutes.get("/auth/google/callback", async (req, res) => {
       const existingUser = getUserByEmail(auth.email);
       if (existingUser && !googleMayUseExistingUser(existingUser.id, auth.email)) {
         res.redirect(`${CLIENT_URL}/connected?error=account_exists`);
-        sendWhatsAppMessage(reg.phone, ACCOUNT_EXISTS_WHATSAPP_TEXT).catch(() => {});
+        sendScriptedText(reg.phone, ACCOUNT_EXISTS_WHATSAPP_TEXT).catch(() => {});
         return;
       }
       // Captured before resolveRegistrationUser runs (same phoneOwnerId check it does internally)
@@ -453,7 +454,7 @@ authRoutes.get("/auth/google/callback", async (req, res) => {
       const resolution = resolveRegistrationUser(reg.phone, auth.email);
       if (resolution.kind === "account_exists") {
         res.redirect(`${CLIENT_URL}/connected?error=account_exists`);
-        sendWhatsAppMessage(reg.phone, whatsappRefusalText(resolution)).catch(() => {});
+        sendScriptedText(reg.phone, whatsappRefusalText(resolution)).catch(() => {});
         return;
       }
       const user = getUser(resolution.userId) as UserRow;
@@ -461,7 +462,7 @@ authRoutes.get("/auth/google/callback", async (req, res) => {
         addPhoneNumberForUser(user.id, reg.phone);
       } catch {
         res.redirect(`${CLIENT_URL}/connected?error=phone_taken`);
-        sendWhatsAppMessage(reg.phone, "This WhatsApp number is already connected to a different Marlowe account.").catch(
+        sendScriptedText(reg.phone, "This WhatsApp number is already connected to a different Marlowe account.").catch(
           () => {}
         );
         return;
@@ -581,7 +582,7 @@ authRoutes.get("/auth/microsoft/callback", async (req, res) => {
       // Authoritative re-check — see the matching comment on the Google callback above.
       if (!isPhoneInvited(reg.phone)) {
         res.redirect(`${CLIENT_URL}/connected?error=not_invited`);
-        sendWhatsAppMessage(
+        sendScriptedText(
           reg.phone,
           "This number isn't invited yet — ask whoever's running the beta to add it, then message again."
         ).catch(() => {});
@@ -590,7 +591,7 @@ authRoutes.get("/auth/microsoft/callback", async (req, res) => {
       const resolved = await resolveMicrosoftUser(auth);
       if (resolved === "unverified") {
         res.redirect(`${CLIENT_URL}/connected?error=account_exists`);
-        sendWhatsAppMessage(reg.phone, ACCOUNT_EXISTS_WHATSAPP_TEXT).catch(() => {});
+        sendScriptedText(reg.phone, ACCOUNT_EXISTS_WHATSAPP_TEXT).catch(() => {});
         return;
       }
       // See the matching comment on the Google callback above. Computed unconditionally, before
@@ -608,7 +609,7 @@ authRoutes.get("/auth/microsoft/callback", async (req, res) => {
         const resolution = resolveRegistrationUser(reg.phone, auth.email);
         if (resolution.kind === "account_exists") {
           res.redirect(`${CLIENT_URL}/connected?error=account_exists`);
-          sendWhatsAppMessage(reg.phone, whatsappRefusalText(resolution)).catch(() => {});
+          sendScriptedText(reg.phone, whatsappRefusalText(resolution)).catch(() => {});
           return;
         }
         userId = resolution.userId;
@@ -619,7 +620,7 @@ authRoutes.get("/auth/microsoft/callback", async (req, res) => {
         addPhoneNumberForUser(userId, reg.phone);
       } catch {
         res.redirect(`${CLIENT_URL}/connected?error=phone_taken`);
-        sendWhatsAppMessage(reg.phone, "This WhatsApp number is already connected to a different Marlowe account.").catch(
+        sendScriptedText(reg.phone, "This WhatsApp number is already connected to a different Marlowe account.").catch(
           () => {}
         );
         return;
@@ -637,7 +638,7 @@ authRoutes.get("/auth/microsoft/callback", async (req, res) => {
       res.redirect(`${CLIENT_URL}/connected`);
       if (isReconnect) {
         completePendingRegistration(reg.phone);
-        sendWhatsAppMessage(
+        sendScriptedText(
           reg.phone,
           `✓ Reconnected ${auth.email} — I can send email from Outlook now. Just ask me to send it again.`
         ).catch((err) => console.error("whatsapp-register: reconnect message failed", err));

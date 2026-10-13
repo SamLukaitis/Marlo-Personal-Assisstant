@@ -16,6 +16,7 @@ import {
   DOCUMENT_CATEGORIES,
   findDocumentByEmailAttachment,
   getDocument,
+  recordSentDocumentWamid,
   recordApiUsage,
   type DocumentRow,
   type DocumentCategory,
@@ -1073,11 +1074,14 @@ export async function sendSavedDocumentFile(
   }
 
   const filename = doc.filename ?? `${doc.title ?? "document"}.${EXTENSIONS[doc.mimeType] ?? "bin"}`;
+  let wamid: string | undefined;
   try {
-    await sendWhatsAppMediaFromBuffer(phone, buffer, doc.mimeType, filename);
+    wamid = await sendWhatsAppMediaFromBuffer(phone, buffer, doc.mimeType, filename);
   } catch (err) {
     console.error("documents: sendSavedDocumentFile failed", err);
     return { ok: false, reason: "send_failed" };
   }
+  // So a swipe on the file ("what's this?") resolves to this document — see quotedMessage.ts.
+  if (wamid) recordSentDocumentWamid(ownerId, doc.id, wamid);
   return { ok: true };
 }

@@ -13,12 +13,13 @@ vi.mock("../ai/assistant.js", () => ({
 }));
 vi.mock("../providers/whatsapp.js", () => ({
   sendWhatsAppMessage: vi.fn().mockResolvedValue(undefined),
-  sendChoiceMessage: vi.fn().mockResolvedValue(undefined),
+  sendChoiceMessage: vi.fn().mockResolvedValue([]),
 }));
 vi.mock("./hub.js", () => ({
   hubHasSentTo: vi.fn(),
 }));
-vi.mock("./whatsappReply.js", () => ({
+vi.mock("./whatsappReply.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./whatsappReply.js")>()),
   sendAssistantReply: vi.fn().mockResolvedValue(undefined),
 }));
 vi.mock("./connectMailboxLink.js", () => ({
@@ -216,6 +217,11 @@ describe("handlePendingActionReply", () => {
       "44700"
     );
     expect(sendWhatsAppMessage).toHaveBeenCalledWith("44700", "✓ Sent.");
+    // Reported: swiping "✓ Sent." to ask why that address was used got nowhere — history held only
+    // "✓ Sent.". What was sent is kept with it, never shown to the user.
+    const [, , , historyText] = vi.mocked(appendWhatsAppMessage).mock.calls.at(-1)!;
+    expect(historyText).toContain("✓ Sent.");
+    expect(historyText).toContain("jane@x.com");
   });
 
   describe("send_email to someone never emailed before", () => {

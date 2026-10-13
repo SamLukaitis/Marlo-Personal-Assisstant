@@ -97,7 +97,7 @@ beforeEach(() => {
   vi.useFakeTimers({ toFake: ["Date"] });
   vi.mocked(sendWhatsAppMessage).mockReset();
   vi.mocked(sendWhatsAppTemplate).mockReset();
-  vi.mocked(sendChoiceMessage).mockReset().mockResolvedValue("wamid.CHOICE");
+  vi.mocked(sendChoiceMessage).mockReset().mockResolvedValue([{ wamid: "wamid.CHOICE", text: "choice" }]);
   vi.mocked(isWhatsAppConfigured).mockReset().mockReturnValue(true);
   modelReply = "Evening Jake, Sarah and Dr Patel both got in touch today.";
   lastCall = null;

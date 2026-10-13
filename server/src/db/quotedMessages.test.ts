@@ -5,6 +5,9 @@ import {
   getWhatsAppMessageByWamid,
   saveDocument,
   getDocumentByWamid,
+  recordSentDocumentWamid,
+  getSentDocumentByWamid,
+  deleteDocument,
 } from "./store.js";
 
 let counter = 0;
@@ -33,6 +36,30 @@ describe("getWhatsAppMessageByWamid", () => {
     expect(getWhatsAppMessageByWamid(user.id, second)?.content).toBe("full reply text");
   });
 
+  // Reported: a swipe on one part of a long, multi-part message (a list in the middle of a reply)
+  // resolved to the whole message, and the model answered about a different part of it.
+  it("remembers which part of a multi-part message each wamid was", () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("wamid-parts"));
+    const first = `wamid.part1-${Date.now()}`;
+    const second = `wamid.part2-${Date.now()}`;
+    appendWhatsAppMessage(user.id, "447900000005", "assistant", "Intro\n\n- Log Horizon\n- Megalobox", [
+      { wamid: first, text: "Intro" },
+      { wamid: second, text: "- Log Horizon\n- Megalobox" },
+    ]);
+
+    const found = getWhatsAppMessageByWamid(user.id, second);
+    expect(found?.content).toBe("Intro\n\n- Log Horizon\n- Megalobox");
+    expect(found?.partText).toBe("- Log Horizon\n- Megalobox");
+    expect(getWhatsAppMessageByWamid(user.id, first)?.partText).toBe("Intro");
+  });
+
+  it("has no part text for a wamid recorded without one", () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("wamid-nopart"));
+    const wamid = `wamid.nopart-${Date.now()}`;
+    appendWhatsAppMessage(user.id, "447900000006", "user", "hi", [wamid]);
+    expect(getWhatsAppMessageByWamid(user.id, wamid)?.partText).toBeUndefined();
+  });
+
   it("returns undefined for an unrecorded wamid", () => {
     const user = findOrCreateUserByEmail(uniqueEmail("wamid-miss"));
     expect(getWhatsAppMessageByWamid(user.id, "wamid.never-seen")).toBeUndefined();
@@ -50,6 +77,43 @@ describe("getWhatsAppMessageByWamid", () => {
   it("appendWhatsAppMessage still works with no wamids given (existing callers)", () => {
     const user = findOrCreateUserByEmail(uniqueEmail("wamid-optional"));
     expect(() => appendWhatsAppMessage(user.id, "447900000004", "user", "no wamid here")).not.toThrow();
+  });
+});
+
+describe("getSentDocumentByWamid", () => {
+  function savePhoto(ownerId: number) {
+    return saveDocument(ownerId, {
+      phone: "447900000009",
+      filename: "bp.jpg",
+      mimeType: "image/jpeg",
+      storedPath: "/tmp/fake-sent-doc",
+      caption: null,
+      title: "Boarding pass",
+      extractedText: "Flight BA123, seat 14C",
+      category: "travel",
+    });
+  }
+
+  it("finds a document Marlowe sent back by the wamid of that send, for its owner only", () => {
+    const owner = findOrCreateUserByEmail(uniqueEmail("sent-doc"));
+    const other = findOrCreateUserByEmail(uniqueEmail("sent-doc-other"));
+    const doc = savePhoto(owner.id);
+    const wamid = `wamid.sent-doc-${Date.now()}`;
+    recordSentDocumentWamid(owner.id, doc.id, wamid);
+
+    expect(getSentDocumentByWamid(owner.id, wamid)?.extractedText).toBe("Flight BA123, seat 14C");
+    expect(getSentDocumentByWamid(other.id, wamid)).toBeUndefined();
+  });
+
+  it("stops resolving once the document is deleted", () => {
+    const owner = findOrCreateUserByEmail(uniqueEmail("sent-doc-deleted"));
+    const doc = savePhoto(owner.id);
+    const wamid = `wamid.sent-doc-del-${Date.now()}`;
+    recordSentDocumentWamid(owner.id, doc.id, wamid);
+
+    deleteDocument(owner.id, doc.id);
+
+    expect(getSentDocumentByWamid(owner.id, wamid)).toBeUndefined();
   });
 });
 

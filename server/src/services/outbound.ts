@@ -10,7 +10,7 @@ import {
   WhatsAppSendError,
   type WhatsAppTemplateName,
 } from "../providers/whatsapp.js";
-import { getLastInboundAt, resolveOwnerByPhone, appendWhatsAppMessage } from "../db/store.js";
+import { getLastInboundAt, resolveOwnerByPhone, appendWhatsAppMessage, type SentPart } from "../db/store.js";
 
 const CUSTOMER_SERVICE_WINDOW_MS = 24 * 60 * 60 * 1000;
 const WINDOW_CLOSED_ERROR_CODE = 131047;
@@ -89,8 +89,8 @@ export async function sendProactiveMessageWithButtons(
 ): Promise<void> {
   if (isWithinCustomerServiceWindow(phone)) {
     try {
-      const wamid = await sendChoiceMessage(phone, text, buttons);
-      recordProactiveInHistory(phone, historyNote ? `${text}\n\n${historyNote}` : text, wamid);
+      const parts = await sendChoiceMessage(phone, text, buttons);
+      recordProactiveInHistory(phone, historyNote ? `${text}\n\n${historyNote}` : text, parts);
       return;
     } catch (err) {
       if (!(err instanceof WhatsAppSendError && err.code === WINDOW_CLOSED_ERROR_CODE)) throw err;
@@ -104,11 +104,14 @@ export async function sendProactiveMessageWithButtons(
 // (whatsappReply.ts) — otherwise a swipe-reply to an alert can't be resolved and a bare "reply
 // yes" has no idea an alert was just sent. Never throws: the message has already been delivered,
 // and callers treat a throw as "not delivered" and retry, which would send the alert twice.
-function recordProactiveInHistory(phone: string, text: string, wamid: string | undefined): void {
+// A choice message can go out as several parts (see sendChoiceMessage); each is kept with its own
+// text so a swipe on one part resolves to that part.
+function recordProactiveInHistory(phone: string, text: string, sent: string | SentPart[] | undefined): void {
   try {
     const ownerId = resolveOwnerByPhone(phone);
     if (ownerId === null) return;
-    appendWhatsAppMessage(ownerId, phone, "assistant", text, wamid ? [wamid] : undefined);
+    const wamids = typeof sent === "string" ? [sent] : sent?.length ? sent : undefined;
+    appendWhatsAppMessage(ownerId, phone, "assistant", text, wamids);
   } catch (err) {
     console.error("outbound: failed to record proactive message in history", err);
   }

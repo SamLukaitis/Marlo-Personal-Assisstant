@@ -1071,6 +1071,28 @@ db.exec(`
   );
   CREATE INDEX IF NOT EXISTS idx_whatsapp_message_wamids_message ON whatsapp_message_wamids(message_id);
 `);
+// part_text: the exact text that went out under this wamid, when one history row was sent as
+// several WhatsApp messages. A swipe lands on one part, and resolving it to the whole row let the
+// model answer about a different part of the same message. Null for single-message rows.
+const wamidColumns = (db.prepare(`PRAGMA table_info(whatsapp_message_wamids)`).all() as { name: string }[]).map(
+  (c) => c.name
+);
+if (!wamidColumns.includes("part_text")) {
+  db.exec(`ALTER TABLE whatsapp_message_wamids ADD COLUMN part_text TEXT`);
+}
+
+// A saved photo/file Marlowe sent back to the user (documents.ts's sendSavedDocumentFile), by the
+// wamid of that send — so a swipe on it ("what's this?") resolves to the document's content. Kept
+// apart from documents.wamid, which is the user's own inbound message that first carried the file.
+// No foreign key, and owner_id carried, so deleteDocument/deleteUserCompletely clear it directly.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS document_sent_wamids (
+    wamid TEXT PRIMARY KEY,
+    document_id INTEGER NOT NULL,
+    owner_id INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_document_sent_wamids_document ON document_sent_wamids(document_id);
+`);
 
 // One rolling summary per WhatsApp conversation, covering everything older than the raw history
 // window (ai/assistant.ts's MAX_HISTORY_MESSAGES) sent to the model on each turn. See
@@ -1889,18 +1911,26 @@ export function getWhatsAppHistory(phone: string, limit = 20): WhatsAppMessageRo
   return rows.reverse();
 }
 
+// One WhatsApp message that went out (or came in) as part of a history row. `text` is that part's
+// own text, given when the row was sent as several messages, so a swipe on one part resolves to
+// that part rather than the whole row (see whatsapp_message_wamids.part_text).
+export interface SentPart {
+  wamid: string;
+  text?: string;
+}
+
 // wamids: the WhatsApp message id(s) this history row corresponds to — a single-element array for
-// an inbound message, or one element per chunk for an outbound reply split across several sends
-// (services/messageSplitting.ts). Optional and omitted by most existing callers (reactions,
-// short-circuit replies like "help"/version text) that don't need to be resolvable as a quote
-// target. Returns the new row's id — messageBatching.ts uses it to find this exact row again when
-// the batch flushes, rather than guessing by position.
+// an inbound message, or one element per part for an outbound message split across several sends
+// (services/messageSplitting.ts, a long choice prompt). Every send path should record these (see
+// whatsappReply.ts's sendTextAndRecord) so any message can be swipe-replied to. Returns the new
+// row's id — messageBatching.ts uses it to find this exact row again when the batch flushes,
+// rather than guessing by position.
 export function appendWhatsAppMessage(
   ownerId: number,
   phone: string,
   role: "user" | "assistant",
   content: string,
-  wamids?: string[]
+  wamids?: Array<string | SentPart>
 ): number {
   const info = db
     .prepare(
@@ -1909,9 +1939,12 @@ export function appendWhatsAppMessage(
     .run(ownerId, phone, role, content, Date.now());
   if (wamids?.length) {
     const insertWamid = db.prepare(
-      `INSERT OR IGNORE INTO whatsapp_message_wamids (wamid, message_id) VALUES (?, ?)`
+      `INSERT OR IGNORE INTO whatsapp_message_wamids (wamid, message_id, part_text) VALUES (?, ?, ?)`
     );
-    for (const wamid of wamids) insertWamid.run(wamid, info.lastInsertRowid);
+    for (const part of wamids) {
+      if (typeof part === "string") insertWamid.run(part, info.lastInsertRowid, null);
+      else insertWamid.run(part.wamid, info.lastInsertRowid, part.text ?? null);
+    }
   }
   return Number(info.lastInsertRowid);
 }
@@ -1919,16 +1952,23 @@ export function appendWhatsAppMessage(
 // Resolves a swipe-to-reply (Meta's `context.id`) back to the message it quoted, no matter how
 // long ago it was sent/received — whatsapp_message_wamids is never pruned, unlike seen_wamids.
 // Scoped by ownerId (defense in depth, same convention as searchWhatsAppHistory/getDocument) so a
-// lookup can never cross an owner boundary even on a wamid collision.
-export function getWhatsAppMessageByWamid(ownerId: number, wamid: string): WhatsAppMessageRow | undefined {
-  return db
+// lookup can never cross an owner boundary even on a wamid collision. partText is the one part
+// the wamid belongs to, when the row went out as several messages.
+export function getWhatsAppMessageByWamid(
+  ownerId: number,
+  wamid: string
+): (WhatsAppMessageRow & { partText?: string }) | undefined {
+  const row = db
     .prepare(
-      `SELECT w.id, w.phone, w.role, w.content, w.created_at AS createdAt
+      `SELECT w.id, w.phone, w.role, w.content, w.created_at AS createdAt, ww.part_text AS partText
        FROM whatsapp_message_wamids ww
        JOIN whatsapp_messages w ON w.id = ww.message_id
        WHERE ww.wamid = ? AND w.owner_id = ?`
     )
-    .get(wamid, ownerId) as WhatsAppMessageRow | undefined;
+    .get(wamid, ownerId) as (WhatsAppMessageRow & { partText: string | null }) | undefined;
+  if (!row) return undefined;
+  const { partText, ...message } = row;
+  return partText === null ? message : { ...message, partText };
 }
 
 // Reaches the full raw transcript, not just the MAX_HISTORY_MESSAGES window the assistant sees by
@@ -2360,11 +2400,28 @@ export function getDocumentByWamid(ownerId: number, wamid: string): DocumentRow 
     .get(ownerId, wamid) as DocumentRow | undefined;
 }
 
+export function recordSentDocumentWamid(ownerId: number, documentId: number, wamid: string): void {
+  db.prepare(`INSERT OR IGNORE INTO document_sent_wamids (wamid, document_id, owner_id) VALUES (?, ?, ?)`).run(
+    wamid,
+    documentId,
+    ownerId
+  );
+}
+
+// The saved document Marlowe sent back under this wamid — see document_sent_wamids.
+export function getSentDocumentByWamid(ownerId: number, wamid: string): DocumentRow | undefined {
+  const row = db
+    .prepare(`SELECT document_id AS documentId FROM document_sent_wamids WHERE wamid = ? AND owner_id = ?`)
+    .get(wamid, ownerId) as { documentId: number } | undefined;
+  return row ? getDocument(ownerId, row.documentId) : undefined;
+}
+
 // document_match_keys.document_id REFERENCES documents(id) — children first, same manual-cascade
 // order as deleteUserCompletely, or the documents delete fails the foreign key.
 export function deleteDocument(ownerId: number, id: number): void {
   const purge = db.transaction(() => {
     db.prepare(`DELETE FROM document_match_keys WHERE document_id = ? AND owner_id = ?`).run(id, ownerId);
+    db.prepare(`DELETE FROM document_sent_wamids WHERE document_id = ? AND owner_id = ?`).run(id, ownerId);
     db.prepare(`DELETE FROM documents WHERE id = ? AND owner_id = ?`).run(id, ownerId);
   });
   purge();
@@ -4058,6 +4115,7 @@ export function deleteUserCompletely(ownerId: number): { deletedDocumentPaths: s
     // document_match_keys.document_id REFERENCES documents(id) — must be deleted before
     // documents itself or the FK constraint rejects the documents delete.
     db.prepare(`DELETE FROM document_match_keys WHERE owner_id = ?`).run(ownerId);
+    db.prepare(`DELETE FROM document_sent_wamids WHERE owner_id = ?`).run(ownerId);
     db.prepare(`DELETE FROM documents WHERE owner_id = ?`).run(ownerId);
     db.prepare(`DELETE FROM travel_checkins WHERE owner_id = ?`).run(ownerId);
     db.prepare(`DELETE FROM entities WHERE owner_id = ?`).run(ownerId);

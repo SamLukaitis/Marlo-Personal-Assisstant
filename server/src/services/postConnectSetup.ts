@@ -31,7 +31,7 @@ import {
 } from "../db/store.js";
 import { getBriefingSettings, saveBriefingSettings, hasBriefingSettings } from "./briefing.js";
 import { userLocalClock } from "./userTimezone.js";
-import { sendWhatsAppMessage, sendWhatsAppReplyButtons } from "../providers/whatsapp.js";
+import { sendScriptedText, sendScriptedButtons } from "./whatsappReply.js";
 import { hubListEvents } from "./hub.js";
 import { handleText } from "./chatDispatch.js";
 import { isPlausibleName } from "./plausibleName.js";
@@ -57,7 +57,7 @@ function isSkip(text: string): boolean {
 }
 
 async function reply(phone: string, text: string): Promise<void> {
-  await sendWhatsAppMessage(phone, text);
+  await sendScriptedText(phone, text);
 }
 
 async function askName(ownerId: number, phone: string): Promise<void> {
@@ -74,7 +74,7 @@ async function askFirstTask(ownerId: number, phone: string): Promise<void> {
 }
 
 async function askBriefing(ownerId: number, phone: string): Promise<void> {
-  await sendWhatsAppReplyButtons(
+  await sendScriptedButtons(
     phone,
     "Want a daily morning update with your email, calendar, and anything that looks like it needs a reply?",
     [
@@ -102,7 +102,7 @@ async function announceBriefingDefault(phone: string): Promise<void> {
 }
 
 async function askTeams(ownerId: number, phone: string): Promise<void> {
-  await sendWhatsAppReplyButtons(phone, "Want me to also search *Microsoft Teams* chats when you ask?", [
+  await sendScriptedButtons(phone, "Want me to also search *Microsoft Teams* chats when you ask?", [
     { id: BUTTON_IDS.ask_teams.yes, title: "Yes" },
     { id: BUTTON_IDS.ask_teams.no, title: "No thanks" },
   ]);
@@ -303,7 +303,7 @@ async function forwardToAssistantThenAdvance(
     await next(ownerId, phone);
   };
   try {
-    await handleText(ownerId, phone, message.text, message.messageId, undefined, undefined, advance);
+    await handleText(ownerId, phone, message.text, message.messageId, message.quotedMessageId, message.forwarded, advance);
   } catch (err) {
     // Nothing was queued, so `advance` will never be called for us — don't strand the chain.
     console.error(`postConnectSetup: forwarding a setup-step message failed for owner ${ownerId}`, err);

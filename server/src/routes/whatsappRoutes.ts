@@ -4,7 +4,6 @@ import {
   isWhatsAppSignatureConfigured,
   verifyWebhookChallenge,
   verifyWebhookSignature,
-  sendWhatsAppMessage,
   sendWhatsAppTypingIndicator,
   extractIncomingMessages,
   type IncomingWhatsAppMessage,
@@ -29,6 +28,7 @@ import { maybeExtractMemory } from "../services/memoryExtraction.js";
 import { handleText, handleLocation } from "../services/chatDispatch.js";
 import { resolveQuotedMessageContext } from "../services/quotedMessage.js";
 import { queueForAssistant, looksComplete } from "../services/messageBatching.js";
+import { sendTextAndRecord, sendScriptedText } from "../services/whatsappReply.js";
 
 export const whatsappRoutes = Router();
 
@@ -65,7 +65,7 @@ async function handleMedia(
   forwarded?: boolean
 ): Promise<void> {
   const label = filename ?? caption ?? "a file";
-  const rowId = appendWhatsAppMessage(ownerId, from, "user", `[Sent ${label}]`);
+  const rowId = appendWhatsAppMessage(ownerId, from, "user", `[Sent ${label}]`, [messageId]);
 
   const doc = await ingestWhatsAppMedia({
     ownerId,
@@ -88,7 +88,7 @@ async function handleMedia(
   // the model has the actual document content to act on and confirm. A rare case where this media
   // message was itself a swipe-reply to something else gets that resolved context prepended —
   // see quotedMessage.ts.
-  const quotedContext = resolveQuotedMessageContext(ownerId, quotedMessageId, forwarded);
+  const quotedContext = resolveQuotedMessageContext(ownerId, quotedMessageId, forwarded, from);
   const docContext =
     (quotedContext ? `${quotedContext}\n\n` : "") +
     `[A document was just sent via WhatsApp and has already been downloaded and saved — no ` +
@@ -205,9 +205,7 @@ export async function handleIncoming(message: IncomingWhatsAppMessage): Promise<
       // plainly rather than staying silent, and log the raw type so it's visible which ones are
       // actually showing up in practice.
       console.log("whatsapp: unsupported message type", { ownerId, type: message.type });
-      const reply = "I can't read that message type yet — text me instead.";
-      appendWhatsAppMessage(ownerId, message.from, "assistant", reply);
-      await sendWhatsAppMessage(message.from, reply);
+      await sendTextAndRecord(ownerId, message.from, "I can't read that message type yet — text me instead.");
     } else {
       // A button tap with nothing pending for this owner — nothing sends buttons outside
       // registration/post-connect setup today, so this is always a stray/late tap. Log and ignore
@@ -219,10 +217,7 @@ export async function handleIncoming(message: IncomingWhatsAppMessage): Promise<
     }
   } catch (err) {
     console.error("whatsapp: failed to handle message", err);
-    await sendWhatsAppMessage(
-      message.from,
-      "Sorry, I hit an error handling that — check the server logs."
-    ).catch(() => {});
+    await sendScriptedText(message.from, "Sorry, I hit an error handling that — check the server logs.").catch(() => {});
   }
 }
 

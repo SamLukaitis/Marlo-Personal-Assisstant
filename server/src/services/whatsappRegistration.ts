@@ -31,7 +31,7 @@ import {
   type PendingRegistrationRow,
   type RegistrationProvider,
 } from "../db/store.js";
-import { sendWhatsAppMessage, sendWhatsAppReplyButtons } from "../providers/whatsapp.js";
+import { sendScriptedText, sendScriptedButtons } from "./whatsappReply.js";
 import { startPostConnectSetup } from "./postConnectSetup.js";
 import { isPlausibleName } from "./plausibleName.js";
 import { sendConnectLink } from "./connectMailboxLink.js";
@@ -159,11 +159,11 @@ function currentStepPrompt(row: PendingRegistrationRow): string {
 }
 
 async function reply(phone: string, text: string): Promise<void> {
-  await sendWhatsAppMessage(phone, text);
+  await sendScriptedText(phone, text);
 }
 
 async function askProvider(row: PendingRegistrationRow): Promise<void> {
-  await sendWhatsAppReplyButtons(row.phone, "Do you use Gmail or Outlook/Hotmail?", [
+  await sendScriptedButtons(row.phone, "Do you use Gmail or Outlook/Hotmail?", [
     { id: PROVIDER_BUTTON_IDS.google, title: "Gmail" },
     { id: PROVIDER_BUTTON_IDS.microsoft, title: "Outlook" },
     { id: PROVIDER_SKIP_BUTTON_ID, title: "Not now" },
@@ -226,7 +226,7 @@ export async function sendFirstValueAndBriefingPrompt(
 }
 
 async function askEmailConfirm(row: PendingRegistrationRow): Promise<void> {
-  await sendWhatsAppReplyButtons(
+  await sendScriptedButtons(
     row.phone,
     "Connecting your email will allow me to help draft responses, add events to your calendar, and flag important emails. Would you like to start here?",
     [
