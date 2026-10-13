@@ -24,9 +24,11 @@ import {
   listPosterNotes,
   addPosterNote,
   deletePosterNote,
+  listPhoneActionsForPortal,
 } from "../db/store.js";
 import { getClient, MODEL_SIMPLE } from "../ai/assistant.js";
 import { buildVersionText } from "../services/version.js";
+import { describeStep, type PhoneStep } from "../services/phoneSteps.js";
 import type { AuthedRequest } from "../middleware/auth.js";
 
 // Every route here runs behind requireAdmin (mounted in index.ts), so req.userId is already
@@ -102,6 +104,29 @@ portalRoutes.post("/unmet-requests/:id/notes", (req, res) => {
   addUnmetRequestNote(id, ownerId(req), text);
   const includeResolved = req.query.includeResolved === "true";
   res.json(listUnmetRequests(includeResolved));
+});
+
+// --- Phone actions ------------------------------------------------------------------------------
+// What testers were offered through the Marlowe Shortcut, and what ran or broke.
+
+portalRoutes.get("/phone-actions", (_req, res) => {
+  res.json(
+    listPhoneActionsForPortal().map((a) => {
+      const steps = a.steps as unknown as PhoneStep[];
+      const failed = a.results.find((r) => !r.ok);
+      return {
+        id: a.id,
+        email: a.email,
+        source: a.source,
+        label: a.label,
+        status: a.status,
+        steps: steps.map(describeStep),
+        failure: failed ? `${describeStep(steps[failed.index])}: ${failed.error ?? "unknown"}` : null,
+        createdAt: a.createdAt,
+        finishedAt: a.finishedAt,
+      };
+    })
+  );
 });
 
 // --- Logs ---------------------------------------------------------------------------------------
