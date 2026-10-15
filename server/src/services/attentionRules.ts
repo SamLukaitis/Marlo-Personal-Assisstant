@@ -3,6 +3,7 @@
 // so every decision is unit-testable. See docs/superpowers/specs/2026-09-28-attention-gate-design.md.
 import { DateTime } from "luxon";
 import type { AttentionDetails, AttentionTier } from "../db/store.js";
+import { validateSteps, type PhoneStep } from "./phoneSteps.js";
 
 export const DAILY_CAP = 4;
 // Never held by the cap: a flight change or security alert can't wait, and a user who asked for
@@ -236,4 +237,53 @@ export function ackLine(details: AttentionDetails, surfaceAt: number, zone: stri
 
 export function briefLine(details: AttentionDetails): string {
   return sentence(details.summary);
+}
+
+const ALARM_LEAD_MS = 3 * 60 * 60 * 1000;
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+// A one-tap phone action that fits a reminder, if any. An iOS alarm only takes a clock time and
+// rings at its next occurrence, so it's only offered when that is within the next 24 hours.
+export function phoneStepsFor(
+  details: AttentionDetails,
+  zone: string | null,
+  now: number,
+  // The user's installed Shortcut version; a step it can't run is never offered. Defaults to the
+  // newest list for callers that don't know the phone.
+  version: number = Infinity
+): { label: string; steps: PhoneStep[]; notAfter: number } | null {
+  if (details.kind === "flight") {
+    const start = parseEventStart(details.eventStart, zone);
+    if (!start || !start.hasTime) return null;
+    const alarmMs = start.ms - ALARM_LEAD_MS;
+    if (alarmMs <= now || alarmMs - now > DAY_MS) return null;
+    const time = local(alarmMs, zone).toFormat("HH:mm");
+    const label = details.flightNumber ? `Flight ${details.flightNumber}` : "Flight";
+    const steps = validated([{ type: "alarm", time, label }], version);
+    return steps ? { label: `Tap to set a ${time} alarm`, steps, notAfter: alarmMs } : null;
+  }
+  if ((details.kind === "hotel" || details.kind === "restaurant") && details.merchant) {
+    // Cut by code point, as phoneSteps counts length, so an emoji or accented pair isn't split.
+    const destination = Array.from(details.merchant).slice(0, 200).join("");
+    const steps = validated([{ type: "directions", destination }], version);
+    if (!steps) return null;
+    // The visible label is shortened to keep the link text readable; the step keeps the full name.
+    const shown = shortenForLabel(steps[0] as Extract<PhoneStep, { type: "directions" }>);
+    return { label: `Tap for directions to ${shown}`, steps, notAfter: now + DAY_MS };
+  }
+  return null;
+}
+
+// Runs the steps through the same validation the phone's own actions use: it cleans invisible and
+// control characters and enforces length limits. Model-extracted mail details reach here, so none
+// of them may skip this. It also drops a step the user's Shortcut version can't run.
+function validated(steps: PhoneStep[], version: number): PhoneStep[] | null {
+  const checked = validateSteps(steps, version);
+  return "error" in checked ? null : checked.steps;
+}
+
+function shortenForLabel(step: Extract<PhoneStep, { type: "directions" }>): string {
+  const LABEL_NAME_MAX = 50;
+  const chars = Array.from(step.destination);
+  return chars.length > LABEL_NAME_MAX ? `${chars.slice(0, LABEL_NAME_MAX).join("")}…` : step.destination;
 }

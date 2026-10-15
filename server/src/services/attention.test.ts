@@ -10,7 +10,17 @@ vi.mock("../providers/whatsapp.js", async (importOriginal) => {
   };
 });
 
+// Plain factory, not importOriginal: loading the real phoneActions here pulls attention.ts in through
+// the phoneActions -> followups -> assistant cycle before this mock is ready, so attention.ts would
+// keep the real module. Defaults match an unconfigured install (suggestions off).
+vi.mock("./phoneActions.js", () => ({
+  phoneSuggestionsEnabled: vi.fn(() => false),
+  createPhoneAction: vi.fn(),
+  PROACTIVE_TTL_MS: 36 * 60 * 60 * 1000,
+}));
+
 const { sendWhatsAppMessage } = await import("../providers/whatsapp.js");
+const { phoneSuggestionsEnabled, createPhoneAction } = await import("./phoneActions.js");
 const { findOrCreateUserByEmail, addPhoneNumberForUser, recordInboundMessage, getAttentionItem, listAttentionItems } =
   await import("../db/store.js");
 const { setUserTimezone } = await import("./userTimezone.js");
@@ -419,5 +429,40 @@ describe("final review fixes", () => {
     messagedJustNow(ownerId);
     await deliverDueAttentionItems(ownerId);
     expect(sendWhatsAppMessage).not.toHaveBeenCalled();
+  });
+});
+
+describe("phone link failures", () => {
+  it("a throwing createPhoneAction logs and still sends the reminder without the link", async () => {
+    const ownerId = newUser();
+    await submitAttentionItem(ownerId, {
+      source: "email",
+      category: "reservation_confirmed",
+      details: {
+        summary: `Your *Hilton Lisbon* stay is confirmed for *12–15 Oct*, ref *HLT12345*.`,
+        kind: "hotel",
+        merchant: "Hilton Lisbon",
+        eventStart: "2026-10-12",
+        reference: "HLT12345",
+      },
+      fallbackKey: "msg:1:HLT12345",
+    });
+    vi.setSystemTime(at("2026-10-12T09:05"));
+    messagedJustNow(ownerId);
+    vi.mocked(phoneSuggestionsEnabled).mockReturnValueOnce(true);
+    vi.mocked(createPhoneAction).mockImplementationOnce(() => {
+      throw new Error("db down");
+    });
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      await deliverDueAttentionItems(ownerId);
+      expect(sentTexts()).toEqual([
+        "🏨 Reminder: Your *Hilton Lisbon* stay is confirmed for *12–15 Oct*, ref *HLT12345*. Check-in is today.",
+      ]);
+      expect(getAttentionItem(ownerId, "ref:HLT12345")?.status).toBe("sent");
+      expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining("attention:"), expect.anything());
+    } finally {
+      errorSpy.mockRestore();
+    }
   });
 });

@@ -1147,6 +1147,38 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_attention_owner_status_surface ON attention_items(owner_id, status, surface_at);
 `);
 
+// One row per one-tap phone action Marlowe offered: the steps it will hand the "Marlowe" Apple
+// Shortcut, stored under the SHA-256 of a one-time code (the code itself only ever lives in the
+// link). services/phoneActions.ts is the only writer.
+// See docs/superpowers/specs/2026-10-12-marlowe-shortcut-design.md.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS phone_actions (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    owner_id    INTEGER NOT NULL REFERENCES users(id),
+    code_hash   TEXT NOT NULL UNIQUE,
+    source      TEXT NOT NULL,
+    phone       TEXT,
+    label       TEXT NOT NULL,
+    steps       TEXT NOT NULL,
+    status      TEXT NOT NULL,
+    results     TEXT NOT NULL DEFAULT '[]',
+    version     INTEGER,
+    created_at  INTEGER NOT NULL,
+    expires_at  INTEGER NOT NULL,
+    fetched_at  INTEGER,
+    finished_at INTEGER
+  );
+  CREATE INDEX IF NOT EXISTS idx_phone_actions_status_fetched ON phone_actions(status, fetched_at);
+  CREATE INDEX IF NOT EXISTS idx_phone_actions_owner_finished ON phone_actions(owner_id, finished_at);
+  CREATE TABLE IF NOT EXISTS phone_shortcut_status (
+    owner_id       INTEGER PRIMARY KEY REFERENCES users(id),
+    version        INTEGER NOT NULL,
+    first_seen     INTEGER NOT NULL,
+    last_seen      INTEGER NOT NULL,
+    known_problems TEXT NOT NULL DEFAULT '[]'
+  );
+`);
+
 // Which provider account a person actually signed in with, keyed on the provider's own immutable
 // ids — for Microsoft, "<tenant id>:<object id>" from the id_token. Microsoft sign-in used to find
 // the user by Graph's `mail`, which any Entra tenant admin can set to someone else's address; see
@@ -2768,6 +2800,146 @@ export function countCappedAttentionSentSince(ownerId: number, sinceMs: number, 
   return row.c;
 }
 
+// --- Phone actions (Marlowe Shortcut) -----------------------------------------------------------
+
+export type PhoneActionSource = "chat" | "briefing" | "digest" | "reminder";
+export type PhoneActionStatus = "offered" | "fetched" | "done" | "failed";
+export interface PhoneStepJson { type: string; [key: string]: unknown }
+export interface PhoneStepResult { index: number; ok: boolean; value?: unknown; error?: string; at: number }
+
+export interface PhoneActionRow {
+  id: number;
+  ownerId: number;
+  codeHash: string;
+  source: PhoneActionSource;
+  phone: string | null;
+  label: string;
+  steps: PhoneStepJson[];
+  status: PhoneActionStatus;
+  results: PhoneStepResult[];
+  version: number | null;
+  createdAt: number;
+  expiresAt: number;
+  fetchedAt: number | null;
+  finishedAt: number | null;
+}
+
+export interface ShortcutKnownProblem { type: string; detail: string; error: string; at: number }
+export interface ShortcutStatusRow {
+  ownerId: number;
+  version: number;
+  firstSeen: number;
+  lastSeen: number;
+  knownProblems: ShortcutKnownProblem[];
+}
+
+const PHONE_ACTION_COLUMNS = `id, owner_id AS ownerId, code_hash AS codeHash, source, phone, label, steps, status, results,
+  version, created_at AS createdAt, expires_at AS expiresAt, fetched_at AS fetchedAt, finished_at AS finishedAt`;
+
+type PhoneActionDbRow = Omit<PhoneActionRow, "steps" | "results"> & { steps: string; results: string };
+
+function phoneActionFromDb(row: PhoneActionDbRow): PhoneActionRow {
+  return { ...row, steps: JSON.parse(row.steps), results: JSON.parse(row.results) };
+}
+
+export function insertPhoneAction(a: {
+  ownerId: number;
+  codeHash: string;
+  source: PhoneActionSource;
+  phone: string | null;
+  label: string;
+  steps: PhoneStepJson[];
+  createdAt: number;
+  expiresAt: number;
+}): number {
+  const info = db
+    .prepare(
+      `INSERT INTO phone_actions (owner_id, code_hash, source, phone, label, steps, status, created_at, expires_at)
+       VALUES (?, ?, ?, ?, ?, ?, 'offered', ?, ?)`
+    )
+    .run(a.ownerId, a.codeHash, a.source, a.phone, a.label, JSON.stringify(a.steps), a.createdAt, a.expiresAt);
+  return Number(info.lastInsertRowid);
+}
+
+export function getPhoneActionByCodeHash(codeHash: string): PhoneActionRow | null {
+  const row = db.prepare(`SELECT ${PHONE_ACTION_COLUMNS} FROM phone_actions WHERE code_hash = ?`).get(codeHash) as
+    | PhoneActionDbRow
+    | undefined;
+  return row ? phoneActionFromDb(row) : null;
+}
+
+export function updatePhoneAction(
+  id: number,
+  patch: Partial<Pick<PhoneActionRow, "status" | "results" | "version" | "fetchedAt" | "finishedAt">>
+): void {
+  const columns: Record<string, string> = {
+    status: "status", results: "results", version: "version", fetchedAt: "fetched_at", finishedAt: "finished_at",
+  };
+  const sets: string[] = [];
+  const values: unknown[] = [];
+  for (const [key, column] of Object.entries(columns)) {
+    if (!(key in patch)) continue;
+    const value = patch[key as keyof typeof patch];
+    sets.push(`${column} = ?`);
+    values.push(key === "results" ? JSON.stringify(value) : value);
+  }
+  if (!sets.length) return;
+  db.prepare(`UPDATE phone_actions SET ${sets.join(", ")} WHERE id = ?`).run(...values, id);
+}
+
+export function listStalledPhoneActions(fetchedBefore: number): PhoneActionRow[] {
+  return (
+    db
+      .prepare(`SELECT ${PHONE_ACTION_COLUMNS} FROM phone_actions WHERE status = 'fetched' AND fetched_at < ?`)
+      .all(fetchedBefore) as PhoneActionDbRow[]
+  ).map(phoneActionFromDb);
+}
+
+export function listRecentFinishedPhoneActions(ownerId: number, since: number): PhoneActionRow[] {
+  return (
+    db
+      .prepare(
+        `SELECT ${PHONE_ACTION_COLUMNS} FROM phone_actions
+         WHERE owner_id = ? AND finished_at IS NOT NULL AND finished_at >= ? ORDER BY finished_at DESC LIMIT 10`
+      )
+      .all(ownerId, since) as PhoneActionDbRow[]
+  ).map(phoneActionFromDb);
+}
+
+export function listPhoneActionsForPortal(limit = 200): (PhoneActionRow & { email: string | null })[] {
+  return (
+    db
+      .prepare(
+        `SELECT p.id, p.owner_id AS ownerId, p.code_hash AS codeHash, p.source, p.phone, p.label, p.steps, p.status, p.results,
+           p.version, p.created_at AS createdAt, p.expires_at AS expiresAt, p.fetched_at AS fetchedAt, p.finished_at AS finishedAt,
+           u.email AS email
+         FROM phone_actions p LEFT JOIN users u ON u.id = p.owner_id ORDER BY p.created_at DESC LIMIT ?`
+      )
+      .all(limit) as (PhoneActionDbRow & { email: string | null })[]
+  ).map((r) => ({ ...phoneActionFromDb(r), email: r.email }));
+}
+
+export function getShortcutStatus(ownerId: number): ShortcutStatusRow | null {
+  const row = db
+    .prepare(
+      `SELECT owner_id AS ownerId, version, first_seen AS firstSeen, last_seen AS lastSeen, known_problems AS knownProblems
+       FROM phone_shortcut_status WHERE owner_id = ?`
+    )
+    .get(ownerId) as (Omit<ShortcutStatusRow, "knownProblems"> & { knownProblems: string }) | undefined;
+  return row ? { ...row, knownProblems: JSON.parse(row.knownProblems) } : null;
+}
+
+export function recordShortcutSeen(ownerId: number, version: number, now: number): void {
+  db.prepare(
+    `INSERT INTO phone_shortcut_status (owner_id, version, first_seen, last_seen) VALUES (?, ?, ?, ?)
+     ON CONFLICT(owner_id) DO UPDATE SET version = excluded.version, last_seen = excluded.last_seen`
+  ).run(ownerId, version, now, now);
+}
+
+export function setShortcutKnownProblems(ownerId: number, problems: ShortcutKnownProblem[]): void {
+  db.prepare(`UPDATE phone_shortcut_status SET known_problems = ? WHERE owner_id = ?`).run(JSON.stringify(problems), ownerId);
+}
+
 export function markAlerted(ownerId: number, key: string): void {
   db.prepare(
     `INSERT OR IGNORE INTO alerted_messages (owner_id, key, alerted_at) VALUES (?, ?, ?)`
@@ -3951,6 +4123,8 @@ export function deleteUserCompletely(ownerId: number): { deletedDocumentPaths: s
     db.prepare(`DELETE FROM alerted_messages WHERE owner_id = ?`).run(ownerId);
     db.prepare(`DELETE FROM proactive_deliveries WHERE owner_id = ?`).run(ownerId);
     db.prepare(`DELETE FROM attention_items WHERE owner_id = ?`).run(ownerId);
+    db.prepare(`DELETE FROM phone_actions WHERE owner_id = ?`).run(ownerId);
+    db.prepare(`DELETE FROM phone_shortcut_status WHERE owner_id = ?`).run(ownerId);
     db.prepare(`DELETE FROM read_emails WHERE owner_id = ?`).run(ownerId);
     db.prepare(`DELETE FROM user_enabled_tools WHERE owner_id = ?`).run(ownerId);
     db.prepare(`DELETE FROM pending_setup WHERE owner_id = ?`).run(ownerId);

@@ -63,6 +63,10 @@ vi.mock("./attention.js", () => ({
   deliverDueAttentionItems: vi.fn(() => Promise.resolve()),
 }));
 
+vi.mock("./phoneActions.js", () => ({
+  sweepStalledPhoneActions: vi.fn(() => Promise.resolve()),
+}));
+
 
 const { listAllUserIds } = await import("../db/store.js");
 const { checkNewEmailsAgainstRecentDocuments } = await import("./reconciliation.js");

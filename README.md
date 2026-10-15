@@ -18,6 +18,8 @@ Marlowe can be used from the web app and, optionally, through WhatsApp. It is de
 - **Travel tools:** Record location check-ins, inspect travel history, and calculate country/Schengen/EU day counts from the check-in timeline.
 - **News, weather, and markets:** Optional external information providers are available through the assistant and briefing features.
 - **Places and travel times (optional):** With `GOOGLE_MAPS_API_KEY` set, the assistant finds real nearby places and driving/walking times through Google's Maps Grounding Lite MCP server. On WhatsApp it can ask for your location with a one-tap "Send location" button.
+- **App hand-off links:** Marlowe sends links that open Uber, Lyft, Google Maps, OpenTable, Resy, Spotify, Airbnb or Booking.com already filled in (`server/src/services/appLinks.ts`); you confirm in the app. There's no setup and no API keys.
+- **Phone actions (optional):** With the one-time "Marlowe" Apple Shortcut installed, Marlowe sends one-tap links that set alarms, timers and reminders, change Focus and phone settings, text or call from your number, run your own Shortcuts, and send your location, battery, sleep or a typed answer back (`server/src/services/phoneActions.ts`). It offers them in chat, the briefing, the evening digest and on booking reminders. Off until `MARLOWE_SHORTCUT_ICLOUD_URL` is set; see `docs/marlowe-shortcut-build-guide.md`.
 - **Administration:** Admin users have access to a separate portal for operational tools, logs, user administration, and application health information.
 
 ## Safety and privacy boundaries
@@ -25,6 +27,7 @@ Marlowe can be used from the web app and, optionally, through WhatsApp. It is de
 - Access is **invite-only**. An administrator must invite an email address before that person can use the application.
 - Each user's connected accounts, documents, settings, memories, phone numbers, and conversations are isolated by tenant-aware API routes.
 - Marlowe never sends email on its own: every email it writes is shown to the user first and only sent after they explicitly tap Send (otherwise it's saved to their Drafts).
+- Phone actions never run without a tap on the user's iPhone. Texts and calls show iOS's own send/call screen. Links work once; chat links expire after 24 hours, and briefing, digest and reminder links after up to 36 hours.
 - Calendar actions are limited to the user's own calendar; it does not invite other people to events.
 - Archiving email is non-destructive; messages are not deleted by the assistant.
 - WhatsApp webhooks use Meta verification/signature checks, and only registered phone numbers are routed to a user's assistant.

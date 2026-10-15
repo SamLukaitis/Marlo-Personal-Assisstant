@@ -9,6 +9,8 @@ import {
   addServerLog,
   getServerLog,
   recordApiUsage,
+  insertPhoneAction,
+  updatePhoneAction,
 } from "../db/store.js";
 import type { AuthedRequest } from "../middleware/auth.js";
 
@@ -367,5 +369,24 @@ describe("usage", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe("GET /phone-actions", () => {
+  it("lists offered actions with plain-English steps and the failure", async () => {
+    const admin = makeAdmin("portal-phone-admin");
+    const app = buildTestApp(admin.id);
+    const owner = findOrCreateUserByEmail(`portal-phone-${Date.now()}@example.com`);
+    const id = insertPhoneAction({
+      ownerId: owner.id, codeHash: `portal-${Date.now()}`, source: "chat", phone: null, label: "Work mode",
+      steps: [{ type: "focus", name: "Work", on: true }], createdAt: Date.now(), expiresAt: Date.now() + 1000,
+    });
+    updatePhoneAction(id, { status: "failed", results: [{ index: 0, ok: false, error: "Focus not found", at: Date.now() }], finishedAt: Date.now() });
+    const res = await request(app).get("/api/portal/phone-actions");
+    expect(res.status).toBe(200);
+    expect(res.body.find((r: { id: number }) => r.id === id)).toMatchObject({
+      email: owner.email, source: "chat", label: "Work mode", status: "failed",
+      steps: ["turn Work Focus on"], failure: "turn Work Focus on: Focus not found",
+    });
   });
 });

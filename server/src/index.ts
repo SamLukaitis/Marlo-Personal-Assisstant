@@ -18,6 +18,7 @@ import { whatsappRoutes } from "./routes/whatsappRoutes.js";
 import { whatsappSettingsRoutes } from "./routes/whatsappSettingsRoutes.js";
 import { documentRoutes } from "./routes/documentRoutes.js";
 import { checkinRoutes, checkinReadRoutes } from "./routes/checkinRoutes.js";
+import { phoneActionRoutes } from "./routes/phoneActionRoutes.js";
 import { searchRoutes } from "./routes/searchRoutes.js";
 import { alertRoutes } from "./routes/alertRoutes.js";
 import { toolsRoutes } from "./routes/toolsRoutes.js";
@@ -81,6 +82,9 @@ app.use(whatsappRoutes);
 // Public: the one route a phone automation (iOS Shortcuts / Android Tasker) hits without any
 // interactive login — gated by its own shared-secret header, resolved to an owner internally.
 app.use(checkinRoutes);
+
+// Public: the "Marlowe" Shortcut calls these with a one-time code and no session.
+app.use(phoneActionRoutes);
 
 // Public: the marketing homepage's help widget, for visitors who haven't signed in yet — must be
 // registered before the blanket /api requireAuth below, or the site's own logged-out visitors

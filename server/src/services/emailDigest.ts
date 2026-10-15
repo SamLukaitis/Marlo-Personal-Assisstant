@@ -19,7 +19,7 @@ import {
 } from "./proactiveVoice.js";
 import { DateTime } from "luxon";
 import { isWhatsAppConfigured } from "../providers/whatsapp.js";
-import { senderDisplayName } from "./hub.js";
+import { senderDisplayName, hubListEvents } from "./hub.js";
 import { sendToAllNumbers } from "./proactiveDelivery.js";
 import { sendProactiveMessageWithButtons } from "./outbound.js";
 import { emailReferenceNote } from "./emailReference.js";
@@ -29,8 +29,10 @@ import {
   realPersonAlertModeChosen,
   realPersonAlertsEnabled,
 } from "./emailAlertSettings.js";
-import { userLocalClock } from "./userTimezone.js";
-import { getBriefingSettings } from "./briefing.js";
+import { userLocalClock, getUserTimezone } from "./userTimezone.js";
+import { getBriefingSettings, describeEventTime } from "./briefing.js";
+import { phoneSuggestionsEnabled, PHONE_SUGGESTION_PROMPT, expandPhoneMarkers } from "./phoneActions.js";
+import { eventLocalDateKey } from "./eventTime.js";
 import {
   collectAttentionForDigest,
   commitAttentionBundle,
@@ -163,6 +165,8 @@ export interface DigestDay {
   total: number;
   senders: DigestSender[];
   attention?: DigestAttention;
+  /** Tomorrow's events, only fetched when phone suggestions are on. */
+  tomorrowEvents?: string[];
 }
 
 export function digestSystemPrompt(voice: ProactiveVoice): string {
@@ -213,6 +217,7 @@ export function digestFactBlock(day: DigestDay): string {
           `- ${g.name}: "${g.subject}"${g.count > 1 ? ` (and ${g.count - 1} more on the same thread)` : ""}${what(g)}`
       )
       .join("\n"),
+    day.tomorrowEvents?.length ? `Tomorrow's calendar: ${day.tomorrowEvents.join("; ")}` : "",
     day.attention?.needsAttention.length ? `Worth knowing: ${day.attention.needsAttention.join(" | ")}` : "",
     day.attention?.noted.length
       ? `Noted, each with when you'll bring it up again: ${day.attention.noted.join(" | ")}`
@@ -226,12 +231,22 @@ export function digestFactBlock(day: DigestDay): string {
 // model call fails for any reason: the queue is cleared on a successful send, so skipping would
 // lose a day of mail the user was told they'd hear about.
 async function digestText(ownerId: number, queue: DigestEmail[], attention?: DigestAttention): Promise<string> {
+  const suggest = phoneSuggestionsEnabled(ownerId);
+  let tomorrowEvents: string[] | undefined;
+  if (suggest) {
+    const zone = getUserTimezone(ownerId);
+    const tomorrow = DateTime.fromISO(userLocalClock(ownerId).dateKey).plus({ days: 1 }).toISODate();
+    tomorrowEvents = (await hubListEvents(ownerId, 2).catch(() => []))
+      .filter((e) => eventLocalDateKey(e.start, zone) === tomorrow)
+      .map((e) => describeEventTime(e, zone));
+  }
   const day: DigestDay = {
     localTime: userLocalClock(ownerId).hhmm,
     localWeekday: DateTime.fromISO(userLocalClock(ownerId).dateKey).toFormat("cccc"),
     total: queue.length,
     senders: groupBySenderAndSubject(queue).slice(0, MAX_NAMED_TO_MODEL),
     attention,
+    tomorrowEvents,
   };
   const voice: ProactiveVoice = {
     assistantName: getSetting(ownerId, "assistant_name") ?? "Marlowe",
@@ -239,7 +254,8 @@ async function digestText(ownerId: number, queue: DigestEmail[], attention?: Dig
     persona: getSetting(ownerId, "persona") ?? "",
   };
   try {
-    return await renderDigest(ownerId, voice, day, "email_digest");
+    const text = await renderDigest(ownerId, voice, day, "email_digest", suggest ? PHONE_SUGGESTION_PROMPT : undefined);
+    return expandPhoneMarkers(ownerId, text, "digest");
   } catch (err) {
     console.error(`emailDigest: falling back to the plain digest for user ${ownerId}`, err);
     return staticDigestMessage(ownerId, queue, attention);
@@ -254,12 +270,15 @@ export async function renderDigest(
   ownerId: number,
   voice: ProactiveVoice,
   day: DigestDay,
-  purpose: string
+  purpose: string,
+  extraSystem?: string
 ): Promise<string> {
   const response = await getClient().messages.create({
     model: MODEL,
     max_tokens: 512,
-    system: digestSystemPrompt(voice),
+    system: extraSystem ? `${digestSystemPrompt(voice)}
+
+${extraSystem}` : digestSystemPrompt(voice),
     messages: [{ role: "user", content: digestFactBlock(day) }],
   });
   recordApiUsage(
