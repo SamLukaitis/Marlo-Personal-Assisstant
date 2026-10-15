@@ -1,0 +1,151 @@
+/*
+Marlowe Shortcut, version 1, written in Cherri (https://github.com/electrikmilk/cherri).
+SPIKE: compiles with Cherri v2.3.0 but has never been run on an iPhone. Do not ship it.
+Mirrors docs/marlowe-shortcut-build-guide.md. Findings: docs/spikes/cherri-shortcut-spike.md.
+Build: cherri Marlowe.cherri --skip-sign
+*/
+
+#define name Marlowe
+#define color blue
+#define glyph sparkles
+#define inputs text
+
+#include 'actions/text'
+#include 'actions/web'
+#include 'actions/calendar'
+#include 'actions/settings'
+#include 'actions/device'
+#include 'actions/contacts'
+#include 'actions/sharing'
+
+// 1. Input
+if !ShortcutInput {
+    mustOutput("Open a link from Marlowe to use this.", "Open a link from Marlowe to use this.")
+}
+
+// 2. Check the link
+const matched = matchText('^https://(PROD_HOST|startupwjake-staging\.up\.railway\.app)/api/phone-actions/[A-Za-z0-9_-]{22}$', "{ShortcutInput}")
+if !matched {
+    alert("This link isn't from Marlowe.")
+    stop()
+}
+@fetchUrl = "{ShortcutInput}"
+
+// 3. Fetch the steps
+const response = downloadURL(@fetchUrl, {"X-Marlowe-Shortcut": "1"})
+const payload = getDictionary(response)
+
+// 4. Message (410: used or expired)
+@message = payload['message']
+if @message {
+    alert("{@message}")
+    stop()
+}
+
+// 5. Update
+@updateRaw = payload['update']
+if @updateRaw {
+    const update = getDictionary(@updateRaw)
+    alert("{update['message']}")
+    openURL("{update['installUrl']}")
+    stop()
+}
+
+// 6. Run the steps
+@reportUrl = "{payload['reportUrl']}"
+@steps = payload['steps']
+
+for item in @steps {
+    const step = getDictionary(@item)
+    @index = RepeatIndex - 1
+    @type = "{step['type']}"
+
+    if @type == "alarm" {
+        createAlarm("{step['label']}", "{step['time']}")
+    }
+    if @type == "timer" {
+        @minutes = number(step['minutes'])
+        startTimer(qty(@minutes, "min"))
+    }
+    if @type == "reminder" {
+        // Not in Cherri's action library: raw action, keys need checking on a device.
+        rawAction("is.workflow.actions.addnewreminder", {
+            "WFCalendarItemTitle": "{step['title']}",
+            "WFAlertEnabled": "Alert",
+            "WFAlertCustomTime": "{step['due']}"
+        })
+    }
+    if @type == "calendar_event" {
+        // Not in Cherri's action library: raw action, keys need checking on a device.
+        rawAction("is.workflow.actions.addnewevent", {
+            "WFCalendarItemTitle": "{step['title']}",
+            "WFCalendarItemStartDate": "{step['start']}",
+            "WFCalendarItemEndDate": "{step['end']}",
+            "WFCalendarItemLocation": "{step['location']}"
+        })
+    }
+    if @type == "focus" {
+        // Cherri (like the Set Focus action itself) needs the Focus picked when the Shortcut is
+        // built, so the name Marlowe sends selects one of the built-in Focus modes.
+        @focusName = "{step['name']}"
+        @on = "{step['on']}"
+        if @on == "1" {
+            if @focusName == "Do Not Disturb" {
+                setFocusMode("Do Not Disturb")
+            }
+            if @focusName == "Sleep" {
+                setFocusMode("Sleep")
+            }
+            if @focusName == "Work" {
+                setFocusMode("Work")
+            }
+            if @focusName == "Personal" {
+                setFocusMode("Personal")
+            }
+            if @focusName == "Driving" {
+                setFocusMode("Driving")
+            }
+        } else {
+            if @focusName == "Do Not Disturb" {
+                rawAction("is.workflow.actions.dnd.set", {"Enabled": 0, "FocusModes": {"DisplayString": "Do Not Disturb", "Identifier": "com.apple.donotdisturb.mode.default"}})
+            }
+            if @focusName == "Sleep" {
+                rawAction("is.workflow.actions.dnd.set", {"Enabled": 0, "FocusModes": {"DisplayString": "Sleep", "Identifier": "com.apple.focus.sleep-mode"}})
+            }
+            if @focusName == "Work" {
+                rawAction("is.workflow.actions.dnd.set", {"Enabled": 0, "FocusModes": {"DisplayString": "Work", "Identifier": "com.apple.focus.work"}})
+            }
+            if @focusName == "Personal" {
+                rawAction("is.workflow.actions.dnd.set", {"Enabled": 0, "FocusModes": {"DisplayString": "Personal", "Identifier": "com.apple.focus.personal-time"}})
+            }
+            if @focusName == "Driving" {
+                rawAction("is.workflow.actions.dnd.set", {"Enabled": 0, "FocusModes": {"DisplayString": "Driving", "Identifier": "com.apple.donotdisturb.mode.driving"}})
+            }
+        }
+    }
+    if @type == "low_power" {
+        @lp = "{step['on']}"
+        if @lp == "1" {
+            setLowPowerMode(true)
+        } else {
+            setLowPowerMode(false)
+        }
+    }
+    if @type == "text" {
+        @to = "{step['to']}"
+        sendMessage(@to, "{step['body']}", true)
+    }
+    if @type == "call" {
+        @callTo = "{step['to']}"
+        call(@callTo)
+    }
+    if @type == "open_url" {
+        openURL("{step['url']}")
+    }
+
+    // Report the step
+    jsonRequest(@reportUrl, "POST", {"index": "{@index}", "ok": true}, {"X-Marlowe-Shortcut": "1"})
+}
+
+// 7. Finish
+jsonRequest(@reportUrl, "POST", {"done": true}, {"X-Marlowe-Shortcut": "1"})
