@@ -87,6 +87,17 @@ export type PhoneActionView =
   | { state: "gone"; installUrl: string };
 
 // The landing page only reads: WhatsApp's link preview and a second look must not use up the code.
+// The model sometimes writes a Marlowe link itself, copying the shape of an earlier one, or re-pastes
+// a link that was already used. Either way the user taps a dead link. Every action link in a reply
+// must be one that exists and is still unused; anything else is replaced so the user isn't misled.
+export function scrubUnknownActionLinks(text: string, now = Date.now()): string {
+  const prefix = actionPageUrl("").replace(/[.*+?^${}()|[\]\\/]/g, "\\$&");
+  return text.replace(new RegExp(`${prefix}([A-Za-z0-9_-]{22})(?![A-Za-z0-9_-])`, "g"), (link, code: string) => {
+    const row = getPhoneActionByCodeHash(hashCode(code));
+    return usable(row, now) ? link : "(that link isn't valid — ask me again for a fresh one)";
+  });
+}
+
 export function viewPhoneAction(code: string, now = Date.now()): PhoneActionView {
   const row = getPhoneActionByCodeHash(hashCode(code));
   if (!usable(row, now)) return { state: "gone", installUrl: shortcutInstallUrl() };
@@ -212,7 +223,8 @@ export function phonePromptSection(ownerId: number, now = Date.now()): string {
     "Phone actions: with make_phone_action you can send a one-tap link that runs steps on the user's iPhone through the Marlowe Shortcut " +
       `(${supportedStepTypes(userShortcutVersion(ownerId)).join(", ")}). Offer one whenever it saves them effort, not only when asked — e.g. an alarm before an early flight, ` +
       "a Focus during a long meeting, a text to say they're running late. Combine related steps into one link. Never say it's done — say \"tap to …\". " +
-      "Put the link on its own line. iPhone only.",
+      "Put the link on its own line. iPhone only. Never write a Marlowe link yourself or reuse one from earlier in the chat: " +
+      "every link must be the url make_phone_action just returned, and each link works only once.",
   ];
   const status = getShortcutStatus(ownerId);
   if (!status) {
@@ -221,7 +233,10 @@ export function phonePromptSection(ownerId: number, now = Date.now()): string {
     lines.push(`Their Marlowe Shortcut is version ${status.version}.`);
     const problems = status.knownProblems.filter((p) => now - p.at <= PROBLEM_TTL_MS);
     if (problems.length) {
-      lines.push(`Known problems on their phone — don't repeat these unless they say it's fixed: ${problems.map((p) => `${p.detail} (${p.error})`).join("; ")}.`);
+      lines.push(
+        `Recent failures on their phone: ${problems.map((p) => `${p.detail} (${p.error})`).join("; ")}. ` +
+          "If they ask for one of these again, mention it failed last time, but still call make_phone_action — a new link is the only way to retry."
+      );
     }
   }
   const recent = listRecentFinishedPhoneActions(ownerId, now - RECENT_RESULTS_MS).map((a) => {

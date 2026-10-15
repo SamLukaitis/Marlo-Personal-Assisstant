@@ -68,7 +68,7 @@ import { fetchWeather } from "../providers/weather.js";
 import { isMapsConfigured, searchPlaces, computeRoute } from "../providers/maps.js";
 import { fetchQuotes, DEFAULT_SYMBOLS } from "../providers/markets.js";
 import { countTravelDays } from "../services/travelDays.js";
-import { isPhoneActionsConfigured, makePhoneActionForChat, phonePromptSection } from "../services/phoneActions.js";
+import { isPhoneActionsConfigured, makePhoneActionForChat, phonePromptSection, scrubUnknownActionLinks } from "../services/phoneActions.js";
 import { STEP_TYPES } from "../services/phoneSteps.js";
 import { resolveReminderTime, ReminderTimeError, type ReminderTimeInput } from "../services/reminderTime.js";
 import { resolveUserTimezone, userLocalClock } from "../services/userTimezone.js";
@@ -2316,6 +2316,8 @@ export async function runAssistantChat(
       usageTotals.cacheReadTokens,
       usageTotals.cacheCreationTokens
     );
+    // A phone-action link the model typed itself (or re-pasted after it was used) is dead on tap.
+    if (isPhoneActionsConfigured() && reply.text) return { ...reply, text: scrubUnknownActionLinks(reply.text) };
     return reply;
   }
 
