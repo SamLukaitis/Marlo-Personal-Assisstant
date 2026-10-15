@@ -18,8 +18,12 @@ export const REPORT_STEP_TYPES: readonly StepType[] = ["get_location", "get_batt
 export const MAX_STEPS = 8;
 
 // Which step types each published Shortcut version can run. Add a key when a new Shortcut version
-// ships; never edit an old one.
-const STEPS_BY_VERSION: Record<number, readonly StepType[]> = { 1: STEP_TYPES };
+// ships; never edit an old one. Version 1 is the first build tested on a phone (the core steps);
+// version 2 is the full list from the spec, once the Shortcut has a branch for every step.
+const STEPS_BY_VERSION: Record<number, readonly StepType[]> = {
+  1: ["alarm", "timer", "reminder", "calendar_event", "focus", "low_power", "text", "call", "open_url"],
+  2: STEP_TYPES,
+};
 
 const HEALTH_METRICS = ["sleep_last_night", "steps_today"] as const;
 const DIRECTION_MODES = ["drive", "walk", "transit"] as const;

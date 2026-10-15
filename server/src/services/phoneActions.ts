@@ -17,7 +17,7 @@ import {
   type PhoneStepJson,
   type PhoneStepResult,
 } from "../db/store.js";
-import { describeStep, unsupportedSteps, validateSteps, STEP_TYPES, type PhoneStep } from "./phoneSteps.js";
+import { describeStep, unsupportedSteps, validateSteps, supportedStepTypes, type PhoneStep } from "./phoneSteps.js";
 import { cleanText, InputError } from "./appLinks.js";
 import { handleFinishedPhoneAction, formatReportedValue, PROBLEM_TTL_MS } from "./phoneActionFollowups.js";
 
@@ -198,13 +198,19 @@ export async function sweepStalledPhoneActions(now = Date.now()): Promise<void> 
 
 const RECENT_RESULTS_MS = 2 * HOUR;
 
+// The Shortcut version this user's phone last reported, or the published one before it ever ran.
+// Everything Marlowe offers is checked against this, so a phone is never sent a step it can't run.
+export function userShortcutVersion(ownerId: number): number {
+  return getShortcutStatus(ownerId)?.version ?? currentShortcutVersion();
+}
+
 // Per-user context for the chat system prompt. Empty when the feature is off, so nothing about
 // phone actions reaches the model on servers without the Shortcut configured.
 export function phonePromptSection(ownerId: number, now = Date.now()): string {
   if (!isPhoneActionsConfigured()) return "";
   const lines = [
     "Phone actions: with make_phone_action you can send a one-tap link that runs steps on the user's iPhone through the Marlowe Shortcut " +
-      `(${STEP_TYPES.join(", ")}). Offer one whenever it saves them effort, not only when asked — e.g. an alarm before an early flight, ` +
+      `(${supportedStepTypes(userShortcutVersion(ownerId)).join(", ")}). Offer one whenever it saves them effort, not only when asked — e.g. an alarm before an early flight, ` +
       "a Focus during a long meeting, a text to say they're running late. Combine related steps into one link. Never say it's done — say \"tap to …\". " +
       "Put the link on its own line. iPhone only.",
   ];
@@ -237,9 +243,10 @@ export function makePhoneActionForChat(
   now = Date.now()
 ): { url: string; summary: string[]; install_url?: string } | { error: string } {
   const status = getShortcutStatus(ownerId);
-  const validated = validateSteps(input.steps, status?.version ?? currentShortcutVersion());
+  const validated = validateSteps(input.steps, userShortcutVersion(ownerId));
   if ("error" in validated) {
-    return status && validated.error.includes("can't do")
+    // Only point at an update when a newer Shortcut than theirs has actually been published.
+    return status && status.version < currentShortcutVersion() && validated.error.includes("can't do")
       ? { error: `${validated.error} Ask them to add the updated Marlowe Shortcut: ${shortcutInstallUrl()}` }
       : validated;
   }
@@ -279,7 +286,7 @@ export const PHONE_SUGGESTION_PROMPT = [
 
 export function expandPhoneMarkers(ownerId: number, text: string, source: "briefing" | "digest", now = Date.now()): string {
   const enabled = phoneSuggestionsEnabled(ownerId);
-  const version = getShortcutStatus(ownerId)?.version ?? currentShortcutVersion();
+  const version = userShortcutVersion(ownerId);
   let made = 0;
   let matched = false;
   const out = text.replace(MARKER, (_whole, rawLabel: string, json: string) => {

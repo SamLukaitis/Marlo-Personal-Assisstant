@@ -165,4 +165,11 @@ describe("phonePromptSection", () => {
     const u = store.findOrCreateUserByEmail(`phone-follow-new-${Date.now()}@example.com`);
     expect(phonePromptSection(u.id)).toMatch(/hasn't run the Marlowe Shortcut yet/);
   });
+
+  it("lists only the steps the user's Shortcut version can run", () => {
+    const id = owner(); // reported version 1
+    const text = phonePromptSection(id);
+    expect(text).toMatch(/alarm, timer, reminder/);
+    expect(text).not.toMatch(/get_location|directions/);
+  });
 });

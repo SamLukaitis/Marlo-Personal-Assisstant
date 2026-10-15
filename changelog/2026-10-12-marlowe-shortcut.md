@@ -20,6 +20,7 @@ abilities ship as Shortcut updates, not new installs.
 ## Notes
 
 - Off until `MARLOWE_SHORTCUT_ICLOUD_URL` is set. Build the Shortcut from `docs/marlowe-shortcut-build-guide.md`.
+- **Two Shortcut versions.** Version 1 (header `1`) has the nine core steps: alarm, timer, reminder, calendar_event, focus, low_power, text, call, open_url. Version 2 has all 22. Marlowe only offers steps the phone's version can run, so a version-1 phone is never sent directions or a location request.
 - **Device check not done yet:** `docs/marlowe-shortcut-device-check.md`.
 - iPhone only. Android (Tasker) could use the same API later.
 

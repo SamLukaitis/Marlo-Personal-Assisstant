@@ -40,7 +40,7 @@ import {
   briefLine,
   phoneStepsFor,
 } from "./attentionRules.js";
-import { createPhoneAction, phoneSuggestionsEnabled, PROACTIVE_TTL_MS } from "./phoneActions.js";
+import { createPhoneAction, phoneSuggestionsEnabled, userShortcutVersion, PROACTIVE_TTL_MS } from "./phoneActions.js";
 
 export interface AttentionCandidate {
   source: AttentionSource;
@@ -132,7 +132,7 @@ function prepareItem(
   if (item.tier !== "interrupt" && phoneSuggestionsEnabled(ownerId)) {
     // A failed link must not cost the reminder itself, nor stop the other due items in this run.
     try {
-      const suggestion = phoneStepsFor(item.details, zone, now);
+      const suggestion = phoneStepsFor(item.details, zone, now, userShortcutVersion(ownerId));
       if (suggestion) {
         const { url } = createPhoneAction(ownerId, suggestion.steps, {
           source: "reminder",

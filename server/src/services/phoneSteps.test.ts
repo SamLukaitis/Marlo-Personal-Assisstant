@@ -1,12 +1,12 @@
 import { describe, it, expect } from "vitest";
-import { validateSteps, unsupportedSteps, describeStep, STEP_TYPES, type PhoneStep } from "./phoneSteps.js";
+import { validateSteps, unsupportedSteps, supportedStepTypes, describeStep, STEP_TYPES, type PhoneStep } from "./phoneSteps.js";
 
-function ok(input: unknown, version = 1): PhoneStep[] {
+function ok(input: unknown, version = 2): PhoneStep[] {
   const r = validateSteps(input, version);
   if ("error" in r) throw new Error(`expected steps, got error: ${r.error}`);
   return r.steps;
 }
-function err(input: unknown, version = 1): string {
+function err(input: unknown, version = 2): string {
   const r = validateSteps(input, version);
   if (!("error" in r)) throw new Error(`expected an error, got ${JSON.stringify(r.steps)}`);
   return r.error;
@@ -94,9 +94,17 @@ describe("validateSteps — fields", () => {
 });
 
 describe("versions", () => {
-  it("version 1 supports every step type", () => {
+  it("version 1 is the first published Shortcut: the nine core steps only", () => {
+    expect([...supportedStepTypes(1)].sort()).toEqual(
+      ["alarm", "calendar_event", "call", "focus", "low_power", "open_url", "reminder", "text", "timer"]
+    );
+    expect(unsupportedSteps([{ type: "get_location" }, { type: "alarm", time: "07:00" }], 1)).toEqual(["get_location"]);
+    expect(err([{ type: "directions", destination: "Nobu" }], 1)).toMatch(/version 1.*can't do "directions"/);
+  });
+
+  it("version 2 supports every step type", () => {
     const all = STEP_TYPES.map((type) => ({ type }) as PhoneStep);
-    expect(unsupportedSteps(all, 1)).toEqual([]);
+    expect(unsupportedSteps(all, 2)).toEqual([]);
   });
 
   it("version 0 (unknown/older) supports nothing", () => {
