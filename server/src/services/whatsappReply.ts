@@ -16,6 +16,7 @@ import {
 } from "../providers/whatsapp.js";
 import { splitIntoChunks, delayForChunk } from "./messageSplitting.js";
 import { sleep } from "./sleep.js";
+import { actionButtonFor, RUN_BUTTON_LABEL } from "./phoneActionButton.js";
 import type { AssistantReply } from "../ai/assistant.js";
 
 // earlierParts: messages already sent for this same turn that aren't in history on their own — the
@@ -47,6 +48,18 @@ export async function sendAssistantReply(
   }
 
   if (!reply.choice) {
+    // One phone-action link: send it as a "Run on iPhone" button. History keeps the full text with
+    // the link, so the model still sees what it offered; a failed button send falls back to text.
+    const button = actionButtonFor(reply.text);
+    if (button) {
+      try {
+        const wamid = await sendWhatsAppCtaUrl(phone, button.body, RUN_BUTTON_LABEL, button.url);
+        recordAssistantMessage(ownerId, phone, reply.text, [...earlierParts, ...(wamid ? [{ wamid, text: button.body }] : [])]);
+        return;
+      } catch (err) {
+        console.error("whatsappReply: Run button send failed; sending the link as text", err);
+      }
+    }
     // Splitting/pausing is transport-only — the history row below always holds the one full
     // reply.text, not one row per chunk, so conversation-history/summary logic elsewhere is
     // unaffected. A single-paragraph reply (the common case) yields exactly one chunk and sends

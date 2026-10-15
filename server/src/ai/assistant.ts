@@ -68,7 +68,7 @@ import { fetchWeather } from "../providers/weather.js";
 import { isMapsConfigured, searchPlaces, computeRoute } from "../providers/maps.js";
 import { fetchQuotes, DEFAULT_SYMBOLS } from "../providers/markets.js";
 import { countTravelDays } from "../services/travelDays.js";
-import { isPhoneActionsConfigured, makePhoneActionForChat, phonePromptSection } from "../services/phoneActions.js";
+import { isPhoneActionsConfigured, makePhoneActionForChat, phonePromptSection, scrubUnknownActionLinks } from "../services/phoneActions.js";
 import { STEP_TYPES } from "../services/phoneSteps.js";
 import { resolveReminderTime, ReminderTimeError, type ReminderTimeInput } from "../services/reminderTime.js";
 import { resolveUserTimezone, userLocalClock } from "../services/userTimezone.js";
@@ -756,8 +756,9 @@ const ALWAYS_ON_TOOLS: Anthropic.ToolUnion[] = [
   {
     name: "make_app_link",
     description:
-      "Make a link that opens an app already filled in, for things you can't do yourself: rides (uber, lyft), directions (google_maps), restaurant tables (opentable, resy), music (spotify) and stays (airbnb, booking_com). The user taps it and confirms in that app — you have NOT booked, ordered or started anything, so never say you have. " +
+      "Make a link that opens an app already filled in, for things you can't do yourself: rides (uber, lyft), directions (google_maps), restaurant tables (opentable, resy), music (spotify), stays (airbnb, booking_com) and WhatsApp messages to other people (whatsapp). The user taps it and confirms in that app — you have NOT booked, ordered or started anything, so never say you have. " +
       "Fields per app: uber/google_maps — destination (required), origin (omit for the user's current location), google_maps also travel_mode. lyft — same, but every place needs latitude+longitude (from a recent location pin or a places result; never invent coordinates — if you only have a name, use uber or google_maps). " +
+      "whatsapp — message (required), phone (the contact's full international number, e.g. from search_contacts; omit it and WhatsApp asks them to pick the contact). " +
       "opentable — query (restaurant name + area, required), party_size, date, time. resy — city (required, e.g. 'New York, NY'), query, party_size, date. spotify — query (song, artist, playlist or mood). airbnb/booking_com — city (required), check_in + check_out together, guests. " +
       "Dates are YYYY-MM-DD in the user's local calendar; times are 24-hour HH:MM. For relative days ('tonight', 'Friday', 'next weekend'), call get_current_time first unless you already know today's date. If it returns an error, ask the user for what's missing rather than guessing. Put the returned url on its own line in your reply.",
     input_schema: {
@@ -793,6 +794,8 @@ const ALWAYS_ON_TOOLS: Anthropic.ToolUnion[] = [
         check_in: { type: "string", description: "airbnb/booking_com: YYYY-MM-DD." },
         check_out: { type: "string", description: "airbnb/booking_com: YYYY-MM-DD, after check_in." },
         guests: { type: "number", description: "airbnb/booking_com: number of adults, 1–20." },
+        phone: { type: "string", description: "whatsapp: the contact's full international number, e.g. +44 7700 900123." },
+        message: { type: "string", description: "whatsapp: the message to type in for them." },
       },
       required: ["app"],
     },
@@ -2053,7 +2056,7 @@ function buildRules(enabled: Set<ToolKey>): string {
   const base = [
     "- Always look up real data with your tools before answering questions about email, calendar, or files — never invent contents.",
     "- ask_user_choice renders real tappable buttons/a list on WhatsApp instead of asking in prose — use it for confirm-before-destructive-action and for disambiguating between candidates (see the archive and search_contacts rules below for the two concrete cases). Call it alone, as the only tool call in your turn.",
-    "- For a ride, directions, a restaurant table, music or a place to stay, use make_app_link to give the user a link that opens the app already filled in — never hand-write Uber/Lyft/OpenTable/Resy/Spotify/Airbnb/Booking.com links. Never say or claim you've booked, ordered or started playing anything: say it's ready for them to confirm in the app. If they want you to complete the booking or payment yourself, explain that you set it up and they confirm in the app, and call flag_unmet_request in the same turn.",
+    "- For a ride, directions, a restaurant table, music, a place to stay or a WhatsApp message to someone, use make_app_link to give the user a link that opens the app already filled in — never hand-write Uber/Lyft/OpenTable/Resy/Spotify/Airbnb/Booking.com links. Never say or claim you've booked, ordered or started playing anything: say it's ready for them to confirm in the app. If they want you to complete the booking or payment yourself, explain that you set it up and they confirm in the app, and call flag_unmet_request in the same turn.",
     "- Never state that something does NOT exist (no booking, no email, nothing on file, calendar is empty, etc.) without calling the relevant tool in THIS turn first. You do not retain tool results from earlier turns — only your own past reply text — so a memory of having checked before is not verification. If a user pushes back on something you said, that is a signal to re-run the tool, not to just apologize or reverse yourself from reasoning alone.",
     "- Before answering a question about a flight change, reservation, invoice/payment due, government mail, delivery, security alert, subscription renewal, or refund/dispute you or an earlier proactive alert may have flagged, call list_flagged_emails first — it's the real stored record (exact subject, sender, summary), not your memory of a past reply. Never state a specific value (a date, an amount, a confirmation code) about a previously flagged email from recollection alone; get it from list_flagged_emails or, if it isn't there, from search_messages/get_message.",
     "- More generally, for ANY email discussed earlier in this conversation (flagged or not), call search_read_emails before restating a specific detail from it — it durably holds every email you've ever listed or opened, so it survives even after the conversation itself has moved on and your only other record is your own paraphrase. If it comes back empty, the email may simply never have been listed/opened yet — fall back to search_messages/get_message rather than assuming the detail doesn't exist.",
@@ -2116,7 +2119,11 @@ export function buildSystemPrompt(ownerId: number, conversationSummary?: string)
           return `- id ${a.id}: ${a.email} (${a.provider})${restrictions.length ? ` — ${restrictions.join(", ")}` : ""}`;
         })
         .join("\n")
-    : "(none connected — this user has no mailbox linked. Anything needing email or calendar is unavailable: say so plainly in one line and offer to connect an inbox, e.g. \"I'd need your email for that — want to connect it?\". If they say yes, ask which they use (Gmail or Outlook/Hotmail) if that's not already obvious, then call connect_email with that provider to actually send them the link — don't just keep offering verbally. Most of these users are on WhatsApp only and have no access to our website — don't reference web-based setup. Everything else — reminders, to-dos, notes, documents they send, and general questions — works normally, so answer those without mentioning the missing inbox.)";
+    : "(none connected — this user has no mailbox linked. " +
+      (isPhoneActionsConfigured()
+        ? "Anything needing email is unavailable. A calendar event can still go on their iPhone: use a make_phone_action calendar_event step rather than asking them to connect. For email,"
+        : "Anything needing email or calendar is unavailable:") +
+      " say so plainly in one line and offer to connect an inbox, e.g. \"I'd need your email for that — want to connect it?\". If they say yes, ask which they use (Gmail or Outlook/Hotmail) if that's not already obvious, then call connect_email with that provider to actually send them the link — don't just keep offering verbally. Most of these users are on WhatsApp only and have no access to our website — don't reference web-based setup. Everything else — reminders, to-dos, notes, documents they send, and general questions — works normally, so answer those without mentioning the missing inbox.)";
 
   const folders = listLocalFolders(ownerId);
   const folderList = folders.length
@@ -2316,6 +2323,8 @@ export async function runAssistantChat(
       usageTotals.cacheReadTokens,
       usageTotals.cacheCreationTokens
     );
+    // A phone-action link the model typed itself (or re-pasted after it was used) is dead on tap.
+    if (isPhoneActionsConfigured() && reply.text) return { ...reply, text: scrubUnknownActionLinks(reply.text) };
     return reply;
   }
 
