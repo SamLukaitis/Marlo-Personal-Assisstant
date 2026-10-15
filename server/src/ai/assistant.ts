@@ -49,6 +49,7 @@ import {
   type RegistrationProvider,
 } from "../db/store.js";
 import { retrieveRelevantMemory } from "./memoryRetrieval.js";
+import { applyEditionTools, getEdition, isToolExcluded, runEditionTool } from "../editions/index.js";
 import { sendConnectLink } from "../services/connectMailboxLink.js";
 import {
   emailDigestTime,
@@ -1232,12 +1233,15 @@ const PHONE_ACTION_TOOLS: Anthropic.Tool[] = [
 
 export function buildToolsForOwner(ownerId: number): Anthropic.ToolUnion[] {
   const enabled = getEnabledTools(ownerId);
-  const result = [...ALWAYS_ON_TOOLS];
+  const assembled: Anthropic.ToolUnion[] = [...ALWAYS_ON_TOOLS];
   for (const key of TOOL_KEYS) {
-    if (enabled.has(key)) result.push(...CONDITIONAL_TOOLS[key]);
+    if (enabled.has(key)) assembled.push(...CONDITIONAL_TOOLS[key]);
   }
-  if (isMapsConfigured()) result.push(...MAPS_TOOLS);
-  if (isPhoneActionsConfigured()) result.push(...PHONE_ACTION_TOOLS);
+  if (isMapsConfigured()) assembled.push(...MAPS_TOOLS);
+  if (isPhoneActionsConfigured()) assembled.push(...PHONE_ACTION_TOOLS);
+  // The user's edition (editions/index.ts) drops tools that don't belong in that product and adds
+  // its own — before the cache breakpoint below, so it still lands on the true last tool.
+  const result = applyEditionTools(ownerId, assembled);
   // Cache breakpoint must be on the LAST tool schema in the array — which tool that is now
   // depends on which conditional tools are enabled, so it's set dynamically here rather than
   // hardcoded on one specific tool definition like before.
@@ -1319,6 +1323,7 @@ export async function runTool(
   input: Record<string, unknown>,
   phone?: string
 ): Promise<unknown> {
+  if (isToolExcluded(ownerId, name)) return { error: `tool not available: ${name}` };
   const requiredKey = TOOL_NAME_TO_KEY[name];
   if (requiredKey && !getEnabledTools(ownerId).has(requiredKey)) {
     return { error: `tool not enabled: ${name}` };
@@ -1944,8 +1949,10 @@ export async function runTool(
         : untilMs - 180 * 24 * 60 * 60 * 1000;
       return countTravelDays(listAllCheckinsAscending(ownerId), input.area as string, sinceMs, untilMs);
     }
-    default:
-      return { error: `unknown tool: ${name}` };
+    default: {
+      const handled = await runEditionTool(ownerId, name, input);
+      return handled !== undefined ? handled : { error: `unknown tool: ${name}` };
+    }
   }
 }
 
@@ -2190,6 +2197,7 @@ export function buildSystemPrompt(ownerId: number, conversationSummary?: string)
     onboardingNote,
     buildRules(getEnabledTools(ownerId)),
     phonePromptSection(ownerId),
+    getEdition(ownerId).promptSection(ownerId),
   ]
     .filter(Boolean)
     .join("\n\n");
