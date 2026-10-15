@@ -12,7 +12,7 @@ import {
   upsertPendingRegistration,
   type RegistrationProvider,
 } from "../db/store.js";
-import { sendWhatsAppMessage, sendWhatsAppCtaUrl } from "../providers/whatsapp.js";
+import { sendScriptedText, sendScriptedLink } from "./whatsappReply.js";
 import { SERVER_URL } from "../config.js";
 
 // Advisory UX throttle (stops someone mashing "resend"/re-asking within the same minute from
@@ -77,7 +77,7 @@ export async function sendConnectLink(
   purpose: ConnectLinkPurpose = "connect"
 ): Promise<ConnectLinkResult> {
   if (withinCooldown(phone)) {
-    await sendWhatsAppMessage(phone, "Still working on it — give it a few seconds and try again if the link doesn't work.");
+    await sendScriptedText(phone, "Still working on it — give it a few seconds and try again if the link doesn't work.");
     return "throttled";
   }
   // setPendingRegistrationToken (store.ts) is `UPDATE ... WHERE phone = ?` — with no matching row
@@ -108,7 +108,7 @@ export async function sendConnectLink(
   const path = provider === "google" ? "/auth/google/register" : "/auth/microsoft/register";
   const link = `${SERVER_URL}${path}?token=${token}`;
   if (purpose === "enable_send") {
-    await sendWhatsAppCtaUrl(
+    await sendScriptedLink(
       phone,
       `Tap below to reconnect *${PROVIDER_LABEL[provider]}* and allow sending — it only takes a moment. I'll still never send anything without you approving it first. This link works for ten minutes.`,
       `Reconnect ${PROVIDER_LABEL[provider]}`,
@@ -116,7 +116,7 @@ export async function sendConnectLink(
     );
     return "sent";
   }
-  await sendWhatsAppCtaUrl(
+  await sendScriptedLink(
     phone,
     `Almost there — tap below to connect *${PROVIDER_LABEL[provider]}*. I'll be able to read your mail and draft replies, but I can never send anything without you approving it first. This link works for ten minutes.`,
     `Connect ${PROVIDER_LABEL[provider]}`,

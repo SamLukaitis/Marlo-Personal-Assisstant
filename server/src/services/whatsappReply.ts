@@ -5,24 +5,35 @@
 // does. Lives in its own module rather than inside whatsappRoutes.ts because actionHandlers.ts
 // needs it too, and whatsappRoutes.ts imports actionHandlers.ts — putting it in whatsappRoutes.ts
 // would create a circular import.
-import { appendWhatsAppMessage } from "../db/store.js";
-import { sendWhatsAppMessage, sendChoiceMessage, sendWhatsAppReaction, sendWhatsAppLocationRequest } from "../providers/whatsapp.js";
+import { appendWhatsAppMessage, resolveOwnerByPhone, type SentPart } from "../db/store.js";
+import {
+  sendWhatsAppMessage,
+  sendChoiceMessage,
+  sendWhatsAppReaction,
+  sendWhatsAppLocationRequest,
+  sendWhatsAppReplyButtons,
+  sendWhatsAppCtaUrl,
+} from "../providers/whatsapp.js";
 import { splitIntoChunks, delayForChunk } from "./messageSplitting.js";
 import { sleep } from "./sleep.js";
 import type { AssistantReply } from "../ai/assistant.js";
 
+// earlierParts: messages already sent for this same turn that aren't in history on their own — the
+// "one sec, working on it…" holding line (messageBatching.ts). They're recorded as parts of this
+// reply, so a swipe on one resolves to the answer it was waiting on.
 export async function sendAssistantReply(
   ownerId: number,
   phone: string,
   reply: AssistantReply,
-  inboundMessageId: string
+  inboundMessageId: string,
+  earlierParts: SentPart[] = []
 ): Promise<void> {
   // Synthetic turns (phone-action report-back) have no inbound wamid to react to — fall through to text.
   if (reply.reaction && inboundMessageId) {
     // A reaction replaces the text reply entirely (see assistant.ts's react_to_message) —
     // persist a readable history line rather than an empty row, and target the message that
     // triggered this turn (the wamid the caller passed in), not one of Marlowe's own messages.
-    appendWhatsAppMessage(ownerId, phone, "assistant", `[reacted ${reply.reaction.emoji}]`);
+    recordAssistantMessage(ownerId, phone, `[reacted ${reply.reaction.emoji}]`, earlierParts);
     await sendWhatsAppReaction(phone, inboundMessageId, reply.reaction.emoji);
     return;
   }
@@ -31,11 +42,7 @@ export async function sendAssistantReply(
     // Persisted like any reply so the next turn — triggered by the pin the user shares — can see
     // what was asked for (chatDispatch.handleLocation appends the pin right after this row).
     const wamid = await sendWhatsAppLocationRequest(phone, reply.text);
-    if (wamid) {
-      appendWhatsAppMessage(ownerId, phone, "assistant", reply.text, [wamid]);
-    } else {
-      appendWhatsAppMessage(ownerId, phone, "assistant", reply.text);
-    }
+    recordAssistantMessage(ownerId, phone, reply.text, [...earlierParts, ...(wamid ? [{ wamid }] : [])]);
     return;
   }
 
@@ -48,33 +55,126 @@ export async function sendAssistantReply(
     // row — see db/store.ts's whatsapp_message_wamids, which resolves a later swipe-to-reply to
     // this message no matter how long afterward.
     const chunks = splitIntoChunks(reply.text);
-    const wamids: string[] = [];
+    const parts: SentPart[] = [...earlierParts];
     if (chunks.length === 0) {
       const wamid = await sendWhatsAppMessage(phone, reply.text);
-      if (wamid) wamids.push(wamid);
+      if (wamid) parts.push({ wamid, text: reply.text });
     } else {
       for (let i = 0; i < chunks.length; i++) {
         if (i > 0) await sleep(delayForChunk(chunks[i]));
         const wamid = await sendWhatsAppMessage(phone, chunks[i]);
-        if (wamid) wamids.push(wamid);
+        if (wamid) parts.push({ wamid, text: chunks[i] });
       }
     }
-    // Only pass the wamids array when it actually has something — an explicit empty/undefined
-    // 5th argument is a different call shape than omitting it, and appendWhatsAppMessage already
-    // treats "no wamids" as a no-op for the join table either way.
-    if (wamids.length) {
-      appendWhatsAppMessage(ownerId, phone, "assistant", reply.text, wamids);
-    } else {
-      appendWhatsAppMessage(ownerId, phone, "assistant", reply.text);
-    }
+    recordAssistantMessage(ownerId, phone, reply.text, parts);
     return;
   }
 
-  appendWhatsAppMessage(ownerId, phone, "assistant", reply.text);
   const choice = reply.choice;
   const choices = choice.buttons.map((b) => ({
     id: `pa:${choice.actionId}:${b.key}`,
     title: b.label,
   }));
-  await sendChoiceMessage(phone, choice.question, choices);
+  await sendChoiceAndRecord(ownerId, phone, reply.text, choice.question, choices, earlierParts);
+}
+
+// Every message Marlowe sends should go through one of the three senders here (or outbound.ts for
+// proactive pushes) so it's recorded with its wamid(s) and can be swipe-replied to — a message sent
+// without them can't be resolved later, and the model is left guessing what the user meant.
+//
+// For the short replies sent outside the assistant (confirmations, "Cancelled.", help text).
+// historyNote is stored with the message but never sent — e.g. what a "✓ Sent." actually sent, so a
+// swipe on it can be answered. Still recorded if the send fails, as these always were; the error is
+// rethrown for the caller to handle.
+export async function sendTextAndRecord(
+  ownerId: number,
+  phone: string,
+  text: string,
+  historyNote?: string,
+  earlierParts: SentPart[] = []
+): Promise<void> {
+  const historyText = historyNote ? `${text}\n\n${historyNote}` : text;
+  let wamid: string | undefined;
+  try {
+    wamid = await sendWhatsAppMessage(phone, text);
+  } finally {
+    recordAssistantMessage(ownerId, phone, historyText, [...earlierParts, ...(wamid ? [{ wamid, text }] : [])]);
+  }
+}
+
+// Sent before it's recorded, like a plain reply, so every part's wamid is kept — a long choice
+// prompt goes out as several messages and any of them can be swiped. historyText is what goes in
+// chat history, which can be fuller than the prompt shown above the buttons.
+export async function sendChoiceAndRecord(
+  ownerId: number,
+  phone: string,
+  historyText: string,
+  prompt: string,
+  choices: { id: string; title: string }[],
+  earlierParts: SentPart[] = []
+): Promise<void> {
+  let parts: SentPart[] = [];
+  try {
+    parts = await sendChoiceMessage(phone, prompt, choices);
+  } finally {
+    recordAssistantMessage(ownerId, phone, historyText, [...earlierParts, ...parts]);
+  }
+}
+
+// For scripted messages sent outside the assistant — onboarding questions, connect links, the
+// "hang tight" line, error and expired-button replies. `send` does the actual send and returns its
+// wamid; historyText is what goes in chat history (for a connect link, the body text — never the
+// link, which carries a sign-in token). The owner is looked up from the phone when the caller
+// doesn't have it; a number with no account yet has no chat history, so it's just sent. Recording
+// never fails the send — the message has already gone out by then.
+export async function sendAndRecord(
+  phone: string,
+  historyText: string,
+  send: () => Promise<string | undefined>,
+  ownerId?: number
+): Promise<void> {
+  let wamid: string | undefined;
+  try {
+    wamid = await send();
+  } finally {
+    try {
+      const owner = ownerId ?? resolveOwnerByPhone(phone);
+      if (owner !== null) recordAssistantMessage(owner, phone, historyText, wamid ? [{ wamid, text: historyText }] : []);
+    } catch (err) {
+      console.error("whatsappReply: couldn't record a sent message in history", err);
+    }
+  }
+}
+
+export function sendScriptedText(phone: string, text: string, ownerId?: number): Promise<void> {
+  return sendAndRecord(phone, text, () => sendWhatsAppMessage(phone, text), ownerId);
+}
+
+export function sendScriptedButtons(
+  phone: string,
+  text: string,
+  buttons: { id: string; title: string }[],
+  ownerId?: number
+): Promise<void> {
+  return sendAndRecord(phone, text, () => sendWhatsAppReplyButtons(phone, text, buttons), ownerId);
+}
+
+// History gets the body text only — the url carries a sign-in token.
+export function sendScriptedLink(phone: string, bodyText: string, buttonText: string, url: string): Promise<void> {
+  return sendAndRecord(phone, bodyText, () => sendWhatsAppCtaUrl(phone, bodyText, buttonText, url));
+}
+
+// A part whose text is the whole message needs no part text — only a part of a longer message does.
+function recordAssistantMessage(ownerId: number, phone: string, text: string, parts: SentPart[]): void {
+  if (!parts.length) {
+    appendWhatsAppMessage(ownerId, phone, "assistant", text);
+    return;
+  }
+  appendWhatsAppMessage(
+    ownerId,
+    phone,
+    "assistant",
+    text,
+    parts.map((p) => (p.text === undefined || p.text === text ? p.wamid : p))
+  );
 }
