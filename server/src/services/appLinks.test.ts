@@ -288,3 +288,33 @@ describe("makeAppLink — deferred minors", () => {
     expect(new URL(url).searchParams.get("dateTime")).toBe("2026-10-13T11:30");
   });
 });
+
+describe("makeAppLink — whatsapp", () => {
+  it("opens a chat with the number and the message typed in", () => {
+    const { url, label } = ok(makeAppLink({ app: "whatsapp", phone: "+44 7700 900-123", message: "Running 10 min late" }, ctx));
+    expect(url).toBe("https://wa.me/447700900123?text=Running%2010%20min%20late");
+    expect(label).toBe("Open in WhatsApp");
+  });
+
+  it("accepts a 00 international prefix", () => {
+    expect(ok(makeAppLink({ app: "whatsapp", phone: "0044 7700 900123", message: "hi" }, ctx)).url).toBe("https://wa.me/447700900123?text=hi");
+  });
+
+  it("without a number, opens WhatsApp's contact picker with the message typed in", () => {
+    expect(ok(makeAppLink({ app: "whatsapp", message: "hi there" }, ctx)).url).toBe("https://wa.me/?text=hi%20there");
+  });
+
+  it("refuses a local number it can't place in a country", () => {
+    expect(err(makeAppLink({ app: "whatsapp", phone: "07700 900123", message: "hi" }, ctx))).toMatch(/international/);
+  });
+
+  it("refuses a number that isn't digits, and a missing message", () => {
+    expect(err(makeAppLink({ app: "whatsapp", phone: "+44 call me", message: "hi" }, ctx))).toMatch(/phone/);
+    expect(err(makeAppLink({ app: "whatsapp", phone: "+447700900123" }, ctx))).toMatch(/message/);
+  });
+
+  it("keeps a long message up to 1000 characters", () => {
+    const { url } = ok(makeAppLink({ app: "whatsapp", message: "a".repeat(1200) }, ctx));
+    expect(decodeURIComponent(new URL(url).searchParams.get("text")!)).toHaveLength(1000);
+  });
+});

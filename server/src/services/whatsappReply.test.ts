@@ -15,7 +15,7 @@ vi.mock("../providers/whatsapp.js", () => ({
 vi.mock("./sleep.js", () => ({ sleep: vi.fn().mockResolvedValue(undefined) }));
 
 const { appendWhatsAppMessage, resolveOwnerByPhone } = await import("../db/store.js");
-const { sendWhatsAppMessage, sendChoiceMessage, sendWhatsAppReaction, sendWhatsAppLocationRequest } = await import("../providers/whatsapp.js");
+const { sendWhatsAppMessage, sendChoiceMessage, sendWhatsAppReaction, sendWhatsAppLocationRequest, sendWhatsAppCtaUrl } = await import("../providers/whatsapp.js");
 const { sleep } = await import("./sleep.js");
 const { sendAssistantReply, sendTextAndRecord, sendScriptedText, sendScriptedButtons, sendScriptedLink } = await import(
   "./whatsappReply.js"
@@ -31,6 +31,26 @@ beforeEach(() => {
 });
 
 describe("sendAssistantReply", () => {
+  it("sends a reply carrying one phone-action link as a Run on iPhone button, keeping the full text in history", async () => {
+    const { SERVER_URL } = await import("../config.js");
+    const link = `${SERVER_URL}/a/kLflvrBG4C_8kJzkdVGZ3A`;
+    vi.mocked(sendWhatsAppCtaUrl).mockClear();
+    await sendAssistantReply(1, "44700", { text: `Tap to set a 7:00 alarm:\n${link}` }, "wamid.in");
+    expect(sendWhatsAppCtaUrl).toHaveBeenCalledWith("44700", "Tap to set a 7:00 alarm:", "Run on iPhone", link);
+    expect(sendWhatsAppMessage).not.toHaveBeenCalled();
+    expect(appendWhatsAppMessage).toHaveBeenCalledWith(1, "44700", "assistant", `Tap to set a 7:00 alarm:\n${link}`, [
+      { wamid: "wamid.link", text: "Tap to set a 7:00 alarm:" },
+    ]);
+  });
+
+  it("falls back to plain text when the button send fails", async () => {
+    const { SERVER_URL } = await import("../config.js");
+    const link = `${SERVER_URL}/a/kLflvrBG4C_8kJzkdVGZ3A`;
+    vi.mocked(sendWhatsAppCtaUrl).mockRejectedValueOnce(new Error("graph down"));
+    await sendAssistantReply(1, "44700", { text: `Tap:\n${link}` }, "wamid.in");
+    expect(sendWhatsAppMessage).toHaveBeenCalledWith("44700", `Tap:\n${link}`);
+  });
+
   it("sends plain text and persists it when there's no choice", async () => {
     await sendAssistantReply(1, "44700", { text: "Sure, done." }, "wamid.in");
 

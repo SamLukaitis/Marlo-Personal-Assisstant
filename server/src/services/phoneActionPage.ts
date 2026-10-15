@@ -24,7 +24,8 @@ export function renderActionPage(view: PhoneActionView): string {
     return page("Link expired", `<h1>This link has expired or was already used</h1><p>Ask Marlowe again for a fresh one.</p>${install}`);
   }
   const steps = view.summary.map((s) => `<li>${esc(s)}</li>`).join("");
-  // Opening the Shortcut straight away saves a tap; the button is there if iOS blocks the jump.
+  // Jumps to the Shortcut as soon as the page loads (no delay), so the only tap left is iOS's own
+  // "Open in Shortcuts?". The button is the fallback if iOS blocks the jump.
   // JSON.stringify doesn't escape "<" (so "</script>" in the URL would end the tag early) or the
   // two line separators (which end a JS string literal in older engines). The "\u" in source is
   // the six-character escape, so the emitted JS carries the text \u003c, not a bare "<".
@@ -32,7 +33,7 @@ export function renderActionPage(view: PhoneActionView): string {
     .replace(/</g, "\\u003c")
     .replace(/\u2028/g, "\\u2028")
     .replace(/\u2029/g, "\\u2029");
-  const script = `<script>setTimeout(function(){location.href=${jsString}},300)</script>`;
+  const script = `<script>location.replace(${jsString})</script>`;
   return page(
     view.label,
     `<h1>${esc(view.label)}</h1><p>Marlowe will:</p><ul>${steps}</ul><a class="run" href="${esc(view.runUrl)}">Run in Shortcuts</a>${install}`,

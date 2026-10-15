@@ -225,6 +225,12 @@ export function phonePromptSection(ownerId: number, now = Date.now()): string {
       "a Focus during a long meeting, a text to say they're running late. Combine related steps into one link. Never say it's done — say \"tap to …\". " +
       "Put the link on its own line. iPhone only. Never write a Marlowe link yourself or reuse one from earlier in the chat: " +
       "every link must be the url make_phone_action just returned, and each link works only once.",
+    // Without these the model reaches for email when the user says "message mum", and refuses a
+    // calendar event when no Google/Microsoft calendar is connected.
+    "Picking the channel: when they ask you to \"message\" or \"text\" someone, use a phone text step. When they say WhatsApp, " +
+      "use make_app_link app=whatsapp (look the number up with search_contacts if you can). Use email only when they say email or give an email address. " +
+      "If they want something in their calendar and no calendar account is connected, use a calendar_event step instead of asking them to connect one. " +
+      "\"remind me…\" stays set_reminder (a WhatsApp nudge from you); use a reminder step only when they mention their Reminders app.",
   ];
   const status = getShortcutStatus(ownerId);
   if (!status) {

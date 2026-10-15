@@ -50,3 +50,16 @@ describe("phonePromptSection — after a failure", () => {
     expect(text).toMatch(/never write a .*link yourself/i);
   });
 });
+
+describe("phonePromptSection — picking the right channel", () => {
+  it("routes message/text to a phone text, WhatsApp to a WhatsApp link, email only when asked, and calendar to the phone when none is connected", () => {
+    const id = owner();
+    store.recordShortcutSeen(id, 1, Date.now());
+    const text = phonePromptSection(id);
+    expect(text).toMatch(/"message" or "text" someone.*text step/);
+    expect(text).toMatch(/WhatsApp.*make_app_link app=whatsapp/);
+    expect(text).toMatch(/email only when they say email/i);
+    expect(text).toMatch(/no calendar account is connected.*calendar_event/);
+    expect(text).toMatch(/remind me.*set_reminder/);
+  });
+});
