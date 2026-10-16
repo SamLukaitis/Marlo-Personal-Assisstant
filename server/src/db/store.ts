@@ -7,6 +7,7 @@ import { getEntityTypeDef } from "../services/entityTypes.js";
 import { migrateUsersEmailNullable } from "./migrations/usersEmailNullable.js";
 import { migrateReplayParkMarker } from "./migrations/replayParkMarker.js";
 import { migrateMemoryGraph } from "./migrations/memoryGraph.js";
+import { migrateBusinessLedger } from "./migrations/businessLedger.js";
 
 // DATA_DIR lets tests (see server/src/test/setup.ts) point this at an isolated temp directory
 // instead of the real server/data — unset in normal dev/production, where this falls back to
@@ -996,6 +997,7 @@ if (!userPhoneNumberColumns.includes("last_inbound_at")) {
 // reads the column any more, so nothing would ever unpark it, while its row went on holding the
 // UNIQUE phone slot. See the migration's own comment for the full story.
 migrateReplayParkMarker(db);
+migrateBusinessLedger(db);
 
 // Which OAuth provider the person picked at the "Gmail or Outlook?" button step of registration
 // — see services/whatsappRegistration.ts. Needed so a later "resend" only re-sends that one link
@@ -4209,6 +4211,9 @@ export function deleteUserCompletely(ownerId: number): { deletedDocumentPaths: s
     ).run(ownerId, ownerId);
     db.prepare(`DELETE FROM admin_todos WHERE created_by = ?`).run(ownerId);
     db.prepare(`DELETE FROM poster_notes WHERE author_id = ?`).run(ownerId);
+    db.prepare(`DELETE FROM ledger_entry_history WHERE owner_id = ?`).run(ownerId);
+    db.prepare(`DELETE FROM ledger_entries WHERE owner_id = ?`).run(ownerId);
+    db.prepare(`DELETE FROM ledger_counterparty_choices WHERE owner_id = ?`).run(ownerId);
     db.prepare(`DELETE FROM user_phone_numbers WHERE user_id = ?`).run(ownerId);
     // replay_parked_phones.owner_id is NOT NULL REFERENCES users(id) — the same shape that has
     // broken the DELETE FROM users below three times already (pending_setup/pending_actions,
