@@ -8,6 +8,7 @@ import { businessPromptSection } from "../business/prompt.js";
 import { receiptToLedger } from "../business/receipts.js";
 import { incomeFromMail } from "../business/incomeDetector.js";
 import { businessBriefingFacts } from "../business/briefing.js";
+import { setBusinessDescription } from "../business/profile.js";
 
 export interface Edition {
   id: EditionId;
@@ -115,4 +116,14 @@ export function editionBriefingFacts(ownerId: number, today: string): string[] {
     console.error("editions: briefing facts failed", err);
     return [];
   }
+}
+
+// For the WhatsApp signup chain (services/postConnectSetup.ts), which asks business users about
+// their business and their first receipt instead of the general first-task question.
+export function usesBusinessOnboarding(ownerId: number): boolean {
+  return getEdition(ownerId).id === "business";
+}
+
+export function saveBusinessDescription(ownerId: number, description: string): void {
+  setBusinessDescription(ownerId, description);
 }

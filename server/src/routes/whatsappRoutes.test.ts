@@ -53,6 +53,9 @@ vi.mock("../services/whatsappRegistration.js", async () => {
 vi.mock("../services/postConnectSetup.js", () => ({
   handleNameReply: vi.fn().mockResolvedValue(false),
   handleFirstTaskReply: vi.fn().mockResolvedValue(false),
+  handleBusinessReply: vi.fn().mockResolvedValue(false),
+  handleFirstReceiptReply: vi.fn().mockResolvedValue(false),
+  firstReceiptFollowUp: vi.fn().mockReturnValue(undefined),
   handlePostConnectSetupReply: vi.fn().mockResolvedValue(false),
 }));
 vi.mock("../services/whatsappReply.js", async (importOriginal) => ({
@@ -78,9 +81,15 @@ const { resolveOwnerByPhone, appendWhatsAppMessage, getDocumentByWamid, getWhats
   "../db/store.js"
 );
 const { runAssistantChat } = await import("../ai/assistant.js");
-const { handleNameReply, handleFirstTaskReply, handlePostConnectSetupReply } = await import(
-  "../services/postConnectSetup.js"
-);
+const {
+  handleNameReply,
+  handleFirstTaskReply,
+  handleBusinessReply,
+  handleFirstReceiptReply,
+  firstReceiptFollowUp,
+  handlePostConnectSetupReply,
+} = await import("../services/postConnectSetup.js");
+const { ingestWhatsAppMedia } = await import("../services/documents.js");
 const { sendAssistantReply } = await import("../services/whatsappReply.js");
 const { handlePendingActionReply } = await import("../services/actionHandlers.js");
 const { handlePendingRegistration } = await import("../services/whatsappRegistration.js");
@@ -102,6 +111,9 @@ beforeEach(() => {
   vi.mocked(appendWhatsAppMessage).mockClear();
   vi.mocked(handleNameReply).mockReset().mockResolvedValue(false);
   vi.mocked(handleFirstTaskReply).mockReset().mockResolvedValue(false);
+  vi.mocked(handleBusinessReply).mockReset().mockResolvedValue(false);
+  vi.mocked(handleFirstReceiptReply).mockReset().mockResolvedValue(false);
+  vi.mocked(firstReceiptFollowUp).mockReset().mockReturnValue(undefined);
   vi.mocked(handlePostConnectSetupReply).mockReset().mockResolvedValue(false);
   vi.mocked(sendAssistantReply).mockClear();
   vi.mocked(handlePendingActionReply).mockReset().mockResolvedValue(false);
@@ -212,6 +224,45 @@ describe("handleIncoming — blocking free-text setup steps", () => {
     expect(runAssistantChat).not.toHaveBeenCalled();
   });
 
+});
+
+describe("handleIncoming — business onboarding steps", () => {
+  it("a reply to the business question is consumed by handleBusinessReply", async () => {
+    vi.mocked(handleBusinessReply).mockResolvedValue(true);
+    await handleIncoming({ kind: "text", from: "447900000020", text: "Plumber in Leeds", messageId: "m20" });
+    expect(handleBusinessReply).toHaveBeenCalledWith(42, expect.objectContaining({ text: "Plumber in Leeds" }));
+    expect(runAssistantChat).not.toHaveBeenCalled();
+  });
+
+  it("a typed reply to the receipt invitation is consumed by handleFirstReceiptReply", async () => {
+    vi.mocked(handleFirstReceiptReply).mockResolvedValue(true);
+    await handleIncoming({ kind: "text", from: "447900000021", text: "skip", messageId: "m21" });
+    expect(handleFirstReceiptReply).toHaveBeenCalledWith(42, expect.objectContaining({ text: "skip" }));
+    expect(runAssistantChat).not.toHaveBeenCalled();
+  });
+
+  it("a receipt photo during setup is filed, confirmed by the assistant, then the chain moves on", async () => {
+    const followUp = vi.fn().mockResolvedValue(undefined);
+    vi.mocked(firstReceiptFollowUp).mockReturnValue(followUp);
+    vi.mocked(ingestWhatsAppMedia).mockResolvedValue({ extractedText: "Screwfix £48.20" } as never);
+    vi.mocked(runAssistantChat).mockResolvedValue({ text: "Added Screwfix £48.20 to your books." });
+
+    await handleIncoming({ kind: "media", from: "447900000022", mediaId: "media-1", mimeType: "image/jpeg", messageId: "m22" });
+    expect(followUp).not.toHaveBeenCalled(); // not before the assistant has replied
+    await flushBatch();
+
+    expect(runAssistantChat).toHaveBeenCalledTimes(1);
+    expect(followUp).toHaveBeenCalledTimes(1);
+  });
+
+  it("a photo outside that step has no follow-up", async () => {
+    vi.mocked(ingestWhatsAppMedia).mockResolvedValue({ extractedText: "x" } as never);
+    vi.mocked(runAssistantChat).mockResolvedValue({ text: "Saved." });
+    await handleIncoming({ kind: "media", from: "447900000023", mediaId: "media-2", mimeType: "image/jpeg", messageId: "m23" });
+    await flushBatch();
+    expect(firstReceiptFollowUp).toHaveBeenCalledWith(42, "447900000023");
+    expect(runAssistantChat).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe("handleIncoming — post-connect setup button taps", () => {
