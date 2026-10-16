@@ -15,6 +15,7 @@ import { chatRoutes } from "./routes/chatRoutes.js";
 import { briefingRoutes } from "./routes/briefingRoutes.js";
 import { memoryRoutes } from "./routes/memoryRoutes.js";
 import { whatsappRoutes } from "./routes/whatsappRoutes.js";
+import { joyceRoutes } from "./joyce/routes.js";
 import { whatsappSettingsRoutes } from "./routes/whatsappSettingsRoutes.js";
 import { documentRoutes } from "./routes/documentRoutes.js";
 import { checkinRoutes, checkinReadRoutes } from "./routes/checkinRoutes.js";
@@ -78,6 +79,9 @@ app.use(authRoutes);
 // Public: Meta calls these directly (webhook verify handshake + signed POST), not a logged-in
 // browser — gated by its own verify-token/HMAC checks, not a session.
 app.use(whatsappRoutes);
+// Joyce — the family assistant on her own WhatsApp number. Entirely separate storage from
+// Marlowe's: see src/joyce/familyDb.ts for why nothing here can reach the other's data.
+app.use(joyceRoutes);
 
 // Public: the one route a phone automation (iOS Shortcuts / Android Tasker) hits without any
 // interactive login — gated by its own shared-secret header, resolved to an owner internally.
