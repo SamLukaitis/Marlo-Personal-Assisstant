@@ -6,6 +6,7 @@ import { getUserEdition, type EditionId } from "../db/store.js";
 import { BUSINESS_TOOLS, BUSINESS_TOOL_NAMES, runBusinessTool } from "../business/tools.js";
 import { businessPromptSection } from "../business/prompt.js";
 import { receiptToLedger } from "../business/receipts.js";
+import { incomeFromMail } from "../business/incomeDetector.js";
 
 export interface Edition {
   id: EditionId;
@@ -87,5 +88,18 @@ export async function onReceiptSaved(
     await receiptToLedger(ownerId, doc, derived);
   } catch (err) {
     console.error("editions: receipt hook failed", err);
+  }
+}
+
+// Called with each batch of new automated mail (importantEmailAlerts.ts). Sends nothing.
+export function onAutomatedMail(
+  ownerId: number,
+  messages: { accountId: number; id: string; from: string; subject: string; snippet: string; receivedAt: string }[]
+): void {
+  if (!getEdition(ownerId).logsReceipts) return;
+  try {
+    incomeFromMail(ownerId, messages);
+  } catch (err) {
+    console.error("editions: mail hook failed", err);
   }
 }

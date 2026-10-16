@@ -60,6 +60,7 @@ const {
 } = await import("./importantEmailAlerts.js");
 const { setXeroForwardingEmail } = await import("./xero.js");
 const { getPendingInvoiceForward } = await import("./xeroInvoiceConfirmation.js");
+const { listLedgerEntries } = await import("../business/ledgerStore.js");
 
 let counter = 0;
 function uniqueEmail(prefix: string): string {
@@ -136,6 +137,40 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.useRealTimers();
+});
+
+describe("checkForImportantEmails — business income", () => {
+  it("logs a payout email as income awaiting review, without messaging the user", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("biz-income"));
+    setUserEdition(user.id, "business");
+    registerActivePhone(user.id);
+    await baseline(user.id);
+
+    mockHubListNewMessages.mockResolvedValueOnce([
+      fakeMessage({ id: "payout-1", from: "Stripe <notifications@stripe.com>", subject: "Your £250.00 payout is on the way" }),
+    ]);
+
+    await checkForImportantEmails(user.id);
+
+    expect(listLedgerEntries(user.id)).toEqual([
+      expect.objectContaining({ direction: "in", amountPence: 25000, status: "needs_review", sourceRef: "email:1:payout-1" }),
+    ]);
+    expect(vi.mocked(sendWhatsAppMessage)).not.toHaveBeenCalled();
+  });
+
+  it("leaves general users' books alone", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("gen-income"));
+    registerActivePhone(user.id);
+    await baseline(user.id);
+
+    mockHubListNewMessages.mockResolvedValueOnce([
+      fakeMessage({ id: "payout-2", from: "Stripe <notifications@stripe.com>", subject: "Your £250.00 payout is on the way" }),
+    ]);
+
+    await checkForImportantEmails(user.id);
+
+    expect(listLedgerEntries(user.id)).toHaveLength(0);
+  });
 });
 
 describe("checkForImportantEmails", () => {
