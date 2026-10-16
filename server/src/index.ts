@@ -27,6 +27,7 @@ import { newsRoutes } from "./routes/newsRoutes.js";
 import { adminRoutes } from "./routes/adminRoutes.js";
 import { whatsappSimRoutes } from "./routes/whatsappSimRoutes.js";
 import { portalRoutes } from "./routes/portalRoutes.js";
+import { joycePortalRoutes } from "./routes/joycePortalRoutes.js";
 import { helpChatRoutes } from "./routes/helpChatRoutes.js";
 import { requireAuth, requireAdmin } from "./middleware/auth.js";
 import { startScheduler } from "./services/scheduler.js";
@@ -126,6 +127,8 @@ if (process.env.ENABLE_WHATSAPP_SIMULATOR === "true") {
 // middleware makes more sense at this size. Mounted after the blanket requireAuth above, so
 // req.userId is already set.
 app.use("/api/portal", requireAdmin, portalRoutes);
+// Joyce's admin portal — the same sections as the Portal, for the family assistant. Same gate.
+app.use("/api/joyce-portal", requireAdmin, joycePortalRoutes);
 
 app.get("/health", (_req, res) => res.json({ ok: true }));
 

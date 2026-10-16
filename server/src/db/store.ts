@@ -363,6 +363,15 @@ const userColumnsAfterRebuild = (db.prepare(`PRAGMA table_info(users)`).all() as
 if (!userColumnsAfterRebuild.includes("edition")) {
   db.exec(`ALTER TABLE users ADD COLUMN edition TEXT NOT NULL DEFAULT 'general'`);
 }
+// The admin to-do list is per product: Marlowe's Portal and Joyce's each have their own list.
+// Everything written before Joyce had a portal was Marlowe's, which is what the default says.
+const adminTodoColumns = (db.prepare(`PRAGMA table_info(admin_todos)`).all() as { name: string }[]).map(
+  (c) => c.name
+);
+if (!adminTodoColumns.includes("product")) {
+  db.exec(`ALTER TABLE admin_todos ADD COLUMN product TEXT NOT NULL DEFAULT 'marlowe'`);
+}
+
 const invitedPhoneColumns = (db.prepare(`PRAGMA table_info(invited_phones)`).all() as { name: string }[]).map(
   (c) => c.name
 );
@@ -3692,7 +3701,17 @@ export function addServerLog(level: string, message: string): void {
   );
 }
 
-export function listRecentServerLogs(limit: number): ServerLogRow[] {
+// `messagePrefix` narrows to one part of the server by its log prefix — Joyce's portal passes
+// "joyce:", the prefix every one of her log lines starts with.
+export function listRecentServerLogs(limit: number, messagePrefix?: string): ServerLogRow[] {
+  if (messagePrefix) {
+    return db
+      .prepare(
+        `SELECT id, level, message, created_at AS createdAt, explanation, explained_at AS explainedAt
+         FROM server_logs WHERE substr(message, 1, ?) = ? ORDER BY created_at DESC LIMIT ?`
+      )
+      .all(messagePrefix.length, messagePrefix, limit) as ServerLogRow[];
+  }
   return db
     .prepare(
       `SELECT id, level, message, created_at AS createdAt, explanation, explained_at AS explainedAt
@@ -3924,15 +3943,18 @@ export interface AdminTodoRow {
 // own read position per todo, so the same todo can show "2 unread" to one admin and "0" to
 // another. Replies are fetched in one extra query (not per-todo N+1) and grouped in JS; an admin
 // to-do list is small enough that this is simpler than a correlated SQL subquery per row.
-export function listAdminTodos(viewerId: number): AdminTodoRow[] {
+export type AdminProduct = "marlowe" | "joyce";
+
+export function listAdminTodos(viewerId: number, product: AdminProduct = "marlowe"): AdminTodoRow[] {
   const todoRows = db
     .prepare(
       `SELECT t.id, t.text, t.done, t.created_by AS createdBy, u.email AS createdByEmail,
               t.created_at AS createdAt, t.done_at AS doneAt
        FROM admin_todos t JOIN users u ON u.id = t.created_by
+       WHERE t.product = ?
        ORDER BY t.done ASC, t.created_at DESC`
     )
-    .all() as (Omit<AdminTodoRow, "done" | "replies" | "unreadReplyCount"> & { done: number })[];
+    .all(product) as (Omit<AdminTodoRow, "done" | "replies" | "unreadReplyCount"> & { done: number })[];
 
   const replyRows = db
     .prepare(
@@ -3966,11 +3988,12 @@ export function listAdminTodos(viewerId: number): AdminTodoRow[] {
   });
 }
 
-export function addAdminTodo(text: string, createdBy: number): void {
-  db.prepare(`INSERT INTO admin_todos (text, created_by, created_at) VALUES (?, ?, ?)`).run(
+export function addAdminTodo(text: string, createdBy: number, product: AdminProduct = "marlowe"): void {
+  db.prepare(`INSERT INTO admin_todos (text, created_by, created_at, product) VALUES (?, ?, ?, ?)`).run(
     text,
     createdBy,
-    Date.now()
+    Date.now(),
+    product
   );
 }
 

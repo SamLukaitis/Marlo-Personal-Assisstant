@@ -7,6 +7,7 @@ import type { FamilySession } from "./familyDb.js";
 import { decryptBufferFor, encryptBufferFor } from "./familyKey.js";
 import { FAMILY_FILES_DIR } from "./registry.js";
 import { getDocument, saveDocument } from "./store.js";
+import { recordJoyceUsage } from "./adminRecords.js";
 
 // Photos and files family members send Joyce: stored, read, and searchable by the whole family.
 //
@@ -88,6 +89,7 @@ async function readFile(buffer: Buffer, mimeType: string): Promise<string> {
       },
     ],
   });
+  recordJoyceUsage(MODEL, "joyce_file_reading", response.usage);
   const text = response.content
     .filter((b): b is Anthropic.TextBlock => b.type === "text")
     .map((b) => b.text)

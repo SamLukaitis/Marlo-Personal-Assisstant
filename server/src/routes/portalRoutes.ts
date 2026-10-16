@@ -231,7 +231,7 @@ const MODEL_PRICE_PER_MTOK: Record<
 
 // estimatedCost is null for a model not in the price table above (e.g. one added after this
 // list was last updated) rather than silently reporting $0, which would understate real spend.
-function estimateCost(
+export function estimateCost(
   model: string,
   inputTokens: number,
   outputTokens: number,

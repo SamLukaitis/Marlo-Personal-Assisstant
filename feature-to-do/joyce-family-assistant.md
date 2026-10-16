@@ -145,6 +145,29 @@ Searching notes and documents now ranks by how many of the search words match. P
 needed the exact phrase, which the live test showed failing whenever the model searched in its own
 words.
 
+## Admin portal
+
+Added 2026-10-17. Admins get a Joyce portal at `/joyce-portal`, next to Marlowe's Portal in the
+sidebar, built from the same components in terracotta instead of green. Four sections:
+
+- **Flagged requests.** Joyce has a `flag_unmet_request` tool, like Marlowe's, for things a
+  family asked for that she couldn't do. Admins can leave notes and mark them resolved.
+- **To-do list.** Its own list, separate from Marlowe's (same table, `product = 'joyce'`).
+- **Logs.** The server's log lines that start with `joyce:`. "Explain this" works as in the Portal.
+- **Usage.** Joyce's Claude calls (replies, and reading photos/files) with token counts and an
+  approximate cost. Recorded with no family attached, so there is no per-family breakdown.
+
+**This is the one place family-originated text leaves a family's encrypted file.** A flagged
+request's one-line summary is stored in `data/joyce/admin.db`, readable by admins, with an
+anonymous family label (`Family 3F9A2C`, an HMAC of the family id under the master key). Joyce is
+told to leave names and personal details out of the summary, but that is an instruction to the
+model, not a guarantee. The label lets admins see that several requests came from one family
+without learning which family. This was a deliberate choice (2026-10-17) over a summary with no
+family link at all. Nothing in the portal can open a family's database.
+
+The portal routes are in `server/src/routes/joycePortalRoutes.ts`, outside `src/joyce/`, because
+they need Marlowe's admin auth; Joyce's own code still imports nothing of Marlowe's.
+
 ## Problems I hit, and what I did about them
 
 **Marlowe would have answered Joyce's messages.** This was the real landmine. Meta configures a

@@ -5,6 +5,7 @@ import { LEAVE_WARNING } from "./leaving.js";
 import { loadFamilyFile } from "./files.js";
 import { sendJoyceMedia } from "./whatsapp.js";
 import { messages as toMessages, type JoyceMessage } from "./messages.js";
+import { flagRequest, recordJoyceUsage } from "./adminRecords.js";
 import {
   appendMessage,
   claimDueReminders,
@@ -170,6 +171,27 @@ const TOOLS: Anthropic.Tool[] = [
         message: { type: "string" },
       },
       required: ["to", "message"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "flag_unmet_request",
+    description:
+      "Call this (alongside your normal honest reply, same turn) whenever someone asks for " +
+      "something you genuinely can't do with your tools — not for things you can do, and not for " +
+      "clarifying questions. The team reads these to decide what to build next. Write one " +
+      "sentence on what was wanted and why you couldn't help, with no names, numbers, addresses " +
+      "or other personal details: 'asked to book a dentist appointment', not 'Priya asked to " +
+      "book Leo in at Smile Dental on 4 Nov'.",
+    input_schema: {
+      type: "object",
+      properties: {
+        summary: {
+          type: "string",
+          description: "One sentence, no personal details: what they wanted and why you couldn't help",
+        },
+      },
+      required: ["summary"],
       additionalProperties: false,
     },
   },
@@ -355,6 +377,10 @@ async function runTool(
       queueRelay(session, found.id, String(input.message));
       return `Message left for ${found.displayName}; they'll get it next time they message you.`;
     }
+    case "flag_unmet_request": {
+      flagRequest(session, String(input.summary ?? ""));
+      return "Flagged for the team. Carry on with your reply as normal; don't mention the flag.";
+    }
     case "current_family_id": {
       const code = getFamilyJoinCode(session);
       if (!code) {
@@ -458,6 +484,7 @@ export async function runJoyceTurn(
       tools: TOOLS,
       messages,
     });
+    recordJoyceUsage(MODEL, "joyce_chat", response.usage);
 
     const text = response.content
       .filter((b): b is Anthropic.TextBlock => b.type === "text")

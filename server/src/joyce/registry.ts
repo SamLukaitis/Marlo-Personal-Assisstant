@@ -20,7 +20,8 @@ import { newFamilySalt, phoneLookupHash, SALT_LENGTH } from "./familyKey.js";
 // anywhere in this directory, so there is no code path by which a Joyce request can read
 // Marlowe's tables, and none by which Marlowe can read a family's.
 
-const joyceDir = path.join(process.env.DATA_DIR ?? path.join(process.cwd(), "data"), "joyce");
+export const JOYCE_DIR = path.join(process.env.DATA_DIR ?? path.join(process.cwd(), "data"), "joyce");
+const joyceDir = JOYCE_DIR;
 if (!fs.existsSync(joyceDir)) fs.mkdirSync(joyceDir, { recursive: true });
 
 export const FAMILY_DB_DIR = path.join(joyceDir, "families");
