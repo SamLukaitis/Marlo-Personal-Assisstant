@@ -3,6 +3,8 @@
 // it never imports server/src/business/ directly.
 import type Anthropic from "@anthropic-ai/sdk";
 import { getUserEdition, type EditionId } from "../db/store.js";
+import { BUSINESS_TOOLS, BUSINESS_TOOL_NAMES, runBusinessTool } from "../business/tools.js";
+import { businessPromptSection } from "../business/prompt.js";
 
 export interface Edition {
   id: EditionId;
@@ -37,9 +39,8 @@ const BUSINESS: Edition = {
     "list_expenses",
     "undo_expense",
   ],
-  extraTools: [],
-  promptSection: () =>
-    "BUSINESS EDITION: this user is a UK sole trader and you are their admin assistant for the business — receipts, bills, payments, email and diary.",
+  extraTools: BUSINESS_TOOLS,
+  promptSection: businessPromptSection,
   logsReceipts: true,
 };
 
@@ -62,10 +63,13 @@ export function applyEditionTools(ownerId: number, tools: Anthropic.ToolUnion[])
 }
 
 // undefined = not an edition tool; runTool falls through to its own "unknown tool" error.
+// Dispatch by tool NAME, not by the caller's edition: a business tool reaching runTool for a
+// general user must still hit runBusinessTool's own edition check and be refused.
 export async function runEditionTool(
-  _ownerId: number,
-  _name: string,
-  _input: Record<string, unknown>
+  ownerId: number,
+  name: string,
+  input: Record<string, unknown>
 ): Promise<unknown | undefined> {
+  if (BUSINESS_TOOL_NAMES.has(name)) return runBusinessTool(ownerId, name, input);
   return undefined;
 }
