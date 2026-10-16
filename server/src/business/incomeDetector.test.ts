@@ -65,6 +65,14 @@ describe("incomeFromMail / onAutomatedMail", () => {
     ]);
   });
 
+  it("a message with an unreadable date doesn't cost the rest of the batch", () => {
+    const id = user("business");
+    const broken = { ...msg, id: "bad", receivedAt: "not a date" };
+    const good = { ...msg, id: "good" };
+    expect(incomeFromMail(id, [broken, good])).toBe(1);
+    expect(listLedgerEntries(id).map((e) => e.sourceRef)).toEqual(["email:1:good"]);
+  });
+
   it("does nothing for general users", () => {
     const id = user("general");
     onAutomatedMail(id, [msg]);

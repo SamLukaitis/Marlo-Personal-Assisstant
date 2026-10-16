@@ -34,10 +34,13 @@ export function detectIncome(m: { from: string; subject: string; snippet: string
   if (!amount) return null;
   const amountPence = Math.round(Number(amount[1].replace(/,/g, "")) * 100);
   if (!Number.isFinite(amountPence) || amountPence <= 0) return null;
+  // No usable date means no tax year to put it in; skip it rather than throw and lose the batch.
+  const received = new Date(m.receivedAt);
+  if (Number.isNaN(received.getTime())) return null;
   return {
     amountPence,
     counterparty: PAYER.exec(m.snippet)?.[1] ?? senderName(m.from),
-    occurredOn: new Date(m.receivedAt).toISOString().slice(0, 10),
+    occurredOn: received.toISOString().slice(0, 10),
   };
 }
 
