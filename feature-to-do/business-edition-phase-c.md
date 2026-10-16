@@ -17,7 +17,7 @@ them is in `docs/superpowers/specs/2026-10-16-business-edition-design.md` §5.
 4. **A proper business onboarding.** For now the assistant asks what the business does and invites
    a first receipt through its prompt. The WhatsApp signup chain (postConnectSetup.ts) could do this
    in scripted steps instead.
-5. **Switch edition from the admin Portal.** Today it's a command (`npm run set-edition`).
+5. ~~Switch edition from the admin Portal.~~ Done: Portal → Admins → Make business / Make general, and a "Business tester" tick box on the Settings invite form.
 6. **Receipts in other currencies.** Currently skipped. Convert at the date's rate, or ask.
 7. **Brand name and landing page** for the business edition (`brandName` in
    `server/src/editions/index.ts` is a placeholder).

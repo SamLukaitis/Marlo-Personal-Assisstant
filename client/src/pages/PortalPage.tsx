@@ -4,6 +4,7 @@ import {
   fetchAdminCandidates,
   grantAdmin,
   revokeAdmin,
+  setUserEdition,
   fetchUnmetRequests,
   fetchPhoneActions,
   resolveUnmetRequest,
@@ -972,11 +973,25 @@ function AdminsTab({ currentUserId }: { currentUserId: number }) {
     }
   }
 
+  async function handleEdition(c: AdminCandidate) {
+    const next = c.edition === "business" ? "general" : "business";
+    const who = c.email ?? c.phone ?? `#${c.id}`;
+    if (!window.confirm(`Switch ${who} to the ${next} edition? It takes effect on their next message.`)) return;
+    setError(null);
+    try {
+      setCandidates(await setUserEdition(c.id, next));
+    } catch (err) {
+      setError((err as Error).message);
+    }
+  }
+
   return (
     <>
       <h2>Admins</h2>
       <p className="settings-section-intro">
         Anyone with Portal access can grant or remove it for anyone else who's been invited to the app.
+        This is also where you move someone between the general and business (UK sole trader)
+        editions. Switching never deletes anything: business books come back if they're switched back.
       </p>
       {error && <p className="error">{error}</p>}
       {!loaded ? (
@@ -988,16 +1003,22 @@ function AdminsTab({ currentUserId }: { currentUserId: number }) {
               {/* Matches usageOwnerLabel (api/client.ts): a beta that's mostly phone-first would
                   otherwise render every phone-only row identically, with no way to tell them
                   apart or audit who holds a live "Make admin" button. */}
-              {c.email ?? `No email connected (#${c.id})`}
+              {c.email ?? (c.phone ? `${c.phone} (no email)` : `No email connected (#${c.id})`)}
               {c.id === currentUserId && <span className="muted"> (you)</span>}
               {c.isAppOwner && <span className="badge-pill" style={{ marginLeft: 8 }}>owner</span>}
               {c.isAdmin && !c.isAppOwner && <span className="badge-pill" style={{ marginLeft: 8 }}>admin</span>}
+              {c.edition === "business" && <span className="badge-pill" style={{ marginLeft: 8 }}>business</span>}
             </span>
-            {!c.isAppOwner && (
-              <button className={c.isAdmin ? "btn-danger" : "btn-primary"} onClick={() => handleToggle(c)}>
-                {c.isAdmin ? "Revoke" : "Make admin"}
+            <span className="row" style={{ gap: 8 }}>
+              <button className="btn-secondary" onClick={() => handleEdition(c)}>
+                {c.edition === "business" ? "Make general" : "Make business"}
               </button>
-            )}
+              {!c.isAppOwner && (
+                <button className={c.isAdmin ? "btn-danger" : "btn-primary"} onClick={() => handleToggle(c)}>
+                  {c.isAdmin ? "Revoke" : "Make admin"}
+                </button>
+              )}
+            </span>
           </div>
         ))
       )}

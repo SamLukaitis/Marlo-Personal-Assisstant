@@ -25,6 +25,7 @@ import {
   getReplayParkedOwner,
   upsertPendingRegistration,
   getPendingRegistration,
+  getUserEdition,
 } from "../db/store.js";
 
 const { sendProactiveMessage } = await import("../services/outbound.js");
@@ -135,6 +136,24 @@ describe("/api/admin/invites", () => {
     const afterRemove = await request(app).delete(`/api/admin/invites/${phone}`);
     expect(afterRemove.status).toBe(200);
     expect(afterRemove.body.map((r: { phone: string }) => r.phone)).not.toContain(phone);
+  });
+
+  it("invites a business tester, who starts on the business edition", async () => {
+    const app = buildTestApp(getAppOwnerUserId());
+    const phone = uniquePhone();
+
+    const res = await request(app).post("/api/admin/invites").send({ phone, edition: "business" });
+    expect(res.status).toBe(200);
+    expect(res.body.find((r: { phone: string }) => r.phone === phone).edition).toBe("business");
+    expect(getUserEdition(findOrCreateUserByPhone(phone).id)).toBe("business");
+  });
+
+  it("a plain invite is general, and an unknown edition is rejected", async () => {
+    const app = buildTestApp(getAppOwnerUserId());
+    const phone = uniquePhone();
+    const res = await request(app).post("/api/admin/invites").send({ phone });
+    expect(res.body.find((r: { phone: string }) => r.phone === phone).edition).toBe("general");
+    expect((await request(app).post("/api/admin/invites").send({ phone: uniquePhone(), edition: "family" })).status).toBe(400);
   });
 
   it("rejects an empty/invalid phone with 400", async () => {

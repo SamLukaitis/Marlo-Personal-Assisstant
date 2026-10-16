@@ -549,20 +549,24 @@ export const fetchTravelDays = (area = "schengen", days = 180) =>
 
 // Invite-only access is gated by phone number, not email — send a tester the WhatsApp number to
 // message and add their number here; no need to collect their email in advance.
+// "business" = the UK sole-trader edition (docs/superpowers/specs/2026-10-16-business-edition-design.md).
+export type Edition = "general" | "business";
+
 export interface InvitedPhone {
   phone: string;
   invitedAt: number;
+  edition: Edition;
 }
 
 export const fetchInvites = () => getJson<InvitedPhone[]>("/api/admin/invites");
 
-export async function addInvite(phone: string): Promise<InvitedPhone[]> {
+export async function addInvite(phone: string, edition?: Edition): Promise<InvitedPhone[]> {
   const res = await fetch(
     `${API_BASE}/api/admin/invites`,
     withCredentials({
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ phone }),
+      body: JSON.stringify(edition ? { phone, edition } : { phone }),
     })
   );
   if (!res.ok) {
@@ -788,9 +792,13 @@ export interface AdminCandidate {
   isAdmin: boolean;
   isAppOwner: boolean;
   createdAt: number;
+  edition: Edition;
+  phone: string | null;
 }
 
 export const fetchAdminCandidates = () => getJson<AdminCandidate[]>("/api/portal/admins");
+export const setUserEdition = (userId: number, edition: Edition) =>
+  mutateJson<AdminCandidate[]>(`/api/portal/editions/${userId}`, "POST", { edition });
 export const grantAdmin = (userId: number) =>
   mutateJson<AdminCandidate[]>(`/api/portal/admins/${userId}`, "POST");
 export const revokeAdmin = (userId: number) =>

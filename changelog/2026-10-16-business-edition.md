@@ -22,8 +22,10 @@ Nothing in the books is ever really deleted. Removing an entry hides it, and eve
 in its history, which an accountant can trust. Personal spending and entries that haven't been
 checked are left out of the totals.
 
-To put someone on it: `npm run invite -- <phone> --edition business`, or for an existing user
-`npm run set-edition -- <phone> business`.
+To put someone on it in the live app: tick **Business tester** when inviting them in Settings →
+Admin, or press **Make business** next to them on the Portal's Admins tab (it takes effect on their
+next message, and switching back never deletes their books). Locally there are also
+`npm run invite -- <phone> --edition business` and `npm run set-edition -- <phone> business`.
 
 ## Why
 

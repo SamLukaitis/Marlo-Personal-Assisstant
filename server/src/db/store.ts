@@ -3551,6 +3551,10 @@ export interface AdminCandidateRow {
   isAdmin: boolean;
   isAppOwner: boolean;
   createdAt: number;
+  // Which product they're on, and a phone to recognise phone-first users (no email) by — the
+  // Portal's user list is also where an admin switches someone to the business edition.
+  edition: EditionId;
+  phone: string | null;
 }
 
 // Every user, with their admin status resolved — lets the Portal's Admins tab show who already
@@ -3558,14 +3562,20 @@ export interface AdminCandidateRow {
 // so this list is implicitly scoped to people who could actually use it).
 export function listAdminCandidateUsers(): AdminCandidateRow[] {
   const rows = db
-    .prepare(`SELECT id, email, is_admin AS isAdminFlag, created_at AS createdAt FROM users ORDER BY created_at ASC`)
-    .all() as { id: number; email: string | null; isAdminFlag: number; createdAt: number }[];
+    .prepare(
+      `SELECT id, email, is_admin AS isAdminFlag, created_at AS createdAt, edition,
+         (SELECT phone FROM user_phone_numbers p WHERE p.user_id = users.id ORDER BY p.created_at ASC LIMIT 1) AS phone
+       FROM users ORDER BY created_at ASC`
+    )
+    .all() as { id: number; email: string | null; isAdminFlag: number; createdAt: number; edition: string; phone: string | null }[];
   return rows.map((r) => ({
     id: r.id,
     email: r.email,
     isAdmin: r.isAdminFlag === 1 || r.id === getAppOwnerUserId(),
     isAppOwner: r.id === getAppOwnerUserId(),
     createdAt: r.createdAt,
+    edition: isEditionId(r.edition) ? r.edition : "general",
+    phone: r.phone,
   }));
 }
 
@@ -4053,11 +4063,15 @@ export function addInvitedPhone(phone: string, edition?: EditionId): void {
 export interface InvitedPhoneRow {
   phone: string;
   invitedAt: number;
+  edition: EditionId;
 }
 
 export function listInvitedPhones(): InvitedPhoneRow[] {
   return db
-    .prepare(`SELECT phone, invited_at AS invitedAt FROM invited_phones ORDER BY invited_at DESC`)
+    .prepare(
+      `SELECT phone, invited_at AS invitedAt, COALESCE(edition, 'general') AS edition
+       FROM invited_phones ORDER BY invited_at DESC`
+    )
     .all() as InvitedPhoneRow[];
 }
 
