@@ -7,6 +7,7 @@ import { BUSINESS_TOOLS, BUSINESS_TOOL_NAMES, runBusinessTool } from "../busines
 import { businessPromptSection } from "../business/prompt.js";
 import { receiptToLedger } from "../business/receipts.js";
 import { incomeFromMail } from "../business/incomeDetector.js";
+import { businessBriefingFacts } from "../business/briefing.js";
 
 export interface Edition {
   id: EditionId;
@@ -101,5 +102,17 @@ export function onAutomatedMail(
     incomeFromMail(ownerId, messages);
   } catch (err) {
     console.error("editions: mail hook failed", err);
+  }
+}
+
+// Extra fact lines for the morning briefing (services/briefing.ts). Never throws: the briefing is
+// the product, and a ledger problem must not cost the user their morning.
+export function editionBriefingFacts(ownerId: number, today: string): string[] {
+  if (getEdition(ownerId).id !== "business") return [];
+  try {
+    return businessBriefingFacts(ownerId, today);
+  } catch (err) {
+    console.error("editions: briefing facts failed", err);
+    return [];
   }
 }

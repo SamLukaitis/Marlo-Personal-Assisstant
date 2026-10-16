@@ -20,6 +20,7 @@ Marlowe can be used from the web app and, optionally, through WhatsApp. It is de
 - **Places and travel times (optional):** With `GOOGLE_MAPS_API_KEY` set, the assistant finds real nearby places and driving/walking times through Google's Maps Grounding Lite MCP server. On WhatsApp it can ask for your location with a one-tap "Send location" button.
 - **App hand-off links:** Marlowe sends links that open Uber, Lyft, Google Maps, OpenTable, Resy, Spotify, Airbnb or Booking.com already filled in (`server/src/services/appLinks.ts`); you confirm in the app. There's no setup and no API keys.
 - **Phone actions (optional):** With the one-time "Marlowe" Apple Shortcut installed, Marlowe sends one-tap links that set alarms, timers and reminders, change Focus and phone settings, text or call from your number, run your own Shortcuts, and send your location, battery, sleep or a typed answer back (`server/src/services/phoneActions.ts`). It offers them in chat, the briefing, the evening digest and on booking reminders. Off until `MARLOWE_SHORTCUT_ICLOUD_URL` is set; see `docs/marlowe-shortcut-build-guide.md`.
+- **Business edition (UK sole traders):** Users invited with `--edition business` get a work-focused Marlowe with a simple set of books. Receipts and bills they send, invoice emails they say yes to, payment emails (Stripe, SumUp, PayPal, "invoice paid") and money mentioned in chat go into a ledger sorted into HMRC's SA103 expense categories. Model guesses always wait for the user's check, a supplier's category is remembered once confirmed, nothing is hard-deleted, and the Monday briefing gives last week's money in and out. GBP only; tax estimates and MTD come next (`feature-to-do/business-edition-phase-c.md`). Code: `server/src/business/`, reached only through `server/src/editions/index.ts`.
 - **Administration:** Admin users have access to a separate portal for operational tools, logs, user administration, and application health information.
 
 ## Safety and privacy boundaries
@@ -105,12 +106,14 @@ npm run dev
 
 Open <http://localhost:5173>. The client expects the API at `http://localhost:4000` by default; change `VITE_API_BASE` in `client/.env` if needed.
 
-Because access is invite-only, invite a user from the server directory before they sign in:
+Because access is invite-only, invite a user's WhatsApp number from the server directory before they sign in:
 
 ```bash
 cd server
-npm run invite -- someone@example.com
+npm run invite -- 447911123456
 ```
+
+Add `--edition business` to put them on the business edition (UK sole traders) from their first message. To move an existing user, run `npm run set-edition -- 447911123456 business` (or `general`).
 
 ## Production build and start
 

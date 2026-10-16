@@ -105,9 +105,9 @@ ledger_entries
   source_ref       TEXT NULL       -- email message id, bank txn id, etc.
   deleted_at       INTEGER NULL    -- soft delete only
   created_at, updated_at INTEGER NOT NULL
-  -- partial unique indexes (CREATE UNIQUE INDEX ... WHERE):
-  UNIQUE (owner_id, document_id) WHERE document_id IS NOT NULL
-  UNIQUE (owner_id, source, source_ref, amount_pence) WHERE source_ref IS NOT NULL
+  -- partial unique index (CREATE UNIQUE INDEX ... WHERE) — dedupe key; a document can hold several
+  -- purchases, so receipts use source_ref = "doc:<id>:<n>", emails "email:<account>:<message>"
+  UNIQUE (owner_id, source, source_ref) WHERE source_ref IS NOT NULL
 
 ledger_entry_history
   id, entry_id → ledger_entries, owner_id, changed_at, changed_by ('user'|'assistant'|'system'),
@@ -123,7 +123,7 @@ cost_of_goods if resold"). Business entertainment is not allowable — record as
 **Rules:**
 - Never hard-delete. "Undo" sets `deleted_at`; every update writes a history row.
 - Totals count only `business_use='business' AND status='confirmed' AND deleted_at IS NULL`.
-- Dedupe via the unique indexes above; a duplicate insert returns the existing entry.
+- Dedupe via the unique index above; a duplicate insert returns the existing entry.
 - `deleteUserCompletely` must delete both tables (history first). Explicit test — this function has a
   recurring owner-scoped-table FK bug.
 
