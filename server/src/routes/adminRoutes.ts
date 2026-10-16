@@ -3,6 +3,7 @@ import {
   isAdmin,
   listInvitedPhones,
   addInvitedPhone,
+  isEditionId,
   removeInvitedPhone,
   resolveOwnerByPhone,
   listReplayParkedPhonesForUser,
@@ -84,7 +85,13 @@ adminRoutes.post("/api/admin/invites", (req, res) => {
     res.status(400).json({ error: formatError });
     return;
   }
-  addInvitedPhone(phone);
+  // Optional: "business" invites a business-edition tester, applied when the number first binds.
+  const edition = req.body?.edition;
+  if (edition !== undefined && !isEditionId(edition)) {
+    res.status(400).json({ error: "edition must be general or business" });
+    return;
+  }
+  addInvitedPhone(phone, edition);
 
   // Makes good on the promise in MARLOWE_WAITLIST_TEXT ("we'll message you here as soon as you
   // can get started"). Only for numbers that actually asked — inviting someone who never messaged

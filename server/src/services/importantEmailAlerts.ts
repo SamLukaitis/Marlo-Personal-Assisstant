@@ -34,6 +34,7 @@ import { enrichImportantEmail } from "./importantEmailEnrichment.js";
 import { getUserTimezone } from "./userTimezone.js";
 import type { AttentionDetails } from "../db/store.js";
 import type { UnifiedMessage } from "../providers/types.js";
+import { onAutomatedMail } from "../editions/index.js";
 
 const BASELINE_KEY = "important_email_baseline_set";
 
@@ -165,6 +166,14 @@ export async function checkForImportantEmails(ownerId: number): Promise<void> {
     holdNewMessageCheckpoint(ownerId);
     return;
   }
+
+  // Business edition: payment-received mail becomes income awaiting review. Before the WhatsApp
+  // gates on purpose — it sends nothing, so it needn't wait for a deliverable number. Safe to see
+  // the same message again on a retry: the ledger dedupes on the message id.
+  onAutomatedMail(
+    ownerId,
+    unscanned.map((m) => ({ ...m, from: m.from ?? "" }))
+  );
 
   // Cheap deliverability gates before the paid classification call, same precedent as alerts.ts
   // and reconciliation.ts — this feature is on by default, so every deployment without WhatsApp

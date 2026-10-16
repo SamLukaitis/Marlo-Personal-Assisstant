@@ -7,6 +7,7 @@ import { getEntityTypeDef } from "../services/entityTypes.js";
 import { migrateUsersEmailNullable } from "./migrations/usersEmailNullable.js";
 import { migrateReplayParkMarker } from "./migrations/replayParkMarker.js";
 import { migrateMemoryGraph } from "./migrations/memoryGraph.js";
+import { migrateBusinessLedger } from "./migrations/businessLedger.js";
 
 // DATA_DIR lets tests (see server/src/test/setup.ts) point this at an isolated temp directory
 // instead of the real server/data — unset in normal dev/production, where this falls back to
@@ -353,6 +354,21 @@ if (!userColumns.includes("is_admin")) {
 // migration itself skips the backup once this fixed path already exists, so a crash loop still
 // only ever produces the one pre-migration snapshot.
 migrateUsersEmailNullable(db, path.join(dataDir, `app.db.bak-users-email-nullable`));
+
+// Business edition (docs/superpowers/specs/2026-10-16-business-edition-design.md): which product a
+// user is on. Added after the users rebuild above so that rebuild never has to know about it.
+const userColumnsAfterRebuild = (db.prepare(`PRAGMA table_info(users)`).all() as { name: string }[]).map(
+  (c) => c.name
+);
+if (!userColumnsAfterRebuild.includes("edition")) {
+  db.exec(`ALTER TABLE users ADD COLUMN edition TEXT NOT NULL DEFAULT 'general'`);
+}
+const invitedPhoneColumns = (db.prepare(`PRAGMA table_info(invited_phones)`).all() as { name: string }[]).map(
+  (c) => c.name
+);
+if (!invitedPhoneColumns.includes("edition")) {
+  db.exec(`ALTER TABLE invited_phones ADD COLUMN edition TEXT`);
+}
 
 // api_usage originally only tracked the main assistant chat (owner_id required, no purpose
 // column). Recording usage for calls with no signed-in owner yet (the public help widget, the
@@ -981,6 +997,7 @@ if (!userPhoneNumberColumns.includes("last_inbound_at")) {
 // reads the column any more, so nothing would ever unpark it, while its row went on holding the
 // UNIQUE phone slot. See the migration's own comment for the full story.
 migrateReplayParkMarker(db);
+migrateBusinessLedger(db);
 
 // Which OAuth provider the person picked at the "Gmail or Outlook?" button step of registration
 // — see services/whatsappRegistration.ts. Needed so a later "resend" only re-sends that one link
@@ -2153,6 +2170,14 @@ export function addPhoneNumberForUser(ownerId: number, phone: string): UserPhone
       row = db
         .prepare(`SELECT id, user_id AS userId, phone, created_at AS createdAt FROM user_phone_numbers WHERE id = ?`)
         .get(info.lastInsertRowid) as UserPhoneNumberRow;
+      // An invite can carry an edition (npm run invite -- <phone> --edition business); it takes
+      // effect the moment that number is first bound to an account.
+      const invited = db.prepare(`SELECT edition FROM invited_phones WHERE phone = ?`).get(normalized) as
+        | { edition: string | null }
+        | undefined;
+      if (isEditionId(invited?.edition)) {
+        db.prepare(`UPDATE users SET edition = ? WHERE id = ?`).run(invited.edition, ownerId);
+      }
     }
     // A live binding always beats a replay park marker, so drop the marker here rather than in
     // each caller. Covers both halves of re-onboarding (the original owner reclaiming its own
@@ -3526,6 +3551,10 @@ export interface AdminCandidateRow {
   isAdmin: boolean;
   isAppOwner: boolean;
   createdAt: number;
+  // Which product they're on, and a phone to recognise phone-first users (no email) by — the
+  // Portal's user list is also where an admin switches someone to the business edition.
+  edition: EditionId;
+  phone: string | null;
 }
 
 // Every user, with their admin status resolved — lets the Portal's Admins tab show who already
@@ -3533,14 +3562,20 @@ export interface AdminCandidateRow {
 // so this list is implicitly scoped to people who could actually use it).
 export function listAdminCandidateUsers(): AdminCandidateRow[] {
   const rows = db
-    .prepare(`SELECT id, email, is_admin AS isAdminFlag, created_at AS createdAt FROM users ORDER BY created_at ASC`)
-    .all() as { id: number; email: string | null; isAdminFlag: number; createdAt: number }[];
+    .prepare(
+      `SELECT id, email, is_admin AS isAdminFlag, created_at AS createdAt, edition,
+         (SELECT phone FROM user_phone_numbers p WHERE p.user_id = users.id ORDER BY p.created_at ASC LIMIT 1) AS phone
+       FROM users ORDER BY created_at ASC`
+    )
+    .all() as { id: number; email: string | null; isAdminFlag: number; createdAt: number; edition: string; phone: string | null }[];
   return rows.map((r) => ({
     id: r.id,
     email: r.email,
     isAdmin: r.isAdminFlag === 1 || r.id === getAppOwnerUserId(),
     isAppOwner: r.id === getAppOwnerUserId(),
     createdAt: r.createdAt,
+    edition: isEditionId(r.edition) ? r.edition : "general",
+    phone: r.phone,
   }));
 }
 
@@ -3549,6 +3584,29 @@ export function listAdminCandidateUsers(): AdminCandidateRow[] {
 // revoke action that would silently do nothing.
 export function setUserAdmin(userId: number, admin: boolean): void {
   db.prepare(`UPDATE users SET is_admin = ? WHERE id = ?`).run(admin ? 1 : 0, userId);
+}
+
+export const EDITION_IDS = ["general", "business"] as const;
+export type EditionId = (typeof EDITION_IDS)[number];
+
+export function isEditionId(x: unknown): x is EditionId {
+  return typeof x === "string" && (EDITION_IDS as readonly string[]).includes(x);
+}
+
+export function getUserEdition(userId: number): EditionId {
+  const row = db.prepare(`SELECT edition FROM users WHERE id = ?`).get(userId) as { edition: string } | undefined;
+  return isEditionId(row?.edition) ? row.edition : "general";
+}
+
+export function setUserEdition(userId: number, edition: EditionId): void {
+  if (!isEditionId(edition)) throw new Error(`Unknown edition: ${String(edition)}`);
+  db.prepare(`UPDATE users SET edition = ? WHERE id = ?`).run(edition, userId);
+}
+
+// For server/src/business/ledgerStore.ts, which keeps its SQL next to its own logic rather than
+// growing this file further. Nothing else should need it.
+export function getDb(): Database.Database {
+  return db;
 }
 
 export interface UnmetRequestNoteRow {
@@ -3993,21 +4051,27 @@ export function isPhoneInvited(phone: string): boolean {
 }
 
 // Used by server/src/scripts/invite.ts — the app owner's manual "grant this person a hub" tool.
-export function addInvitedPhone(phone: string): void {
-  db.prepare(`INSERT OR IGNORE INTO invited_phones (phone, invited_at) VALUES (?, ?)`).run(
-    normalizePhone(phone),
-    Date.now()
-  );
+// An edition on the invite is applied when the number is first bound to an account.
+export function addInvitedPhone(phone: string, edition?: EditionId): void {
+  if (edition !== undefined && !isEditionId(edition)) throw new Error(`Unknown edition: ${String(edition)}`);
+  db.prepare(
+    `INSERT INTO invited_phones (phone, invited_at, edition) VALUES (?, ?, ?)
+     ON CONFLICT(phone) DO UPDATE SET edition = COALESCE(excluded.edition, invited_phones.edition)`
+  ).run(normalizePhone(phone), Date.now(), edition ?? null);
 }
 
 export interface InvitedPhoneRow {
   phone: string;
   invitedAt: number;
+  edition: EditionId;
 }
 
 export function listInvitedPhones(): InvitedPhoneRow[] {
   return db
-    .prepare(`SELECT phone, invited_at AS invitedAt FROM invited_phones ORDER BY invited_at DESC`)
+    .prepare(
+      `SELECT phone, invited_at AS invitedAt, COALESCE(edition, 'general') AS edition
+       FROM invited_phones ORDER BY invited_at DESC`
+    )
     .all() as InvitedPhoneRow[];
 }
 
@@ -4161,6 +4225,9 @@ export function deleteUserCompletely(ownerId: number): { deletedDocumentPaths: s
     ).run(ownerId, ownerId);
     db.prepare(`DELETE FROM admin_todos WHERE created_by = ?`).run(ownerId);
     db.prepare(`DELETE FROM poster_notes WHERE author_id = ?`).run(ownerId);
+    db.prepare(`DELETE FROM ledger_entry_history WHERE owner_id = ?`).run(ownerId);
+    db.prepare(`DELETE FROM ledger_entries WHERE owner_id = ?`).run(ownerId);
+    db.prepare(`DELETE FROM ledger_counterparty_choices WHERE owner_id = ?`).run(ownerId);
     db.prepare(`DELETE FROM user_phone_numbers WHERE user_id = ?`).run(ownerId);
     // replay_parked_phones.owner_id is NOT NULL REFERENCES users(id) — the same shape that has
     // broken the DELETE FROM users below three times already (pending_setup/pending_actions,

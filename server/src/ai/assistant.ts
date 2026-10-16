@@ -49,6 +49,7 @@ import {
   type RegistrationProvider,
 } from "../db/store.js";
 import { retrieveRelevantMemory } from "./memoryRetrieval.js";
+import { applyEditionTools, getEdition, isToolExcluded, runEditionTool } from "../editions/index.js";
 import { sendConnectLink } from "../services/connectMailboxLink.js";
 import {
   emailDigestTime,
@@ -1009,7 +1010,7 @@ const ALWAYS_ON_TOOLS: Anthropic.ToolUnion[] = [
   {
     name: "respond_to_invoice_forward_prompt",
     description:
-      "Call this when the user is replying to a 'looks like an invoice — reply yes and I'll forward it to Xero' prompt from a recent WhatsApp alert (check your context for a pending Xero invoice confirmation — only call this if one is actually present; if there's none pending, their message is about something else, so don't call this speculatively). Set confirm=true for an affirmative reply (yes, go ahead, please do, sure), confirm=false for a decline (no, skip, ignore, not now). You never choose which email or attachment this acts on — that was already fixed when the alert was sent.",
+      "Call this when the user is replying to a 'looks like an invoice — reply yes and I'll save it' prompt (to their books and/or Xero) from a recent WhatsApp alert (check your context for a pending Xero invoice confirmation — only call this if one is actually present; if there's none pending, their message is about something else, so don't call this speculatively). Set confirm=true for an affirmative reply (yes, go ahead, please do, sure), confirm=false for a decline (no, skip, ignore, not now). You never choose which email or attachment this acts on — that was already fixed when the alert was sent.",
     input_schema: {
       type: "object",
       properties: {
@@ -1235,12 +1236,15 @@ const PHONE_ACTION_TOOLS: Anthropic.Tool[] = [
 
 export function buildToolsForOwner(ownerId: number): Anthropic.ToolUnion[] {
   const enabled = getEnabledTools(ownerId);
-  const result = [...ALWAYS_ON_TOOLS];
+  const assembled: Anthropic.ToolUnion[] = [...ALWAYS_ON_TOOLS];
   for (const key of TOOL_KEYS) {
-    if (enabled.has(key)) result.push(...CONDITIONAL_TOOLS[key]);
+    if (enabled.has(key)) assembled.push(...CONDITIONAL_TOOLS[key]);
   }
-  if (isMapsConfigured()) result.push(...MAPS_TOOLS);
-  if (isPhoneActionsConfigured()) result.push(...PHONE_ACTION_TOOLS);
+  if (isMapsConfigured()) assembled.push(...MAPS_TOOLS);
+  if (isPhoneActionsConfigured()) assembled.push(...PHONE_ACTION_TOOLS);
+  // The user's edition (editions/index.ts) drops tools that don't belong in that product and adds
+  // its own — before the cache breakpoint below, so it still lands on the true last tool.
+  const result = applyEditionTools(ownerId, assembled);
   // Cache breakpoint must be on the LAST tool schema in the array — which tool that is now
   // depends on which conditional tools are enabled, so it's set dynamically here rather than
   // hardcoded on one specific tool definition like before.
@@ -1322,6 +1326,7 @@ export async function runTool(
   input: Record<string, unknown>,
   phone?: string
 ): Promise<unknown> {
+  if (isToolExcluded(ownerId, name)) return { error: `tool not available: ${name}` };
   const requiredKey = TOOL_NAME_TO_KEY[name];
   if (requiredKey && !getEnabledTools(ownerId).has(requiredKey)) {
     return { error: `tool not enabled: ${name}` };
@@ -1947,8 +1952,10 @@ export async function runTool(
         : untilMs - 180 * 24 * 60 * 60 * 1000;
       return countTravelDays(listAllCheckinsAscending(ownerId), input.area as string, sinceMs, untilMs);
     }
-    default:
-      return { error: `unknown tool: ${name}` };
+    default: {
+      const handled = await runEditionTool(ownerId, name, input);
+      return handled !== undefined ? handled : { error: `unknown tool: ${name}` };
+    }
   }
 }
 
@@ -2145,7 +2152,7 @@ export function buildSystemPrompt(ownerId: number, conversationSummary?: string)
 
   const pendingInvoice = getPendingInvoiceForward(ownerId);
   const pendingInvoiceStatus = pendingInvoice
-    ? `Pending Xero invoice confirmation: a WhatsApp alert about "${pendingInvoice.subject}" asked the user to reply "yes" to forward it to Xero. If their latest message is answering that (yes/no/go ahead/skip), call respond_to_invoice_forward_prompt with confirm accordingly. If it's about something else, ignore this.`
+    ? `Pending Xero invoice confirmation: a WhatsApp alert about "${pendingInvoice.subject}" asked the user to reply "yes" to save it (to their books and/or Xero). If their latest message is answering that (yes/no/go ahead/skip), call respond_to_invoice_forward_prompt with confirm accordingly. If it's about something else, ignore this.`
     : "";
 
   // Mid-onboarding context, keyed off the WhatsApp post-connect chain's own pending step
@@ -2197,6 +2204,7 @@ export function buildSystemPrompt(ownerId: number, conversationSummary?: string)
     onboardingNote,
     buildRules(getEnabledTools(ownerId)),
     phonePromptSection(ownerId),
+    getEdition(ownerId).promptSection(ownerId),
   ]
     .filter(Boolean)
     .join("\n\n");
