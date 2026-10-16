@@ -259,7 +259,10 @@ whatsappRoutes.post("/webhooks/whatsapp", (req, res) => {
     return;
   }
 
-  const messages = extractIncomingMessages(req.body);
+  // Scoped to Marlowe's own number so a second number on the same Meta app (Joyce) can't be
+  // answered by Marlowe, which would otherwise treat every family member as an unrecognised
+  // number and start its own signup flow at them.
+  const messages = extractIncomingMessages(req.body, process.env.WHATSAPP_PHONE_NUMBER_ID);
   for (const m of messages) {
     if (alreadyProcessed(m.messageId)) continue;
     handleIncoming(m).catch((err) =>

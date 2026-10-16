@@ -322,6 +322,50 @@ describe("extractIncomingMessages — unsupported message types", () => {
   });
 });
 
+describe("extractIncomingMessages — which of our numbers it was sent to", () => {
+  // Joyce's number sits on the same Meta app as Marlowe's, so Marlowe's webhook can receive
+  // messages meant for her. Marlowe must ignore those rather than answer them.
+  const MARLOWE = "1237424532795312";
+  const JOYCE = "1429960503526492";
+  const payloadTo = (phoneNumberId?: string) => ({
+    entry: [
+      {
+        changes: [
+          {
+            value: {
+              ...(phoneNumberId ? { metadata: { phone_number_id: phoneNumberId } } : {}),
+              messages: [
+                { from: "447000000001", id: "wamid.n1", type: "text", text: { body: "hi" } },
+              ],
+            },
+          },
+        ],
+      },
+    ],
+  });
+
+  it("keeps a message sent to our own number", () => {
+    expect(extractIncomingMessages(payloadTo(MARLOWE), MARLOWE)).toHaveLength(1);
+  });
+
+  it("drops a message sent to a different number on the same app", () => {
+    expect(extractIncomingMessages(payloadTo(JOYCE), MARLOWE)).toEqual([]);
+  });
+
+  it("keeps a message with no metadata (simulator and older fixtures don't carry it)", () => {
+    expect(extractIncomingMessages(payloadTo(undefined), MARLOWE)).toHaveLength(1);
+  });
+
+  it("keeps everything when no number is given to filter by", () => {
+    expect(extractIncomingMessages(payloadTo(JOYCE))).toHaveLength(1);
+  });
+
+  it("filters per change, so a batch addressed to both numbers keeps only ours", () => {
+    const both = { entry: [...payloadTo(JOYCE).entry, ...payloadTo(MARLOWE).entry] };
+    expect(extractIncomingMessages(both, MARLOWE)).toHaveLength(1);
+  });
+});
+
 describe("extractIncomingMessages — location", () => {
   it("parses a dropped pin with a name and address into an IncomingLocationMessage", () => {
     const payload = {
