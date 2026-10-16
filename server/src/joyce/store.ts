@@ -1,5 +1,5 @@
 import { decryptFor, encryptFor } from "./familyKey.js";
-import type { FamilySession } from "./familyDb.js";
+import { syncReminderSchedule, type FamilyData, type FamilySession } from "./familyDb.js";
 
 // Every read and write of family content. Note what these functions do not take: a family id, an
 // owner id, a phone number, or anything else identifying whose data to touch. They take a
@@ -96,6 +96,16 @@ export function appendMessage(
     )
     // An assistant turn is the family's, not any one member's, so it carries no member_id.
     .run(role === "user" ? session.actor.id : null, role, encryptFor(session.key, body), Date.now());
+}
+
+/**
+ * Something Joyce sent without being asked (a reminder), kept in the family's history like any
+ * reply of hers so she can see later that she sent it.
+ */
+export function appendSentMessage(family: FamilyData, body: string): void {
+  family.db
+    .prepare(`INSERT INTO messages (member_id, role, body_enc, created_at) VALUES (NULL, 'assistant', ?, ?)`)
+    .run(encryptFor(family.key, body), Date.now());
 }
 
 export interface HistoryEntry {
@@ -338,6 +348,7 @@ export function createReminder(
          VALUES (?, ?, ?, ?, ?)`
     )
     .run(session.actor.id, targetMemberId, encryptFor(session.key, body), dueAt, Date.now());
+  syncReminderSchedule(session);
   return Number(res.lastInsertRowid);
 }
 
@@ -381,8 +392,9 @@ export function listUpcomingReminders(session: FamilySession, limit = 20): Remin
 }
 
 /**
- * Reminders now due for this member — either addressed to them or to the whole family. Marks
- * them delivered in the same call, so the same reminder can't be shown twice.
+ * Reminders now due for this member — addressed to them or to the whole family — that they
+ * haven't received yet, whether because the reminder sender couldn't reach them or because it
+ * hasn't run. Recorded as delivered to them in the same call, so nothing is handed over twice.
  */
 export function claimDueReminders(session: FamilySession, now = Date.now()): ReminderRow[] {
   const due = decryptReminderRows(
@@ -392,18 +404,105 @@ export function claimDueReminders(session: FamilySession, now = Date.now()): Rem
         `${REMINDER_SELECT}
           WHERE r.delivered_at IS NULL AND r.due_at <= ?
             AND (r.target_member_id IS NULL OR r.target_member_id = ?)
+            AND NOT EXISTS (SELECT 1 FROM reminder_deliveries d
+                             WHERE d.reminder_id = r.id AND d.member_id = ?)
           ORDER BY r.due_at ASC`
       )
-      .all(now, session.actor.id) as never
+      .all(now, session.actor.id, session.actor.id) as never
   );
-  if (due.length > 0) {
-    const mark = session.db.prepare(`UPDATE reminders SET delivered_at = ? WHERE id = ?`);
-    const markAll = session.db.transaction((ids: number[]) => {
-      for (const id of ids) mark.run(now, id);
-    });
-    markAll(due.map((r) => r.id));
-  }
+  for (const r of due) recordReminderDelivery(session, r.id, session.actor.id, now);
+  if (due.length > 0) syncReminderSchedule(session);
   return due;
+}
+
+// --- Reminder sending (reminderDelivery.ts) ----------------------------------------------------
+
+export interface ReminderRecipient {
+  memberId: number;
+  name: string | null;
+  /** Null for a member who hasn't messaged since numbers started being kept. */
+  phone: string | null;
+  lastSeenAt: number;
+}
+
+export interface ReminderToPush {
+  id: number;
+  body: string;
+  createdByName: string | null;
+  /** Who still needs it: the target, or every member for a whole-family reminder. */
+  recipients: ReminderRecipient[];
+}
+
+/** Due reminders the sender hasn't tried yet, with who still needs each one. */
+export function listRemindersToPush(family: FamilyData, now = Date.now()): ReminderToPush[] {
+  const rows = family.db
+    .prepare(
+      `SELECT r.id, r.body_enc, r.target_member_id, creator.display_name_enc AS creator_name_enc
+         FROM reminders r JOIN members creator ON creator.id = r.created_by_member_id
+        WHERE r.delivered_at IS NULL AND r.push_attempted_at IS NULL AND r.due_at <= ?
+        ORDER BY r.due_at ASC`
+    )
+    .all(now) as {
+    id: number;
+    body_enc: string;
+    target_member_id: number | null;
+    creator_name_enc: string | null;
+  }[];
+  const members = family.db
+    .prepare(`SELECT id, display_name_enc, phone_enc, last_seen_at FROM members`)
+    .all() as { id: number; display_name_enc: string | null; phone_enc: string | null; last_seen_at: number }[];
+  const delivered = family.db.prepare(
+    `SELECT 1 FROM reminder_deliveries WHERE reminder_id = ? AND member_id = ?`
+  );
+
+  return rows.map((r) => ({
+    id: r.id,
+    body: decryptFor(family.key, r.body_enc),
+    createdByName: r.creator_name_enc === null ? null : decryptFor(family.key, r.creator_name_enc),
+    recipients: members
+      .filter((m) => r.target_member_id === null || m.id === r.target_member_id)
+      .filter((m) => !delivered.get(r.id, m.id))
+      .map((m) => ({
+        memberId: m.id,
+        name: m.display_name_enc === null ? null : decryptFor(family.key, m.display_name_enc),
+        phone: m.phone_enc === null ? null : decryptFor(family.key, m.phone_enc),
+        lastSeenAt: m.last_seen_at,
+      })),
+  }));
+}
+
+/**
+ * Records that a member has a reminder, and marks the reminder done once everyone it was for has
+ * it: the target member, or every member of the family for a whole-family reminder.
+ */
+export function recordReminderDelivery(
+  family: FamilyData,
+  reminderId: number,
+  memberId: number,
+  now = Date.now()
+): void {
+  family.db
+    .prepare(
+      `INSERT INTO reminder_deliveries (reminder_id, member_id, delivered_at) VALUES (?, ?, ?)
+       ON CONFLICT(reminder_id, member_id) DO NOTHING`
+    )
+    .run(reminderId, memberId, now);
+  const outstanding = family.db
+    .prepare(
+      `SELECT COUNT(*) AS n FROM members m, reminders r
+        WHERE r.id = ? AND (r.target_member_id IS NULL OR m.id = r.target_member_id)
+          AND NOT EXISTS (SELECT 1 FROM reminder_deliveries d
+                           WHERE d.reminder_id = r.id AND d.member_id = m.id)`
+    )
+    .get(reminderId) as { n: number };
+  if (outstanding.n === 0) {
+    family.db.prepare(`UPDATE reminders SET delivered_at = ? WHERE id = ?`).run(now, reminderId);
+  }
+}
+
+/** The sender has had its one go at this reminder; anyone left gets it when they next message. */
+export function markReminderPushAttempted(family: FamilyData, reminderId: number, now = Date.now()): void {
+  family.db.prepare(`UPDATE reminders SET push_attempted_at = ? WHERE id = ?`).run(now, reminderId);
 }
 
 // --- Relays (member-to-member messages) --------------------------------------------------------
@@ -459,4 +558,181 @@ export function claimRelaysFor(session: FamilySession): RelayRow[] {
     fromName: r.display_name_enc === null ? null : decryptFor(session.key, r.display_name_enc),
     createdAt: r.created_at,
   }));
+}
+
+// --- Calendar ------------------------------------------------------------------------------------
+
+export interface EventRow {
+  id: number;
+  title: string;
+  notes: string | null;
+  allDay: boolean;
+  /** All-day events only: first and last day, inclusive, as written. */
+  startDate: string | null;
+  endDate: string | null;
+  startsAt: number;
+  endsAt: number;
+  /** Null for a whole-family event. */
+  aboutMemberId: number | null;
+  aboutName: string | null;
+  createdByName: string | null;
+}
+
+export interface NewEvent {
+  title: string;
+  notes?: string | null;
+  allDay: boolean;
+  startDate?: string | null;
+  endDate?: string | null;
+  startsAt: number;
+  endsAt: number;
+  aboutMemberId: number | null;
+}
+
+const EVENT_SELECT = `
+  SELECT e.id, e.title_enc, e.notes_enc, e.all_day, e.start_date, e.end_date, e.starts_at,
+         e.ends_at, e.about_member_id, about.display_name_enc AS about_name_enc,
+         creator.display_name_enc AS creator_name_enc
+    FROM events e
+    JOIN members creator ON creator.id = e.created_by_member_id
+    LEFT JOIN members about ON about.id = e.about_member_id`;
+
+type EventDbRow = {
+  id: number;
+  title_enc: string;
+  notes_enc: string | null;
+  all_day: number;
+  start_date: string | null;
+  end_date: string | null;
+  starts_at: number;
+  ends_at: number;
+  about_member_id: number | null;
+  about_name_enc: string | null;
+  creator_name_enc: string | null;
+};
+
+function decryptEvent(family: FamilyData, r: EventDbRow): EventRow {
+  const dec = (v: string | null) => (v === null ? null : decryptFor(family.key, v));
+  return {
+    id: r.id,
+    title: decryptFor(family.key, r.title_enc),
+    notes: dec(r.notes_enc),
+    allDay: r.all_day === 1,
+    startDate: r.start_date,
+    endDate: r.end_date,
+    startsAt: r.starts_at,
+    endsAt: r.ends_at,
+    aboutMemberId: r.about_member_id,
+    aboutName: dec(r.about_name_enc),
+    createdByName: dec(r.creator_name_enc),
+  };
+}
+
+export function addEvent(session: FamilySession, event: NewEvent): number {
+  const now = Date.now();
+  const res = session.db
+    .prepare(
+      `INSERT INTO events (created_by_member_id, about_member_id, title_enc, notes_enc, all_day,
+                           start_date, end_date, starts_at, ends_at, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    )
+    .run(
+      session.actor.id,
+      event.aboutMemberId,
+      encryptFor(session.key, event.title),
+      event.notes ? encryptFor(session.key, event.notes) : null,
+      event.allDay ? 1 : 0,
+      event.startDate ?? null,
+      event.endDate ?? null,
+      event.startsAt,
+      event.endsAt,
+      now,
+      now
+    );
+  return Number(res.lastInsertRowid);
+}
+
+export function getEvent(family: FamilyData, id: number): EventRow | null {
+  const row = family.db.prepare(`${EVENT_SELECT} WHERE e.id = ?`).get(id) as EventDbRow | undefined;
+  return row ? decryptEvent(family, row) : null;
+}
+
+/** Events overlapping [fromMs, toMs), earliest first. */
+export function listEventsBetween(family: FamilyData, fromMs: number, toMs: number): EventRow[] {
+  return (
+    family.db
+      .prepare(`${EVENT_SELECT} WHERE e.starts_at < ? AND e.ends_at > ? ORDER BY e.starts_at ASC`)
+      .all(toMs, fromMs) as EventDbRow[]
+  ).map((r) => decryptEvent(family, r));
+}
+
+/** Every event, for the calendar subscription feed. */
+export function listAllEvents(family: FamilyData): EventRow[] {
+  return (family.db.prepare(`${EVENT_SELECT} ORDER BY e.starts_at ASC`).all() as EventDbRow[]).map((r) =>
+    decryptEvent(family, r)
+  );
+}
+
+/**
+ * Other events that overlap this time and involve the same people: anything for the same person
+ * or for the whole family, or — for a whole-family event — anything at all.
+ */
+export function findClashes(
+  family: FamilyData,
+  startsAt: number,
+  endsAt: number,
+  aboutMemberId: number | null,
+  excludeId?: number
+): EventRow[] {
+  return listEventsBetween(family, startsAt, endsAt).filter(
+    (e) =>
+      e.id !== excludeId &&
+      (aboutMemberId === null || e.aboutMemberId === null || e.aboutMemberId === aboutMemberId)
+  );
+}
+
+export function updateEvent(session: FamilySession, id: number, event: NewEvent): boolean {
+  const res = session.db
+    .prepare(
+      `UPDATE events SET about_member_id = ?, title_enc = ?, notes_enc = ?, all_day = ?,
+                         start_date = ?, end_date = ?, starts_at = ?, ends_at = ?, updated_at = ?
+        WHERE id = ?`
+    )
+    .run(
+      event.aboutMemberId,
+      encryptFor(session.key, event.title),
+      event.notes ? encryptFor(session.key, event.notes) : null,
+      event.allDay ? 1 : 0,
+      event.startDate ?? null,
+      event.endDate ?? null,
+      event.startsAt,
+      event.endsAt,
+      Date.now(),
+      id
+    );
+  return res.changes > 0;
+}
+
+export function deleteEvent(session: FamilySession, id: number): boolean {
+  return session.db.prepare(`DELETE FROM events WHERE id = ?`).run(id).changes > 0;
+}
+
+// The current calendar link secret, kept encrypted so a member can ask for the link again. The
+// registry holds only its hash (registry.ts's calendar_feeds), like the join code.
+const CALENDAR_TOKEN_KEY = "calendar_token_enc";
+
+export function setFamilyCalendarToken(session: FamilySession, token: string): void {
+  session.db
+    .prepare(
+      `INSERT INTO family_meta (key, value) VALUES (?, ?)
+       ON CONFLICT(key) DO UPDATE SET value = excluded.value`
+    )
+    .run(CALENDAR_TOKEN_KEY, encryptFor(session.key, token));
+}
+
+export function getFamilyCalendarToken(session: FamilySession): string | null {
+  const row = session.db
+    .prepare(`SELECT value FROM family_meta WHERE key = ?`)
+    .get(CALENDAR_TOKEN_KEY) as { value: string } | undefined;
+  return row ? decryptFor(session.key, row.value) : null;
 }

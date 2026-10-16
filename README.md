@@ -25,7 +25,7 @@ Marlowe can be used from the web app and, optionally, through WhatsApp. It is de
 
 ## Joyce — family WhatsApp assistant (optional)
 
-Joyce is a separate assistant on her own WhatsApp number that a family shares. Members can save notes, photos and documents (PDF, Word, text), pass messages to each other and set reminders, and any member of the family can search what's been saved or ask for a file back. Joyce shares no data with Marlowe: each family's data sits in its own database file, encrypted with its own key derived from `JOYCE_MASTER_KEY`. Joyce stays switched off until the `JOYCE_*` settings are filled in (see `server/.env.example`), and her number needs a WhatsApp webhook override pointing at `/webhooks/joyce` (see "Going live" in `feature-to-do/joyce-family-assistant.md`). Anyone who messages her number can start a family, so share the number only with people you trust for now. Admins have a separate Joyce portal (`/joyce-portal`, in terracotta) with requests Joyce flagged as things she couldn't do, her own to-do list, her server log lines and her API spend. Design notes: `feature-to-do/joyce-family-assistant.md`.
+Joyce is a separate assistant on her own WhatsApp number that a family shares. Members can save notes, photos and documents (PDF, Word, text), pass messages to each other, set reminders (Joyce sends them when they come due) and keep a shared family calendar that she checks for clashes; anyone can subscribe to the calendar from Google Calendar or their phone with a private link. Any member of the family can search what's been saved or ask for a file back. Each family has a timezone, guessed from the phone number of whoever started it until someone tells Joyce otherwise. Joyce shares no data with Marlowe: each family's data sits in its own database file, encrypted with its own key derived from `JOYCE_MASTER_KEY`. Joyce stays switched off until the `JOYCE_*` settings are filled in (see `server/.env.example`), and her number needs a WhatsApp webhook override pointing at `/webhooks/joyce` (see "Going live" in `feature-to-do/joyce-family-assistant.md`). Anyone who messages her number can start a family, so share the number only with people you trust for now. Admins have a separate Joyce portal (`/joyce-portal`, in terracotta) with requests Joyce flagged as things she couldn't do, her own to-do list, her server log lines and her API spend. Design notes: `feature-to-do/joyce-family-assistant.md`.
 
 ## Safety and privacy boundaries
 
@@ -132,6 +132,8 @@ The server listens on `PORT` (4000 by default). Set `CLIENT_URL`, `SERVER_URL`, 
 
 Proactive briefings, alerts, and reminders run in-process. The server must remain running for those features to fire, so an always-on deployment is recommended.
 
+Railway has two environments: **production** (deploys `master`) and **staging** (deploys `staging`). Staging is for Jake and Sam to test features away from WhatsApp, using the admin-only WhatsApp Simulator. It deliberately has no `WHATSAPP_TOKEN`: with the live number's settings it sends real messages from the business number that production then can't recognise when people reply (seen 2026-10-16). Don't add WhatsApp settings to staging.
+
 ## Useful commands
 
 ### Server
@@ -144,6 +146,7 @@ npm test                 # Run the Vitest suite
 npm run eval:grounding   # Run assistant grounding evaluations
 npm run invite -- EMAIL  # Invite a user
 npm run whatsapp:check -- <WABA_ID> --subscribe
+npm run joyce:templates -- 1574262347469069           # Joyce's template approval status (--create to submit)
 ```
 
 ### Client

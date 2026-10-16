@@ -85,6 +85,44 @@ export async function sendJoyceMessage(to: string, text: string): Promise<void> 
   });
 }
 
+// Meta's error code for a free-form message sent outside the 24-hour customer service window.
+export const JOYCE_WINDOW_CLOSED_ERROR = 131047;
+
+// Joyce's approved message templates — the only thing WhatsApp lets a business send someone who
+// hasn't messaged in the last 24 hours. Named body variables, like Marlowe's. Created on the
+// WhatsApp Business Account by scripts/createJoyceTemplates.ts; they must be approved by Meta
+// before sending works, and the language here must match what was submitted.
+export const JOYCE_REMINDER_TEMPLATE = {
+  name: "joyce_reminder",
+  language: "en_GB",
+  param: "reminder_text",
+} as const;
+
+export async function sendJoyceReminderTemplate(to: string, reminderText: string): Promise<void> {
+  await post({
+    messaging_product: "whatsapp",
+    to,
+    type: "template",
+    template: {
+      name: JOYCE_REMINDER_TEMPLATE.name,
+      language: { code: JOYCE_REMINDER_TEMPLATE.language },
+      components: [
+        {
+          type: "body",
+          parameters: [
+            // Template variables can't contain newlines or long runs of spaces.
+            {
+              type: "text",
+              parameter_name: JOYCE_REMINDER_TEMPLATE.param,
+              text: reminderText.replace(/\s+/g, " ").trim().slice(0, 900),
+            },
+          ],
+        },
+      ],
+    },
+  });
+}
+
 /** A message with up to three tappable reply buttons under it. */
 export async function sendJoyceButtons(
   to: string,

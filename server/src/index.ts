@@ -16,6 +16,9 @@ import { briefingRoutes } from "./routes/briefingRoutes.js";
 import { memoryRoutes } from "./routes/memoryRoutes.js";
 import { whatsappRoutes } from "./routes/whatsappRoutes.js";
 import { joyceRoutes } from "./joyce/routes.js";
+import { startJoyceReminderDelivery } from "./joyce/reminderDelivery.js";
+import { isJoyceConfigured } from "./joyce/familyKey.js";
+import { isJoyceWhatsAppConfigured } from "./joyce/whatsapp.js";
 import { whatsappSettingsRoutes } from "./routes/whatsappSettingsRoutes.js";
 import { documentRoutes } from "./routes/documentRoutes.js";
 import { checkinRoutes, checkinReadRoutes } from "./routes/checkinRoutes.js";
@@ -256,6 +259,8 @@ const server = app.listen(PORT, () => {
 
 // Only useful while the server keeps running — see README known limitations.
 startScheduler();
+// Joyce's reminders, sent when they come due. Only when she's set up — staging has no WhatsApp.
+if (isJoyceConfigured() && isJoyceWhatsAppConfigured()) startJoyceReminderDelivery();
 // Separate, much tighter interval than startScheduler's 5-minute tick — see
 // reminderScheduler.ts for why reminders need their own accurate clock.
 startReminderScheduler();

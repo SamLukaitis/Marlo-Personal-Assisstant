@@ -1,7 +1,8 @@
 import { Router } from "express";
 import { isJoyceConfigured, normalizeJoycePhone } from "./familyKey.js";
 import { markJoyceWamidSeenIfNew } from "./registry.js";
-import { openFamilySessionForPhone } from "./familyDb.js";
+import { openFamilyForCalendarToken, openFamilySessionForPhone } from "./familyDb.js";
+import { buildCalendarFeed } from "./calendarFeed.js";
 import { appendMessage } from "./store.js";
 import { applyName, CHOICE_BUTTONS, handleOnboarding, needsName } from "./onboarding.js";
 import { handlePendingLeave } from "./leaving.js";
@@ -29,6 +30,20 @@ import {
 // defence in case Marlowe's traffic is ever delivered here too.
 
 export const joyceRoutes = Router();
+
+// The family calendar subscription feed — see calendarFeed.ts. The secret in the path is the only
+// credential; an unknown or replaced link gets a plain 404 that says nothing about why.
+joyceRoutes.get("/joyce/calendar/:file", (req, res) => {
+  const match = /^([A-Za-z0-9_-]{20,64})\.ics$/.exec(req.params.file);
+  const family = match && isJoyceConfigured() ? openFamilyForCalendarToken(match[1]) : null;
+  if (!family) {
+    res.sendStatus(404);
+    return;
+  }
+  res.set("Content-Type", "text/calendar; charset=utf-8");
+  res.set("Cache-Control", "no-store");
+  res.send(buildCalendarFeed(family));
+});
 
 joyceRoutes.get("/webhooks/joyce", (req, res) => {
   const mode = req.query["hub.mode"] as string;
