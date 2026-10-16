@@ -15,3 +15,8 @@ process.env.DATA_DIR = testDataDir;
 // not a generated one: test data is thrown away with testDataDir above, so nothing depends on
 // this being secret or stable across runs — it only needs to be present and 64 hex chars.
 process.env.ENCRYPTION_KEY = "0".repeat(64);
+
+// Joyce (src/joyce/) derives a separate AES key per family from this master secret, and throws
+// at import time if it's missing. Deliberately a *different* value from ENCRYPTION_KEY above —
+// a test that accidentally decrypted Joyce data with Marlowe's key, or vice versa, should fail.
+process.env.JOYCE_MASTER_KEY = "1".repeat(64);
