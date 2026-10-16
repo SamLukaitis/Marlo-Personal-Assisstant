@@ -68,6 +68,7 @@ import { listLocalFolders } from "../providers/local.js";
 import { fetchHeadlines, NEWS_TOPICS, type NewsTopic } from "../providers/news.js";
 import { fetchWeather } from "../providers/weather.js";
 import { isMapsConfigured, searchPlaces, computeRoute } from "../providers/maps.js";
+import { isFlightsConfigured, searchFlights, type Cabin } from "../providers/flights.js";
 import { fetchQuotes, DEFAULT_SYMBOLS } from "../providers/markets.js";
 import { countTravelDays } from "../services/travelDays.js";
 import { isPhoneActionsConfigured, makePhoneActionForChat, phonePromptSection, scrubUnknownActionLinks } from "../services/phoneActions.js";
@@ -1203,6 +1204,36 @@ const MAPS_TOOLS: Anthropic.Tool[] = [
 export const MAX_MAPS_CALLS_PER_MESSAGE = 5;
 const MAPS_CALL_TOOLS = new Set(["find_places", "get_route"]);
 
+// Google Flights via SerpApi (providers/flights.ts), offered only when SERPAPI_API_KEY is set —
+// constant for the life of the process, like MAPS_TOOLS.
+const FLIGHT_TOOLS: Anthropic.Tool[] = [
+  {
+    name: "search_flights",
+    description:
+      "Live flight prices and availability from Google Flights for one route and date (or date pair): airline, flight numbers, times, stops, duration, price, Google's price insight (low/typical/high), and a Google Flights link. Search only — you can't book; the user books from the link. " +
+      "Use airport codes, comma-separated for a city's airports (London = LHR,LGW,STN,LTN,LCY; New York = JFK,EWR,LGA). " +
+      "To compare dates, call once per date (all in the same turn). For a round trip, prices are the round-trip total and only outbound flights come back; to show return flights for one of them, call again with the same search plus return_for set to that option's returnFor. " +
+      "Times are local to each airport. Notes may mention baggage or fare conditions; report only what they say.",
+    input_schema: {
+      type: "object",
+      properties: {
+        from: { type: "string", description: "Departure airport code(s), e.g. 'LHR' or 'LHR,LGW,STN,LTN,LCY'." },
+        to: { type: "string", description: "Arrival airport code(s), e.g. 'BCN'." },
+        depart_date: { type: "string", description: "YYYY-MM-DD." },
+        return_date: { type: "string", description: "YYYY-MM-DD. Omit for one-way." },
+        adults: { type: "number", description: "Default 1." },
+        cabin: { type: "string", enum: ["economy", "premium_economy", "business", "first"], description: "Default economy." },
+        max_stops: { type: "number", enum: [0, 1, 2], description: "0 = nonstop only. Omit for any." },
+        currency: { type: "string", description: "ISO code for the user's currency, default GBP." },
+        return_for: { type: "string", description: "returnFor from an outbound option of the same round-trip search, to list its return flights." },
+      },
+      required: ["from", "to", "depart_date"],
+    },
+  },
+];
+
+export const MAX_FLIGHT_SEARCHES_PER_MESSAGE = 4;
+
 // Only sent when MARLOWE_SHORTCUT_ICLOUD_URL is set (see services/phoneActions.ts) — one tool for
 // every on-phone step, so the step list grows without adding tools.
 const PHONE_ACTION_TOOLS: Anthropic.Tool[] = [
@@ -1242,6 +1273,7 @@ export function buildToolsForOwner(ownerId: number): Anthropic.ToolUnion[] {
     if (enabled.has(key)) assembled.push(...CONDITIONAL_TOOLS[key]);
   }
   if (isMapsConfigured()) assembled.push(...MAPS_TOOLS);
+  if (isFlightsConfigured()) assembled.push(...FLIGHT_TOOLS);
   if (isPhoneActionsConfigured()) assembled.push(...PHONE_ACTION_TOOLS);
   // The user's edition (editions/index.ts) drops tools that don't belong in that product and adds
   // its own — before the cache breakpoint below, so it still lands on the true last tool.
@@ -1706,6 +1738,27 @@ export async function runTool(
         return { error: `Couldn't reach Google Maps: ${(err as Error).message}` };
       }
     }
+    case "search_flights": {
+      if (!isFlightsConfigured()) return { error: "Flight search isn't set up on this server." };
+      const cabins: Cabin[] = ["economy", "premium_economy", "business", "first"];
+      const optStr = (v: unknown) => (typeof v === "string" && v.trim() ? v.trim() : undefined);
+      try {
+        return await searchFlights({
+          from: String(input.from ?? ""),
+          to: String(input.to ?? ""),
+          departDate: String(input.depart_date ?? ""),
+          ...(optStr(input.return_date) ? { returnDate: optStr(input.return_date) } : {}),
+          ...(typeof input.adults === "number" ? { adults: input.adults } : {}),
+          ...(cabins.includes(input.cabin as Cabin) ? { cabin: input.cabin as Cabin } : {}),
+          ...(input.max_stops === 0 || input.max_stops === 1 || input.max_stops === 2 ? { maxStops: input.max_stops } : {}),
+          ...(optStr(input.currency) ? { currency: optStr(input.currency) } : {}),
+          ...(optStr(input.return_for) ? { returnFor: optStr(input.return_for) } : {}),
+        });
+      } catch (err) {
+        console.warn("search_flights: SerpApi lookup failed", err);
+        return { error: `Couldn't reach Google Flights: ${(err as Error).message}` };
+      }
+    }
     case "get_markets": {
       const requested = (input.symbols as string[] | undefined) ?? [];
       const quotes = await fetchQuotes(requested.length ? requested : DEFAULT_SYMBOLS);
@@ -2060,6 +2113,9 @@ const WEB_SEARCH_RULE_NO_MAPS =
 const WEB_SEARCH_RULE_WITH_MAPS =
   "- Use find_places to find or recommend places and get_route for driving/walking times — they return real Google Maps data. Use web_search only for what Maps doesn't cover (reviews in depth, events, menus, prices, news). For anything near the user with no shared location from the last ~2 hours (pin lines carry the UTC time they were shared), call request_location rather than guessing where they are. Always list the Google Maps links (and any attribution) from the Maps result as sources right after your answer. Never invent coordinates or place details, and never claim you've sent a location pin (you haven't).";
 
+const FLIGHTS_RULE =
+  "- Use search_flights for flight prices, availability and comparing dates or routes — never quote a fare from memory or from web_search when it can be searched. Say prices are what Google Flights shows right now and can change, give the price for what was searched (round trip or one way, number of travellers), and end with the googleFlightsUrl. Point out anything that would surprise them: an overnight leg, a long layover, a return to a different airport, a flight often delayed. Never say you've booked or held a seat — they book from the link. For baggage allowances or entry/visa rules, use only what the result's notes say or what web_search finds on the airline's or government's own site, and name that source.";
+
 function buildRules(enabled: Set<ToolKey>): string {
   const base = [
     "- Always look up real data with your tools before answering questions about email, calendar, or files — never invent contents.",
@@ -2096,6 +2152,7 @@ function buildRules(enabled: Set<ToolKey>): string {
     "- If the user asks to connect/set up Xero: Xero gives each account a unique forwarding email (in Xero: Business > Bills to pay, or Accounting > Bills — the 'email bills to this address' address). Ask them to paste it, then call connect_xero with exactly what they send — never guess or fill in an address yourself. Once connected, receipts they send that are filed under 'receipts' and yield a recognized expense are forwarded to Xero automatically in the background — this already works, don't tell the user it's unbuilt or manual.",
     "- There are TWO separate paths to Xero, both already built: (1) a WhatsApp photo/PDF filed as a receipt forwards automatically, no confirmation needed. (2) Email is scanned periodically (every few minutes) for invoice-looking automated mail; ONLY when that scan actually flags one do you get a pending confirmation to offer 'reply yes to forward' (see below) — the scan hasn't necessarily run yet or matched a given email, so no pending confirmation does NOT mean email invoices are unsupported. If the user asks about a specific email invoice with nothing pending, never claim this feature only works for WhatsApp — instead offer to call extract_email_attachment on it directly, which also triggers the same automatic Xero forwarding once it's saved as a receipt with a real expense, just without the alert/confirm step.",
     isMapsConfigured() ? WEB_SEARCH_RULE_WITH_MAPS : WEB_SEARCH_RULE_NO_MAPS,
+    ...(isFlightsConfigured() ? [FLIGHTS_RULE] : []),
   ];
   const travel = [
     "- Use list_travel_checkins for questions about where the user has physically been or when they arrived somewhere — this is automatic location history, separate from documents.",
@@ -2332,6 +2389,7 @@ export async function runAssistantChat(
   // web_search's max_uses. Counted synchronously inside the map below, so parallel calls in one
   // response are counted too.
   let mapsCalls = 0;
+  let flightSearches = 0;
   const channel = phone ? "whatsapp" : "web";
   function finish(reply: AssistantReply): AssistantReply {
     // Admins (Jake and Sam) see what each of their own messages cost in the Portal, so the text
@@ -2463,6 +2521,14 @@ export async function runAssistantChat(
             type: "tool_result" as const,
             tool_use_id: toolUse.id,
             content: "Error: Maps lookup limit reached for this message — answer with what you already have.",
+            is_error: true,
+          };
+        }
+        if (toolUse.name === "search_flights" && ++flightSearches > MAX_FLIGHT_SEARCHES_PER_MESSAGE) {
+          return {
+            type: "tool_result" as const,
+            tool_use_id: toolUse.id,
+            content: "Error: flight search limit reached for this message — answer with what you already have.",
             is_error: true,
           };
         }
