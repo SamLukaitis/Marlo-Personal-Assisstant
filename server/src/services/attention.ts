@@ -41,6 +41,7 @@ import {
   phoneStepsFor,
 } from "./attentionRules.js";
 import { createPhoneAction, phoneSuggestionsEnabled, userShortcutVersion, PROACTIVE_TTL_MS } from "./phoneActions.js";
+import { getEdition } from "../editions/index.js";
 
 export interface AttentionCandidate {
   source: AttentionSource;
@@ -122,11 +123,19 @@ function prepareItem(
     updateAttentionItem(ownerId, item.id, { tier: "brief", surfaceAt: null });
     return "queued";
   }
+  // Business-edition users get the offer even without Xero: saying yes ingests the invoice, and the
+  // receipt hook (editions/index.ts) puts it in their books.
+  const xeroEmail = getXeroForwardingEmail(ownerId);
+  const logsReceipts = getEdition(ownerId).logsReceipts;
   const offer =
-    item.category === "invoice_due" && item.details.xeroOffer && getXeroForwardingEmail(ownerId)
+    item.category === "invoice_due" && item.details.xeroOffer && (xeroEmail || logsReceipts)
       ? item.details.xeroOffer
       : null;
-  if (offer) text += `\n\nReply "yes" and I'll forward it to Xero.`;
+  if (offer) {
+    text += logsReceipts
+      ? `\n\nReply "yes" and I'll add it to your books${xeroEmail ? " and forward it to Xero" : ""}.`
+      : `\n\nReply "yes" and I'll forward it to Xero.`;
+  }
   // Created now, when the reminder actually goes out, so its expiry runs from when they see it.
   // Only scheduled reminders: an interrupt is about something that changed, not something to set up.
   if (item.tier !== "interrupt" && phoneSuggestionsEnabled(ownerId)) {

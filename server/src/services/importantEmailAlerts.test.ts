@@ -49,6 +49,7 @@ const {
   clearPendingSetup,
   getWhatsAppHistory,
   getAttentionItem,
+  setUserEdition,
 } = await import("../db/store.js");
 const { setUserTimezone } = await import("./userTimezone.js");
 const { markOnboardingConnected } = await import("./onboardingAlertSuppression.js");
@@ -790,6 +791,39 @@ describe("checkForImportantEmails — invoice forward offer", () => {
       messageId: "inv-1",
       subject: "Invoice from Acme",
     });
+  });
+
+  it("business edition without Xero: offers to add the invoice to their books", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("invoice-business"));
+    setUserEdition(user.id, "business");
+    registerActivePhone(user.id);
+    await baseline(user.id);
+
+    mockHubListNewMessages.mockResolvedValueOnce([fakeMessage({ id: "inv-biz-1", subject: "Invoice from Acme" })]);
+    mockClassify.mockResolvedValueOnce(new Map([[0, { category: "invoice_due", summary: "Your *Acme* invoice for *£120* is due.", needsAction: true }]]));
+
+    await checkForImportantEmails(user.id);
+
+    const [, text] = vi.mocked(sendWhatsAppMessage).mock.calls[0];
+    expect(text).toContain("add it to your books");
+    expect(text).not.toContain("Xero");
+    expect(getPendingInvoiceForward(user.id)).toMatchObject({ messageId: "inv-biz-1" });
+  });
+
+  it("business edition with Xero: offers both", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("invoice-business-xero"));
+    setUserEdition(user.id, "business");
+    registerActivePhone(user.id);
+    setXeroForwardingEmail(user.id, "abc123@bills.xero.com");
+    await baseline(user.id);
+
+    mockHubListNewMessages.mockResolvedValueOnce([fakeMessage({ id: "inv-biz-2" })]);
+    mockClassify.mockResolvedValueOnce(new Map([[0, { category: "invoice_due", summary: "Your *Acme* invoice for *£120* is due.", needsAction: true }]]));
+
+    await checkForImportantEmails(user.id);
+
+    const [, text] = vi.mocked(sendWhatsAppMessage).mock.calls[0];
+    expect(text).toContain("add it to your books and forward it to Xero");
   });
 
   it("does not offer to forward when Xero isn't connected", async () => {

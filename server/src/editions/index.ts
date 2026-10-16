@@ -5,6 +5,7 @@ import type Anthropic from "@anthropic-ai/sdk";
 import { getUserEdition, type EditionId } from "../db/store.js";
 import { BUSINESS_TOOLS, BUSINESS_TOOL_NAMES, runBusinessTool } from "../business/tools.js";
 import { businessPromptSection } from "../business/prompt.js";
+import { receiptToLedger } from "../business/receipts.js";
 
 export interface Edition {
   id: EditionId;
@@ -72,4 +73,19 @@ export async function runEditionTool(
 ): Promise<unknown | undefined> {
   if (BUSINESS_TOOL_NAMES.has(name)) return runBusinessTool(ownerId, name, input);
   return undefined;
+}
+
+// Awaited by documents.ts so the assistant's "saved" reply can already see the review question.
+// Never throws: a ledger problem must not cost the user their saved document.
+export async function onReceiptSaved(
+  ownerId: number,
+  doc: { id: number; source?: string | null },
+  derived: { type: string; data: unknown; status: string }[]
+): Promise<void> {
+  if (!getEdition(ownerId).logsReceipts) return;
+  try {
+    await receiptToLedger(ownerId, doc, derived);
+  } catch (err) {
+    console.error("editions: receipt hook failed", err);
+  }
 }

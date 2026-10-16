@@ -1007,7 +1007,7 @@ const ALWAYS_ON_TOOLS: Anthropic.ToolUnion[] = [
   {
     name: "respond_to_invoice_forward_prompt",
     description:
-      "Call this when the user is replying to a 'looks like an invoice — reply yes and I'll forward it to Xero' prompt from a recent WhatsApp alert (check your context for a pending Xero invoice confirmation — only call this if one is actually present; if there's none pending, their message is about something else, so don't call this speculatively). Set confirm=true for an affirmative reply (yes, go ahead, please do, sure), confirm=false for a decline (no, skip, ignore, not now). You never choose which email or attachment this acts on — that was already fixed when the alert was sent.",
+      "Call this when the user is replying to a 'looks like an invoice — reply yes and I'll save it' prompt (to their books and/or Xero) from a recent WhatsApp alert (check your context for a pending Xero invoice confirmation — only call this if one is actually present; if there's none pending, their message is about something else, so don't call this speculatively). Set confirm=true for an affirmative reply (yes, go ahead, please do, sure), confirm=false for a decline (no, skip, ignore, not now). You never choose which email or attachment this acts on — that was already fixed when the alert was sent.",
     input_schema: {
       type: "object",
       properties: {
@@ -2145,7 +2145,7 @@ export function buildSystemPrompt(ownerId: number, conversationSummary?: string)
 
   const pendingInvoice = getPendingInvoiceForward(ownerId);
   const pendingInvoiceStatus = pendingInvoice
-    ? `Pending Xero invoice confirmation: a WhatsApp alert about "${pendingInvoice.subject}" asked the user to reply "yes" to forward it to Xero. If their latest message is answering that (yes/no/go ahead/skip), call respond_to_invoice_forward_prompt with confirm accordingly. If it's about something else, ignore this.`
+    ? `Pending Xero invoice confirmation: a WhatsApp alert about "${pendingInvoice.subject}" asked the user to reply "yes" to save it (to their books and/or Xero). If their latest message is answering that (yes/no/go ahead/skip), call respond_to_invoice_forward_prompt with confirm accordingly. If it's about something else, ignore this.`
     : "";
 
   // Mid-onboarding context, keyed off the WhatsApp post-connect chain's own pending step

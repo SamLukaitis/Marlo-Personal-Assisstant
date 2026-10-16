@@ -34,6 +34,7 @@ import {
 import { fetchPageText, type FetchFailureReason } from "./safeLinkFetcher.js";
 import type { MatchKeys } from "./reconciliation.js";
 import { forwardReceiptToXero } from "./xeroForwarding.js";
+import { onReceiptSaved } from "../editions/index.js";
 
 // Pure on purpose — the one bit of category logic worth its own unit test is "what happens when
 // the model's tool call doesn't give us a valid category," and that doesn't need an Anthropic
@@ -783,6 +784,7 @@ async function finalizeIngestedFile(
     }
   }
   storeDerivedEntities(ownerId, doc, derivedEntities);
+  await onReceiptSaved(ownerId, doc, derivedEntities);
 
   if (doc.category === "receipts" && derivedEntities.some((e) => e.type === "expense" && e.status === "active")) {
     void forwardReceiptToXero(ownerId, doc, buffer).catch((err) =>
@@ -950,6 +952,7 @@ export async function ingestEmailBodyReceipt(params: {
   }
 
   storeDerivedEntities(params.ownerId, doc, derivedEntities);
+  await onReceiptSaved(params.ownerId, doc, derivedEntities);
 
   if (doc.category === "receipts") {
     // Same fire-and-forget posture as ingestWhatsAppMedia/ingestEmailAttachment — the "attachment"
@@ -1038,6 +1041,7 @@ export async function ingestWhatsAppLink(params: {
     }
   }
   storeDerivedEntities(params.ownerId, doc, derivedEntities);
+  await onReceiptSaved(params.ownerId, doc, derivedEntities);
 
   if (matchKeys) saveMatchKeys(params.ownerId, doc.id, matchKeys); // indexed only — see finalizeIngestedFile
 
