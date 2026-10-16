@@ -4489,7 +4489,13 @@ export function deletePendingRegistration(phone: string): void {
 // Microsoft account connected.
 // ---------------------------------------------------------------------------
 
-export type PostConnectSetupStep = "ask_name" | "ask_first_task" | "ask_briefing" | "ask_teams";
+export type PostConnectSetupStep =
+  | "ask_name"
+  | "ask_first_task"
+  | "ask_business" // business edition: what the business does (free text)
+  | "ask_first_receipt" // business edition: "send me a receipt" (free text or a photo)
+  | "ask_briefing"
+  | "ask_teams";
 
 export function getPendingSetup(ownerId: number): PostConnectSetupStep | null {
   const row = db.prepare(`SELECT step FROM pending_setup WHERE owner_id = ?`).get(ownerId) as

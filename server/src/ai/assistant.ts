@@ -2171,7 +2171,19 @@ export function buildSystemPrompt(ownerId: number, conversationSummary?: string)
         "connection problem mentioned earlier in this conversation is resolved, so never bring it " +
         "up. If their message turns out to just mean \"carry on with setup\", reply with one short " +
         "acknowledgement and nothing else."
-      : "";
+      : pendingSetupStep === "ask_business"
+        ? "The user is mid-setup and was just asked what their business does; instead they asked you " +
+          "something. Answer it normally and briefly — a scripted setup question will follow " +
+          "automatically right after your reply, so don't ask about their business or any other " +
+          "setup question yourself. Their mailbox has just connected successfully."
+        : pendingSetupStep === "ask_first_receipt"
+          ? "The user is mid-setup and was just invited to send their first receipt. If they sent one, " +
+            "confirm in one or two short lines what you added to their books (supplier, amount, and " +
+            "the category you guessed). Don't ask the business or personal review question now, and " +
+            "don't use ask_user_choice — that check comes later. If they typed a request instead, " +
+            "answer it normally. Either way a scripted setup question follows automatically right " +
+            "after your reply, so don't ask it yourself."
+          : "";
 
   // The model's only anchor for "today"/"what weekday is it" — e.g. resolving "next Tuesday" to
   // a calendar date for set_reminder's local_date. Stated in the user's own resolved timezone

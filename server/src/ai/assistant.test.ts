@@ -1490,6 +1490,23 @@ describe("check_reminder_status tool", () => {
 });
 
 describe("buildSystemPrompt onboarding paragraph", () => {
+  it("while ask_business is pending, answers the question and leaves the next setup step to the script", () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("prompt-onboarding-business"));
+    setPendingSetup(user.id, "ask_business");
+    const prompt = buildSystemPrompt(user.id);
+    expect(prompt).toContain("mid-setup");
+    expect(prompt).toContain("what their business does");
+  });
+
+  it("while ask_first_receipt is pending, confirms the receipt and holds the review question", () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("prompt-onboarding-receipt"));
+    setPendingSetup(user.id, "ask_first_receipt");
+    const prompt = buildSystemPrompt(user.id);
+    expect(prompt).toContain("mid-setup");
+    expect(prompt).toContain("first receipt");
+    expect(prompt).toMatch(/don't ask .*business or personal/i);
+  });
+
   it("is present, without mentioning set_briefing_preferences, while ask_first_task is pending", () => {
     const user = findOrCreateUserByEmail(uniqueEmail("prompt-onboarding-first-task"));
     setPendingSetup(user.id, "ask_first_task");

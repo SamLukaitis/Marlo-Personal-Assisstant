@@ -21,6 +21,9 @@ import {
   handlePostConnectSetupReply,
   handleNameReply,
   handleFirstTaskReply,
+  handleBusinessReply,
+  handleFirstReceiptReply,
+  firstReceiptFollowUp,
 } from "../services/postConnectSetup.js";
 import { handlePendingActionReply } from "../services/actionHandlers.js";
 import { maybeUpdateConversationSummary } from "../services/conversationSummary.js";
@@ -99,7 +102,17 @@ async function handleMedia(
   // A caption that reads as a complete thought ("what does this say?") takes the short debounce
   // path; no caption (or one that trails off) defaults to waiting longer, since a document often
   // arrives with the explanatory text as its own separate follow-up message.
-  queueForAssistant(ownerId, from, messageId, rowId, docContext, !!caption && looksComplete(caption));
+  // Mid business onboarding, "send me a receipt" was just asked: the next setup question follows
+  // the assistant's confirmation rather than racing it (undefined at any other time).
+  queueForAssistant(
+    ownerId,
+    from,
+    messageId,
+    rowId,
+    docContext,
+    !!caption && looksComplete(caption),
+    firstReceiptFollowUp(ownerId, from)
+  );
 }
 
 export async function handleIncoming(message: IncomingWhatsAppMessage): Promise<void> {
@@ -154,6 +167,10 @@ export async function handleIncoming(message: IncomingWhatsAppMessage): Promise<
   // steps in the chain — ask_name is the very first question asked.
   if (await handleNameReply(ownerId, message)) return;
   if (await handleFirstTaskReply(ownerId, message)) return;
+  // The business edition's two free-text steps (what the business does, a first receipt) — same
+  // shape as the two above. A receipt *photo* is not consumed here: see handleMedia.
+  if (await handleBusinessReply(ownerId, message)) return;
+  if (await handleFirstReceiptReply(ownerId, message)) return;
   // A tap answering one of postConnectSetup's yes/no button questions (daily briefing, Teams) —
   // handled entirely there and never reaches the assistant. Returns false for everything else
   // (nothing pending, a stray/late tap, or ordinary text/media), which falls through to normal
