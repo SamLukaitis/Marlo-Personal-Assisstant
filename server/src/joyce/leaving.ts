@@ -15,7 +15,7 @@ import { consumePendingLeave, leaveFamily, setOnboardingState } from "./registry
 const CONFIRM_PHRASE = "confirm cancel";
 
 export const LEAVE_WARNING =
-  "Before I do that, please read this carefully ⚠️\n\n" +
+  "Before I do that, please read this carefully.\n\n" +
   "If you leave:\n" +
   "• You'll lose access to everything this family has saved — notes, documents, reminders, all " +
   "of it.\n" +

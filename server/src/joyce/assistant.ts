@@ -4,6 +4,7 @@ import { requestLeave, rotateJoinCode } from "./registry.js";
 import { LEAVE_WARNING } from "./leaving.js";
 import { loadFamilyFile } from "./files.js";
 import { sendJoyceMedia } from "./whatsapp.js";
+import { messages as toMessages, type JoyceMessage } from "./messages.js";
 import {
   appendMessage,
   claimDueReminders,
@@ -205,7 +206,9 @@ function systemPrompt(session: FamilySession): string {
     `The current time is ${new Date().toISOString()} (UTC). All reminder times are UTC.`,
     "",
     "Be warm and brief — this is WhatsApp, not email. Two or three sentences is usually plenty. " +
-      "Use WhatsApp formatting (*bold*) sparingly and never Markdown headings or tables.",
+      "Use WhatsApp formatting (*bold*) sparingly and never Markdown headings or tables. Never " +
+      "use emoji, not even one. A blank line between paragraphs sends them as separate " +
+      "messages, so use one only where a new message makes sense.",
     "",
     "Save things without being asked when someone tells you something the family would want " +
       "later. When you are asked something you don't know, search the family's notes and " +
@@ -224,6 +227,8 @@ function systemPrompt(session: FamilySession): string {
  */
 interface TurnState {
   forcedReply: string | null;
+  /** Sent as messages of their own after the reply — a new family ID, so it can be copied cleanly. */
+  followUps: string[];
 }
 
 async function runTool(
@@ -346,9 +351,13 @@ async function runTool(
       // there is no way to rotate another family's code. It addresses the registry rather than
       // the family database, which is why this is the one tool needing the phone number.
       const code = rotateJoinCode(ctx.normalizedPhone);
-      return code
-        ? `New family ID is ${code}. The previous one no longer works.`
-        : "Couldn't issue a new family ID.";
+      if (!code) return "Couldn't issue a new family ID.";
+      state.followUps.push(code);
+      return (
+        `New family ID is ${code}. The previous one no longer works. The ID itself is sent ` +
+        `automatically as its own message straight after your reply, so it can be copied — ` +
+        `don't write it out yourself; just say a new one is coming.`
+      );
     }
     case "request_leave_family": {
       requestLeave(ctx.normalizedPhone);
@@ -380,7 +389,7 @@ export async function runJoyceTurn(
   ctx: JoyceTurnContext,
   userText: string,
   attachedFile?: { documentId: number; extractedText: string }
-): Promise<string> {
+): Promise<JoyceMessage[]> {
   const { session } = ctx;
   appendMessage(session, "user", userText);
 
@@ -415,7 +424,7 @@ export async function runJoyceTurn(
     });
   }
 
-  const state: TurnState = { forcedReply: null };
+  const state: TurnState = { forcedReply: null, followUps: [] };
   let reply = "";
   for (let turn = 0; turn < MAX_TURNS; turn++) {
     const response = await getClient().messages.create({
@@ -464,6 +473,9 @@ export async function runJoyceTurn(
   // from a turn that also called another tool.
   if (state.forcedReply) reply = state.forcedReply;
   if (!reply) reply = "Sorry — I got a bit lost there. Could you say that again?";
-  appendMessage(session, "assistant", reply);
-  return reply;
+  const out = toMessages(reply, ...state.followUps);
+  // History keeps everything that was sent, follow-ups included, so a later "what was that ID
+  // again?" can be answered from the conversation.
+  appendMessage(session, "assistant", [reply, ...state.followUps].join("\n\n"));
+  return out;
 }

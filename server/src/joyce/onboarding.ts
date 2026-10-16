@@ -9,6 +9,7 @@ import {
 } from "./registry.js";
 import { openFamilySessionForNewMember, type FamilySession } from "./familyDb.js";
 import { setMemberName } from "./store.js";
+import { messages, type JoyceButton, type JoyceMessage } from "./messages.js";
 
 // Getting someone from "a number that has never messaged Joyce" to "a named member of a family".
 // Three questions at most: who I am, new family or existing one, and what to call you.
@@ -17,33 +18,53 @@ import { setMemberName } from "./store.js";
 // third needs no state at all, because "this member has no name yet" is already representable as
 // members.display_name_enc IS NULL in the family's own database.
 
-export const INTRO =
-  "Hi, I'm Joyce 👋 I'm a family assistant.\n\n" +
-  "I help a family plan things together, keep hold of important information, and remind each " +
-  "other about what's coming up. Everything one of you tells me, the rest of you can ask me " +
-  "about.\n\n" +
-  "Would you like to *start a new family group*, or *join an existing one*?";
+// The two answers to "new family or join one?", offered as buttons. A tap arrives as the button's
+// title (see extractJoyceMessages), so both titles must be in the word sets below.
+export const CHOICE_BUTTONS: JoyceButton[] = [
+  { id: "joyce_start_new", title: "Start new" },
+  { id: "joyce_join_existing", title: "Join existing" },
+];
+
+const CHOICE_QUESTION = "Would you like to start a new family group, or join an existing one?";
+
+// Four short messages rather than one paragraph: it reads as someone talking, not a leaflet.
+export const INTRO: JoyceMessage[] = [
+  ...messages(
+    "Hi, I'm Joyce. I'm a family assistant.",
+    "I remember important things, help plan, and remind people about what's coming up.",
+    "Whatever you tell me, your family members can ask me about. For example, many families have " +
+      "me remember wifi passwords for them so they only have to ask me to find it."
+  ),
+  { text: CHOICE_QUESTION, buttons: CHOICE_BUTTONS },
+];
 
 const ASK_CODE =
-  "No problem — send me the family ID you were given. It looks like *JOY-XXXX-XXXX*.";
+  "No problem. Send me the family ID you were given. It looks like *JOY-XXXX-XXXX*.";
 
-const ASK_CHOICE_AGAIN =
-  "Sorry, I didn't catch that. Reply *new* to start a family group, or *join* if someone has " +
-  "already sent you a family ID.";
+const ASK_CHOICE_AGAIN: JoyceMessage[] = [
+  {
+    text:
+      "Sorry, I didn't catch that. Tap *Start new* to start a family group, or *Join existing* " +
+      "if someone has already sent you a family ID.",
+    buttons: CHOICE_BUTTONS,
+  },
+];
 
 function askName(memberCount: number): string {
   return memberCount <= 1
-    ? "Last thing — what should I call you?"
+    ? "Last thing: what should I call you?"
     : "Welcome in! What should I call you, so everyone knows who's who?";
 }
 
-function welcomeNewFamily(joinCode: string): string {
-  return (
-    "Done — your family group is set up 🎉\n\n" +
-    `Your family ID is *${joinCode}*\n\n` +
-    "Share that with the people you want in the group; they message me and send that ID to " +
-    "join. Anyone with it can join, so pass it on privately — you can ask me for a new ID any " +
-    "time and the old one stops working."
+// The family ID goes out as a message of its own, with nothing else in it, so it can be
+// long-pressed and copied straight into a message to someone else.
+function welcomeNewFamily(joinCode: string): JoyceMessage[] {
+  return messages(
+    "Done, your family group is set up.\n\n" +
+      "Your family ID is below. Share it with the people you want in the group: they message me " +
+      "and send that ID to join. Anyone with it can join, so pass it on privately. You can ask me " +
+      "for a new ID any time and the old one stops working.",
+    joinCode
   );
 }
 
@@ -57,9 +78,9 @@ const JOIN_WORDS = new Set(["join", "2", "two", "existing", "join existing", "jo
 
 export type OnboardingResult =
   /** Still onboarding — send `reply` and stop; no assistant turn this message. */
-  | { done: false; reply: string }
+  | { done: false; reply: JoyceMessage[] }
   /** They're in a family now. `session` is open and `reply` (if set) goes out first. */
-  | { done: true; session: FamilySession; reply?: string };
+  | { done: true; session: FamilySession; reply?: JoyceMessage[] };
 
 /**
  * Drives everything that happens before someone is a named member of a family. Called only for
@@ -84,12 +105,12 @@ export function handleOnboarding(normalizedPhone: string, text: string): Onboard
   if (NEW_WORDS.has(lowered)) {
     const { family, joinCode } = createFamily(normalizedPhone);
     const session = openFamilySessionForNewMember(family, normalizedPhone);
-    return { done: true, session, reply: `${welcomeNewFamily(joinCode)}\n\n${askName(1)}` };
+    return { done: true, session, reply: [...welcomeNewFamily(joinCode), ...messages(askName(1))] };
   }
 
   if (JOIN_WORDS.has(lowered)) {
     setOnboardingState(normalizedPhone, "awaiting_join_code");
-    return { done: false, reply: ASK_CODE };
+    return { done: false, reply: messages(ASK_CODE) };
   }
 
   // Someone who was forwarded a code often just pastes it instead of answering the question.
@@ -107,13 +128,14 @@ function applyJoinCode(normalizedPhone: string, rawCode: string): OnboardingResu
       // Shouldn't be reachable (routes.ts only calls onboarding for family-less numbers), but if
       // it is, saying so plainly beats a confusing failure.
       clearOnboardingState(normalizedPhone);
-      return { done: false, reply: "You're already part of a family group here." };
+      return { done: false, reply: messages("You're already part of a family group here.") };
     }
     return {
       done: false,
-      reply:
-        "I don't recognise that family ID. Double-check it with whoever sent it — it looks " +
-        "like *JOY-XXXX-XXXX* — and send it again.",
+      reply: messages(
+        "I don't recognise that family ID. Double-check it with whoever sent it (it looks " +
+          "like *JOY-XXXX-XXXX*) and send it again."
+      ),
     };
   }
 
@@ -121,7 +143,7 @@ function applyJoinCode(normalizedPhone: string, rawCode: string): OnboardingResu
   return {
     done: true,
     session,
-    reply: askName(countFamilyMembers(outcome.family.familyId)),
+    reply: messages(askName(countFamilyMembers(outcome.family.familyId))),
   };
 }
 
