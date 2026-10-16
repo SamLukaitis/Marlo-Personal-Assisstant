@@ -23,6 +23,10 @@ Marlowe can be used from the web app and, optionally, through WhatsApp. It is de
 - **Business edition (UK sole traders):** Users invited as a "Business tester" (Settings → Admin → Invited testers) or switched in the Portal (Admins → Make business) get a work-focused Marlowe with a simple set of books. Receipts and bills they send, invoice emails they say yes to, payment emails (Stripe, SumUp, PayPal, "invoice paid") and money mentioned in chat go into a ledger sorted into HMRC's SA103 expense categories. Model guesses always wait for the user's check, a supplier's category is remembered once confirmed, nothing is hard-deleted, and the Monday briefing gives last week's money in and out. Their WhatsApp setup asks what the business does and invites a first receipt. GBP only; tax estimates and MTD come next (`feature-to-do/business-edition-phase-c.md`). Code: `server/src/business/`, reached only through `server/src/editions/index.ts`.
 - **Administration:** Admin users have access to a separate portal for operational tools, logs, user administration, and application health information.
 
+## Joyce — family WhatsApp assistant (optional)
+
+Joyce is a separate assistant on her own WhatsApp number that a family shares. Members can save notes, photos and documents (PDF, Word, text), pass messages to each other and set reminders, and any member of the family can search what's been saved or ask for a file back. Joyce shares no data with Marlowe: each family's data sits in its own database file, encrypted with its own key derived from `JOYCE_MASTER_KEY`. Joyce stays switched off until the `JOYCE_*` settings are filled in (see `server/.env.example`), and her number needs a WhatsApp webhook override pointing at `/webhooks/joyce` (see "Going live" in `feature-to-do/joyce-family-assistant.md`). Anyone who messages her number can start a family, so share the number only with people you trust for now. Design notes: `feature-to-do/joyce-family-assistant.md`.
+
 ## Safety and privacy boundaries
 
 - Access is **invite-only**. An administrator must invite an email address before that person can use the application.

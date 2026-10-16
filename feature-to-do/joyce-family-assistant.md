@@ -230,9 +230,17 @@ tenant files would deserve a serious look before committing to the shared table.
    Generate the master key fresh — it must **not** be the same value as `ENCRYPTION_KEY`, and
    losing it makes every family's data permanently unreadable, so back it up off the server.
    `server/.env.example` has the full list with instructions.
-3. Point the webhook at `/webhooks/joyce` and subscribe it to messages. Note the WABA
-   webhook-subscription gotcha that bit us with Marlowe: subscribing the *app* is not the same as
-   subscribing the *WhatsApp Business Account*, and both are needed.
+3. Route Joyce's number to `/webhooks/joyce`. Meta has **one** callback URL per app (Marlowe's
+   `/webhooks/whatsapp`), so without this every message to Joyce lands on Marlowe's endpoint,
+   Marlowe drops it (wrong `phone_number_id`), and Joyce never hears it. The fix is a
+   *phone-number-level webhook override*, which applies to Joyce's number only:
+   `POST /{JOYCE_PHONE_NUMBER_ID}` with
+   `{"webhook_configuration":{"override_callback_uri":"https://<host>/webhooks/joyce","verify_token":"<JOYCE_WHATSAPP_VERIFY_TOKEN>"}}`.
+   Meta checks the URL when you set it, so the Joyce env vars must already be deployed. Check
+   it with `GET /{JOYCE_PHONE_NUMBER_ID}?fields=webhook_configuration`. Do **not** use the
+   WABA-level override; that would move Marlowe's traffic too. (Corrected 2026-10-16: an earlier
+   version of this step assumed both endpoints receive every message.) The WABA must also be
+   subscribed to the app, which it already is.
 4. Send one message to Marlowe and one to Joyce and confirm each is answered by the right one and
    ignored by the other.
 
