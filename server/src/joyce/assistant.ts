@@ -11,6 +11,8 @@ import {
   claimRelaysFor,
   createReminder,
   findMemberByName,
+  getFamilyJoinCode,
+  setFamilyJoinCode,
   listDocuments,
   listMembers,
   listNotes,
@@ -170,6 +172,13 @@ const TOOLS: Anthropic.Tool[] = [
       required: ["to", "message"],
       additionalProperties: false,
     },
+  },
+  {
+    name: "current_family_id",
+    description:
+      "Look up this family's current family ID, for when someone asks what it is so they can " +
+      "invite someone. Prefer this over new_family_id unless they want the old one to stop working.",
+    input_schema: { type: "object", properties: {}, additionalProperties: false },
   },
   {
     name: "new_family_id",
@@ -346,12 +355,27 @@ async function runTool(
       queueRelay(session, found.id, String(input.message));
       return `Message left for ${found.displayName}; they'll get it next time they message you.`;
     }
+    case "current_family_id": {
+      const code = getFamilyJoinCode(session);
+      if (!code) {
+        return (
+          "This family's ID wasn't kept when it was made, so it can't be looked up. Offer to " +
+          "issue a new one with new_family_id, explaining that the old one would stop working."
+        );
+      }
+      state.followUps.push(code);
+      return (
+        `The family ID is ${code}. It is sent automatically as its own message straight after ` +
+        `your reply, so it can be copied — don't write it out yourself.`
+      );
+    }
     case "new_family_id": {
       // rotateJoinCode picks the family from the caller's own phone, not from any argument, so
       // there is no way to rotate another family's code. It addresses the registry rather than
       // the family database, which is why this is the one tool needing the phone number.
       const code = rotateJoinCode(ctx.normalizedPhone);
       if (!code) return "Couldn't issue a new family ID.";
+      setFamilyJoinCode(session, code);
       state.followUps.push(code);
       return (
         `New family ID is ${code}. The previous one no longer works. The ID itself is sent ` +

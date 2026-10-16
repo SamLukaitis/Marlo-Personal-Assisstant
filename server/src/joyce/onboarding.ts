@@ -3,12 +3,13 @@ import {
   countFamilyMembers,
   createFamily,
   getOnboardingState,
+  formatJoinCode,
   joinFamilyByCode,
   normalizeJoinCode,
   setOnboardingState,
 } from "./registry.js";
 import { openFamilySessionForNewMember, type FamilySession } from "./familyDb.js";
-import { setMemberName } from "./store.js";
+import { setFamilyJoinCode, setMemberName } from "./store.js";
 import { messages, type JoyceButton, type JoyceMessage } from "./messages.js";
 
 // Getting someone from "a number that has never messaged Joyce" to "a named member of a family".
@@ -105,6 +106,7 @@ export function handleOnboarding(normalizedPhone: string, text: string): Onboard
   if (NEW_WORDS.has(lowered)) {
     const { family, joinCode } = createFamily(normalizedPhone);
     const session = openFamilySessionForNewMember(family, normalizedPhone);
+    setFamilyJoinCode(session, joinCode);
     return { done: true, session, reply: [...welcomeNewFamily(joinCode), ...messages(askName(1))] };
   }
 
@@ -140,6 +142,8 @@ function applyJoinCode(normalizedPhone: string, rawCode: string): OnboardingResu
   }
 
   const session = openFamilySessionForNewMember(outcome.family, normalizedPhone);
+  // The code just worked, so it's the family's current one.
+  setFamilyJoinCode(session, formatJoinCode(normalizeJoinCode(rawCode)!));
   return {
     done: true,
     session,

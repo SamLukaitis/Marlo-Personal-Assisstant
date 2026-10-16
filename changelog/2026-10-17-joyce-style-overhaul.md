@@ -16,6 +16,11 @@ What changed, all in `server/src/joyce/`:
   messages with a short pause between them. The splitting code is a copy of Marlowe's
   `services/messageSplitting.ts` in `joyce/messageSplitting.ts`, because Joyce isn't allowed to
   import Marlowe's code. Change both if you change one.
+- **"What's our family ID?" now works.** Joyce has a `current_family_id` tool. Until now she
+  could only issue a new ID, because the registry keeps just a hash of it. The ID is now also kept
+  in the family's own database, encrypted with the family's key, whenever it's created, replaced,
+  or used to join. Families made before this get it filled in the next time someone joins with
+  the ID or a new one is issued; until then Joyce offers to issue a new one.
 - **Joyce remembers her scripted messages.** The welcome (with the family ID) and the "Lovely to
   meet you" reply after someone gives their name were sent but never saved to the family's
   conversation history, so Joyce couldn't see later what she'd told them. They're saved now.

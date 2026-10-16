@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import { composeReply as composeReplyMessages } from "./routes.js";
 import { asText } from "./messages.js";
 import { openFamilySessionForPhone } from "./familyDb.js";
-import { listNotes, recentHistory, saveNote } from "./store.js";
+import { getFamilyJoinCode, listNotes, recentHistory, saveNote } from "./store.js";
 import { findFamilyForPhone } from "./registry.js";
 
 // These tests check wording; joining the messages back into text keeps them about that.
@@ -193,5 +193,43 @@ describe("how Joyce's onboarding messages are laid out", () => {
       ...(await composeReplyMessages(phone, "Gil")),
     ];
     expect(sent.filter((m) => EMOJI.test(m.text)).map((m) => m.text)).toEqual([]);
+  });
+});
+
+describe("the family ID a member can look up", () => {
+  const CODE = /^JOY-[0-9A-Z]{4}-[0-9A-Z]{4}$/;
+
+  it("is kept when a family is created", async () => {
+    const phone = "15551130001";
+    await composeReplyMessages(phone, "hi");
+    const created = await composeReplyMessages(phone, "new");
+    const code = created.find((m) => CODE.test(m.text))!.text;
+    expect(getFamilyJoinCode(openFamilySessionForPhone(phone)!)).toBe(code);
+  });
+
+  it("is filled in for an older family when someone joins with it", async () => {
+    const owner = "15551130002";
+    await composeReplyMessages(owner, "hi");
+    const code = (await composeReplyMessages(owner, "new")).find((m) => CODE.test(m.text))!.text;
+    // A family made before the code was kept has nothing stored.
+    const ownerSession = openFamilySessionForPhone(owner)!;
+    ownerSession.db.prepare(`DELETE FROM family_meta WHERE key = 'join_code_enc'`).run();
+    expect(getFamilyJoinCode(ownerSession)).toBeNull();
+
+    const joiner = "15551130003";
+    await composeReplyMessages(joiner, "hi");
+    // Typed the way people actually type it.
+    await composeReplyMessages(joiner, code.toLowerCase().replace(/-/g, " "));
+    expect(getFamilyJoinCode(openFamilySessionForPhone(joiner)!)).toBe(code);
+  });
+
+  it("is stored encrypted, not as readable text", async () => {
+    const phone = "15551130004";
+    await composeReplyMessages(phone, "hi");
+    const code = (await composeReplyMessages(phone, "new")).find((m) => CODE.test(m.text))!.text;
+    const raw = openFamilySessionForPhone(phone)!
+      .db.prepare(`SELECT value FROM family_meta WHERE key = 'join_code_enc'`)
+      .get() as { value: string };
+    expect(raw.value).not.toContain(code.slice(4));
   });
 });
