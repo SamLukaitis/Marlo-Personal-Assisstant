@@ -29,6 +29,14 @@ added twice). Each reply in the history now carries a short "[Done: …]" note o
 behind it, never sent to anyone, and she's told to act only on the newest message. This affected
 notes and reminders as well as the calendar.
 
+**Each family member now has their own conversation with Joyce.** Before, she kept one history
+for the whole family, so one person's "yes" could be taken as answering something she'd said to
+someone else. Now she only sees her conversation with whoever she's replying to. What anyone tells
+her is still available to the rest of the family through notes, the calendar and reminders, and a
+new search over everything members have said to her ("has anyone mentioned Mum's birthday?").
+
+Joyce's admin portal now has a light pink background.
+
 Also: `npm run joyce:templates` shows or submits Joyce's WhatsApp templates. Use the account id
 1574262347469069; 1576415707195454 refuses template creation. And the README now records that
 Railway's staging environment deliberately has no WhatsApp settings.

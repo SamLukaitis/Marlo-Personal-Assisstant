@@ -51,22 +51,19 @@ async function sendOne(recipient: ReminderRecipient, text: string, now: number):
 
 async function deliverForFamily(family: FamilyData, now: number): Promise<void> {
   for (const reminder of listRemindersToPush(family, now)) {
-    const reached: string[] = [];
     for (const recipient of reminder.recipients) {
       if (!recipient.phone) continue;
+      const text = reminderText(reminder, recipient);
       try {
-        await sendOne(recipient, reminderText(reminder, recipient), now);
+        await sendOne(recipient, text, now);
         recordReminderDelivery(family, reminder.id, recipient.memberId);
-        reached.push(recipient.name ?? "a family member");
+        // In their own conversation, so Joyce knows what they mean if they reply to it.
+        appendSentMessage(family, recipient.memberId, `Reminder: ${text}`);
       } catch (err) {
         console.error("joyce: couldn't send a reminder; they'll get it when they next message", err);
       }
     }
     markReminderPushAttempted(family, reminder.id);
-    // One history line per reminder, so Joyce can see later that it went out and to whom.
-    if (reached.length > 0) {
-      appendSentMessage(family, `(Sent a reminder to ${reached.join(", ")}): Reminder: ${reminder.body}`);
-    }
   }
 }
 

@@ -87,8 +87,9 @@ describe("sending reminders when they come due", () => {
     );
     // Done for everyone: nothing left to hand over when they next message.
     expect(claimDueReminders(session(sam))).toEqual([]);
-    // And Joyce can see in the history that she sent it.
-    expect(recentHistory(session(priya)).at(-1)?.body).toContain("Sent a reminder to");
+    // And each of them has it in their own conversation, so Joyce knows what a reply refers to.
+    expect(recentHistory(session(priya)).at(-1)?.body).toBe("Reminder: School trip money");
+    expect(recentHistory(session(sam)).at(-1)?.body).toBe("Reminder: School trip money (from Priya)");
   });
 
   it("doesn't send anything before it's due", async () => {

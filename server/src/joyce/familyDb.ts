@@ -72,9 +72,12 @@ const SCHEMA = `
     last_seen_at INTEGER NOT NULL
   );
 
-  -- The family's shared conversation with Joyce. Everyone's messages are here, which is the
-  -- point ("all information sent by a family member should be available to all other family
-  -- members"), and member_id + created_at is what lets Joyce answer "who said that, and when?".
+  -- Every member's conversation with Joyce. Each person has their own thread (thread_member_id,
+  -- added by migrate below), so what Joyce sees when she replies is only her conversation with
+  -- that person — one member's "yes" can't be read as answering something she said to another.
+  -- Everything stays in this one family file, and Joyce can still search all of it
+  -- (search_family_chat), so what any member tells her remains available to the others.
+  -- member_id is who sent a user message; Joyce's own messages have none.
   CREATE TABLE IF NOT EXISTS messages (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     member_id INTEGER REFERENCES members(id),
@@ -172,6 +175,20 @@ function migrate(db: Database.Database): void {
   // couldn't reach gets it when they next message instead, so it's never retried every minute.
   if (!columns("reminders").includes("push_attempted_at")) {
     db.exec(`ALTER TABLE reminders ADD COLUMN push_attempted_at INTEGER`);
+  }
+  // Which member's conversation a message belongs to. For messages written before threads
+  // existed: a member's own message is in their thread, and each reply of Joyce's goes in the
+  // thread of the most recent message she was answering.
+  if (!columns("messages").includes("thread_member_id")) {
+    db.exec(`
+      ALTER TABLE messages ADD COLUMN thread_member_id INTEGER REFERENCES members(id);
+      UPDATE messages SET thread_member_id = member_id WHERE role = 'user';
+      UPDATE messages SET thread_member_id = (
+        SELECT u.member_id FROM messages u
+         WHERE u.role = 'user' AND u.id < messages.id ORDER BY u.id DESC LIMIT 1
+      ) WHERE role = 'assistant';
+      CREATE INDEX IF NOT EXISTS idx_messages_thread ON messages(thread_member_id, id);
+    `);
   }
   // Who an event is for when that person isn't a member — usually a child without a phone
   // ("Leo's dentist"). Encrypted; about_member_id stays NULL.

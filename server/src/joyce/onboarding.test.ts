@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import { composeReply as composeReplyMessages } from "./routes.js";
 import { asText } from "./messages.js";
 import { openFamilySessionForPhone } from "./familyDb.js";
-import { getFamilyJoinCode, listNotes, recentHistory, saveNote } from "./store.js";
+import { appendMessage, getFamilyJoinCode, listNotes, recentHistory, saveNote, searchFamilyChat } from "./store.js";
 import { findFamilyForPhone } from "./registry.js";
 
 // These tests check wording; joining the messages back into text keeps them about that.
@@ -231,5 +231,42 @@ describe("the family ID a member can look up", () => {
       .db.prepare(`SELECT value FROM family_meta WHERE key = 'join_code_enc'`)
       .get() as { value: string };
     expect(raw.value).not.toContain(code.slice(4));
+  });
+});
+
+describe("each member's own conversation with Joyce", () => {
+  let next = 0;
+  async function twoMembers(): Promise<[string, string]> {
+    next += 2;
+    const a = `155511400${String(next).padStart(2, "0")}`;
+    const b = `155511410${String(next).padStart(2, "0")}`;
+    await composeReplyMessages(a, "hi");
+    const code = (await composeReplyMessages(a, "new")).find((m) => /^JOY-/.test(m.text))!.text;
+    await composeReplyMessages(a, "Priya");
+    await composeReplyMessages(b, "hi");
+    await composeReplyMessages(b, code);
+    await composeReplyMessages(b, "Sam");
+    return [a, b];
+  }
+
+  it("keeps one member's messages out of another's conversation", async () => {
+    const [priya, sam] = await twoMembers();
+    appendMessage(openFamilySessionForPhone(priya)!, "user", "Shall I book the restaurant for Friday?");
+    appendMessage(openFamilySessionForPhone(priya)!, "assistant", "Want me to remind you to book it?");
+    appendMessage(openFamilySessionForPhone(sam)!, "user", "yes");
+
+    const samsView = recentHistory(openFamilySessionForPhone(sam)!).map((h) => h.body);
+    expect(samsView).toContain("yes");
+    expect(samsView.join(" ")).not.toContain("restaurant");
+    const priyasView = recentHistory(openFamilySessionForPhone(priya)!).map((h) => h.body);
+    expect(priyasView.at(-1)).toBe("Want me to remind you to book it?");
+    expect(priyasView).not.toContain("yes");
+  });
+
+  it("can still find what another member said, through the family chat search", async () => {
+    const [priya, sam] = await twoMembers();
+    appendMessage(openFamilySessionForPhone(priya)!, "user", "The plumber is coming on Thursday morning");
+    const hits = searchFamilyChat(openFamilySessionForPhone(sam)!, "when is the plumber coming");
+    expect(hits[0]).toEqual(expect.objectContaining({ body: "The plumber is coming on Thursday morning", senderName: "Priya" }));
   });
 });
