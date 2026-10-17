@@ -43,6 +43,7 @@ import {
   getPendingSetup,
   addUnmetRequest,
   recordApiUsage,
+  isAdmin,
   listPhoneNumbersForUser,
   type ToolKey,
   type DocumentRow,
@@ -2306,6 +2307,10 @@ export async function runAssistantChat(
   let mapsCalls = 0;
   const channel = phone ? "whatsapp" : "web";
   function finish(reply: AssistantReply): AssistantReply {
+    // Admins (Jake and Sam) see what each of their own messages cost in the Portal, so the text
+    // is kept alongside the cost for them only. Never for anyone else's account.
+    const replyText =
+      reply.text || reply.choice?.question || (reply.reaction ? `(reacted ${reply.reaction.emoji})` : "");
     recordApiUsage(
       ownerId,
       channel,
@@ -2314,7 +2319,8 @@ export async function runAssistantChat(
       usageTotals.inputTokens,
       usageTotals.outputTokens,
       usageTotals.cacheReadTokens,
-      usageTotals.cacheCreationTokens
+      usageTotals.cacheCreationTokens,
+      isAdmin(ownerId) ? { userMessage: lastUserMessage, replyText } : undefined
     );
     return reply;
   }

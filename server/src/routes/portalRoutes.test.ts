@@ -273,6 +273,39 @@ describe("logs explain", () => {
 });
 
 describe("usage", () => {
+  it("shows message text only for admins' own chats, and messagesOnly lists just those", async () => {
+    const admin = makeAdmin("usage-messages");
+    const demoted = makeAdmin("usage-messages-demoted");
+    const someUser = findOrCreateUserByEmail(uniqueEmail("usage-messages-owner"));
+    recordApiUsage(admin.id, "whatsapp", "claude-sonnet-5", "usage_messages_test_marker", 1, 2, 3, 4, {
+      userMessage: "what's on today?",
+      replyText: "Two meetings.",
+    });
+    recordApiUsage(demoted.id, "whatsapp", "claude-sonnet-5", "usage_messages_test_marker", 1, 2, 3, 4, {
+      userMessage: "old admin message",
+      replyText: "old reply",
+    });
+    setUserAdmin(demoted.id, false);
+    // Even if text somehow reached a non-admin's row, the API must not hand it out.
+    recordApiUsage(someUser.id, "whatsapp", "claude-sonnet-5", "usage_messages_test_marker", 1, 2, 3, 4, {
+      userMessage: "private",
+      replyText: "private reply",
+    });
+    const app = buildTestApp(admin.id);
+
+    const all = await request(app).get("/api/portal/usage?days=1&recentLimit=200");
+    const byOwner = (id: number) => all.body.recent.find((r: { ownerId: number }) => r.ownerId === id);
+    expect(byOwner(admin.id)).toMatchObject({ userMessage: "what's on today?", replyText: "Two meetings." });
+    expect(byOwner(demoted.id)).toMatchObject({ userMessage: null, replyText: null });
+    expect(byOwner(someUser.id)).toMatchObject({ userMessage: null, replyText: null });
+
+    const only = await request(app).get("/api/portal/usage?days=1&recentLimit=200&messagesOnly=1");
+    const owners = only.body.recent.map((r: { ownerId: number }) => r.ownerId);
+    expect(owners).toContain(admin.id);
+    expect(owners).not.toContain(demoted.id);
+    expect(owners).not.toContain(someUser.id);
+  });
+
   it("breaks down recorded calls by purpose, separately from the day/channel/model table", async () => {
     const admin = makeAdmin("usage");
     const someUser = findOrCreateUserByEmail(uniqueEmail("usage-owner"));

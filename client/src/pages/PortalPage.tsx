@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
 import { Navigate } from "react-router-dom";
 import {
   fetchAdminCandidates,
@@ -717,10 +717,11 @@ function UsageTab() {
   const [recent, setRecent] = useState<ApiUsageCallRow[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [days, setDays] = useState(30);
+  const [messagesOnly, setMessagesOnly] = useState(true);
 
-  function load(d: number) {
+  function load(d: number, onlyMessages: boolean) {
     setLoaded(false);
-    fetchUsageSummary(d)
+    fetchUsageSummary(d, 50, onlyMessages)
       .then((r) => {
         setRows(r.rows);
         setByPurpose(r.byPurpose);
@@ -731,7 +732,7 @@ function UsageTab() {
       .finally(() => setLoaded(true));
   }
 
-  useEffect(() => load(days), [days]);
+  useEffect(() => load(days, messagesOnly), [days, messagesOnly]);
 
   const totalCalls = rows.reduce((sum, r) => sum + r.calls, 0);
   // "Tokens" everywhere on this tab means ALL tokens, cached included — matching what the
@@ -904,10 +905,19 @@ function UsageTab() {
           <h2 style={{ fontSize: 15, marginTop: 24, marginBottom: 10 }}>Recent calls</h2>
           <p className="muted" style={{ marginTop: -6, marginBottom: 10, fontSize: 12 }}>
             The last {recent.length} individual calls with an exact time — the day-by-day table
-            above only groups down to the day.
+            above only groups down to the day. Admins' own chats show the message and reply under
+            the cost; nobody else's messages are ever shown.
           </p>
+          <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, marginBottom: 10 }}>
+            <input type="checkbox" checked={messagesOnly} onChange={(e) => setMessagesOnly(e.target.checked)} />
+            Only admins' own messages
+          </label>
           {recent.length === 0 ? (
-            <p className="muted">No assistant activity yet.</p>
+            <p className="muted">
+              {messagesOnly
+                ? "No messages yet. Message text is saved from this update onwards, so send Marlowe something and refresh."
+                : "No assistant activity yet."}
+            </p>
           ) : (
             <div className="card" style={{ overflowX: "auto" }}>
               <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
@@ -927,7 +937,8 @@ function UsageTab() {
                 </thead>
                 <tbody>
                   {recent.map((r) => (
-                    <tr key={r.id} className="data-row">
+                    <Fragment key={r.id}>
+                    <tr className="data-row">
                       <td style={{ ...tdText, whiteSpace: "nowrap" }}>{timeAgo(r.createdAt)}</td>
                       <td style={tdText}>{usagePurposeLabel(r.purpose)}</td>
                       <td style={tdText}>{usageOwnerLabel(r)}</td>
@@ -939,6 +950,19 @@ function UsageTab() {
                       <td style={tdNum}>{r.cacheCreationTokens.toLocaleString()}</td>
                       <td style={tdNum}>{r.estimatedCost != null ? `$${r.estimatedCost.toFixed(3)}` : "—"}</td>
                     </tr>
+                    {r.userMessage != null && (
+                      <tr>
+                        <td colSpan={10} style={{ padding: "0 12px 10px", fontSize: 12 }}>
+                          <div style={{ whiteSpace: "pre-wrap" }}>
+                            <strong>Message:</strong> {r.userMessage}
+                          </div>
+                          <div className="muted" style={{ whiteSpace: "pre-wrap", marginTop: 2 }}>
+                            <strong>Reply:</strong> {r.replyText || "—"}
+                          </div>
+                        </td>
+                      </tr>
+                    )}
+                    </Fragment>
                   ))}
                 </tbody>
               </table>

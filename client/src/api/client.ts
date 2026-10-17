@@ -910,6 +910,9 @@ export interface ApiUsageCallRow {
   cacheCreationTokens: number;
   createdAt: number;
   estimatedCost: number | null;
+  // Only set on admins' own assistant chats; null for everyone else.
+  userMessage: string | null;
+  replyText: string | null;
 }
 
 // Maps the internal purpose tags (assistant.ts, documents.ts, etc.) to what an admin actually
@@ -945,7 +948,7 @@ export function usageOwnerLabel(row: {
   return row.ownerEmail ?? `No email connected (#${row.ownerId})`;
 }
 
-export const fetchUsageSummary = (days = 30, recentLimit = 50) =>
+export const fetchUsageSummary = (days = 30, recentLimit = 50, messagesOnly = false) =>
   getJson<{
     rows: ApiUsageRow[];
     byPurpose: ApiUsageByPurposeRow[];
@@ -953,7 +956,7 @@ export const fetchUsageSummary = (days = 30, recentLimit = 50) =>
     projection: ApiUsageProjection | null;
     recent: ApiUsageCallRow[];
     approx: true;
-  }>(`/api/portal/usage?days=${days}&recentLimit=${recentLimit}`);
+  }>(`/api/portal/usage?days=${days}&recentLimit=${recentLimit}${messagesOnly ? "&messagesOnly=1" : ""}`);
 
 export interface AdminTodoReply {
   id: number;

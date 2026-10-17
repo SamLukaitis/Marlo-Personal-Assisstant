@@ -62,6 +62,24 @@ describe("recordApiUsage / getApiUsageSummary / getApiUsageByPurpose", () => {
     });
   });
 
+  it("keeps message text only when given, trimmed to 500 characters, and messagesOnly filters to it", () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("usage-message-text"));
+    recordApiUsage(user.id, "web", "claude-sonnet-5", "message_text_test_marker", 1, 1, 0, 0, {
+      userMessage: "x".repeat(800),
+      replyText: "short reply",
+    });
+    recordApiUsage(user.id, "web", "claude-sonnet-5", "message_text_test_marker_none", 1, 1, 0, 0);
+
+    const withText = listRecentApiUsage(200).find((r) => r.purpose === "message_text_test_marker");
+    expect(withText?.userMessage).toHaveLength(500);
+    expect(withText?.replyText).toBe("short reply");
+    expect(listRecentApiUsage(200).find((r) => r.purpose === "message_text_test_marker_none")?.userMessage).toBeNull();
+
+    const onlyMessages = listRecentApiUsage(200, true);
+    expect(onlyMessages.every((r) => r.userMessage !== null)).toBe(true);
+    expect(onlyMessages.some((r) => r.purpose === "message_text_test_marker")).toBe(true);
+  });
+
   it("listRecentApiUsage returns individual calls newest-first with an exact timestamp and owner email", () => {
     const user = findOrCreateUserByEmail(uniqueEmail("usage-recent"));
     recordApiUsage(user.id, "web", "claude-sonnet-5", "recent_calls_test_marker", 111, 22, 999, 33);
