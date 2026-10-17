@@ -725,8 +725,14 @@ export function LogsTab({ api }: { api: PortalSectionsApi }) {
 // Shared cell styles for the usage tables. Numeric columns are right-aligned on BOTH the header
 // and body cells — browsers give <th> its own default alignment rather than inheriting the row's
 // textAlign, so setting it only on the <tr> leaves titles floating away from their numbers.
-const thText = { padding: "8px 12px", textAlign: "left", whiteSpace: "nowrap" } as const;
-const thNum = { padding: "8px 12px", textAlign: "right", whiteSpace: "nowrap" } as const;
+// Headers stick to the top of their scroll box (usageScrollBox below), so column names stay
+// visible while scrolling a long table. The background stops rows showing through them.
+const thSticky = { position: "sticky", top: 0, background: "var(--surface)", zIndex: 1 } as const;
+const thText = { padding: "8px 12px", textAlign: "left", whiteSpace: "nowrap", ...thSticky } as const;
+const thNum = { padding: "8px 12px", textAlign: "right", whiteSpace: "nowrap", ...thSticky } as const;
+// The usage tables can run to hundreds of rows. Capping their height makes each one scroll inside
+// its own box instead of making the whole page very long.
+const usageScrollBox = { overflow: "auto", maxHeight: "min(480px, 60vh)" } as const;
 const tdText = { padding: "8px 12px" } as const;
 const tdNum = { padding: "8px 12px", textAlign: "right" } as const;
 
@@ -896,7 +902,7 @@ export function UsageTab({
           {rows.length === 0 ? (
             <p className="muted">No assistant activity in this range.</p>
           ) : (
-            <div className="card" style={{ overflowX: "auto" }}>
+            <div className="card" style={usageScrollBox}>
               <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
                 <thead>
                   <tr>
@@ -951,7 +957,7 @@ export function UsageTab({
                 : "No assistant activity yet."}
             </p>
           ) : (
-            <div className="card" style={{ overflowX: "auto" }}>
+            <div className="card" style={usageScrollBox}>
               <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
                 <thead>
                   <tr>
