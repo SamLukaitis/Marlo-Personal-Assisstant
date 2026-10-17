@@ -145,6 +145,21 @@ Searching notes and documents now ranks by how many of the search words match. P
 needed the exact phrase, which the live test showed failing whenever the model searched in its own
 words.
 
+## Each member has their own conversation
+
+Changed 2026-10-17. Originally the whole family shared one conversation history, so Joyce's
+replies to one member sat in another's context with nothing saying who they were for — one
+person's "yes" could be read as answering something she'd said to someone else. Now each member
+has their own thread (`messages.thread_member_id`): when Joyce replies, she sees only her
+conversation with that person. Existing history was sorted into threads on upgrade (each reply of
+Joyce's goes to whoever she was answering).
+
+The original requirement — everything one member tells Joyce is available to the others — still
+holds, two ways: she saves what matters to notes, documents, reminders and the calendar, which are
+shared; and `search_family_chat` searches what every member has said to her (the last 1,000
+messages), with who said it and when. Members' chat is still in the same family file, under the
+same key; this changes what the model is shown, not who can reach the data.
+
 ## Timezones, reminders and the calendar
 
 Added 2026-10-17.

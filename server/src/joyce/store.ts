@@ -85,6 +85,7 @@ export function findMemberByName(session: FamilySession, name: string): MemberLo
 
 // --- Conversation log ------------------------------------------------------------------------
 
+/** A message in the acting member's own conversation with Joyce — theirs, or her reply to them. */
 export function appendMessage(
   session: FamilySession,
   role: "user" | "assistant",
@@ -92,20 +93,23 @@ export function appendMessage(
 ): void {
   session.db
     .prepare(
-      `INSERT INTO messages (member_id, role, body_enc, created_at) VALUES (?, ?, ?, ?)`
+      `INSERT INTO messages (member_id, thread_member_id, role, body_enc, created_at) VALUES (?, ?, ?, ?, ?)`
     )
-    // An assistant turn is the family's, not any one member's, so it carries no member_id.
-    .run(role === "user" ? session.actor.id : null, role, encryptFor(session.key, body), Date.now());
+    // Joyce's own messages have no sender member, but belong to the thread of whoever she's talking to.
+    .run(role === "user" ? session.actor.id : null, session.actor.id, role, encryptFor(session.key, body), Date.now());
 }
 
 /**
- * Something Joyce sent without being asked (a reminder), kept in the family's history like any
- * reply of hers so she can see later that she sent it.
+ * Something Joyce sent a member without being asked (a reminder), kept in that member's
+ * conversation like any reply of hers, so she can see later that she sent it.
  */
-export function appendSentMessage(family: FamilyData, body: string): void {
+export function appendSentMessage(family: FamilyData, memberId: number, body: string): void {
   family.db
-    .prepare(`INSERT INTO messages (member_id, role, body_enc, created_at) VALUES (NULL, 'assistant', ?, ?)`)
-    .run(encryptFor(family.key, body), Date.now());
+    .prepare(
+      `INSERT INTO messages (member_id, thread_member_id, role, body_enc, created_at)
+       VALUES (NULL, ?, 'assistant', ?, ?)`
+    )
+    .run(memberId, encryptFor(family.key, body), Date.now());
 }
 
 export interface HistoryEntry {
@@ -116,18 +120,20 @@ export interface HistoryEntry {
 }
 
 /**
- * The shared family history, newest `limit` turns, oldest first. Everyone sees everyone's —
- * that's the product. Each user turn carries the sender's name so the model can attribute
- * ("Dad asked about that on Tuesday") instead of treating the family as one voice.
+ * The acting member's own conversation with Joyce, newest `limit` messages, oldest first. Only
+ * theirs: another member's messages never appear here, so a short reply like "yes" can only be
+ * read against what Joyce said to this person. Other members' conversations are reachable on
+ * purpose through searchFamilyChat.
  */
 export function recentHistory(session: FamilySession, limit = 40): HistoryEntry[] {
   const rows = session.db
     .prepare(
       `SELECT m.role, m.body_enc, m.created_at, mem.display_name_enc
          FROM messages m LEFT JOIN members mem ON mem.id = m.member_id
+        WHERE m.thread_member_id = ?
         ORDER BY m.id DESC LIMIT ?`
     )
-    .all(limit) as {
+    .all(session.actor.id, limit) as {
     role: "user" | "assistant";
     body_enc: string;
     created_at: number;
@@ -223,6 +229,37 @@ function rankByWords<T>(items: T[], query: string, textOf: (item: T) => string, 
     .sort((a, b) => b.score - a.score)
     .slice(0, limit)
     .map((r) => r.item);
+}
+
+export interface ChatHit {
+  body: string;
+  senderName: string | null;
+  createdAt: number;
+}
+
+// How far back the chat search reads. Everything is decrypted to be searched, so it's bounded;
+// anything worth keeping longer should be a note, which Joyce saves without being asked.
+const CHAT_SEARCH_WINDOW = 1000;
+
+/**
+ * What any member has said to Joyce, searched by words — so something one person mentioned in
+ * passing can still be found by another. Members' own messages only, not Joyce's replies, each
+ * with who said it and when.
+ */
+export function searchFamilyChat(session: FamilySession, query: string, limit = 10): ChatHit[] {
+  const rows = session.db
+    .prepare(
+      `SELECT m.body_enc, m.created_at, mem.display_name_enc
+         FROM messages m LEFT JOIN members mem ON mem.id = m.member_id
+        WHERE m.role = 'user' ORDER BY m.id DESC LIMIT ?`
+    )
+    .all(CHAT_SEARCH_WINDOW) as { body_enc: string; created_at: number; display_name_enc: string | null }[];
+  const hits = rows.map((r) => ({
+    body: decryptFor(session.key, r.body_enc),
+    senderName: r.display_name_enc === null ? null : decryptFor(session.key, r.display_name_enc),
+    createdAt: r.created_at,
+  }));
+  return rankByWords(hits, query, (h) => h.body, limit);
 }
 
 export function searchNotes(session: FamilySession, query: string, limit = 10): NoteRow[] {

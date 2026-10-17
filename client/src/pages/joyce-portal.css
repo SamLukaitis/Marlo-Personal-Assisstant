@@ -3,9 +3,10 @@
 .joyce-theme {
   --accent: #b4532a;
   --accent-foreground: #fff7ed;
-  --joyce-tint: #fdf3ec;
-  --joyce-tint-border: #f2d9c8;
-  background: #fffaf6;
+  --joyce-tint: #fbe4ec;
+  --joyce-tint-border: #f3cfdc;
+  /* Light pink, so it's obvious at a glance which portal you're in. */
+  background: #fdf0f4;
 }
 
 .joyce-theme .page-header h1 {

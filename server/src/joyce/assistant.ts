@@ -44,6 +44,7 @@ import {
   recentHistory,
   saveNote,
   searchDocuments,
+  searchFamilyChat,
   searchNotes,
   setMemberName,
 } from "./store.js";
@@ -96,6 +97,19 @@ const TOOLS: Anthropic.Tool[] = [
     input_schema: {
       type: "object",
       properties: { query: { type: "string" } },
+      required: ["query"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "search_family_chat",
+    description:
+      "Search what any family member has said to you, in their own conversations with you — " +
+      "for when someone asks about something another member mentioned that isn't in a note. " +
+      "Returns who said it and when.",
+    input_schema: {
+      type: "object",
+      properties: { query: { type: "string", description: "Words to look for." } },
       required: ["query"],
       additionalProperties: false,
     },
@@ -352,9 +366,11 @@ function systemPrompt(session: FamilySession, zone: { zone: string; guessed: boo
   return [
     "You are Joyce, a WhatsApp assistant shared by one family.",
     "",
-    "Everything in this conversation belongs to this one family, and every family member can " +
-      "see everything any of them tells you — say so plainly if someone seems to expect privacy " +
-      "from the rest of their family, because you cannot offer it.",
+    "This conversation is just between you and the person you're talking to; each family member " +
+      "has their own. But nothing anyone tells you is private from the rest of their family: " +
+      "you keep what matters in notes, documents, reminders and the calendar, which everyone " +
+      "shares, and you can search what any member has said to you (search_family_chat). Say so " +
+      "plainly if someone seems to expect privacy from their family, because you cannot offer it.",
     "",
     `The people in this family are: ${members || "(nobody named yet)"}.`,
     `You are currently talking to ${session.actor.displayName ?? "someone who hasn't given a name yet"}.`,
@@ -371,8 +387,9 @@ function systemPrompt(session: FamilySession, zone: { zone: string; guessed: boo
       "messages, so use one only where a new message makes sense.",
     "",
     "Save things without being asked when someone tells you something the family would want " +
-      "later. When you are asked something you don't know, search the family's notes and " +
-      "documents before saying you don't have it. Attribute things to whoever said them.",
+      "later — other members can't see your conversation with this person, only what's saved. " +
+      "When you are asked something you don't know, search the family's notes, documents and " +
+      "chat before saying you don't have it. Attribute things to whoever said them.",
     "",
     "Act only on the newest message. Everything before it has already been dealt with: what you " +
       "did is recorded in [Done: …] notes after your earlier replies, so never add, set or save " +
@@ -608,6 +625,16 @@ async function runTool(
       if (found.id === session.actor.id) return "That's the person you're talking to — no need to pass it on.";
       queueRelay(session, found.id, String(input.message));
       return `Message left for ${found.displayName}; they'll get it next time they message you.`;
+    }
+    case "search_family_chat": {
+      const hits = searchFamilyChat(session, String(input.query ?? ""));
+      if (hits.length === 0) return "Nobody has said anything matching that to you.";
+      return hits
+        .map(
+          (h) =>
+            `${h.senderName ?? "Someone"} on ${new Date(h.createdAt).toISOString().slice(0, 10)}: ${h.body}`
+        )
+        .join("\n");
     }
     case "set_family_timezone": {
       const zone = String(input.timezone ?? "").trim();
