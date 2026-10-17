@@ -5,7 +5,7 @@ import { handleOnboarding } from "./onboarding.js";
 import { openFamilySessionForPhone, type FamilySession } from "./familyDb.js";
 import { getFamilyZone, parseLocal, setFamilyZone } from "./familyTime.js";
 import { addEvent, findClashes, getFamilyJoinCode, listEventsBetween, setMemberName, type NewEvent } from "./store.js";
-import { buildCalendarFeed, calendarFeedUrl } from "./calendarFeed.js";
+import { buildCalendarFeed, calendarFeedUrl, calendarSubscribeUrl, calendarWebcalUrl } from "./calendarFeed.js";
 import { issueCalendarToken } from "./registry.js";
 import { joyceRoutes } from "./routes.js";
 
@@ -166,5 +166,42 @@ describe("the calendar subscription feed", () => {
     expect((await request(app).get(`/joyce/calendar/${first}.ics`)).status).toBe(404);
     expect((await request(app).get(`/joyce/calendar/${second}.ics`)).status).toBe(200);
     expect((await request(app).get(`/joyce/calendar/not-a-real-link-at-all-xx.ics`)).status).toBe(404);
+  });
+});
+
+describe("the one-tap subscribe page", () => {
+  it("hands an iPhone straight to the Calendar app, and offers Google Calendar too", async () => {
+    const { phone } = family("Ola");
+    const token = issueCalendarToken(phone)!;
+    const app = express().use(joyceRoutes);
+    const page = await request(app).get(`/joyce/subscribe/${token}`);
+    expect(page.status).toBe(200);
+    expect(page.headers["content-type"]).toContain("text/html");
+    expect(page.headers["referrer-policy"]).toBe("no-referrer");
+    expect(page.headers["cache-control"]).toBe("no-store");
+
+    const webcal = calendarWebcalUrl(token);
+    expect(webcal).toMatch(/^webcal:\/\/.+\/joyce\/calendar\/.+\.ics$/);
+    expect(page.text).toContain(`href="${webcal}"`);
+    expect(page.text).toContain(`location.href = ${JSON.stringify(webcal)}`);
+    expect(page.text).toContain(`https://calendar.google.com/calendar/render?cid=${encodeURIComponent(webcal).replace(/&/g, "&amp;")}`);
+    expect(calendarSubscribeUrl(token)).toMatch(new RegExp(`/joyce/subscribe/${token}$`));
+  });
+
+  it("is a 404 for an unknown or replaced link", async () => {
+    const { phone } = family("Pip");
+    const app = express().use(joyceRoutes);
+    const old = issueCalendarToken(phone)!;
+    issueCalendarToken(phone);
+    expect((await request(app).get(`/joyce/subscribe/${old}`)).status).toBe(404);
+    expect((await request(app).get(`/joyce/subscribe/not-a-real-link-at-all-xx`)).status).toBe(404);
+    expect((await request(app).get(`/joyce/subscribe/<script>`)).status).toBe(404);
+  });
+
+  it("names the calendar and suggests Joyce's colour to calendar apps", () => {
+    const { session } = family("Quin");
+    const ics = buildCalendarFeed(session);
+    expect(ics).toContain("X-WR-CALNAME:Family (Joyce)");
+    expect(ics).toContain("X-APPLE-CALENDAR-COLOR:#D9577F");
   });
 });

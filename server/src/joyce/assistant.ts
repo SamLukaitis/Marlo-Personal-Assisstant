@@ -18,7 +18,7 @@ import {
   parseLocal,
   setFamilyZone,
 } from "./familyTime.js";
-import { calendarFeedUrl } from "./calendarFeed.js";
+import { calendarSubscribeUrl } from "./calendarFeed.js";
 import { issueCalendarToken } from "./registry.js";
 import {
   appendMessage,
@@ -313,8 +313,9 @@ const TOOLS: Anthropic.Tool[] = [
   {
     name: "calendar_link",
     description:
-      "Get the link that lets someone see the family calendar in Google Calendar or their " +
-      "phone's calendar. Set reset to true only if they want the old link to stop working.",
+      "Get the link that adds the family calendar to someone's phone or Google Calendar — one " +
+      "tap on an iPhone. Offer it when someone starts using the calendar or asks how to see it. " +
+      "Set reset to true only if they want the old link to stop working.",
     input_schema: {
       type: "object",
       properties: { reset: { type: "boolean" } },
@@ -776,14 +777,13 @@ async function runTool(
         if (!token) return "Couldn't make a calendar link.";
         setFamilyCalendarToken(session, token);
       }
-      state.followUps.push(calendarFeedUrl(token));
+      state.followUps.push(calendarSubscribeUrl(token));
       return (
         "The link is sent automatically as its own message straight after your reply, so don't " +
-        "write it out. Tell them briefly how to add it: in Google Calendar on a computer, Other " +
-        "calendars, +, From URL, paste it; on an iPhone, Settings, Calendar, Accounts, Add " +
-        "Account, Other, Add Subscribed Calendar. It shows the family calendar read-only and " +
-        "updates by itself (Google can take several hours). Anyone with the link can see the " +
-        "calendar, so share it only with the family" +
+        "write it out. Tell them in a sentence or two: tap it, and on an iPhone tap Subscribe — " +
+        "the family calendar then shows in their Calendar app and updates by itself. On Android " +
+        "or a computer the page has a Google Calendar button (Google can take a few hours to " +
+        "show changes). Anyone with the link can see the calendar, so keep it in the family" +
         (input.reset === true ? "; the old link has stopped working." : ".")
       );
     }

@@ -230,6 +230,20 @@ The registry keeps only a hash of the secret; the family's file keeps it encrypt
 hand it out again, and asking for a new one kills the old link. Google refreshes subscribed
 calendars every several hours, which no feed setting can change.
 
+**One tap** (2026-10-17). Joyce sends a page link (`/joyce/subscribe/<secret>`) rather than the
+feed address. On an iPhone, iPad or Mac the page hands straight to the Calendar app's "Subscribe?"
+prompt (a `webcal://` link — WhatsApp only makes http(s) links tappable, hence the page); elsewhere
+it shows Apple and Google Calendar buttons. The feed suggests a colour (`X-APPLE-CALENDAR-COLOR`,
+rose pink) and the name "Family (Joyce)"; whether Apple uses the colour isn't confirmed, and anyone
+can change it.
+
+**Not possible / later:** Apple has no API for an app to write into or read from someone's iCloud
+calendar, so a subscription is the only Apple route. Writing into Google (a "Family" calendar in
+each member's account, updated instantly) and reading members' busy times ("Sam's busy 2–4pm",
+never what) are possible through a Google sign-in with the narrow `calendar.app.created` and
+`calendar.freebusy` permissions, pending a decision and Google's app verification. Work Outlook
+calendars can publish an availability-only link Joyce could read without any sign-in.
+
 **Two new ways into a family besides a phone number:** the reminder sender (from the schedule)
 and the calendar link (by its secret). Both get a `FamilyData` with no acting member, neither is
 reachable from an AI tool or a WhatsApp message, and neither lets a caller name a family.
