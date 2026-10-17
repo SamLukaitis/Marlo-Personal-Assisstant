@@ -16,10 +16,34 @@ import { listAllEvents, type EventRow } from "./store.js";
 // subscription (as often as every 5 minutes), Google's is every several hours and can't be
 // changed. The refresh hints below are a request, not a guarantee.
 
-export function calendarFeedUrl(token: string): string {
-  const base = (process.env.SERVER_URL ?? "http://localhost:4000").replace(/\/+$/, "");
-  return `${base}/joyce/calendar/${token}.ics`;
+function baseUrl(): string {
+  return (process.env.SERVER_URL ?? "http://localhost:4000").replace(/\/+$/, "");
 }
+
+/** The feed itself. What calendar apps fetch. */
+export function calendarFeedUrl(token: string): string {
+  return `${baseUrl()}/joyce/calendar/${token}.ics`;
+}
+
+/**
+ * The same feed as a webcal:// link: tapped on an iPhone or Mac, it opens the Calendar app and
+ * asks "Subscribe?", with nothing to copy. Calendar apps fetch it over https.
+ */
+export function calendarWebcalUrl(token: string): string {
+  return calendarFeedUrl(token).replace(/^https?:\/\//, "webcal://");
+}
+
+/**
+ * What Joyce sends: a page that opens the Calendar app's subscribe prompt on Apple devices and
+ * offers Google Calendar elsewhere. An https link because WhatsApp only makes http(s) tappable.
+ */
+export function calendarSubscribeUrl(token: string): string {
+  return `${baseUrl()}/joyce/subscribe/${token}`;
+}
+
+// Joyce's colour for the family calendar, suggested to calendar apps through the feed. Apple
+// Calendar may use it; anyone can change it in their calendar's settings.
+const CALENDAR_COLOUR = "#D9577F";
 
 /** Escapes text for an iCalendar property value (RFC 5545 §3.3.11). */
 function escapeText(value: string): string {
@@ -78,7 +102,10 @@ export function buildCalendarFeed(family: FamilyData, now = Date.now()): string 
     "PRODID:-//Joyce//Family calendar//EN",
     "CALSCALE:GREGORIAN",
     "METHOD:PUBLISH",
-    "X-WR-CALNAME:Family calendar (Joyce)",
+    "X-WR-CALNAME:Family (Joyce)",
+    "NAME:Family (Joyce)",
+    `X-APPLE-CALENDAR-COLOR:${CALENDAR_COLOUR}`,
+    `COLOR:palevioletred`,
     `X-WR-TIMEZONE:${zone}`,
     "REFRESH-INTERVAL;VALUE=DURATION:PT1H",
     "X-PUBLISHED-TTL:PT1H",
@@ -86,4 +113,53 @@ export function buildCalendarFeed(family: FamilyData, now = Date.now()): string 
     "END:VCALENDAR",
   ];
   return lines.map(fold).join("\r\n") + "\r\n";
+}
+
+const escapeHtml = (v: string) =>
+  v.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+
+/**
+ * The page behind calendarSubscribeUrl. On an iPhone, iPad or Mac it goes straight to the
+ * Calendar app's subscribe prompt; everywhere it shows the same choices as buttons, since an
+ * in-app browser may not follow the automatic hand-off. Self-contained: no scripts or styles
+ * from anywhere else.
+ */
+export function buildSubscribePage(token: string): string {
+  const webcal = escapeHtml(calendarWebcalUrl(token));
+  const google = escapeHtml(
+    `https://calendar.google.com/calendar/render?cid=${encodeURIComponent(calendarWebcalUrl(token))}`
+  );
+  const feed = escapeHtml(calendarFeedUrl(token));
+  return `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Family calendar</title>
+<style>
+  :root { --pink: ${CALENDAR_COLOUR}; --ink: #2b1d22; --soft: #fdf0f4; }
+  body { margin: 0; font-family: -apple-system, system-ui, "Segoe UI", sans-serif; background: var(--soft); color: var(--ink); }
+  main { max-width: 420px; margin: 0 auto; padding: 48px 20px; text-align: center; }
+  h1 { font-size: 22px; margin: 0 0 8px; }
+  p { font-size: 15px; line-height: 1.45; margin: 0 0 24px; color: #5b4850; }
+  a.button { display: block; padding: 14px 16px; margin: 0 0 12px; border-radius: 12px; font-size: 16px; font-weight: 600; text-decoration: none; }
+  a.primary { background: var(--pink); color: #fff; }
+  a.secondary { background: #fff; color: var(--ink); border: 1px solid #f0cfdb; }
+  small { display: block; margin-top: 28px; font-size: 12px; color: #8a7480; word-break: break-all; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Family calendar</h1>
+  <p>Add it to your calendar. It updates by itself whenever someone tells Joyce about a date.</p>
+  <a class="button primary" href="${webcal}">Add to iPhone or Mac Calendar</a>
+  <a class="button secondary" href="${google}">Add to Google Calendar</a>
+  <small>Anyone with this link can see the family calendar, so keep it in the family.<br><br>Calendar address: ${feed}</small>
+</main>
+<script>
+  if (/iPhone|iPad|iPod|Macintosh/.test(navigator.userAgent)) location.href = ${JSON.stringify(calendarWebcalUrl(token))};
+</script>
+</body>
+</html>`;
 }

@@ -2,7 +2,7 @@ import { Router } from "express";
 import { isJoyceConfigured, normalizeJoycePhone } from "./familyKey.js";
 import { markJoyceWamidSeenIfNew } from "./registry.js";
 import { openFamilyForCalendarToken, openFamilySessionForPhone } from "./familyDb.js";
-import { buildCalendarFeed } from "./calendarFeed.js";
+import { buildCalendarFeed, buildSubscribePage } from "./calendarFeed.js";
 import { appendMessage } from "./store.js";
 import { applyName, CHOICE_BUTTONS, handleOnboarding, needsName } from "./onboarding.js";
 import { handlePendingLeave } from "./leaving.js";
@@ -45,6 +45,23 @@ joyceRoutes.get("/joyce/calendar/:file", (req, res) => {
   res.set("Content-Type", "text/calendar; charset=utf-8");
   res.set("Cache-Control", "no-store");
   res.send(buildCalendarFeed(family));
+});
+
+// The page Joyce links to for subscribing — see calendarFeed.ts's buildSubscribePage. Same
+// secret, same 404 for anything unknown.
+joyceRoutes.get("/joyce/subscribe/:token", (req, res) => {
+  const token = /^[A-Za-z0-9_-]{20,64}$/.test(req.params.token) ? req.params.token : null;
+  const family = token && isJoyceConfigured() ? openFamilyForCalendarToken(token) : null;
+  if (!token || !family) {
+    res.sendStatus(404);
+    return;
+  }
+  res.set("Content-Type", "text/html; charset=utf-8");
+  res.set("Cache-Control", "no-store");
+  // The link is the only credential, so it mustn't leak to anywhere the page links to.
+  res.set("Referrer-Policy", "no-referrer");
+  res.set("X-Robots-Tag", "noindex");
+  res.send(buildSubscribePage(token));
 });
 
 joyceRoutes.get("/webhooks/joyce", (req, res) => {
