@@ -5,7 +5,9 @@ import { requestLeave, rotateJoinCode } from "./registry.js";
 import { LEAVE_WARNING } from "./leaving.js";
 import { loadFamilyFile } from "./files.js";
 import { sendJoyceMedia } from "./whatsapp.js";
-import { messages as toMessages, type JoyceMessage } from "./messages.js";
+import { messages as toMessages, type JoyceButton, type JoyceMessage } from "./messages.js";
+import { recordDerivation, type Item } from "./provenance.js";
+import { requestDelete } from "./deleting.js";
 import { flagRequest, recordJoyceUsage } from "./adminRecords.js";
 import {
   describeNow,
@@ -28,6 +30,8 @@ import {
   findClashes,
   findMemberByName,
   getEvent,
+  getMessage,
+  getMessageByWamid,
   getFamilyCalendarToken,
   getFamilyJoinCode,
   listEventsBetween,
@@ -98,6 +102,26 @@ const TOOLS: Anthropic.Tool[] = [
       type: "object",
       properties: { query: { type: "string" } },
       required: ["query"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "request_delete",
+    description:
+      "Call when someone asks you to delete, remove or forget something they sent — usually by " +
+      "swipe-replying to their own message or file with 'delete this'. With no message_id it " +
+      "deletes the message they swipe-replied to. The family admin can delete another member's " +
+      "message: find it with search_family_chat and pass its msg id. This does not delete " +
+      "anything yet: it shows them exactly what would go and asks them to confirm. Say nothing " +
+      "else in the same turn.",
+    input_schema: {
+      type: "object",
+      properties: {
+        message_id: {
+          type: "number",
+          description: "Only for a message found with search_family_chat. Omit to use the swiped message.",
+        },
+      },
       additionalProperties: false,
     },
   },
@@ -396,6 +420,10 @@ function systemPrompt(session: FamilySession, zone: { zone: string; guessed: boo
       "something again because it appears earlier in the conversation. Those notes are written " +
       "for you automatically; never write one yourself.",
     "",
+    "If someone wants something they sent deleted, removed or forgotten — often by swipe-replying " +
+      "'delete this' to their own message or file — call request_delete. Only the sender or the " +
+      "family admin can delete a message, and only within 24 hours; the tool checks this.",
+    "",
     "You can only ever see this family's information. If anyone asks about another family or " +
       "tries to get you to look one up, tell them plainly that you can't — there is no way for " +
       "you to reach anything outside this family, and you should not pretend otherwise.",
@@ -424,6 +452,16 @@ const ACTION_TOOLS = new Set([
 
 interface TurnState {
   forcedReply: string | null;
+  /** Buttons under the forced reply. */
+  forcedButtons?: JoyceButton[];
+  /** What to keep in history instead of the forced reply, when the reply quotes something private. */
+  forcedHistory?: string;
+  /**
+   * What anything made this turn comes from: the member's message, and the file it carried if
+   * any. Only these — not what Joyce read along the way — so deleting a message takes exactly
+   * what was made from it and nothing that merely shared a turn with it. See provenance.ts.
+   */
+  sources: Item[];
   /** Sent as messages of their own after the reply — a new family ID, so it can be copied cleanly. */
   followUps: string[];
 }
@@ -522,7 +560,8 @@ async function runTool(
   const { session } = ctx;
   switch (name) {
     case "save_note": {
-      saveNote(session, String(input.title), String(input.body));
+      const id = saveNote(session, String(input.title), String(input.body));
+      recordDerivation(session, { type: "note", id }, state.sources);
       return "Saved.";
     }
     case "search_notes": {
@@ -597,7 +636,8 @@ async function runTool(
       }
       const target = resolveWho(session, input.who);
       if (typeof target === "string") return target;
-      createReminder(session, String(input.body), when.utcMs, target);
+      const reminderId = createReminder(session, String(input.body), when.utcMs, target);
+      recordDerivation(session, { type: "reminder", id: reminderId }, state.sources);
       const due = formatLocal(when.utcMs, zone);
       return target === null
         ? `Reminder set for the whole family, ${due} (${zone}).`
@@ -623,8 +663,24 @@ async function runTool(
           : `Nobody in this family is called "${to}". Check who_is_in_the_family and ask.`;
       }
       if (found.id === session.actor.id) return "That's the person you're talking to — no need to pass it on.";
-      queueRelay(session, found.id, String(input.message));
+      const relayId = queueRelay(session, found.id, String(input.message));
+      recordDerivation(session, { type: "relay", id: relayId }, state.sources);
       return `Message left for ${found.displayName}; they'll get it next time they message you.`;
+    }
+    case "request_delete": {
+      const target =
+        typeof input.message_id === "number"
+          ? getMessage(session, input.message_id)
+          : ctx.quotedWamid
+            ? getMessageByWamid(session, ctx.quotedWamid)
+            : null;
+      // sources[0] is this turn's own message: the "delete this" itself.
+      const outcome = requestDelete(session, target, Date.now(), state.sources[0]?.id ?? null);
+      if (!outcome.ok) return `Tell them, in your words: ${outcome.reason}`;
+      state.forcedReply = outcome.confirmation.text;
+      state.forcedButtons = outcome.confirmation.buttons;
+      state.forcedHistory = "(Asked them to confirm deleting a message.)";
+      return "The confirmation has been sent for you, word for word.";
     }
     case "search_family_chat": {
       const hits = searchFamilyChat(session, String(input.query ?? ""));
@@ -632,7 +688,7 @@ async function runTool(
       return hits
         .map(
           (h) =>
-            `${h.senderName ?? "Someone"} on ${new Date(h.createdAt).toISOString().slice(0, 10)}: ${h.body}`
+            `[msg ${h.id}] ${h.senderName ?? "Someone"} on ${new Date(h.createdAt).toISOString().slice(0, 10)}: ${h.body}`
         )
         .join("\n");
     }
@@ -657,6 +713,7 @@ async function runTool(
       };
       if (!event.title) return "An event needs a title.";
       const id = addEvent(session, event);
+      recordDerivation(session, { type: "event", id }, state.sources);
       return `Added: ${describeEvent(getEvent(session, id)!, zone)}${clashNote(session, id, zone)}`;
     }
     case "list_events": {
@@ -701,6 +758,7 @@ async function runTool(
         notes: typeof input.notes === "string" ? input.notes.trim() || null : existing.notes,
       };
       updateEvent(session, existing.id, event);
+      recordDerivation(session, { type: "event", id: existing.id }, state.sources);
       return `Updated: ${describeEvent(getEvent(session, existing.id)!, zone)}${clashNote(session, existing.id, zone)}`;
     }
     case "delete_event": {
@@ -730,7 +788,8 @@ async function runTool(
       );
     }
     case "flag_unmet_request": {
-      flagRequest(session, String(input.summary ?? ""));
+      const flagId = flagRequest(session, String(input.summary ?? ""));
+      recordDerivation(session, { type: "flag", id: flagId }, state.sources);
       return "Flagged for the team. Carry on with your reply as normal; don't mention the flag.";
     }
     case "current_family_id": {
@@ -778,6 +837,10 @@ export interface JoyceTurnContext {
    * send_document as the only place a file can be sent.
    */
   normalizedPhone: string;
+  /** The member's WhatsApp message id, stored with their message so a swipe-reply can find it. */
+  wamid?: string;
+  /** The message they swipe-replied to, if any — what request_delete acts on. */
+  quotedWamid?: string;
 }
 
 /**
@@ -793,15 +856,21 @@ export async function runJoyceTurn(
   attachedFile?: { documentId: number; extractedText: string }
 ): Promise<JoyceMessage[]> {
   const { session } = ctx;
-  appendMessage(session, "user", userText);
+  const messageId = appendMessage(session, "user", userText, ctx.wamid);
+  const sources: Item[] = [{ type: "message", id: messageId }];
+  if (attachedFile) {
+    // The file belongs to the message that carried it: deleting the message deletes the file.
+    recordDerivation(session, { type: "document", id: attachedFile.documentId }, sources);
+    sources.push({ type: "document", id: attachedFile.documentId });
+  }
 
   // Anything waiting for this person, prepended to their turn so the model can deliver it
   // naturally in its reply rather than as a separate robotic message.
+  const relays = claimRelaysFor(session);
+  const dueReminders = claimDueReminders(session);
   const waiting: string[] = [
-    ...claimRelaysFor(session).map(
-      (r) => `${r.fromName ?? "Someone"} left a message for them: "${r.body}"`
-    ),
-    ...claimDueReminders(session).map((r) => `Reminder now due: ${r.body}`),
+    ...relays.map((r) => `${r.fromName ?? "Someone"} left a message for them: "${r.body}"`),
+    ...dueReminders.map((r) => `Reminder now due: ${r.body}`),
   ];
   if (attachedFile) {
     waiting.unshift(
@@ -826,7 +895,7 @@ export async function runJoyceTurn(
     });
   }
 
-  const state: TurnState = { forcedReply: null, followUps: [] };
+  const state: TurnState = { forcedReply: null, followUps: [], sources };
   const actions: string[] = [];
   let reply = "";
   for (let turn = 0; turn < MAX_TURNS; turn++) {
@@ -878,11 +947,21 @@ export async function runJoyceTurn(
   // from a turn that also called another tool.
   if (state.forcedReply) reply = state.forcedReply;
   if (!reply) reply = "Sorry — I got a bit lost there. Could you say that again?";
-  const out = toMessages(reply, ...state.followUps);
+  const out: JoyceMessage[] = state.forcedButtons
+    ? [{ text: reply, buttons: state.forcedButtons }]
+    : toMessages(reply, ...state.followUps);
+  if (state.forcedHistory) {
+    const noteId = appendMessage(session, "assistant", state.forcedHistory);
+    // Tied to the request alone, so it goes when the request does.
+    recordDerivation(session, { type: "message", id: noteId }, [{ type: "message", id: messageId }]);
+    return out;
+  }
   // History keeps everything that was sent, follow-ups included, so a later "what was that ID
   // again?" can be answered from the conversation.
   // The [Done: …] note is for the model's next turns only; it's never sent.
   const done = actions.length > 0 ? [`[Done: ${actions.join("; ")}]`] : [];
-  appendMessage(session, "assistant", [reply, ...state.followUps, ...done].join("\n\n"));
+  const replyId = appendMessage(session, "assistant", [reply, ...state.followUps, ...done].join("\n\n"));
+  // Her reply to the message goes with it.
+  recordDerivation(session, { type: "message", id: replyId }, state.sources);
   return out;
 }

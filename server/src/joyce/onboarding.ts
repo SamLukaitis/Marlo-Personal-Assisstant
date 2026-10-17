@@ -9,7 +9,7 @@ import {
   setOnboardingState,
 } from "./registry.js";
 import { openFamilySessionForNewMember, type FamilySession } from "./familyDb.js";
-import { setFamilyJoinCode, setMemberName } from "./store.js";
+import { setFamilyAdmin, setFamilyJoinCode, setMemberName } from "./store.js";
 import { messages, type JoyceButton, type JoyceMessage } from "./messages.js";
 
 // Getting someone from "a number that has never messaged Joyce" to "a named member of a family".
@@ -107,6 +107,8 @@ export function handleOnboarding(normalizedPhone: string, text: string): Onboard
     const { family, joinCode } = createFamily(normalizedPhone);
     const session = openFamilySessionForNewMember(family, normalizedPhone);
     setFamilyJoinCode(session, joinCode);
+    // Whoever starts the family is its admin — see deleting.ts for what that allows.
+    setFamilyAdmin(session);
     return { done: true, session, reply: [...welcomeNewFamily(joinCode), ...messages(askName(1))] };
   }
 

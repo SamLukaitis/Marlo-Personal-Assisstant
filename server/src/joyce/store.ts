@@ -85,31 +85,81 @@ export function findMemberByName(session: FamilySession, name: string): MemberLo
 
 // --- Conversation log ------------------------------------------------------------------------
 
-/** A message in the acting member's own conversation with Joyce — theirs, or her reply to them. */
+/**
+ * A message in the acting member's own conversation with Joyce — theirs, or her reply to them.
+ * `wamid` is the member's WhatsApp message id, kept so a swipe-reply to it can find it. Returns
+ * the message's id.
+ */
 export function appendMessage(
   session: FamilySession,
   role: "user" | "assistant",
-  body: string
-): void {
-  session.db
+  body: string,
+  wamid?: string
+): number {
+  const res = session.db
     .prepare(
-      `INSERT INTO messages (member_id, thread_member_id, role, body_enc, created_at) VALUES (?, ?, ?, ?, ?)`
+      `INSERT INTO messages (member_id, thread_member_id, role, body_enc, created_at, wamid)
+       VALUES (?, ?, ?, ?, ?, ?)`
     )
     // Joyce's own messages have no sender member, but belong to the thread of whoever she's talking to.
-    .run(role === "user" ? session.actor.id : null, session.actor.id, role, encryptFor(session.key, body), Date.now());
+    .run(
+      role === "user" ? session.actor.id : null,
+      session.actor.id,
+      role,
+      encryptFor(session.key, body),
+      Date.now(),
+      wamid ?? null
+    );
+  return Number(res.lastInsertRowid);
+}
+
+export interface StoredMessage {
+  id: number;
+  role: "user" | "assistant";
+  /** Who sent it; null for Joyce's own messages. */
+  memberId: number | null;
+  body: string;
+  createdAt: number;
+}
+
+function storedMessage(session: FamilySession, where: string, value: string | number): StoredMessage | null {
+  const row = session.db
+    .prepare(`SELECT id, role, member_id, body_enc, created_at FROM messages WHERE ${where} = ?`)
+    .get(value) as
+    | { id: number; role: "user" | "assistant"; member_id: number | null; body_enc: string; created_at: number }
+    | undefined;
+  return row
+    ? {
+        id: row.id,
+        role: row.role,
+        memberId: row.member_id,
+        body: decryptFor(session.key, row.body_enc),
+        createdAt: row.created_at,
+      }
+    : null;
+}
+
+/** The family's message with this WhatsApp id — what a swipe-reply points at. */
+export function getMessageByWamid(session: FamilySession, wamid: string): StoredMessage | null {
+  return storedMessage(session, "wamid", wamid);
+}
+
+export function getMessage(session: FamilySession, id: number): StoredMessage | null {
+  return storedMessage(session, "id", id);
 }
 
 /**
  * Something Joyce sent a member without being asked (a reminder), kept in that member's
  * conversation like any reply of hers, so she can see later that she sent it.
  */
-export function appendSentMessage(family: FamilyData, memberId: number, body: string): void {
-  family.db
+export function appendSentMessage(family: FamilyData, memberId: number, body: string): number {
+  const res = family.db
     .prepare(
       `INSERT INTO messages (member_id, thread_member_id, role, body_enc, created_at)
        VALUES (NULL, ?, 'assistant', ?, ?)`
     )
     .run(memberId, encryptFor(family.key, body), Date.now());
+  return Number(res.lastInsertRowid);
 }
 
 export interface HistoryEntry {
@@ -232,6 +282,7 @@ function rankByWords<T>(items: T[], query: string, textOf: (item: T) => string, 
 }
 
 export interface ChatHit {
+  id: number;
   body: string;
   senderName: string | null;
   createdAt: number;
@@ -249,12 +300,13 @@ const CHAT_SEARCH_WINDOW = 1000;
 export function searchFamilyChat(session: FamilySession, query: string, limit = 10): ChatHit[] {
   const rows = session.db
     .prepare(
-      `SELECT m.body_enc, m.created_at, mem.display_name_enc
+      `SELECT m.id, m.body_enc, m.created_at, mem.display_name_enc
          FROM messages m LEFT JOIN members mem ON mem.id = m.member_id
         WHERE m.role = 'user' ORDER BY m.id DESC LIMIT ?`
     )
-    .all(CHAT_SEARCH_WINDOW) as { body_enc: string; created_at: number; display_name_enc: string | null }[];
+    .all(CHAT_SEARCH_WINDOW) as { id: number; body_enc: string; created_at: number; display_name_enc: string | null }[];
   const hits = rows.map((r) => ({
+    id: r.id,
     body: decryptFor(session.key, r.body_enc),
     senderName: r.display_name_enc === null ? null : decryptFor(session.key, r.display_name_enc),
     createdAt: r.created_at,
@@ -790,4 +842,62 @@ export function getFamilyCalendarToken(session: FamilySession): string | null {
     .prepare(`SELECT value FROM family_meta WHERE key = ?`)
     .get(CALENDAR_TOKEN_KEY) as { value: string } | undefined;
   return row ? decryptFor(session.key, row.value) : null;
+}
+
+// --- The family admin ------------------------------------------------------------------------------
+// Whoever started the family. The only thing it grants: deleting another member's message. Set
+// when the family is created; for families made before that, the first member (lowest id),
+// which is the person who created it.
+
+const ADMIN_KEY = "admin_member_id";
+
+export function setFamilyAdmin(session: FamilySession): void {
+  session.db
+    .prepare(
+      `INSERT INTO family_meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`
+    )
+    .run(ADMIN_KEY, String(session.actor.id));
+}
+
+export function getFamilyAdminId(family: FamilyData): number | null {
+  const stored = family.db.prepare(`SELECT value FROM family_meta WHERE key = ?`).get(ADMIN_KEY) as
+    | { value: string }
+    | undefined;
+  if (stored) return Number(stored.value);
+  const first = family.db.prepare(`SELECT MIN(id) AS id FROM members`).get() as { id: number | null };
+  return first.id;
+}
+
+// --- A delete waiting for confirmation ----------------------------------------------------------
+// Per member, in the family's own file. Spent by the member's very next message whatever it is,
+// and void after ten minutes — the same shape as leaving a family (leaving.ts).
+
+const PENDING_DELETE_TTL_MS = 10 * 60 * 1000;
+const pendingDeleteKey = (memberId: number) => `pending_delete:${memberId}`;
+
+export interface PendingDelete {
+  /** The message to delete. */
+  messageId: number;
+  /** The member's message asking for it ("delete this"), removed too once it's done. */
+  requestMessageId: number | null;
+}
+
+export function setPendingDelete(session: FamilySession, pending: PendingDelete): void {
+  session.db
+    .prepare(
+      `INSERT INTO family_meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`
+    )
+    .run(pendingDeleteKey(session.actor.id), JSON.stringify({ ...pending, at: Date.now() }));
+}
+
+/** What this member asked to delete, if they asked within the last ten minutes. Clears it. */
+export function takePendingDelete(session: FamilySession, now = Date.now()): PendingDelete | null {
+  const k = pendingDeleteKey(session.actor.id);
+  const row = session.db.prepare(`SELECT value FROM family_meta WHERE key = ?`).get(k) as
+    | { value: string }
+    | undefined;
+  if (!row) return null;
+  session.db.prepare(`DELETE FROM family_meta WHERE key = ?`).run(k);
+  const { messageId, requestMessageId, at } = JSON.parse(row.value) as PendingDelete & { at: number };
+  return now - at <= PENDING_DELETE_TTL_MS ? { messageId, requestMessageId: requestMessageId ?? null } : null;
 }

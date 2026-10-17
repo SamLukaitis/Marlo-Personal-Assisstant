@@ -9,6 +9,8 @@ import { handlePendingLeave } from "./leaving.js";
 import { runJoyceTurn } from "./assistant.js";
 import { saveFamilyFile } from "./files.js";
 import { asText, messages, type JoyceMessage } from "./messages.js";
+import { handlePendingDelete } from "./deleting.js";
+import { takePendingDelete } from "./store.js";
 import { delayForChunk, splitIntoChunks } from "./messageSplitting.js";
 import {
   downloadJoyceMedia,
@@ -99,8 +101,13 @@ export async function handleJoyceIncoming(message: JoyceInboundMessage): Promise
         mimeType: media.mimeType,
         filename: media.filename,
         download: () => downloadJoyceMedia(media.mediaId),
+        wamid: message.messageId,
+        quotedWamid: message.quotedMessageId,
       })
-    : await composeReply(phone, message.text);
+    : await composeReply(phone, message.text, {
+        wamid: message.messageId,
+        quotedWamid: message.quotedMessageId,
+      });
   await sendJoyceReply(message.from, reply);
 }
 
@@ -137,6 +144,8 @@ export async function composeMediaReply(
     mimeType: string;
     filename?: string;
     download: () => Promise<Buffer>;
+    wamid?: string;
+    quotedWamid?: string;
   }
 ): Promise<JoyceMessage[]> {
   // A file is still "the next message", so it spends a pending leave request like anything
@@ -160,6 +169,9 @@ export async function composeMediaReply(
     ];
   }
 
+  // A file isn't an answer to "delete this?", so a pending delete is just dropped (kept).
+  takePendingDelete(session);
+
   const saved = await saveFamilyFile(session, {
     buffer: await media.download(),
     mimeType: media.mimeType,
@@ -174,7 +186,11 @@ export async function composeMediaReply(
   const kind = media.mimeType.startsWith("image/") ? "a photo" : "a file";
   const label = media.filename ? ` "${media.filename}"` : "";
   const userText = `[Sent ${kind}${label}]${media.caption ? ` ${media.caption}` : ""}`;
-  return runJoyceTurn({ session, normalizedPhone }, userText, saved);
+  return runJoyceTurn(
+    { session, normalizedPhone, wamid: media.wamid, quotedWamid: media.quotedWamid },
+    userText,
+    saved
+  );
 }
 
 // After leaving, their next message is read as the answer to "new or join?" (see leaving.ts), so
@@ -189,7 +205,8 @@ function leftReply(text: string): JoyceMessage[] {
  */
 export async function composeReply(
   normalizedPhone: string,
-  text: string
+  text: string,
+  meta: { wamid?: string; quotedWamid?: string } = {}
 ): Promise<JoyceMessage[]> {
   // First, before anything reads a family and before the model is involved at all: is this the
   // answer to a leave confirmation? Matching it here rather than in a tool is what makes leaving
@@ -237,5 +254,14 @@ export async function composeReply(
     return messages(reply);
   }
 
-  return runJoyceTurn({ session, normalizedPhone }, text);
+  // The answer to "delete this?" — matched in code before the model runs, like leaving. Kept out of
+  // the history beyond a plain record, since the request it answers wasn't stored either.
+  const deleteOutcome = handlePendingDelete(session, text);
+  if (deleteOutcome) {
+    appendMessage(session, "user", text);
+    appendMessage(session, "assistant", deleteOutcome);
+    return messages(deleteOutcome);
+  }
+
+  return runJoyceTurn({ session, normalizedPhone, ...meta }, text);
 }

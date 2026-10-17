@@ -54,10 +54,17 @@ db.exec(`
 // --- Flagged requests --------------------------------------------------------------------------
 
 /** Called by Joyce's flag_unmet_request tool. The family comes from the session, never an argument. */
-export function flagRequest(session: FamilySession, summary: string): void {
-  db.prepare(
-    `INSERT INTO flagged_requests (family_label, summary, created_at) VALUES (?, ?, ?)`
-  ).run(familyAdminLabel(session.familyId), summary.trim().slice(0, 500), Date.now());
+export function flagRequest(session: FamilySession, summary: string): number {
+  const res = db
+    .prepare(`INSERT INTO flagged_requests (family_label, summary, created_at) VALUES (?, ?, ?)`)
+    .run(familyAdminLabel(session.familyId), summary.trim().slice(0, 500), Date.now());
+  return Number(res.lastInsertRowid);
+}
+
+/** Removes a flagged request (and admins' notes on it) when the message it came from is deleted. */
+export function deleteFlaggedRequest(id: number): void {
+  db.prepare(`DELETE FROM flagged_request_notes WHERE request_id = ?`).run(id);
+  db.prepare(`DELETE FROM flagged_requests WHERE id = ?`).run(id);
 }
 
 export interface FlaggedRequestNote {
