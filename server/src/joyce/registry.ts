@@ -76,6 +76,24 @@ registry.exec(`
     wamid TEXT PRIMARY KEY,
     seen_at INTEGER NOT NULL
   );
+
+  -- When each family's next reminder is due, so the reminder sender (reminderDelivery.ts) can
+  -- find who has something due without opening every family's file. A time and an opaque id,
+  -- nothing else: what the reminder says stays in the family's own encrypted file. A family with
+  -- nothing pending has no row.
+  CREATE TABLE IF NOT EXISTS reminder_schedule (
+    family_id TEXT PRIMARY KEY REFERENCES families(family_id),
+    next_due_at INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_reminder_schedule_due ON reminder_schedule(next_due_at);
+
+  -- A family's calendar subscription link (calendarFeed.ts). Only a hash of the secret in the
+  -- link is kept here, the same way join codes are, so a copy of the registry can't be used to
+  -- read anyone's calendar.
+  CREATE TABLE IF NOT EXISTS calendar_feeds (
+    token_hash TEXT PRIMARY KEY,
+    family_id TEXT NOT NULL UNIQUE REFERENCES families(family_id)
+  );
 `);
 
 export type OnboardingStep = "awaiting_choice" | "awaiting_join_code";
@@ -323,4 +341,68 @@ export function markJoyceWamidSeenIfNew(wamid: string): boolean {
 /** Test-only escape hatch so a suite can assert against registry internals. */
 export function __registryForTests(): Database.Database {
   return registry;
+}
+
+// --- Reminder schedule ---------------------------------------------------------------------------
+// Written from inside a family (familyDb.ts's syncReminderSchedule, after any reminder change) and
+// read only by the reminder sender. Neither is reachable from an AI tool or an inbound request.
+
+export function setReminderScheduleEntry(familyId: string, nextDueAt: number | null): void {
+  if (nextDueAt === null) {
+    registry.prepare(`DELETE FROM reminder_schedule WHERE family_id = ?`).run(familyId);
+    return;
+  }
+  registry
+    .prepare(
+      `INSERT INTO reminder_schedule (family_id, next_due_at) VALUES (?, ?)
+       ON CONFLICT(family_id) DO UPDATE SET next_due_at = excluded.next_due_at`
+    )
+    .run(familyId, nextDueAt);
+}
+
+/** Families with a reminder due by `now`, for the reminder sender only. */
+export function familiesWithRemindersDue(now: number): FamilyRecord[] {
+  return registry
+    .prepare(
+      `SELECT f.family_id AS familyId, f.salt AS salt
+         FROM reminder_schedule s JOIN families f ON f.family_id = s.family_id
+        WHERE s.next_due_at <= ?`
+    )
+    .all(now) as FamilyRecord[];
+}
+
+// --- Calendar subscription links -----------------------------------------------------------------
+
+function calendarTokenHash(token: string): string {
+  return crypto.createHash("sha256").update(token).digest("hex");
+}
+
+/**
+ * Makes a new calendar link secret for the caller's own family, replacing any earlier one so the
+ * old link stops working. Like rotateJoinCode, the family comes from the caller's phone.
+ */
+export function issueCalendarToken(normalizedPhone: string): string | null {
+  const family = findFamilyForPhone(normalizedPhone);
+  if (!family) return null;
+  const token = crypto.randomBytes(24).toString("base64url");
+  const replace = registry.transaction(() => {
+    registry.prepare(`DELETE FROM calendar_feeds WHERE family_id = ?`).run(family.familyId);
+    registry
+      .prepare(`INSERT INTO calendar_feeds (token_hash, family_id) VALUES (?, ?)`)
+      .run(calendarTokenHash(token), family.familyId);
+  });
+  replace();
+  return token;
+}
+
+/** The family a calendar link belongs to, or null for an unknown or replaced link. */
+export function findFamilyForCalendarToken(token: string): FamilyRecord | null {
+  const row = registry
+    .prepare(
+      `SELECT f.family_id AS familyId, f.salt AS salt
+         FROM calendar_feeds c JOIN families f ON f.family_id = c.family_id
+        WHERE c.token_hash = ?`
+    )
+    .get(calendarTokenHash(token)) as FamilyRecord | undefined;
+  return row ?? null;
 }

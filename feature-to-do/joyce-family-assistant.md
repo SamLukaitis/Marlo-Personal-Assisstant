@@ -145,6 +145,48 @@ Searching notes and documents now ranks by how many of the search words match. P
 needed the exact phrase, which the live test showed failing whenever the model searched in its own
 words.
 
+## Timezones, reminders and the calendar
+
+Added 2026-10-17.
+
+**Timezone.** Each family has one, stored encrypted in `family_meta`
+(`joyce/familyTime.ts`). It's guessed from the phone number of whoever Joyce is talking to the
+first time it's needed (a copy of Marlowe's `phoneTimezoneGuess.ts`) and marked as a guess, so
+Joyce says which zone she assumed when she sets a time. A member can tell her otherwise
+(`set_family_timezone`); only city zones like `Europe/London` are accepted, never `UTC`/`GMT`,
+because Marlowe once let the model turn "the UK" into "UTC" and reminders fired an hour late. The
+model always works in local wall-clock times; storage is UTC.
+
+**Reminders that arrive.** `joyce/reminderDelivery.ts` runs every minute. It asks the registry's
+`reminder_schedule` (a family id and a due time, nothing else) which families have something due,
+opens only those, and messages each person the reminder is for: an ordinary message if they've
+written to Joyce in the last 24 hours, otherwise the `joyce_reminder` template. Each reminder gets
+one attempt; anyone it couldn't reach gets it the next time they message, through the old path.
+`reminder_deliveries` records who has had it, so nothing goes out twice. This needed Joyce to keep
+members' phone numbers, which she never did before: they're now stored encrypted in the family's
+own file (`members.phone_enc`), filled in from each member's next message.
+
+The template (`npm run joyce:templates -- 1574262347469069`):
+
+> Reminder: {{reminder_text}}
+>
+> Reply here if you need anything.
+
+Submitted 2026-10-17, UTILITY, en_GB. Until it's approved, reminders for people outside the
+24-hour window wait for their next message.
+
+**Calendar.** Events live in the family's file (`events`), with tools to add, list, change and
+delete them. Adding or moving one reports anything it clashes with: same person, or anything for
+the whole family. **Subscribe link:** `calendar_link` gives a private URL
+(`/joyce/calendar/<secret>.ics`) that Google Calendar or a phone can subscribe to, read-only.
+The registry keeps only a hash of the secret; the family's file keeps it encrypted so Joyce can
+hand it out again, and asking for a new one kills the old link. Google refreshes subscribed
+calendars every several hours, which no feed setting can change.
+
+**Two new ways into a family besides a phone number:** the reminder sender (from the schedule)
+and the calendar link (by its secret). Both get a `FamilyData` with no acting member, neither is
+reachable from an AI tool or a WhatsApp message, and neither lets a caller name a family.
+
 ## Admin portal
 
 Added 2026-10-17. Admins get a Joyce portal at `/joyce-portal`, next to Marlowe's Portal in the
@@ -194,12 +236,10 @@ a future change could route a family's message out through the wrong number.
 
 Roughly in the order I'd do them.
 
-1. **Timezones.** Store one per family (ask during onboarding, or guess from the phone's country
-   code) and convert reminder times. Reminders are close to useless until this exists.
-2. **Reminders actually arriving.** Right now a reminder is delivered the next time that person
-   messages Joyce, and she's honest about that. Real delivery needs a scheduler like Marlowe's,
-   plus WhatsApp message templates — outside the 24-hour window since a user's last message,
-   Meta only allows pre-approved templates, which have to be submitted and approved.
+1. ~~Timezones~~ — done 2026-10-17, see "Timezones, reminders and the calendar" below. One zone
+   per family; members abroad share it.
+2. ~~Reminders actually arriving~~ — done 2026-10-17, same section. Depends on Meta approving
+   the `joyce_reminder` template for anyone who hasn't messaged in 24 hours.
 3. ~~Documents and photos~~ — done 2026-10-03, see "Photos and files" above. Voice notes are
    still ignored.
 4. **Expiring or single-use join codes**, if permanent shareable codes feel too loose once real
