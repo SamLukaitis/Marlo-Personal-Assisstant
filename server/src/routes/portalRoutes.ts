@@ -17,6 +17,7 @@ import {
   getApiUsageByPurpose,
   getApiUsageByOwner,
   listRecentApiUsage,
+  isAdmin,
   recordApiUsage,
   listAdminTodos,
   addAdminTodo,
@@ -349,10 +350,23 @@ portalRoutes.get("/usage", (req, res) => {
   // `days` window (it's "most recent N calls", not "calls in this range") since that's the more
   // useful question for a live activity feed.
   const recentLimit = Math.min(Number(req.query.recentLimit) || 50, 200);
-  const recent = listRecentApiUsage(recentLimit).map((r) => ({
-    ...r,
-    estimatedCost: estimateCost(r.model, r.inputTokens, r.outputTokens, r.cacheReadTokens, r.cacheCreationTokens),
-  }));
+  const messagesOnly = req.query.messagesOnly === "1";
+  const adminCache = new Map<number, boolean>();
+  const stillAdmin = (id: number | null) => {
+    if (id === null) return false;
+    if (!adminCache.has(id)) adminCache.set(id, isAdmin(id));
+    return adminCache.get(id)!;
+  };
+  const recent = listRecentApiUsage(recentLimit, messagesOnly)
+    // Text is only ever saved for admins, but someone may have stopped being one since; their
+    // old messages then stop showing here too.
+    .filter((r) => !messagesOnly || stillAdmin(r.ownerId))
+    .map((r) => ({
+      ...r,
+      userMessage: stillAdmin(r.ownerId) ? r.userMessage : null,
+      replyText: stillAdmin(r.ownerId) ? r.replyText : null,
+      estimatedCost: estimateCost(r.model, r.inputTokens, r.outputTokens, r.cacheReadTokens, r.cacheCreationTokens),
+    }));
 
   res.json({ rows, byPurpose, byOwner, projection, recent, approx: true });
 });
