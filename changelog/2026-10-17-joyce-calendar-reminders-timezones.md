@@ -20,6 +20,15 @@ the whole family. Ask "what's on this week?" or "is anyone free Saturday?". Ask 
 link to see it in Google Calendar or on a phone; anyone with the link can see it, and asking for a
 new one stops the old one working.
 
+Events can be for anyone named, not just members, so a child without a phone ("Leo's dentist")
+works; clash checks match on the name.
+
+**Fix found while testing with the real model:** Joyce's saved history kept only her replies, not
+what she'd done, so on the next message she'd sometimes redo the previous request (Leo's dentist
+added twice). Each reply in the history now carries a short "[Done: …]" note of the actions
+behind it, never sent to anyone, and she's told to act only on the newest message. This affected
+notes and reminders as well as the calendar.
+
 Also: `npm run joyce:templates` shows or submits Joyce's WhatsApp templates. Use the account id
 1574262347469069; 1576415707195454 refuses template creation. And the README now records that
 Railway's staging environment deliberately has no WhatsApp settings.

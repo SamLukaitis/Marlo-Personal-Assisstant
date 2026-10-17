@@ -103,14 +103,27 @@ describe("the family calendar", () => {
     const sam = join(owner.session, "Sam");
     addEvent(owner.session, event({ title: "Priya's dentist", aboutMemberId: owner.session.actor.id }));
 
-    const samAtSameTime = findClashes(owner.session, Date.UTC(2026, 10, 3, 15, 30), Date.UTC(2026, 10, 3, 16, 30), sam.actor.id);
+    const samAtSameTime = findClashes(owner.session, Date.UTC(2026, 10, 3, 15, 30), Date.UTC(2026, 10, 3, 16, 30), { memberId: sam.actor.id, name: "Sam" });
     expect(samAtSameTime).toEqual([]);
-    const priyaAtSameTime = findClashes(owner.session, Date.UTC(2026, 10, 3, 15, 30), Date.UTC(2026, 10, 3, 16, 30), owner.session.actor.id);
+    const priyaAtSameTime = findClashes(owner.session, Date.UTC(2026, 10, 3, 15, 30), Date.UTC(2026, 10, 3, 16, 30), { memberId: owner.session.actor.id, name: "Priya" });
     expect(priyaAtSameTime.map((e) => e.title)).toEqual(["Priya's dentist"]);
-    const everyoneAtSameTime = findClashes(owner.session, Date.UTC(2026, 10, 3, 15, 30), Date.UTC(2026, 10, 3, 16, 30), null);
+    const everyoneAtSameTime = findClashes(owner.session, Date.UTC(2026, 10, 3, 15, 30), Date.UTC(2026, 10, 3, 16, 30), { memberId: null, name: null });
     expect(everyoneAtSameTime.map((e) => e.title)).toEqual(["Priya's dentist"]);
     // Back to back isn't a clash.
-    expect(findClashes(owner.session, Date.UTC(2026, 10, 3, 16), Date.UTC(2026, 10, 3, 17), null)).toEqual([]);
+    expect(findClashes(owner.session, Date.UTC(2026, 10, 3, 16), Date.UTC(2026, 10, 3, 17), { memberId: null, name: null })).toEqual([]);
+  });
+});
+
+describe("events for someone who isn't a member", () => {
+  it("keeps the name, shows it, and checks clashes against the same name", () => {
+    const { session } = family("Nia");
+    addEvent(session, event({ title: "Dentist", aboutMemberId: null, aboutLabel: "Leo" }));
+    const [stored] = listEventsBetween(session, Date.UTC(2026, 10, 3), Date.UTC(2026, 10, 4));
+    expect(stored.aboutName).toBe("Leo");
+    const overlap = [Date.UTC(2026, 10, 3, 15, 30), Date.UTC(2026, 10, 3, 16, 30)] as const;
+    expect(findClashes(session, ...overlap, { memberId: null, name: "leo" }).map((e) => e.title)).toEqual(["Dentist"]);
+    expect(findClashes(session, ...overlap, { memberId: null, name: "Maya" })).toEqual([]);
+    expect(buildCalendarFeed(session)).toContain("SUMMARY:Leo: Dentist");
   });
 });
 

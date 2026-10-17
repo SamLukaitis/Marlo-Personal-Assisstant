@@ -205,7 +205,10 @@ const TOOLS: Anthropic.Tool[] = [
     input_schema: {
       type: "object",
       properties: {
-        title: { type: "string", description: "Short, e.g. 'Dentist' or 'School trip to the zoo'." },
+        title: {
+          type: "string",
+          description: "Short, without the person's name (that's `who`): 'Dentist', 'School trip to the zoo'.",
+        },
         start: {
           type: "string",
           description: "Local time YYYY-MM-DDTHH:mm, or just YYYY-MM-DD for an all-day event.",
@@ -218,7 +221,9 @@ const TOOLS: Anthropic.Tool[] = [
         },
         who: {
           type: "string",
-          description: "Who it's for: a family member's name, or 'everyone'. Omit for everyone.",
+          description:
+            "Who it's for: anyone's name — a family member, or someone who doesn't message you, " +
+            "like a child — or 'everyone'. Omit for everyone.",
         },
         notes: { type: "string", description: "Optional details: address, what to bring." },
       },
@@ -369,6 +374,11 @@ function systemPrompt(session: FamilySession, zone: { zone: string; guessed: boo
       "later. When you are asked something you don't know, search the family's notes and " +
       "documents before saying you don't have it. Attribute things to whoever said them.",
     "",
+    "Act only on the newest message. Everything before it has already been dealt with: what you " +
+      "did is recorded in [Done: …] notes after your earlier replies, so never add, set or save " +
+      "something again because it appears earlier in the conversation. Those notes are written " +
+      "for you automatically; never write one yourself.",
+    "",
     "You can only ever see this family's information. If anyone asks about another family or " +
       "tries to get you to look one up, tell them plainly that you can't — there is no way for " +
       "you to reach anything outside this family, and you should not pretend otherwise.",
@@ -380,6 +390,21 @@ function systemPrompt(session: FamilySession, zone: { zone: string; guessed: boo
  * warning has to go out word for word, and a model asked to "relay this verbatim" will
  * paraphrase it sooner or later.
  */
+// Tools that change something. What they did is kept in the history after Joyce's reply (see
+// runJoyceTurn), because the history otherwise holds only her words: without it, the next turn
+// saw "Leo has the dentist on Tuesday" with no sign it had been handled, and added it again.
+const ACTION_TOOLS = new Set([
+  "save_note",
+  "set_reminder",
+  "add_event",
+  "update_event",
+  "delete_event",
+  "pass_message",
+  "set_family_timezone",
+  "set_my_name",
+  "new_family_id",
+]);
+
 interface TurnState {
   forcedReply: string | null;
   /** Sent as messages of their own after the reply — a new family ID, so it can be copied cleanly. */
@@ -397,9 +422,20 @@ function resolveWho(session: FamilySession, rawWho: unknown): number | null | st
     : `Nobody in this family is called "${who}". Check who_is_in_the_family and ask.`;
 }
 
-function whoName(rawWho: unknown): string | null {
+/**
+ * Who an event is for. Unlike a reminder, it can be someone who isn't a member — a child with no
+ * phone — in which case the name is kept as given. Two members sharing a name is still an error.
+ */
+function eventAbout(
+  session: FamilySession,
+  rawWho: unknown
+): Pick<NewEvent, "aboutMemberId" | "aboutLabel"> | string {
   const who = typeof rawWho === "string" ? rawWho.trim() : "";
-  return who && who.toLowerCase() !== "everyone" ? who : null;
+  if (!who || who.toLowerCase() === "everyone") return { aboutMemberId: null, aboutLabel: null };
+  const found = findMemberByName(session, who);
+  if (found.found) return { aboutMemberId: found.id, aboutLabel: null };
+  if (found.reason === "ambiguous") return `More than one family member is called "${who}" — ask which one they mean.`;
+  return { aboutMemberId: null, aboutLabel: who };
 }
 
 const DEFAULT_EVENT_MS = 60 * 60 * 1000;
@@ -439,22 +475,6 @@ function startOf(event: EventRow, zone: string): string {
     : DateTime.fromMillis(event.startsAt, { zone }).toFormat("yyyy-LL-dd'T'HH:mm");
 }
 
-function asRow(event: NewEvent, id: number): EventRow {
-  return {
-    id,
-    title: event.title,
-    notes: event.notes ?? null,
-    allDay: event.allDay,
-    startDate: event.startDate ?? null,
-    endDate: event.endDate ?? null,
-    startsAt: event.startsAt,
-    endsAt: event.endsAt,
-    aboutMemberId: event.aboutMemberId,
-    aboutName: null,
-    createdByName: null,
-  };
-}
-
 /** "[12] Tue 21 Oct, 16:00–17:00 — Leo: Dentist" */
 function describeEvent(e: EventRow, zone: string): string {
   let when: string;
@@ -463,13 +483,14 @@ function describeEvent(e: EventRow, zone: string): string {
   } else {
     when = `${formatLocal(e.startsAt, zone)}–${DateTime.fromMillis(e.endsAt, { zone }).toFormat("HH:mm")}`;
   }
-  const who = e.aboutName ?? (e.aboutMemberId === null ? "Everyone" : "Someone");
+  const who = e.aboutName ?? "Everyone";
   const notes = e.notes ? ` (${e.notes})` : "";
   return `[${e.id}] ${when} — ${who}: ${e.title}${notes}`;
 }
 
-function clashNote(session: FamilySession, event: NewEvent, zone: string, id: number): string {
-  const clashes = findClashes(session, event.startsAt, event.endsAt, event.aboutMemberId, id);
+function clashNote(session: FamilySession, id: number, zone: string): string {
+  const e = getEvent(session, id)!;
+  const clashes = findClashes(session, e.startsAt, e.endsAt, { memberId: e.aboutMemberId, name: e.aboutName }, id);
   return clashes.length === 0
     ? ""
     : `\nClashes with:\n${clashes.map((c) => describeEvent(c, zone)).join("\n")}`;
@@ -599,17 +620,17 @@ async function runTool(
       const { zone } = getFamilyZone(session);
       const times = eventTimes(input.start, input.end, zone);
       if (typeof times === "string") return times;
-      const about = resolveWho(session, input.who);
+      const about = eventAbout(session, input.who);
       if (typeof about === "string") return about;
       const event: NewEvent = {
         ...times,
+        ...about,
         title: String(input.title ?? "").trim(),
         notes: typeof input.notes === "string" ? input.notes.trim() || null : null,
-        aboutMemberId: about,
       };
       if (!event.title) return "An event needs a title.";
       const id = addEvent(session, event);
-      return `Added: ${describeEvent({ ...asRow(event, id), aboutName: whoName(input.who) }, zone)}${clashNote(session, event, zone, id)}`;
+      return `Added: ${describeEvent(getEvent(session, id)!, zone)}${clashNote(session, id, zone)}`;
     }
     case "list_events": {
       const { zone } = getFamilyZone(session);
@@ -641,17 +662,19 @@ async function runTool(
               endsAt: existing.endsAt,
             };
       if (typeof times === "string") return times;
-      const about = input.who !== undefined ? resolveWho(session, input.who) : existing.aboutMemberId;
+      const about =
+        input.who !== undefined
+          ? eventAbout(session, input.who)
+          : { aboutMemberId: existing.aboutMemberId, aboutLabel: existing.aboutMemberId === null ? existing.aboutName : null };
       if (typeof about === "string") return about;
       const event: NewEvent = {
         ...times,
+        ...about,
         title: typeof input.title === "string" && input.title.trim() ? input.title.trim() : existing.title,
         notes: typeof input.notes === "string" ? input.notes.trim() || null : existing.notes,
-        aboutMemberId: about,
       };
       updateEvent(session, existing.id, event);
-      const updated = getEvent(session, existing.id)!;
-      return `Updated: ${describeEvent(updated, zone)}${clashNote(session, event, zone, existing.id)}`;
+      return `Updated: ${describeEvent(getEvent(session, existing.id)!, zone)}${clashNote(session, existing.id, zone)}`;
     }
     case "delete_event": {
       const existing = getEvent(session, Number(input.id));
@@ -777,6 +800,7 @@ export async function runJoyceTurn(
   }
 
   const state: TurnState = { forcedReply: null, followUps: [] };
+  const actions: string[] = [];
   let reply = "";
   for (let turn = 0; turn < MAX_TURNS; turn++) {
     const response = await getClient().messages.create({
@@ -815,6 +839,7 @@ export async function runJoyceTurn(
         result = "That failed. Tell the user something went wrong and you couldn't do it.";
       }
       results.push({ type: "tool_result", tool_use_id: use.id, content: result });
+      if (ACTION_TOOLS.has(use.name)) actions.push(`${use.name}: ${result.split("\n")[0]}`);
     }
     messages.push({ role: "user", content: results });
 
@@ -829,6 +854,8 @@ export async function runJoyceTurn(
   const out = toMessages(reply, ...state.followUps);
   // History keeps everything that was sent, follow-ups included, so a later "what was that ID
   // again?" can be answered from the conversation.
-  appendMessage(session, "assistant", [reply, ...state.followUps].join("\n\n"));
+  // The [Done: …] note is for the model's next turns only; it's never sent.
+  const done = actions.length > 0 ? [`[Done: ${actions.join("; ")}]`] : [];
+  appendMessage(session, "assistant", [reply, ...state.followUps, ...done].join("\n\n"));
   return out;
 }

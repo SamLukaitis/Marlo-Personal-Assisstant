@@ -173,6 +173,11 @@ function migrate(db: Database.Database): void {
   if (!columns("reminders").includes("push_attempted_at")) {
     db.exec(`ALTER TABLE reminders ADD COLUMN push_attempted_at INTEGER`);
   }
+  // Who an event is for when that person isn't a member — usually a child without a phone
+  // ("Leo's dentist"). Encrypted; about_member_id stays NULL.
+  if (!columns("events").includes("about_label_enc")) {
+    db.exec(`ALTER TABLE events ADD COLUMN about_label_enc TEXT`);
+  }
 }
 
 // Opening a SQLite file is cheap but not free, and better-sqlite3 handles are safe to reuse, so

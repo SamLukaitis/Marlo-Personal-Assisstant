@@ -572,8 +572,9 @@ export interface EventRow {
   endDate: string | null;
   startsAt: number;
   endsAt: number;
-  /** Null for a whole-family event. */
+  /** The member it's for, if it's for a member. */
   aboutMemberId: number | null;
+  /** Who it's for by name — a member's name, or someone who isn't a member. Null: whole family. */
   aboutName: string | null;
   createdByName: string | null;
 }
@@ -587,11 +588,13 @@ export interface NewEvent {
   startsAt: number;
   endsAt: number;
   aboutMemberId: number | null;
+  /** Someone who isn't a member, e.g. a child without a phone. Ignored when aboutMemberId is set. */
+  aboutLabel?: string | null;
 }
 
 const EVENT_SELECT = `
   SELECT e.id, e.title_enc, e.notes_enc, e.all_day, e.start_date, e.end_date, e.starts_at,
-         e.ends_at, e.about_member_id, about.display_name_enc AS about_name_enc,
+         e.ends_at, e.about_member_id, e.about_label_enc, about.display_name_enc AS about_name_enc,
          creator.display_name_enc AS creator_name_enc
     FROM events e
     JOIN members creator ON creator.id = e.created_by_member_id
@@ -607,6 +610,7 @@ type EventDbRow = {
   starts_at: number;
   ends_at: number;
   about_member_id: number | null;
+  about_label_enc: string | null;
   about_name_enc: string | null;
   creator_name_enc: string | null;
 };
@@ -623,22 +627,28 @@ function decryptEvent(family: FamilyData, r: EventDbRow): EventRow {
     startsAt: r.starts_at,
     endsAt: r.ends_at,
     aboutMemberId: r.about_member_id,
-    aboutName: dec(r.about_name_enc),
+    aboutName: dec(r.about_name_enc) ?? dec(r.about_label_enc),
     createdByName: dec(r.creator_name_enc),
   };
+}
+
+function labelFor(family: FamilyData, event: NewEvent): string | null {
+  const label = event.aboutMemberId === null ? event.aboutLabel?.trim() : null;
+  return label ? encryptFor(family.key, label) : null;
 }
 
 export function addEvent(session: FamilySession, event: NewEvent): number {
   const now = Date.now();
   const res = session.db
     .prepare(
-      `INSERT INTO events (created_by_member_id, about_member_id, title_enc, notes_enc, all_day,
-                           start_date, end_date, starts_at, ends_at, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO events (created_by_member_id, about_member_id, about_label_enc, title_enc, notes_enc,
+                           all_day, start_date, end_date, starts_at, ends_at, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
       session.actor.id,
       event.aboutMemberId,
+      labelFor(session, event),
       encryptFor(session.key, event.title),
       event.notes ? encryptFor(session.key, event.notes) : null,
       event.allDay ? 1 : 0,
@@ -675,31 +685,39 @@ export function listAllEvents(family: FamilyData): EventRow[] {
 
 /**
  * Other events that overlap this time and involve the same people: anything for the same person
- * or for the whole family, or — for a whole-family event — anything at all.
+ * (the same member, or the same name for someone who isn't a member) or for the whole family,
+ * or — for a whole-family event — anything at all.
  */
 export function findClashes(
   family: FamilyData,
   startsAt: number,
   endsAt: number,
-  aboutMemberId: number | null,
+  about: { memberId: number | null; name: string | null },
   excludeId?: number
 ): EventRow[] {
+  const forWholeFamily = (memberId: number | null, name: string | null) => memberId === null && !name;
+  const samePerson = (e: EventRow) =>
+    about.memberId !== null
+      ? e.aboutMemberId === about.memberId
+      : !!about.name && e.aboutMemberId === null && e.aboutName?.toLowerCase() === about.name.toLowerCase();
   return listEventsBetween(family, startsAt, endsAt).filter(
     (e) =>
       e.id !== excludeId &&
-      (aboutMemberId === null || e.aboutMemberId === null || e.aboutMemberId === aboutMemberId)
+      (forWholeFamily(about.memberId, about.name) || forWholeFamily(e.aboutMemberId, e.aboutName) || samePerson(e))
   );
 }
 
 export function updateEvent(session: FamilySession, id: number, event: NewEvent): boolean {
   const res = session.db
     .prepare(
-      `UPDATE events SET about_member_id = ?, title_enc = ?, notes_enc = ?, all_day = ?,
-                         start_date = ?, end_date = ?, starts_at = ?, ends_at = ?, updated_at = ?
+      `UPDATE events SET about_member_id = ?, about_label_enc = ?, title_enc = ?, notes_enc = ?,
+                         all_day = ?, start_date = ?, end_date = ?, starts_at = ?, ends_at = ?,
+                         updated_at = ?
         WHERE id = ?`
     )
     .run(
       event.aboutMemberId,
+      labelFor(session, event),
       encryptFor(session.key, event.title),
       event.notes ? encryptFor(session.key, event.notes) : null,
       event.allDay ? 1 : 0,
