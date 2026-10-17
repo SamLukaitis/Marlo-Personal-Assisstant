@@ -6,9 +6,14 @@ import { openFamilySessionForNewMember, openFamilySessionForPhone } from "./fami
 import { decryptBufferFor } from "./familyKey.js";
 import { listDocuments, searchDocuments, setMemberName } from "./store.js";
 import { loadFamilyFile, saveFamilyFile } from "./files.js";
-import { composeMediaReply } from "./routes.js";
+import { composeMediaReply as composeMediaReplyMessages } from "./routes.js";
+import { asText } from "./messages.js";
 import { extractJoyceMessages } from "./whatsapp.js";
 import { NOT_CONFIRMED_MESSAGE } from "./leaving.js";
+
+// These tests check wording; joining the messages back into text keeps them about that.
+const composeMediaReply = async (...args: Parameters<typeof composeMediaReplyMessages>) =>
+  asText(await composeMediaReplyMessages(...args));
 
 // Plain-text files are read without the model, so everything here runs with no API key. The
 // photo/PDF path differs only in where the text comes from.

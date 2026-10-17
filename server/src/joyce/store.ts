@@ -11,6 +11,33 @@ import type { FamilySession } from "./familyDb.js";
 // feature-to-do/tenant-isolation-audit.md has nothing to check in this file. There is no
 // `WHERE family_id = ?` to forget, because every query is already confined to one database.
 
+// --- The family's current join code --------------------------------------------------------------
+//
+// The registry holds only a hash of the join code (registry.ts), so a copy of the registry can't
+// be used to join anyone's family. This keeps the code itself too, encrypted under the family's
+// own key like everything else in this file, so a member can ask Joyce what it is. Written
+// whenever the code is created, rotated, or used successfully to join — the last of those is
+// what fills it in for families created before it was stored.
+
+const JOIN_CODE_KEY = "join_code_enc";
+
+export function setFamilyJoinCode(session: FamilySession, joinCode: string): void {
+  session.db
+    .prepare(
+      `INSERT INTO family_meta (key, value) VALUES (?, ?)
+       ON CONFLICT(key) DO UPDATE SET value = excluded.value`
+    )
+    .run(JOIN_CODE_KEY, encryptFor(session.key, joinCode));
+}
+
+/** The family's current join code, or null if it hasn't been stored since it was last issued. */
+export function getFamilyJoinCode(session: FamilySession): string | null {
+  const row = session.db
+    .prepare(`SELECT value FROM family_meta WHERE key = ?`)
+    .get(JOIN_CODE_KEY) as { value: string } | undefined;
+  return row ? decryptFor(session.key, row.value) : null;
+}
+
 export interface FamilyMemberRow {
   id: number;
   displayName: string | null;

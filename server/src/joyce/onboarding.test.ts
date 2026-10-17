@@ -2,10 +2,15 @@ import { describe, expect, it } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { composeReply } from "./routes.js";
+import { composeReply as composeReplyMessages } from "./routes.js";
+import { asText } from "./messages.js";
 import { openFamilySessionForPhone } from "./familyDb.js";
-import { listNotes, saveNote } from "./store.js";
+import { getFamilyJoinCode, listNotes, recentHistory, saveNote } from "./store.js";
 import { findFamilyForPhone } from "./registry.js";
+
+// These tests check wording; joining the messages back into text keeps them about that.
+const composeReply = async (...args: Parameters<typeof composeReplyMessages>) =>
+  asText(await composeReplyMessages(...args));
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 
@@ -112,5 +117,119 @@ describe("Joyce is structurally separate from Marlowe", () => {
     const dataDir = process.env.DATA_DIR!;
     expect(fs.existsSync(path.join(dataDir, "joyce", "registry.db"))).toBe(true);
     expect(fs.existsSync(path.join(dataDir, "joyce", "families"))).toBe(true);
+  });
+});
+
+describe("how Joyce's onboarding messages are laid out", () => {
+  const CODE = /^JOY-[0-9A-Z]{4}-[0-9A-Z]{4}$/;
+  // Any pictographic character, which covers every emoji WhatsApp would render as one.
+  const EMOJI = /\p{Extended_Pictographic}/u;
+
+  it("introduces herself in four messages, with the choice as buttons on the last", async () => {
+    const intro = await composeReplyMessages("15551120001", "hi");
+    expect(intro.map((m) => m.text)).toEqual([
+      "Hi, I'm Joyce. I'm a family assistant.",
+      "I remember important things, help plan, and remind people about what's coming up.",
+      "Whatever you tell me, your family members can ask me about. For example, many families " +
+        "have me remember wifi passwords for them so they only have to ask me to find it.",
+      "Would you like to start a new family group, or join an existing one?",
+    ]);
+    expect(intro.slice(0, 3).every((m) => !m.buttons)).toBe(true);
+    expect(intro[3].buttons?.map((b) => b.title)).toEqual(["Start new", "Join existing"]);
+  });
+
+  it("starts a family when the Start new button is tapped", async () => {
+    const phone = "15551120002";
+    await composeReplyMessages(phone, "hi");
+    // A tap reaches composeReply as the button's title.
+    await composeReplyMessages(phone, "Start new");
+    expect(findFamilyForPhone(phone)).not.toBeNull();
+  });
+
+  it("asks for a code when the Join existing button is tapped", async () => {
+    const phone = "15551120003";
+    await composeReplyMessages(phone, "hi");
+    const asked = asText(await composeReplyMessages(phone, "Join existing"));
+    expect(asked).toContain("Send me the family ID");
+    expect(findFamilyForPhone(phone)).toBeNull();
+  });
+
+  it("shows the buttons again when the answer isn't clear", async () => {
+    const phone = "15551120004";
+    await composeReplyMessages(phone, "hi");
+    const again = await composeReplyMessages(phone, "dunno");
+    expect(again.at(-1)?.buttons?.map((b) => b.title)).toEqual(["Start new", "Join existing"]);
+  });
+
+  it("sends the family ID as a message on its own, so it can be copied", async () => {
+    const phone = "15551120005";
+    await composeReplyMessages(phone, "hi");
+    const created = await composeReplyMessages(phone, "new");
+    const codeMessages = created.filter((m) => CODE.test(m.text));
+    expect(codeMessages).toHaveLength(1);
+    expect(created.at(-1)?.text).toContain("what should I call you");
+  });
+
+  it("keeps the welcome, family ID and name exchange in the family's history", async () => {
+    const phone = "15551120006";
+    await composeReplyMessages(phone, "hi");
+    const created = await composeReplyMessages(phone, "new");
+    const code = created.find((m) => CODE.test(m.text))!.text;
+    await composeReplyMessages(phone, "Fran");
+
+    const history = recentHistory(openFamilySessionForPhone(phone)!);
+    expect(history.map((h) => h.role)).toEqual(["user", "assistant", "user", "assistant"]);
+    expect(history[1].body).toContain(code);
+    expect(history[2].body).toBe("Fran");
+    expect(history[3].body).toContain("Lovely to meet you, Fran");
+  });
+
+  it("uses no emoji anywhere in onboarding", async () => {
+    const phone = "15551120007";
+    const sent = [
+      ...(await composeReplyMessages(phone, "hi")),
+      ...(await composeReplyMessages(phone, "dunno")),
+      ...(await composeReplyMessages(phone, "new")),
+      ...(await composeReplyMessages(phone, "Gil")),
+    ];
+    expect(sent.filter((m) => EMOJI.test(m.text)).map((m) => m.text)).toEqual([]);
+  });
+});
+
+describe("the family ID a member can look up", () => {
+  const CODE = /^JOY-[0-9A-Z]{4}-[0-9A-Z]{4}$/;
+
+  it("is kept when a family is created", async () => {
+    const phone = "15551130001";
+    await composeReplyMessages(phone, "hi");
+    const created = await composeReplyMessages(phone, "new");
+    const code = created.find((m) => CODE.test(m.text))!.text;
+    expect(getFamilyJoinCode(openFamilySessionForPhone(phone)!)).toBe(code);
+  });
+
+  it("is filled in for an older family when someone joins with it", async () => {
+    const owner = "15551130002";
+    await composeReplyMessages(owner, "hi");
+    const code = (await composeReplyMessages(owner, "new")).find((m) => CODE.test(m.text))!.text;
+    // A family made before the code was kept has nothing stored.
+    const ownerSession = openFamilySessionForPhone(owner)!;
+    ownerSession.db.prepare(`DELETE FROM family_meta WHERE key = 'join_code_enc'`).run();
+    expect(getFamilyJoinCode(ownerSession)).toBeNull();
+
+    const joiner = "15551130003";
+    await composeReplyMessages(joiner, "hi");
+    // Typed the way people actually type it.
+    await composeReplyMessages(joiner, code.toLowerCase().replace(/-/g, " "));
+    expect(getFamilyJoinCode(openFamilySessionForPhone(joiner)!)).toBe(code);
+  });
+
+  it("is stored encrypted, not as readable text", async () => {
+    const phone = "15551130004";
+    await composeReplyMessages(phone, "hi");
+    const code = (await composeReplyMessages(phone, "new")).find((m) => CODE.test(m.text))!.text;
+    const raw = openFamilySessionForPhone(phone)!
+      .db.prepare(`SELECT value FROM family_meta WHERE key = 'join_code_enc'`)
+      .get() as { value: string };
+    expect(raw.value).not.toContain(code.slice(4));
   });
 });

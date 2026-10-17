@@ -39,6 +39,7 @@ const NAV_ITEMS: NavItem[] = [
   { to: "/features", label: "Features", Icon: IconFeatures },
   { to: "/settings", label: "Settings", Icon: IconSettings },
   { to: "/portal", label: "Portal", Icon: IconPortal, requiresAdmin: true },
+  { to: "/joyce-portal", label: "Joyce", Icon: IconPortal, requiresAdmin: true },
   {
     to: "/whatsapp-sim",
     label: "WhatsApp Test",

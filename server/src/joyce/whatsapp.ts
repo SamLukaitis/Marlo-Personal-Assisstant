@@ -85,6 +85,26 @@ export async function sendJoyceMessage(to: string, text: string): Promise<void> 
   });
 }
 
+/** A message with up to three tappable reply buttons under it. */
+export async function sendJoyceButtons(
+  to: string,
+  text: string,
+  buttons: { id: string; title: string }[]
+): Promise<void> {
+  await post({
+    messaging_product: "whatsapp",
+    to,
+    type: "interactive",
+    interactive: {
+      type: "button",
+      body: { text },
+      action: {
+        buttons: buttons.map((b) => ({ type: "reply", reply: { id: b.id, title: b.title } })),
+      },
+    },
+  });
+}
+
 export async function sendJoyceTypingIndicator(messageId: string): Promise<void> {
   await post({
     messaging_product: "whatsapp",

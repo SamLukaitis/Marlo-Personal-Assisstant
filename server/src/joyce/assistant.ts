@@ -4,12 +4,16 @@ import { requestLeave, rotateJoinCode } from "./registry.js";
 import { LEAVE_WARNING } from "./leaving.js";
 import { loadFamilyFile } from "./files.js";
 import { sendJoyceMedia } from "./whatsapp.js";
+import { messages as toMessages, type JoyceMessage } from "./messages.js";
+import { flagRequest, recordJoyceUsage } from "./adminRecords.js";
 import {
   appendMessage,
   claimDueReminders,
   claimRelaysFor,
   createReminder,
   findMemberByName,
+  getFamilyJoinCode,
+  setFamilyJoinCode,
   listDocuments,
   listMembers,
   listNotes,
@@ -171,6 +175,34 @@ const TOOLS: Anthropic.Tool[] = [
     },
   },
   {
+    name: "flag_unmet_request",
+    description:
+      "Call this (alongside your normal honest reply, same turn) whenever someone asks for " +
+      "something you genuinely can't do with your tools — not for things you can do, and not for " +
+      "clarifying questions. The team reads these to decide what to build next. Write one " +
+      "sentence on what was wanted and why you couldn't help, with no names, numbers, addresses " +
+      "or other personal details: 'asked to book a dentist appointment', not 'Priya asked to " +
+      "book Leo in at Smile Dental on 4 Nov'.",
+    input_schema: {
+      type: "object",
+      properties: {
+        summary: {
+          type: "string",
+          description: "One sentence, no personal details: what they wanted and why you couldn't help",
+        },
+      },
+      required: ["summary"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "current_family_id",
+    description:
+      "Look up this family's current family ID, for when someone asks what it is so they can " +
+      "invite someone. Prefer this over new_family_id unless they want the old one to stop working.",
+    input_schema: { type: "object", properties: {}, additionalProperties: false },
+  },
+  {
     name: "new_family_id",
     description:
       "Issue a fresh family ID for this family and stop the old one working. Use when someone " +
@@ -205,7 +237,9 @@ function systemPrompt(session: FamilySession): string {
     `The current time is ${new Date().toISOString()} (UTC). All reminder times are UTC.`,
     "",
     "Be warm and brief — this is WhatsApp, not email. Two or three sentences is usually plenty. " +
-      "Use WhatsApp formatting (*bold*) sparingly and never Markdown headings or tables.",
+      "Use WhatsApp formatting (*bold*) sparingly and never Markdown headings or tables. Never " +
+      "use emoji, not even one. A blank line between paragraphs sends them as separate " +
+      "messages, so use one only where a new message makes sense.",
     "",
     "Save things without being asked when someone tells you something the family would want " +
       "later. When you are asked something you don't know, search the family's notes and " +
@@ -224,6 +258,8 @@ function systemPrompt(session: FamilySession): string {
  */
 interface TurnState {
   forcedReply: string | null;
+  /** Sent as messages of their own after the reply — a new family ID, so it can be copied cleanly. */
+  followUps: string[];
 }
 
 async function runTool(
@@ -341,14 +377,37 @@ async function runTool(
       queueRelay(session, found.id, String(input.message));
       return `Message left for ${found.displayName}; they'll get it next time they message you.`;
     }
+    case "flag_unmet_request": {
+      flagRequest(session, String(input.summary ?? ""));
+      return "Flagged for the team. Carry on with your reply as normal; don't mention the flag.";
+    }
+    case "current_family_id": {
+      const code = getFamilyJoinCode(session);
+      if (!code) {
+        return (
+          "This family's ID wasn't kept when it was made, so it can't be looked up. Offer to " +
+          "issue a new one with new_family_id, explaining that the old one would stop working."
+        );
+      }
+      state.followUps.push(code);
+      return (
+        `The family ID is ${code}. It is sent automatically as its own message straight after ` +
+        `your reply, so it can be copied — don't write it out yourself.`
+      );
+    }
     case "new_family_id": {
       // rotateJoinCode picks the family from the caller's own phone, not from any argument, so
       // there is no way to rotate another family's code. It addresses the registry rather than
       // the family database, which is why this is the one tool needing the phone number.
       const code = rotateJoinCode(ctx.normalizedPhone);
-      return code
-        ? `New family ID is ${code}. The previous one no longer works.`
-        : "Couldn't issue a new family ID.";
+      if (!code) return "Couldn't issue a new family ID.";
+      setFamilyJoinCode(session, code);
+      state.followUps.push(code);
+      return (
+        `New family ID is ${code}. The previous one no longer works. The ID itself is sent ` +
+        `automatically as its own message straight after your reply, so it can be copied — ` +
+        `don't write it out yourself; just say a new one is coming.`
+      );
     }
     case "request_leave_family": {
       requestLeave(ctx.normalizedPhone);
@@ -380,7 +439,7 @@ export async function runJoyceTurn(
   ctx: JoyceTurnContext,
   userText: string,
   attachedFile?: { documentId: number; extractedText: string }
-): Promise<string> {
+): Promise<JoyceMessage[]> {
   const { session } = ctx;
   appendMessage(session, "user", userText);
 
@@ -415,7 +474,7 @@ export async function runJoyceTurn(
     });
   }
 
-  const state: TurnState = { forcedReply: null };
+  const state: TurnState = { forcedReply: null, followUps: [] };
   let reply = "";
   for (let turn = 0; turn < MAX_TURNS; turn++) {
     const response = await getClient().messages.create({
@@ -425,6 +484,7 @@ export async function runJoyceTurn(
       tools: TOOLS,
       messages,
     });
+    recordJoyceUsage(MODEL, "joyce_chat", response.usage);
 
     const text = response.content
       .filter((b): b is Anthropic.TextBlock => b.type === "text")
@@ -464,6 +524,9 @@ export async function runJoyceTurn(
   // from a turn that also called another tool.
   if (state.forcedReply) reply = state.forcedReply;
   if (!reply) reply = "Sorry — I got a bit lost there. Could you say that again?";
-  appendMessage(session, "assistant", reply);
-  return reply;
+  const out = toMessages(reply, ...state.followUps);
+  // History keeps everything that was sent, follow-ups included, so a later "what was that ID
+  // again?" can be answered from the conversation.
+  appendMessage(session, "assistant", [reply, ...state.followUps].join("\n\n"));
+  return out;
 }

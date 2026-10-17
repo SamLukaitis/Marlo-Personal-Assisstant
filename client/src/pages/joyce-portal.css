@@ -1,0 +1,45 @@
+/* Joyce's portal: the Portal's layout and components in warm terracotta instead of Marlowe's
+   dark green. Everything is scoped under .joyce-theme so nothing outside the page changes. */
+.joyce-theme {
+  --accent: #b4532a;
+  --accent-foreground: #fff7ed;
+  --joyce-tint: #fdf3ec;
+  --joyce-tint-border: #f2d9c8;
+  background: #fffaf6;
+}
+
+.joyce-theme .page-header h1 {
+  color: var(--accent);
+}
+
+.joyce-portal-subtitle {
+  margin-top: -10px;
+  margin-bottom: 18px;
+  font-size: 12.5px;
+}
+
+.joyce-theme .btn-primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-foreground);
+}
+
+.joyce-theme .btn-primary:hover {
+  background: #9a4421;
+  border-color: #9a4421;
+}
+
+.joyce-theme .settings-nav-item:not(.active):hover {
+  background: var(--joyce-tint);
+}
+
+.joyce-theme .card,
+.joyce-theme .stat-card {
+  border-color: var(--joyce-tint-border);
+}
+
+.joyce-theme .badge-pill {
+  background: var(--joyce-tint);
+  border-color: var(--joyce-tint-border);
+  color: var(--accent);
+}

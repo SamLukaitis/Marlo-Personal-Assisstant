@@ -12,6 +12,7 @@ import { FilesPage } from "./pages/FilesPage";
 import { TravelPage } from "./pages/TravelPage";
 import { SettingsPage } from "./pages/SettingsPage";
 import { PortalPage } from "./pages/PortalPage";
+import { JoycePortalPage } from "./pages/JoycePortalPage";
 import { WhatsAppSimPage } from "./pages/WhatsAppSimPage";
 import { BriefingLabPage } from "./pages/BriefingLabPage";
 import { FeaturesPage } from "./pages/FeaturesPage";
@@ -56,6 +57,7 @@ function App() {
             <Route path="/features" element={<FeaturesPage />} />
             <Route path="/settings" element={<SettingsPage />} />
             <Route path="/portal" element={<PortalPage />} />
+            <Route path="/joyce-portal" element={<JoycePortalPage />} />
             <Route path="/whatsapp-sim" element={<WhatsAppSimPage />} />
             <Route path="/briefing-lab" element={<BriefingLabPage />} />
             {/* "Setup" was renamed to "Settings" — it behaves like one now. */}
