@@ -146,6 +146,7 @@ export function buildSubscribePage(token: string): string {
   a.button { display: block; padding: 14px 16px; margin: 0 0 12px; border-radius: 12px; font-size: 16px; font-weight: 600; text-decoration: none; }
   a.primary { background: var(--pink); color: #fff; }
   a.secondary { background: #fff; color: var(--ink); border: 1px solid #f0cfdb; }
+  .tip { background: #fff; border: 1px solid #f0cfdb; border-radius: 12px; padding: 12px 14px; font-size: 14px; color: var(--ink); }
   small { display: block; margin-top: 28px; font-size: 12px; color: #8a7480; word-break: break-all; }
 </style>
 </head>
@@ -155,9 +156,14 @@ export function buildSubscribePage(token: string): string {
   <p>Add it to your calendar. It updates by itself whenever someone tells Joyce about a date.</p>
   <a class="button primary" href="${webcal}">Add to iPhone or Mac Calendar</a>
   <a class="button secondary" href="${google}">Add to Google Calendar</a>
+  <p class="tip" id="mac-tip" hidden>On a Mac: in the window that appears, set <strong>Auto-refresh</strong> to <strong>Every hour</strong>. Otherwise your Mac only checks for changes once a week.</p>
   <small>Anyone with this link can see the family calendar, so keep it in the family.<br><br>Calendar address: ${feed}</small>
 </main>
 <script>
+  // A Mac starts every new subscription at a weekly refresh, ignoring the hourly one the feed asks
+  // for, so Mac users are told to change it. An iPad can report itself as a Mac; touch tells them apart.
+  var mac = /Macintosh/.test(navigator.userAgent) && !(navigator.maxTouchPoints > 1);
+  if (mac) document.getElementById("mac-tip").hidden = false;
   if (/iPhone|iPad|iPod|Macintosh/.test(navigator.userAgent)) location.href = ${JSON.stringify(calendarWebcalUrl(token))};
 </script>
 </body>

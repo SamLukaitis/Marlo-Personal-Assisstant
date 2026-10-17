@@ -7,6 +7,9 @@ it opens the Calendar app's "Subscribe?" prompt straight away; on Android or a c
 "Family (Joyce)" and suggests a rose-pink colour to calendar apps (Apple may or may not use it;
 anyone can change it).
 
+A Mac starts every new subscription at a weekly refresh, ignoring the hourly one the calendar asks
+for, so on a Mac the page also says to set Auto-refresh to "Every hour" in the window that appears.
+
 It's still a subscription, read-only and updating by itself; Google Calendar only refreshes
 subscribed calendars every few hours. Apple has no way for an app to add a calendar to iCloud
 directly. Connecting Google properly (instant updates, and busy/free from members' own calendars)

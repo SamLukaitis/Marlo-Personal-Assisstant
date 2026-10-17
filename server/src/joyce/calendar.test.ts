@@ -186,6 +186,9 @@ describe("the one-tap subscribe page", () => {
     expect(page.text).toContain(`location.href = ${JSON.stringify(webcal)}`);
     expect(page.text).toContain(`https://calendar.google.com/calendar/render?cid=${encodeURIComponent(webcal).replace(/&/g, "&amp;")}`);
     expect(calendarSubscribeUrl(token)).toMatch(new RegExp(`/joyce/subscribe/${token}$`));
+    // Hidden unless the page's script finds a Mac (see buildSubscribePage).
+    expect(page.text).toContain('id="mac-tip" hidden');
+    expect(page.text).toContain("set <strong>Auto-refresh</strong> to <strong>Every hour</strong>");
   });
 
   it("is a 404 for an unknown or replaced link", async () => {
