@@ -1,4 +1,5 @@
 import { openFamiliesWithRemindersDue, syncReminderSchedule, type FamilyData } from "./familyDb.js";
+import { recordDerivation } from "./provenance.js";
 import {
   appendSentMessage,
   listRemindersToPush,
@@ -58,7 +59,8 @@ async function deliverForFamily(family: FamilyData, now: number): Promise<void> 
         await sendOne(recipient, text, now);
         recordReminderDelivery(family, reminder.id, recipient.memberId);
         // In their own conversation, so Joyce knows what they mean if they reply to it.
-        appendSentMessage(family, recipient.memberId, `Reminder: ${text}`);
+        const sentId = appendSentMessage(family, recipient.memberId, `Reminder: ${text}`);
+        recordDerivation(family, { type: "message", id: sentId }, [{ type: "reminder", id: reminder.id }]);
       } catch (err) {
         console.error("joyce: couldn't send a reminder; they'll get it when they next message", err);
       }

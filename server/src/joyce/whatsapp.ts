@@ -170,6 +170,8 @@ export interface JoyceInboundMessage {
   media?: JoyceInboundMedia;
   /** Which of our numbers it was addressed to — see extractJoyceMessages. */
   toPhoneNumberId: string | undefined;
+  /** The message this one swipe-replied to, if it did. */
+  quotedMessageId?: string;
 }
 
 interface WebhookPayload {
@@ -181,6 +183,7 @@ interface WebhookPayload {
           from?: string;
           id?: string;
           type?: string;
+          context?: { id?: string };
           text?: { body?: string };
           image?: { id?: string; mime_type?: string; caption?: string };
           document?: { id?: string; mime_type?: string; filename?: string; caption?: string };
@@ -216,12 +219,14 @@ export function extractJoyceMessages(payload: WebhookPayload): JoyceInboundMessa
       const toPhoneNumberId = change.value?.metadata?.phone_number_id;
       for (const m of change.value?.messages ?? []) {
         if (!m.from || !m.id) continue;
+        // Spread into each message below, so one that isn't a swipe-reply has no such key at all.
+        const quote = m.context?.id ? { quotedMessageId: m.context.id } : {};
         if (m.type === "text" && m.text?.body) {
-          out.push({ from: m.from, messageId: m.id, text: m.text.body, toPhoneNumberId });
+          out.push({ from: m.from, messageId: m.id, text: m.text.body, toPhoneNumberId, ...quote });
         } else if (m.type === "interactive") {
           const title =
             m.interactive?.button_reply?.title ?? m.interactive?.list_reply?.title;
-          if (title) out.push({ from: m.from, messageId: m.id, text: title, toPhoneNumberId });
+          if (title) out.push({ from: m.from, messageId: m.id, text: title, toPhoneNumberId, ...quote });
         } else if (m.type === "image" && m.image?.id && m.image.mime_type) {
           out.push({
             from: m.from,
@@ -229,6 +234,7 @@ export function extractJoyceMessages(payload: WebhookPayload): JoyceInboundMessa
             text: m.image.caption ?? "",
             media: { mediaId: m.image.id, mimeType: m.image.mime_type },
             toPhoneNumberId,
+            ...quote,
           });
         } else if (m.type === "document" && m.document?.id && m.document.mime_type) {
           out.push({
@@ -241,6 +247,7 @@ export function extractJoyceMessages(payload: WebhookPayload): JoyceInboundMessa
               filename: m.document.filename,
             },
             toPhoneNumberId,
+            ...quote,
           });
         }
       }

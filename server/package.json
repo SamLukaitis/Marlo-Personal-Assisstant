@@ -13,6 +13,7 @@
     "eval:grounding": "vitest run --config vitest.eval.config.ts",
     "whatsapp:check": "tsx src/scripts/whatsappCheck.ts",
     "joyce:templates": "tsx src/scripts/createJoyceTemplates.ts",
+    "joyce:delete": "tsx src/scripts/joyceDeleteMessage.ts",
     "maps:probe": "tsx src/scripts/mapsProbe.ts"
   },
   "dependencies": {

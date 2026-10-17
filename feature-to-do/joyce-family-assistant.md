@@ -160,6 +160,38 @@ shared; and `search_family_chat` searches what every member has said to her (the
 messages), with who said it and when. Members' chat is still in the same family file, under the
 same key; this changes what the model is shown, not who can reach the data.
 
+## Deleting a message, and everything made from it
+
+Added 2026-10-17. Someone sends something wrong or too personal, then swipe-replies to it with
+"delete this". Joyce removes the message and everything she built from it.
+
+**Provenance** (`joyce/provenance.ts`, `derivations` table). Everything Joyce keeps is linked to
+what it came from: the member's message that started the turn, any file it carried, and every
+note, document, event, reminder or message whose content she read during that turn. Her reply is
+linked the same way. Deleting follows the links outward and removes everything reachable: a trip
+letter, the trip event made from it, a packing note later made from the event, a reminder, and the
+reply where she told someone the dates. It errs towards removing too much (something made in a
+turn where she happened to read the deleted item goes too), which is the right side for something
+wrong or personal. Links exist from 2026-10-17; deleting an older message removes only that
+message.
+
+**Who and when.** The sender, or the family admin (whoever started the family; for older
+families, the first member) for another member's message. **Only within 24 hours of it being
+sent**, for everyone: a message that's been around longer has usually been built on, and deleting
+a year-old one could take a large part of a family's memory with it. Older ones go to a
+developer: `npm run joyce:delete -- <member's phone> "<words>"` lists matches, `--id <n>` shows
+what would go, `--confirm` deletes (`server/src/scripts/joyceDeleteMessage.ts`).
+
+**How.** Like leaving, two steps: the model recognises the request (`request_delete`, using the
+swiped message, or a message id from `search_family_chat` when the admin names someone else's),
+Joyce lists exactly what will go with Delete/Keep buttons, and the answer is matched in code
+(`joyce/deleting.ts`) before the model runs. No tool deletes a message. Once done, the request
+("delete this, it had my PIN in it") is removed too, so nothing points back at what was deleted.
+
+**What it can't do.** WhatsApp gives a business no way to delete messages from people's phones, so
+the message stays in the sender's chat; Joyce says so. Reminders or relays already delivered can't
+be unsent. Usage records hold no content and aren't touched.
+
 ## Timezones, reminders and the calendar
 
 Added 2026-10-17.

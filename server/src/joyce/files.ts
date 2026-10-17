@@ -3,7 +3,7 @@ import path from "node:path";
 import crypto from "node:crypto";
 import Anthropic from "@anthropic-ai/sdk";
 import mammoth from "mammoth";
-import type { FamilySession } from "./familyDb.js";
+import type { FamilyData, FamilySession } from "./familyDb.js";
 import { decryptBufferFor, encryptBufferFor } from "./familyKey.js";
 import { FAMILY_FILES_DIR } from "./registry.js";
 import { getDocument, saveDocument } from "./store.js";
@@ -50,7 +50,7 @@ function getClient(): Anthropic {
   return client;
 }
 
-function familyFolder(session: FamilySession): string {
+function familyFolder(session: FamilyData): string {
   const dir = path.join(FAMILY_FILES_DIR, session.familyId);
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
   return dir;
@@ -157,4 +157,13 @@ export function loadFamilyFile(
     mimeType: doc.mimeType,
     filename: doc.filename ?? `family-file-${doc.id}.${EXTENSIONS[doc.mimeType] ?? "bin"}`,
   };
+}
+
+/**
+ * Removes a document's encrypted file from disk. The row itself is removed by the caller
+ * (provenance.ts). A file already gone is not an error — the goal is that it doesn't exist.
+ */
+export function deleteFamilyFileFromDisk(family: FamilyData, storedName: string): void {
+  const onDisk = path.join(familyFolder(family), path.basename(storedName));
+  fs.rmSync(onDisk, { force: true });
 }

@@ -159,6 +159,20 @@ const SCHEMA = `
     updated_at INTEGER NOT NULL
   );
   CREATE INDEX IF NOT EXISTS idx_events_starts ON events(starts_at);
+
+  -- Where everything Joyce keeps came from: "this item was made from that one". An item made in
+  -- a turn is linked to the member's message that started the turn, and to every note, document,
+  -- event, reminder or message whose content Joyce read during it. Deleting a message follows
+  -- these links outward and removes everything that came from it (provenance.ts).
+  -- item_type/source_type: message, document, note, event, reminder, relay, flag.
+  CREATE TABLE IF NOT EXISTS derivations (
+    item_type TEXT NOT NULL,
+    item_id INTEGER NOT NULL,
+    source_type TEXT NOT NULL,
+    source_id INTEGER NOT NULL,
+    PRIMARY KEY (item_type, item_id, source_type, source_id)
+  );
+  CREATE INDEX IF NOT EXISTS idx_derivations_source ON derivations(source_type, source_id);
 `;
 
 // Columns added after families already existed. SCHEMA's CREATE TABLE IF NOT EXISTS doesn't
@@ -188,6 +202,13 @@ function migrate(db: Database.Database): void {
          WHERE u.role = 'user' AND u.id < messages.id ORDER BY u.id DESC LIMIT 1
       ) WHERE role = 'assistant';
       CREATE INDEX IF NOT EXISTS idx_messages_thread ON messages(thread_member_id, id);
+    `);
+  }
+  // The WhatsApp id of a member's message, so a swipe-reply to it ("delete this") can find it.
+  if (!columns("messages").includes("wamid")) {
+    db.exec(`
+      ALTER TABLE messages ADD COLUMN wamid TEXT;
+      CREATE INDEX IF NOT EXISTS idx_messages_wamid ON messages(wamid);
     `);
   }
   // Who an event is for when that person isn't a member — usually a child without a phone
