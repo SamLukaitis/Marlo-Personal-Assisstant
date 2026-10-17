@@ -424,6 +424,15 @@ if (!apiUsageColumnsNow.includes("cache_read_tokens")) {
     ALTER TABLE api_usage ADD COLUMN cache_creation_tokens INTEGER NOT NULL DEFAULT 0;
   `);
 }
+// The message and reply behind an assistant_chat row, so the Portal can show what each message
+// cost. Only ever written for admin accounts (ai/assistant.ts decides) — everyone else's rows keep
+// these null, so no other user's chat text is copied here.
+if (!apiUsageColumnsNow.includes("user_message")) {
+  db.exec(`
+    ALTER TABLE api_usage ADD COLUMN user_message TEXT;
+    ALTER TABLE api_usage ADD COLUMN reply_text TEXT;
+  `);
+}
 
 // Bootstraps the very first non-owner admin without needing an existing admin to grant it through
 // the Portal's Admins tab first (a chicken-and-egg problem otherwise) — and deliberately doesn't
@@ -3763,14 +3772,31 @@ export function recordApiUsage(
   inputTokens: number,
   outputTokens: number,
   cacheReadTokens: number,
-  cacheCreationTokens: number
+  cacheCreationTokens: number,
+  // Only passed for admin accounts' assistant chats — see the user_message migration above.
+  message?: { userMessage: string; replyText: string }
 ): void {
   db.prepare(
     `INSERT INTO api_usage (owner_id, channel, model, purpose, input_tokens, output_tokens,
-                            cache_read_tokens, cache_creation_tokens, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
-  ).run(ownerId, channel, model, purpose, inputTokens, outputTokens, cacheReadTokens, cacheCreationTokens, Date.now());
+                            cache_read_tokens, cache_creation_tokens, user_message, reply_text, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  ).run(
+    ownerId,
+    channel,
+    model,
+    purpose,
+    inputTokens,
+    outputTokens,
+    cacheReadTokens,
+    cacheCreationTokens,
+    message ? message.userMessage.slice(0, API_USAGE_TEXT_MAX) : null,
+    message ? message.replyText.slice(0, API_USAGE_TEXT_MAX) : null,
+    Date.now()
+  );
 }
+
+// Enough to recognise which message it was; the full conversation stays where it already lives.
+const API_USAGE_TEXT_MAX = 500;
 
 export interface ApiUsageSummaryRow {
   day: string;
@@ -3895,21 +3921,27 @@ export interface ApiUsageCallRow {
   cacheReadTokens: number;
   cacheCreationTokens: number;
   createdAt: number;
+  // Null except on admin accounts' assistant chats (see the user_message migration).
+  userMessage: string | null;
+  replyText: string | null;
 }
 
 // Individual calls with an exact timestamp, newest first — getApiUsageSummary/getApiUsageByPurpose
 // only aggregate down to the day, which isn't specific enough to tell exactly when something
 // happened (e.g. tracking down what caused a cost spike). LEFT JOIN, not JOIN — owner_id is
 // nullable (calls with no signed-in user yet, e.g. the public help widget).
-export function listRecentApiUsage(limit: number): ApiUsageCallRow[] {
+// messagesOnly narrows it to calls that have message text attached, i.e. admins' own chats, so
+// they aren't buried under the background checks that run every few minutes.
+export function listRecentApiUsage(limit: number, messagesOnly = false): ApiUsageCallRow[] {
   return db
     .prepare(
       `SELECT u.id, u.owner_id AS ownerId, (us.id IS NOT NULL) AS ownerExists,
               us.email AS ownerEmail, u.channel, u.model, u.purpose,
               u.input_tokens AS inputTokens, u.output_tokens AS outputTokens,
               u.cache_read_tokens AS cacheReadTokens, u.cache_creation_tokens AS cacheCreationTokens,
-              u.created_at AS createdAt
+              u.created_at AS createdAt, u.user_message AS userMessage, u.reply_text AS replyText
        FROM api_usage u LEFT JOIN users us ON us.id = u.owner_id
+       ${messagesOnly ? "WHERE u.user_message IS NOT NULL" : ""}
        ORDER BY u.created_at DESC, u.id DESC
        LIMIT ?`
     )
