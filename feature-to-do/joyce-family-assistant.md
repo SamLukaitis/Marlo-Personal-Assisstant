@@ -165,14 +165,14 @@ same key; this changes what the model is shown, not who can reach the data.
 Added 2026-10-17. Someone sends something wrong or too personal, then swipe-replies to it with
 "delete this". Joyce removes the message and everything she built from it.
 
-**Provenance** (`joyce/provenance.ts`, `derivations` table). Everything Joyce keeps is linked to
-what it came from: the member's message that started the turn, any file it carried, and every
-note, document, event, reminder or message whose content she read during that turn. Her reply is
-linked the same way. Deleting follows the links outward and removes everything reachable: a trip
-letter, the trip event made from it, a packing note later made from the event, a reminder, and the
-reply where she told someone the dates. It errs towards removing too much (something made in a
-turn where she happened to read the deleted item goes too), which is the right side for something
-wrong or personal. Links exist from 2026-10-17; deleting an older message removes only that
+**Provenance** (`joyce/provenance.ts`, `derivations` table). Everything Joyce stores in a turn is
+linked to the member's message that started it, and to the file it carried, if any; her reply is
+linked the same way. Deleting the message removes those: a trip letter, the trip event and note
+she made from it, and her reply. **Direct links only** (decided 2026-10-17): nothing is linked to
+what she merely read during a turn, and links don't chain on into later turns, so a delete never
+sweeps up something unrelated that happened to share a turn. The cost: something made later from
+the trip event (a packing note in another conversation), or her reply to someone else who later
+asked about it, stays. Links exist from 2026-10-17; deleting an older message removes only that
 message.
 
 **Who and when.** The sender, or the family admin (whoever started the family; for older

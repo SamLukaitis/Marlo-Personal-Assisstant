@@ -102,7 +102,7 @@ describe("deleting a message and everything made from it", () => {
     expect(asked.confirmation.text).toContain('The file "trip-letter.txt"');
     expect(asked.confirmation.text).toContain('The calendar event "Paris trip"');
     expect(asked.confirmation.text).toContain('The reminder "Pay £120 for the Paris trip"');
-    expect(asked.confirmation.text).toContain("1 of my replies that used it");
+    expect(asked.confirmation.text).toContain("My reply to it");
     expect(asked.confirmation.buttons?.map((b) => b.title)).toEqual(["Delete", "Keep"]);
 
     const folder = path.join(FAMILY_FILES_DIR, session(priya).familyId);
@@ -118,18 +118,20 @@ describe("deleting a message and everything made from it", () => {
     expect(listNotes(s).map((note) => note.title)).toEqual(["Wifi"]);
   });
 
-  it("follows the chain: something made from the trip event goes too", async () => {
+  it("doesn't reach things made in a later turn — only what came directly from the message", async () => {
     const [ana] = familyOf("Ana");
     const ids = await letterAboutATrip(ana);
     const s = session(ana);
-    // A later turn read the event and saved a packing note from it.
+    // A later turn, which looked at the trip event, saved a packing note. As runJoyceTurn
+    // records it: linked to that turn's own message only.
     const later = appendMessage(s, "user", "make a packing list for the trip");
     const note = saveNote(s, "Packing for Paris", "passport, adaptor");
-    recordDerivation(s, { type: "note", id: note }, [{ type: "message", id: later }, { type: "event", id: ids.event }]);
+    recordDerivation(s, { type: "note", id: note }, [{ type: "message", id: later }]);
 
     requestDelete(s, getMessage(s, ids.msg));
     handlePendingDelete(session(ana), "delete");
-    expect(listNotes(session(ana))).toEqual([]);
+    expect(listNotes(session(ana)).map((n) => n.title)).toEqual(["Packing for Paris"]);
+    expect(listEventsBetween(session(ana), 0, Date.UTC(2030, 0, 1))).toEqual([]);
   });
 
   it("keeps everything on anything other than Delete", async () => {

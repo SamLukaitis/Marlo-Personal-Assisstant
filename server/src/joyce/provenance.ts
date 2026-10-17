@@ -6,17 +6,15 @@ import { deleteFlaggedRequest } from "./adminRecords.js";
 
 // Where everything Joyce keeps came from, and taking it all back out.
 //
-// Every item Joyce stores is linked (the `derivations` table) to what it was made from: the
-// member's message that started the turn, plus anything whose content she read during that turn
-// — a note she looked up, a document she searched, an event she listed. Her own reply is linked
-// the same way. So a letter about a trip, the trip event she put on the calendar from it, a
-// reminder about the event, and the reply where she told someone the dates all trace back to the
-// message that carried the letter.
+// Everything Joyce stores in a turn is linked (the `derivations` table) to the member's message
+// that started it, and to the file that message carried, if any. Her reply is linked the same
+// way. So a letter about a trip, the trip event she put on the calendar from it, a reminder she
+// set from it, and her reply all trace back to the message that carried the letter.
 //
-// Deleting a message follows those links outward and removes everything reachable. That errs
-// towards removing too much: something made in a turn where Joyce also happened to read the
-// deleted item goes with it. For someone deleting something incorrect or personal, removing a
-// little too much is the right side to be on.
+// Only direct links, deliberately: nothing is linked to what Joyce merely read during a turn, and
+// links don't chain on from one turn to the next. Deleting a message removes exactly what was
+// made from it, never something unrelated that happened to share a turn. The cost is that
+// something made later from the trip event (a packing note in another conversation) stays.
 //
 // Links only exist from when this was added (2026-10-17). Deleting an older message removes just
 // that message: nothing was recorded about what came from it.
@@ -42,7 +40,11 @@ export function recordDerivation(family: FamilyData, item: Item, sources: Item[]
   }
 }
 
-/** The item and everything made from it, directly or through other items. */
+/**
+ * The item and everything linked to it. With only direct links recorded, that's the message, its
+ * file, what was made from it in the same turn, Joyce's reply, and any reminder message she later
+ * sent for a reminder made from it.
+ */
 export function collectDerived(family: FamilyData, root: Item): Item[] {
   const children = family.db.prepare(
     `SELECT item_type AS type, item_id AS id FROM derivations WHERE source_type = ? AND source_id = ?`
@@ -123,7 +125,7 @@ export function describeItems(family: FamilyData, items: Item[]): string[] {
         break;
     }
   }
-  if (replies > 0) lines.push(`${replies} of my replies that used it`);
+  if (replies > 0) lines.push(replies === 1 ? "My reply to it" : `${replies} of my messages about it`);
   return lines;
 }
 

@@ -6,9 +6,10 @@ the message, any file it carried, and the notes, calendar events, reminders and 
 from it — with Delete and Keep buttons. Delete removes all of it, including the "delete this"
 request itself, so nothing points back at what was there.
 
-To make that possible, Joyce now records where everything she keeps came from: the message that
-started the turn, plus anything she read while making it. So a trip event made from a letter, and
-a packing note later made from that event, both go when the letter is deleted.
+To make that possible, Joyce now records which message everything she keeps was made from. Only
+direct links: what she made in her reply to that message. So a trip event made from a letter goes
+when the letter is deleted, but a packing note someone asked for later, in a different
+conversation, stays — a delete never sweeps up something unrelated.
 
 Rules:
 - Only the person who sent it, or the family admin (whoever started the family), can delete it.
@@ -23,5 +24,5 @@ Rules:
   message.
 
 Tested against the real model: deleting a saved PIN by swipe-reply, deleting a trip letter (which
-also removed the event and note Joyce had made from it, and the file on disk), a non-admin being
-refused, and the admin deleting another member's message.
+also removed the event and note Joyce made from it, her reply, and the file on disk), a non-admin
+being refused, and the admin deleting another member's message.

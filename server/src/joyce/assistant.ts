@@ -457,17 +457,13 @@ interface TurnState {
   /** What to keep in history instead of the forced reply, when the reply quotes something private. */
   forcedHistory?: string;
   /**
-   * What anything made this turn comes from: the member's message, a file it carried, anything
-   * delivered to them, and everything Joyce has read so far this turn. See provenance.ts.
+   * What anything made this turn comes from: the member's message, and the file it carried if
+   * any. Only these — not what Joyce read along the way — so deleting a message takes exactly
+   * what was made from it and nothing that merely shared a turn with it. See provenance.ts.
    */
   sources: Item[];
   /** Sent as messages of their own after the reply — a new family ID, so it can be copied cleanly. */
   followUps: string[];
-}
-
-/** Notes that the model has now seen these items' content, so anything made this turn derives from them. */
-function read(sources: Item[], type: Item["type"], rows: { id: number }[]): void {
-  for (const row of rows) sources.push({ type, id: row.id });
 }
 
 /** A member's id for `who`, null for the whole family, or an error to hand back to the model. */
@@ -570,7 +566,6 @@ async function runTool(
     }
     case "search_notes": {
       const hits = searchNotes(session, String(input.query));
-      read(state.sources, "note", hits);
       if (hits.length === 0) return "No matching notes.";
       return hits
         .map(
@@ -582,7 +577,6 @@ async function runTool(
     }
     case "list_recent_notes": {
       const notes = listNotes(session, 15);
-      read(state.sources, "note", notes);
       if (notes.length === 0) return "The family hasn't saved anything yet.";
       return notes
         .map((n) => `[${n.id}] ${n.title}: ${n.body} — ${n.savedByName ?? "someone"}`)
@@ -590,7 +584,6 @@ async function runTool(
     }
     case "search_documents": {
       const hits = searchDocuments(session, String(input.query));
-      read(state.sources, "document", hits);
       if (hits.length === 0) {
         return listDocuments(session, 1).length === 0
           ? "Nobody has sent any documents yet."
@@ -606,7 +599,6 @@ async function runTool(
     }
     case "list_recent_documents": {
       const docs = listDocuments(session, 10);
-      read(state.sources, "document", docs);
       if (docs.length === 0) return "Nobody has sent any documents yet.";
       return docs
         .map(
@@ -621,7 +613,6 @@ async function runTool(
       // from — the model picks which file, never who receives it.
       const file = loadFamilyFile(session, Number(input.document_id));
       if (!file) return "There's no saved file with that id. Search for it again.";
-      read(state.sources, "document", [{ id: Number(input.document_id) }]);
       await sendJoyceMedia(ctx.normalizedPhone, file.buffer, file.mimeType, file.filename);
       return "Sent.";
     }
@@ -654,7 +645,6 @@ async function runTool(
     }
     case "list_reminders": {
       const rows = listUpcomingReminders(session);
-      read(state.sources, "reminder", rows);
       if (rows.length === 0) return "No reminders pending.";
       return rows
         .map(
@@ -694,7 +684,6 @@ async function runTool(
     }
     case "search_family_chat": {
       const hits = searchFamilyChat(session, String(input.query ?? ""));
-      read(state.sources, "message", hits);
       if (hits.length === 0) return "Nobody has said anything matching that to you.";
       return hits
         .map(
@@ -739,7 +728,6 @@ async function runTool(
       const toWhen = parseLocal(toDate, zone);
       if (!fromWhen?.allDay || !toWhen?.allDay) return "from and to must be dates, YYYY-MM-DD.";
       const events = listEventsBetween(session, fromWhen.utcMs, endOfLocalDate(toWhen.date, zone));
-      read(state.sources, "event", events);
       if (events.length === 0) return `Nothing on the calendar from ${from} to ${toDate}.`;
       return events.map((e) => describeEvent(e, zone)).join("\n");
     }
@@ -880,8 +868,6 @@ export async function runJoyceTurn(
   // naturally in its reply rather than as a separate robotic message.
   const relays = claimRelaysFor(session);
   const dueReminders = claimDueReminders(session);
-  read(sources, "relay", relays);
-  read(sources, "reminder", dueReminders);
   const waiting: string[] = [
     ...relays.map((r) => `${r.fromName ?? "Someone"} left a message for them: "${r.body}"`),
     ...dueReminders.map((r) => `Reminder now due: ${r.body}`),
@@ -975,7 +961,7 @@ export async function runJoyceTurn(
   // The [Done: …] note is for the model's next turns only; it's never sent.
   const done = actions.length > 0 ? [`[Done: ${actions.join("; ")}]`] : [];
   const replyId = appendMessage(session, "assistant", [reply, ...state.followUps, ...done].join("\n\n"));
-  // Her reply came from the same things as anything she made, so it goes if they do.
+  // Her reply to the message goes with it.
   recordDerivation(session, { type: "message", id: replyId }, state.sources);
   return out;
 }
