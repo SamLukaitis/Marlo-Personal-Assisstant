@@ -13,15 +13,18 @@ import {
   addFlaggedRequestNote,
   getJoyceUsageByDay,
   getJoyceUsageByPurpose,
+  isBuiltInCalendarEnabled,
   listFlaggedRequests,
   listRecentJoyceUsage,
   resolveFlaggedRequest,
+  setBuiltInCalendarEnabled,
 } from "../joyce/adminRecords.js";
 import { estimateCost } from "./portalRoutes.js";
 import type { AuthedRequest } from "../middleware/auth.js";
 
 // Joyce's admin portal: the same sections as Marlowe's Portal (portalRoutes.ts) for the parts
-// that apply to her — flagged requests, a to-do list, server logs and API usage. Every route
+// that apply to her — flagged requests, a to-do list, server logs and API usage — plus her own
+// Settings. Every route
 // returns the same shape as its Marlowe counterpart, so the client renders both with the same
 // components (client/src/pages/PortalPage.tsx).
 //
@@ -156,6 +159,27 @@ joycePortalRoutes.get("/usage", (req, res) => {
   }));
 
   res.json({ rows, byPurpose, byOwner: [], projection, recent, approx: true });
+});
+
+// --- Settings -----------------------------------------------------------------------------------
+// Switches that apply to every family at once (adminRecords.ts's settings table).
+
+function settingsForPortal() {
+  return { builtInCalendar: isBuiltInCalendarEnabled() };
+}
+
+joycePortalRoutes.get("/settings", (_req, res) => {
+  res.json(settingsForPortal());
+});
+
+joycePortalRoutes.put("/settings", (req, res) => {
+  if (typeof req.body?.builtInCalendar !== "boolean") {
+    res.status(400).json({ error: "builtInCalendar must be true or false" });
+    return;
+  }
+  setBuiltInCalendarEnabled(req.body.builtInCalendar);
+  console.log(`joyce: admin ${adminId(req)} turned the built-in calendar ${req.body.builtInCalendar ? "on" : "off"}`);
+  res.json(settingsForPortal());
 });
 
 // --- To-do list ---------------------------------------------------------------------------------

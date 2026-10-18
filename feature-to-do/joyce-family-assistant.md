@@ -90,6 +90,11 @@ I ran a real conversation end to end against the live API. All of this is workin
   remembering to check.
 - **Leaving a family**, with a two-step confirmation (see below).
 - **Photos and files** (added 2026-10-03): see below.
+- **Google Calendar** (added 2026-10-17): each member can connect their own, and Joyce can make
+  a shared family calendar that new events go on by default. See
+  `changelog/2026-10-17-joyce-google-calendar.md`.
+- **One calendar per family** (2026-10-18): Google once anyone connects it, otherwise Joyce's own,
+  with a Portal switch to turn Joyce's own off. See "Which calendar a family uses" below.
 
 Every test passes: 31 Joyce tests, and Marlowe's existing suite still green (1557 total).
 
@@ -367,6 +372,54 @@ tenant files would deserve a serious look before committing to the shared table.
    subscribed to the app, which it already is.
 4. Send one message to Marlowe and one to Joyce and confirm each is answered by the right one and
    ignored by the other.
+
+## Which calendar a family uses
+
+Added 2026-10-18 (`joyce/calendarMode.ts`). Joyce has two calendars: her own (above) and Google
+(below). A family only ever uses one, so she never has two to choose between:
+
+- **Google** as soon as any member has connected it. Joyce is given only the Google tools, and her
+  own calendar's subscribe feed is served empty, so phones don't show a second "family calendar".
+- **Joyce's own** if nobody has connected Google and the switch in the Joyce portal (Settings) is
+  on. This is the default.
+- **None** if nobody has connected Google and the switch is off. Joyce can only offer to connect
+  Google. Used for testing Google on its own.
+
+The model is handed only the current mode's tools, worked out afresh on every round of a turn, and
+`runTool` refuses the others too (an old tool call earlier in the conversation could name one).
+Nothing is deleted on a change: built-in events stay in the family's file and come back if the
+switch is turned on again or everyone disconnects Google. They don't move to Google by themselves;
+the connect message says so when there are any. The switch lives in Joyce's `admin.db` (`settings`
+table) and applies to every family at once. Follow-ups are in
+`feature-to-do/joyce-calendar-followups.md`.
+
+## Google Calendar
+
+Added 2026-10-17. Code in `joyce/googleCalendar.ts` (talking to Google), `joyce/calendarTools.ts`
+(the model's tools), `joyce/familyCalendar.ts` (the shared family calendar) and
+`joyce/googleRoutes.ts` (the connect and callback pages). The full story
+is in `changelog/2026-10-17-joyce-google-calendar.md`. Points that matter for the isolation design:
+
+- The browser that finishes Google's sign-in has no phone number, so the one-time link stands in
+  for one. It's minted for a phone hash in the registry (`google_connect_tokens`), and spending it
+  opens that phone's family as that member (`openFamilySessionForGoogleConnect`). That is the only
+  way into a family other than an inbound message, and it still takes no family id.
+- Event refs are `<account id>|<calendar id>|<event id>`. The account id is looked up in this
+  family's own `google_accounts` table, so a ref from anywhere else finds nothing.
+- Leaving a family deletes and revokes the leaver's Google connection.
+- The family calendar is a Google calendar owned by whoever asked for it. Its id is kept
+  encrypted in `family_meta`. Only the owner's account can share it, so new members are shared in
+  (and leavers unshared) through the owner's tokens. If the owner leaves, the family drops it.
+- New events go on the family calendar by default. Anyone can still ask for a specific person's
+  own calendar, and any member can change any connected member's calendar, because that's how the
+  rest of Joyce works (everyone sees everything). Joyce warns about this before anyone connects.
+  If that turns out too loose, the obvious tightening is to make personal calendars read-only to
+  other members, now that family events have their own place.
+- Not handled yet: if the owner deletes the family calendar in Google, Joyce reports errors
+  rather than offering to make a new one.
+- Adding or moving a timed event reports clashes with timed events on the family calendar and
+  every connected member's own calendars (all-day events aren't counted). Best effort: a calendar
+  that can't be read is skipped.
 
 ## What this touched outside Joyce
 

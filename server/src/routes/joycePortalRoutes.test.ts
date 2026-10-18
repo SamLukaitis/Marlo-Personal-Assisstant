@@ -40,6 +40,25 @@ function newFamily(): FamilySession {
 }
 
 describe("Joyce portal routes", () => {
+  it("turns the built-in calendar off and on, and rejects anything but true or false", async () => {
+    const app = buildTestApp(makeUser("joyce-admin-settings", true).id);
+    expect((await request(app).get("/api/joyce-portal/settings")).body).toEqual({ builtInCalendar: true });
+
+    const off = await request(app).put("/api/joyce-portal/settings").send({ builtInCalendar: false });
+    expect(off.body).toEqual({ builtInCalendar: false });
+    expect((await request(app).get("/api/joyce-portal/settings")).body).toEqual({ builtInCalendar: false });
+
+    expect((await request(app).put("/api/joyce-portal/settings").send({ builtInCalendar: "off" })).status).toBe(400);
+
+    const on = await request(app).put("/api/joyce-portal/settings").send({ builtInCalendar: true });
+    expect(on.body).toEqual({ builtInCalendar: true });
+  });
+
+  it("won't let a non-admin change settings", async () => {
+    const app = buildTestApp(makeUser("joyce-nonadmin-settings", false).id);
+    expect((await request(app).put("/api/joyce-portal/settings").send({ builtInCalendar: false })).status).toBe(403);
+  });
+
   it("refuses anyone who isn't an admin", async () => {
     const user = makeUser("joyce-nonadmin", false);
     const res = await request(buildTestApp(user.id)).get("/api/joyce-portal/unmet-requests");

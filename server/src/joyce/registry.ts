@@ -94,6 +94,17 @@ registry.exec(`
     token_hash TEXT PRIMARY KEY,
     family_id TEXT NOT NULL UNIQUE REFERENCES families(family_id)
   );
+
+  -- One-time links for connecting a Google Calendar (joyce/googleRoutes.ts). The browser that
+  -- finishes the Google sign-in carries no phone number, so the link stands in for one: it was
+  -- minted for this phone_hash, and spending it opens that phone's family exactly as an inbound
+  -- message would. Only an HMAC of the token is kept, like join codes.
+  CREATE TABLE IF NOT EXISTS google_connect_tokens (
+    token_hash TEXT PRIMARY KEY,
+    phone_hash TEXT NOT NULL,
+    created_at INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_google_connect_tokens_phone ON google_connect_tokens(phone_hash);
 `);
 
 export type OnboardingStep = "awaiting_choice" | "awaiting_join_code";
@@ -184,13 +195,22 @@ export function createFamily(normalizedPhone: string): { family: FamilyRecord; j
 
 /** The family this number belongs to, or null if it belongs to none. */
 export function findFamilyForPhone(normalizedPhone: string): FamilyRecord | null {
+  return findFamilyForPhoneHash(phoneLookupHash(normalizedPhone));
+}
+
+/**
+ * Same as findFamilyForPhone, for the one caller that holds a phone hash rather than a number:
+ * opening a family from a spent Google connect link (familyDb.ts). The hash only ever comes from
+ * a row this registry wrote itself, never from a request.
+ */
+export function findFamilyForPhoneHash(phoneHash: string): FamilyRecord | null {
   const row = registry
     .prepare(
       `SELECT f.family_id AS familyId, f.salt AS salt
          FROM family_members m JOIN families f ON f.family_id = m.family_id
         WHERE m.phone_hash = ?`
     )
-    .get(phoneLookupHash(normalizedPhone)) as { familyId: string; salt: Buffer } | undefined;
+    .get(phoneHash) as { familyId: string; salt: Buffer } | undefined;
   if (!row) return null;
   if (row.salt.length !== SALT_LENGTH) {
     throw new Error(`registry: family ${row.familyId} has a malformed salt — refusing to derive a key`);
@@ -328,6 +348,53 @@ export function leaveFamily(normalizedPhone: string): boolean {
     .prepare(`DELETE FROM family_members WHERE phone_hash = ?`)
     .run(phoneLookupHash(normalizedPhone));
   return res.changes > 0;
+}
+
+// Long enough to tap the link and get through Google's screens, short enough that a link found
+// later in a forwarded chat or a phone's history is dead. Same window as Marlowe's connect links.
+export const GOOGLE_CONNECT_TOKEN_TTL_MS = 10 * 60 * 1000;
+
+function googleConnectTokenHash(token: string): string {
+  return phoneLookupHash(`googleconnect:${token}`);
+}
+
+/**
+ * A fresh connect link token for this phone, replacing any earlier one so only the latest link a
+ * person was sent works. Returned in plaintext once; only its HMAC is stored.
+ */
+export function issueGoogleConnectToken(normalizedPhone: string): string {
+  const phoneHash = phoneLookupHash(normalizedPhone);
+  const token = crypto.randomBytes(24).toString("base64url");
+  registry.transaction(() => {
+    registry.prepare(`DELETE FROM google_connect_tokens WHERE phone_hash = ?`).run(phoneHash);
+    registry
+      .prepare(`INSERT INTO google_connect_tokens (token_hash, phone_hash, created_at) VALUES (?, ?, ?)`)
+      .run(googleConnectTokenHash(token), phoneHash, Date.now());
+  })();
+  return token;
+}
+
+/** Checks a token without spending it, so the link can be validated before sending anyone to Google. */
+export function isGoogleConnectTokenLive(token: string): boolean {
+  const row = registry
+    .prepare(`SELECT created_at AS createdAt FROM google_connect_tokens WHERE token_hash = ?`)
+    .get(googleConnectTokenHash(token)) as { createdAt: number } | undefined;
+  return !!row && Date.now() - row.createdAt <= GOOGLE_CONNECT_TOKEN_TTL_MS;
+}
+
+/**
+ * Spends a token, returning the phone hash it was minted for, or null if it's unknown or
+ * expired. Deleted either way, so a link works once. Callers want familyDb.ts's
+ * openFamilySessionForGoogleConnect, not this.
+ */
+export function consumeGoogleConnectToken(token: string): string | null {
+  const tokenHash = googleConnectTokenHash(token);
+  const row = registry
+    .prepare(`SELECT phone_hash AS phoneHash, created_at AS createdAt FROM google_connect_tokens WHERE token_hash = ?`)
+    .get(tokenHash) as { phoneHash: string; createdAt: number } | undefined;
+  if (!row) return null;
+  registry.prepare(`DELETE FROM google_connect_tokens WHERE token_hash = ?`).run(tokenHash);
+  return Date.now() - row.createdAt <= GOOGLE_CONNECT_TOKEN_TTL_MS ? row.phoneHash : null;
 }
 
 /** False if this wamid was already handled — the dedupe guard for Meta's webhook retries. */

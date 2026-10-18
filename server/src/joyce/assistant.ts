@@ -9,6 +9,7 @@ import { messages as toMessages, type JoyceButton, type JoyceMessage } from "./m
 import { recordDerivation, type Item } from "./provenance.js";
 import { requestDelete } from "./deleting.js";
 import { flagRequest, recordJoyceUsage } from "./adminRecords.js";
+import { calendarMode, type CalendarMode } from "./calendarMode.js";
 import {
   describeNow,
   endOfLocalDate,
@@ -21,6 +22,13 @@ import {
 import { calendarSubscribeUrl } from "./calendarFeed.js";
 import { issueCalendarToken } from "./registry.js";
 import {
+  CALENDAR_TOOLS,
+  CONNECT_TOOLS,
+  isCalendarTool,
+  runCalendarTool,
+} from "./calendarTools.js";
+import { nowIn } from "./googleCalendar.js";
+import {
   appendMessage,
   claimDueReminders,
   claimRelaysFor,
@@ -30,6 +38,7 @@ import {
   findClashes,
   findMemberByName,
   getEvent,
+  getFamilyCalendar,
   getMessage,
   getMessageByWamid,
   getFamilyCalendarToken,
@@ -41,6 +50,7 @@ import {
   type NewEvent,
   setFamilyJoinCode,
   listDocuments,
+  listGoogleAccounts,
   listMembers,
   listNotes,
   listUpcomingReminders,
@@ -76,7 +86,7 @@ function getClient(): Anthropic {
   return client;
 }
 
-const TOOLS: Anthropic.Tool[] = [
+const BASE_TOOLS: Anthropic.Tool[] = [
   {
     name: "save_note",
     description:
@@ -235,6 +245,71 @@ const TOOLS: Anthropic.Tool[] = [
     },
   },
   {
+    name: "pass_message",
+    description:
+      "Leave a message for another family member. They receive it the next time they message " +
+      "you, so tell the sender it has been left rather than that it has been sent.",
+    input_schema: {
+      type: "object",
+      properties: {
+        to: { type: "string", description: "The family member's name." },
+        message: { type: "string" },
+      },
+      required: ["to", "message"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "flag_unmet_request",
+    description:
+      "Call this (alongside your normal honest reply, same turn) whenever someone asks for " +
+      "something you genuinely can't do with your tools — not for things you can do, and not for " +
+      "clarifying questions. The team reads these to decide what to build next. Write one " +
+      "sentence on what was wanted and why you couldn't help, with no names, numbers, addresses " +
+      "or other personal details: 'asked to book a dentist appointment', not 'Priya asked to " +
+      "book Leo in at Smile Dental on 4 Nov'.",
+    input_schema: {
+      type: "object",
+      properties: {
+        summary: {
+          type: "string",
+          description: "One sentence, no personal details: what they wanted and why you couldn't help",
+        },
+      },
+      required: ["summary"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "current_family_id",
+    description:
+      "Look up this family's current family ID, for when someone asks what it is so they can " +
+      "invite someone. Prefer this over new_family_id unless they want the old one to stop working.",
+    input_schema: { type: "object", properties: {}, additionalProperties: false },
+  },
+  {
+    name: "new_family_id",
+    description:
+      "Issue a fresh family ID for this family and stop the old one working. Use when someone " +
+      "has lost the ID or wants to stop further people joining with the old one.",
+    input_schema: { type: "object", properties: {}, additionalProperties: false },
+  },
+  {
+    name: "request_leave_family",
+    description:
+      "Call this when someone says they want to leave the family group, in whatever words — " +
+      "'I want to leave this family', 'take me off this', 'remove me from the group'. It does " +
+      "NOT remove them: it starts a confirmation step, and the exact wording of that step is " +
+      "handled for you. Say nothing else in the same turn. Do not call it if they are only " +
+      "asking about leaving rather than asking to leave.",
+    input_schema: { type: "object", properties: {}, additionalProperties: false },
+  },
+];
+
+// Joyce's own calendar (store.ts's events, with a subscribe link). Only offered to a family on
+// the built-in calendar — see calendarMode.
+const BUILT_IN_CALENDAR_TOOLS: Anthropic.Tool[] = [
+  {
     name: "add_event",
     description:
       "Put something on the family calendar: appointments, trips, school dates, birthdays, " +
@@ -322,69 +397,62 @@ const TOOLS: Anthropic.Tool[] = [
       additionalProperties: false,
     },
   },
-  {
-    name: "pass_message",
-    description:
-      "Leave a message for another family member. They receive it the next time they message " +
-      "you, so tell the sender it has been left rather than that it has been sent.",
-    input_schema: {
-      type: "object",
-      properties: {
-        to: { type: "string", description: "The family member's name." },
-        message: { type: "string" },
-      },
-      required: ["to", "message"],
-      additionalProperties: false,
-    },
-  },
-  {
-    name: "flag_unmet_request",
-    description:
-      "Call this (alongside your normal honest reply, same turn) whenever someone asks for " +
-      "something you genuinely can't do with your tools — not for things you can do, and not for " +
-      "clarifying questions. The team reads these to decide what to build next. Write one " +
-      "sentence on what was wanted and why you couldn't help, with no names, numbers, addresses " +
-      "or other personal details: 'asked to book a dentist appointment', not 'Priya asked to " +
-      "book Leo in at Smile Dental on 4 Nov'.",
-    input_schema: {
-      type: "object",
-      properties: {
-        summary: {
-          type: "string",
-          description: "One sentence, no personal details: what they wanted and why you couldn't help",
-        },
-      },
-      required: ["summary"],
-      additionalProperties: false,
-    },
-  },
-  {
-    name: "current_family_id",
-    description:
-      "Look up this family's current family ID, for when someone asks what it is so they can " +
-      "invite someone. Prefer this over new_family_id unless they want the old one to stop working.",
-    input_schema: { type: "object", properties: {}, additionalProperties: false },
-  },
-  {
-    name: "new_family_id",
-    description:
-      "Issue a fresh family ID for this family and stop the old one working. Use when someone " +
-      "has lost the ID or wants to stop further people joining with the old one.",
-    input_schema: { type: "object", properties: {}, additionalProperties: false },
-  },
-  {
-    name: "request_leave_family",
-    description:
-      "Call this when someone says they want to leave the family group, in whatever words — " +
-      "'I want to leave this family', 'take me off this', 'remove me from the group'. It does " +
-      "NOT remove them: it starts a confirmation step, and the exact wording of that step is " +
-      "handled for you. Say nothing else in the same turn. Do not call it if they are only " +
-      "asking about leaving rather than asking to leave.",
-    input_schema: { type: "object", properties: {}, additionalProperties: false },
-  },
 ];
 
-function systemPrompt(session: FamilySession, zone: { zone: string; guessed: boolean }): string {
+const BUILT_IN_CALENDAR_TOOL_NAMES = new Set(BUILT_IN_CALENDAR_TOOLS.map((t) => t.name));
+
+// The model is only ever handed the tools for the family's current calendar (calendarMode.ts),
+// and runTool refuses the others, so an old tool call in the conversation can't reach a calendar
+// that isn't in use.
+function toolsFor(mode: CalendarMode): Anthropic.Tool[] {
+  if (mode === "google") return [...BASE_TOOLS, ...CALENDAR_TOOLS];
+  if (mode === "built_in") return [...BASE_TOOLS, ...BUILT_IN_CALENDAR_TOOLS, ...CONNECT_TOOLS];
+  return [...BASE_TOOLS, ...CONNECT_TOOLS];
+}
+
+/** The system prompt's calendar section, for the family's current mode. */
+function calendarLines(session: FamilySession, mode: CalendarMode): string[] {
+  if (mode === "none") {
+    return [
+      "The family has no calendar yet. If someone mentions plans or asks about the calendar, " +
+        "offer to connect their Google Calendar (connect_google_calendar).",
+    ];
+  }
+  if (mode === "built_in") {
+    return [
+      "The family's calendar is one you keep yourself (add_event, list_events). Anyone can see " +
+        "it in their own calendar app through calendar_link. If someone would rather use their " +
+        "Google Calendar, they can connect it (connect_google_calendar); from then on the family " +
+        "uses Google instead.",
+    ];
+  }
+  const now = new Date();
+  const family = getFamilyCalendar(session);
+  return [
+    "The family's calendar is Google Calendar, and it is the only calendar: there is no other " +
+      "one to check or add to. These members have connected theirs, and you can read and add to " +
+      "or change it for anyone in the family:",
+    ...listGoogleAccounts(session).map(
+      (a) => `- ${a.memberName ?? "(unnamed)"}: it's ${nowIn(a.timeZone, now)} for them (${a.timeZone})`
+    ),
+    family
+      ? `The family has a shared Google calendar, "${family.name}" (${family.timeZone}, where it's ` +
+        `${nowIn(family.timeZone, now)}). New events go on it unless someone asks for a specific ` +
+        "person's own calendar."
+      : "The family has no shared family calendar yet, so new events go on the person's own " +
+        "calendar. If someone wants a family calendar, or is adding something for the whole " +
+        "family, offer to make one (create_family_calendar).",
+    "Calendar times are in each calendar's own time zone, which is usually the family's. Check " +
+      "the calendar before answering anything about plans or who's free. Members who haven't " +
+      "connected Google have no calendar of their own here; offer to connect theirs if it comes up.",
+  ];
+}
+
+function systemPrompt(
+  session: FamilySession,
+  zone: { zone: string; guessed: boolean },
+  mode: CalendarMode
+): string {
   const members = listMembers(session)
     .map((m) => (m.isSelf ? `${m.displayName ?? "(unnamed)"} (you are talking to them)` : m.displayName ?? "(unnamed)"))
     .join(", ");
@@ -405,6 +473,8 @@ function systemPrompt(session: FamilySession, zone: { zone: string; guessed: boo
           "set a reminder or add a timed event, say which timezone you used so they can correct it."
         : ""),
     "Every time you give or take is the family's local time.",
+    "",
+    ...calendarLines(session, mode),
     "",
     "Be warm and brief — this is WhatsApp, not email. Two or three sentences is usually plenty. " +
       "Use WhatsApp formatting (*bold*) sparingly and never Markdown headings or tables. Never " +
@@ -432,9 +502,9 @@ function systemPrompt(session: FamilySession, zone: { zone: string; guessed: boo
 }
 
 /**
- * Lets a tool override whatever the model would have said. Only the leave flow uses it: the
- * warning has to go out word for word, and a model asked to "relay this verbatim" will
- * paraphrase it sooner or later.
+ * Lets a tool override whatever the model would have said. The leave flow and the Google
+ * Calendar connect link use it: the leave warning has to go out word for word, and a model asked
+ * to "relay this verbatim" will paraphrase it sooner or later — or, for the link, mistype a URL.
  */
 // Tools that change something. What they did is kept in the history after Joyce's reply (see
 // runJoyceTurn), because the history otherwise holds only her words: without it, the next turn
@@ -445,6 +515,11 @@ const ACTION_TOOLS = new Set([
   "add_event",
   "update_event",
   "delete_event",
+  "add_calendar_event",
+  "change_calendar_event",
+  "delete_calendar_event",
+  "create_family_calendar",
+  "disconnect_google_calendar",
   "pass_message",
   "set_family_timezone",
   "set_my_name",
@@ -559,6 +634,15 @@ async function runTool(
   input: Record<string, unknown>
 ): Promise<string> {
   const { session } = ctx;
+  const calendarTool = isCalendarTool(name) || BUILT_IN_CALENDAR_TOOL_NAMES.has(name);
+  if (calendarTool && !toolsFor(calendarMode(session)).some((t) => t.name === name)) {
+    return "That calendar isn't in use for this family any more. Use the calendar tools you have now.";
+  }
+  if (isCalendarTool(name)) {
+    const outcome = await runCalendarTool(ctx, name, input);
+    if (outcome.forcedReply) state.forcedReply = outcome.forcedReply;
+    return outcome.result;
+  }
   switch (name) {
     case "save_note": {
       const id = saveNote(session, String(input.title), String(input.body));
@@ -899,11 +983,13 @@ export async function runJoyceTurn(
   const actions: string[] = [];
   let reply = "";
   for (let turn = 0; turn < MAX_TURNS; turn++) {
+    // Worked out each round: connecting or disconnecting Google mid-turn changes it.
+    const mode = calendarMode(session);
     const response = await getClient().messages.create({
       model: MODEL,
       max_tokens: 2000,
-      system: systemPrompt(session, getFamilyZone(session, ctx.normalizedPhone)),
-      tools: TOOLS,
+      system: systemPrompt(session, getFamilyZone(session, ctx.normalizedPhone), mode),
+      tools: toolsFor(mode),
       messages,
     });
     recordJoyceUsage(MODEL, "joyce_chat", response.usage);

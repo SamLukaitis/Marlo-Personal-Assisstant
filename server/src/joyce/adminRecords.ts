@@ -4,7 +4,8 @@ import { JOYCE_DIR } from "./registry.js";
 import { familyAdminLabel } from "./familyKey.js";
 import type { FamilySession } from "./familyDb.js";
 
-// What Joyce's admin portal shows: requests she couldn't handle, and what she costs to run.
+// What Joyce's admin portal shows: requests she couldn't handle, and what she costs to run, plus
+// the few switches admins can flip for every family at once (the settings table).
 // Kept in its own file, away from both the registry and every family's database, because it is
 // the one place admins read — and so it holds nothing a family told Joyce beyond the one-line
 // summary she writes when she flags something.
@@ -49,6 +50,11 @@ db.exec(`
     created_at            INTEGER NOT NULL
   );
   CREATE INDEX IF NOT EXISTS idx_usage_created ON usage(created_at);
+
+  CREATE TABLE IF NOT EXISTS settings (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+  );
 `);
 
 // --- Flagged requests --------------------------------------------------------------------------
@@ -199,4 +205,27 @@ export function listRecentJoyceUsage(limit: number): {
          FROM usage ORDER BY created_at DESC, id DESC LIMIT ?`
     )
     .all(limit) as ReturnType<typeof listRecentJoyceUsage>;
+}
+
+// --- Settings -----------------------------------------------------------------------------------
+// Switches admins flip in the Joyce portal. They apply to every family at once.
+
+const BUILT_IN_CALENDAR_KEY = "built_in_calendar";
+
+/**
+ * Whether a family that hasn't connected Google Calendar falls back to Joyce's own calendar
+ * (store.ts's events, with the subscribe link). On unless an admin turns it off. Off, such a
+ * family has no calendar until someone connects Google. See assistant.ts's calendarMode.
+ */
+export function isBuiltInCalendarEnabled(): boolean {
+  const row = db.prepare(`SELECT value FROM settings WHERE key = ?`).get(BUILT_IN_CALENDAR_KEY) as
+    | { value: string }
+    | undefined;
+  return row?.value !== "off";
+}
+
+export function setBuiltInCalendarEnabled(enabled: boolean): void {
+  db.prepare(
+    `INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`
+  ).run(BUILT_IN_CALENDAR_KEY, enabled ? "on" : "off");
 }

@@ -1067,6 +1067,16 @@ export const marlowePortalApi: PortalSectionsApi = {
 
 const JOYCE = "/api/joyce-portal";
 
+/** Switches in the Joyce portal that apply to every family (server: joycePortalRoutes.ts). */
+export interface JoyceSettings {
+  /** Families without Google Calendar fall back to Joyce's own calendar. */
+  builtInCalendar: boolean;
+}
+
+export const fetchJoyceSettings = () => getJson<JoyceSettings>(`${JOYCE}/settings`);
+export const updateJoyceSettings = (settings: JoyceSettings) =>
+  mutateJson<JoyceSettings>(`${JOYCE}/settings`, "PUT", settings);
+
 export const joycePortalApi: PortalSectionsApi = {
   fetchTodos: () => getJson<AdminTodo[]>(`${JOYCE}/todos`),
   addTodo: (text) => mutateJson<AdminTodo[]>(`${JOYCE}/todos`, "POST", { text }),

@@ -12,6 +12,7 @@ import { asText, messages, type JoyceMessage } from "./messages.js";
 import { handlePendingDelete } from "./deleting.js";
 import { takePendingDelete } from "./store.js";
 import { delayForChunk, splitIntoChunks } from "./messageSplitting.js";
+import { joyceGoogleRoutes } from "./googleRoutes.js";
 import {
   downloadJoyceMedia,
   extractJoyceMessages,
@@ -63,6 +64,9 @@ joyceRoutes.get("/joyce/subscribe/:token", (req, res) => {
   res.set("X-Robots-Tag", "noindex");
   res.send(buildSubscribePage(token));
 });
+
+// Connecting a family member's Google Calendar — see joyce/googleRoutes.ts.
+joyceRoutes.use(joyceGoogleRoutes);
 
 joyceRoutes.get("/webhooks/joyce", (req, res) => {
   const mode = req.query["hub.mode"] as string;

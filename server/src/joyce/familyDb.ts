@@ -3,9 +3,11 @@ import path from "node:path";
 import { decryptFor, deriveFamilyKey, encryptFor, phoneLookupHash } from "./familyKey.js";
 import {
   FAMILY_DB_DIR,
+  consumeGoogleConnectToken,
   familiesWithRemindersDue,
   findFamilyForCalendarToken,
   findFamilyForPhone,
+  findFamilyForPhoneHash,
   setReminderScheduleEntry,
   type FamilyRecord,
 } from "./registry.js";
@@ -20,7 +22,9 @@ import {
 // else's, because someone else's isn't in the file that's open.
 //
 // The second barrier is that a FamilySession is the only way to reach a family database, and the
-// only way to get one is `openFamilySessionForPhone(phone)` with an inbound WhatsApp number.
+// only way to get one is `openFamilySessionForPhone(phone)` with an inbound WhatsApp number (or
+// a one-time Google connect link that such a message minted — see
+// openFamilySessionForGoogleConnect below).
 // Nothing in this module takes a family id from a caller, there is no "list all families", and
 // no store function accepts one either. That is what makes the assistant safe by construction
 // rather than by instruction: Joyce's tools (joyce/assistant.ts) are handed an already-opened
@@ -173,6 +177,21 @@ const SCHEMA = `
     PRIMARY KEY (item_type, item_id, source_type, source_id)
   );
   CREATE INDEX IF NOT EXISTS idx_derivations_source ON derivations(source_type, source_id);
+
+  -- A member's connected Google account (joyce/googleCalendar.ts). One per member: connecting
+  -- again replaces it. Tokens are encrypted with the family key like everything else, so the
+  -- file on its own gives no access to anyone's calendar. time_zone is the primary calendar's,
+  -- read at connect time, and is what calendar times are read and written in.
+  CREATE TABLE IF NOT EXISTS google_accounts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    member_id INTEGER NOT NULL UNIQUE REFERENCES members(id),
+    email_enc TEXT NOT NULL,
+    access_token_enc TEXT,
+    refresh_token_enc TEXT,
+    expiry_date INTEGER,
+    time_zone TEXT NOT NULL,
+    connected_at INTEGER NOT NULL
+  );
 `;
 
 // Columns added after families already existed. SCHEMA's CREATE TABLE IF NOT EXISTS doesn't
@@ -283,7 +302,7 @@ function upsertMember(
   db: Database.Database,
   key: Buffer,
   normalizedPhone: string
-): { id: number; display_name_enc: string | null } {
+): MemberRow {
   const phoneHash = phoneLookupHash(normalizedPhone);
   const now = Date.now();
   // last_seen_at is also what tells the reminder sender whether WhatsApp's 24-hour window is
@@ -296,12 +315,17 @@ function upsertMember(
   ).run(phoneHash, now, now, encryptFor(key, normalizedPhone));
   return db
     .prepare(`SELECT id, display_name_enc FROM members WHERE phone_hash = ?`)
-    .get(phoneHash) as { id: number; display_name_enc: string | null };
+    .get(phoneHash) as MemberRow;
 }
+
+type MemberRow = { id: number; display_name_enc: string | null };
 
 function sessionFor(record: FamilyRecord, normalizedPhone: string): FamilySession {
   const { db, key } = openFamilyDb(record);
-  const row = upsertMember(db, key, normalizedPhone);
+  return sessionWith(record, db, key, upsertMember(db, key, normalizedPhone));
+}
+
+function sessionWith(record: FamilyRecord, db: Database.Database, key: Buffer, row: MemberRow): FamilySession {
   return {
     familyId: record.familyId,
     db,
@@ -324,6 +348,29 @@ function sessionFor(record: FamilyRecord, normalizedPhone: string): FamilySessio
 export function openFamilySessionForPhone(normalizedPhone: string): FamilySession | null {
   const record = findFamilyForPhone(normalizedPhone);
   return record ? sessionFor(record, normalizedPhone) : null;
+}
+
+/**
+ * The second way in, for the browser finishing a Google Calendar connection, which has a
+ * connect link rather than a phone number. The link was minted by an inbound message from one
+ * phone (registry.ts's issueGoogleConnectToken), so spending it opens that phone's family as
+ * that member — the same session the message itself would have had, and still no family id
+ * anywhere. Null if the link is unknown, expired, already used, or the member has since left.
+ *
+ * Looks the member up rather than upserting: a browser visit isn't a WhatsApp message, so it
+ * mustn't move last_seen_at (which says whether WhatsApp's 24-hour window is open) and there's
+ * no phone number here to store anyway.
+ */
+export function openFamilySessionForGoogleConnect(token: string): FamilySession | null {
+  const phoneHash = consumeGoogleConnectToken(token);
+  if (!phoneHash) return null;
+  const record = findFamilyForPhoneHash(phoneHash);
+  if (!record) return null;
+  const { db, key } = openFamilyDb(record);
+  const row = db
+    .prepare(`SELECT id, display_name_enc FROM members WHERE phone_hash = ?`)
+    .get(phoneHash) as MemberRow | undefined;
+  return row ? sessionWith(record, db, key, row) : null;
 }
 
 /**
