@@ -19,14 +19,15 @@ Marlowe can be used from the web app and, optionally, through WhatsApp. It is de
 - **Travel tools:** Record location check-ins, inspect travel history, and calculate country/Schengen/EU day counts from the check-in timeline.
 - **News, weather, and markets:** Optional external information providers are available through the assistant and briefing features.
 - **Places and travel times (optional):** With `GOOGLE_MAPS_API_KEY` set, the assistant finds real nearby places and driving/walking times through Google's Maps Grounding Lite MCP server. On WhatsApp it can ask for your location with a one-tap "Send location" button.
-- **App hand-off links:** Marlowe sends links that open Uber, Lyft, Google Maps, OpenTable, Resy, Spotify, Airbnb or Booking.com already filled in (`server/src/services/appLinks.ts`); you confirm in the app. There's no setup and no API keys.
+- **App hand-off links:** Marlowe sends links that open Uber, Lyft, Google Maps, OpenTable, Resy, Spotify, Airbnb or Booking.com already filled in, and WhatsApp chats with a message already typed (`server/src/services/appLinks.ts`); you confirm in the app. There's no setup and no API keys.
 - **Phone actions (optional):** With the one-time "Marlowe" Apple Shortcut installed, Marlowe sends one-tap links that set alarms, timers and reminders, change Focus and phone settings, text or call from your number, run your own Shortcuts, and send your location, battery, sleep or a typed answer back (`server/src/services/phoneActions.ts`). It offers them in chat, the briefing, the evening digest and on booking reminders. Off until `MARLOWE_SHORTCUT_ICLOUD_URL` is set; see `docs/marlowe-shortcut-build-guide.md`.
 - **Features page:** `/features` explains to users what Marlowe can do, with example things to say, and shows which optional tools are switched on.
+- **Business edition (UK sole traders):** Users invited as a "Business tester" (Settings → Admin → Invited testers) or switched in the Portal (Admins → Make business) get a work-focused Marlowe with a simple set of books. Receipts and bills they send, invoice emails they say yes to, payment emails (Stripe, SumUp, PayPal, "invoice paid") and money mentioned in chat go into a ledger sorted into HMRC's SA103 expense categories. Model guesses always wait for the user's check, a supplier's category is remembered once confirmed, nothing is hard-deleted, and the Monday briefing gives last week's money in and out. Their WhatsApp setup asks what the business does and invites a first receipt. GBP only; tax estimates and MTD come next (`feature-to-do/business-edition-phase-c.md`). Code: `server/src/business/`, reached only through `server/src/editions/index.ts`.
 - **Administration:** Admin users have access to a separate portal for operational tools, logs, user administration, the waitlist of uninvited numbers, and application health information. Admin-only test tools include the WhatsApp Simulator (try conversations without the live number) and the Briefing Lab (`/briefing-lab`, for judging briefing drafts).
 
 ## Joyce — family WhatsApp assistant (optional)
 
-Joyce is a separate assistant on her own WhatsApp number that a family shares. Members can save notes, photos and documents (PDF, Word, text), and any member of the family can search them or ask for a file back. Each member can also connect their own Google Calendar. Joyce can make a shared family calendar in Google, separate from everyone's own, which every connected member sees in their Google Calendar app. New events go on it unless someone asks for a particular person's calendar. Anyone in the family can ask what's on, or have Joyce add, move or delete events. Connecting needs `GOOGLE_CLIENT_ID`/`GOOGLE_CLIENT_SECRET` (the same Google app as Marlowe) and Joyce's callback URL, `<SERVER_URL>/joyce/google/callback`, added to that app's authorised redirect URIs. Joyce shares no data with Marlowe: each family's data sits in its own database file, encrypted with its own key derived from `JOYCE_MASTER_KEY`. Joyce stays switched off until the `JOYCE_*` settings are filled in (see `server/.env.example`). Design notes: `feature-to-do/joyce-family-assistant.md`.
+Joyce is a separate assistant on her own WhatsApp number that a family shares. Members can save notes, photos and documents (PDF, Word, text), pass messages to each other, set reminders (Joyce sends them when they come due) and keep a family calendar that she checks for clashes. Each family has one calendar. Once any member connects their Google Calendar, it's Google: Joyce reads and changes members' real calendars and can make a shared "Family" calendar in Google that everyone sees. Until then, Joyce keeps the calendar herself, and anyone can subscribe to it from their phone or Google Calendar with a private link. An admin can turn Joyce's own calendar off in the Joyce portal (Settings) to test Google on its own. Connecting Google needs `GOOGLE_CLIENT_ID`/`GOOGLE_CLIENT_SECRET` (the same Google app as Marlowe), with `<SERVER_URL>/joyce/google/callback` added to that app's authorised redirect URIs. Any member of the family can search what's been saved or ask for a file back. Each family has a timezone, guessed from the phone number of whoever started it until someone tells Joyce otherwise. Someone who sends something wrong or personal can swipe-reply "delete this" within 24 hours, and Joyce removes it and everything she made from it (the family admin, whoever started the family, can do this for anyone's message; older messages need a developer, `npm run joyce:delete`). Joyce shares no data with Marlowe: each family's data sits in its own database file, encrypted with its own key derived from `JOYCE_MASTER_KEY`. Joyce stays switched off until the `JOYCE_*` settings are filled in (see `server/.env.example`), and her number needs a WhatsApp webhook override pointing at `/webhooks/joyce` (see "Going live" in `feature-to-do/joyce-family-assistant.md`). Anyone who messages her number can start a family, so share the number only with people you trust for now. Admins have a separate Joyce portal (`/joyce-portal`, in terracotta) with requests Joyce flagged as things she couldn't do, her own to-do list, her server log lines, her API spend and her settings. Design notes: `feature-to-do/joyce-family-assistant.md`.
 
 ## Safety and privacy boundaries
 
@@ -112,12 +113,14 @@ npm run dev
 
 Open <http://localhost:5173>. The client expects the API at `http://localhost:4000` by default; change `VITE_API_BASE` in `client/.env` if needed.
 
-Because access is invite-only, invite a user's phone number (international format, no `+`) from the server directory before they sign up:
+Because access is invite-only, invite a user's WhatsApp number from the server directory before they sign in:
 
 ```bash
 cd server
 npm run invite -- 447911123456
 ```
+
+Add `--edition business` to put them on the business edition (UK sole traders) from their first message, or move an existing user with `npm run set-edition -- 447911123456 business` (or `general`). These commands only reach the database on the machine they run on. For the live app, tick "Business tester" when inviting in Settings → Admin, or use Make business / Make general on the Portal's Admins tab.
 
 ## Production build and start
 
@@ -132,6 +135,8 @@ The server listens on `PORT` (4000 by default). Set `CLIENT_URL`, `SERVER_URL`, 
 
 Proactive briefings, alerts, and reminders run in-process. The server must remain running for those features to fire, so an always-on deployment is recommended.
 
+Railway has two environments: **production** (deploys `master`) and **staging** (deploys `staging`). Staging is for Jake and Sam to test features away from WhatsApp, using the admin-only WhatsApp Simulator. It deliberately has no `WHATSAPP_TOKEN`: with the live number's settings it sends real messages from the business number that production then can't recognise when people reply (seen 2026-10-16). Don't add WhatsApp settings to staging.
+
 ## Useful commands
 
 ### Server
@@ -144,6 +149,7 @@ npm test                 # Run the Vitest suite
 npm run eval:grounding   # Run assistant grounding evaluations
 npm run invite -- PHONE  # Invite a user by phone number
 npm run whatsapp:check -- <WABA_ID> --subscribe
+npm run joyce:templates -- 1574262347469069           # Joyce's template approval status (--create to submit)
 ```
 
 ### Client

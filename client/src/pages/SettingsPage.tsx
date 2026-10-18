@@ -113,6 +113,7 @@ export function SettingsPage() {
   const [importantEmailSaved, setImportantEmailSaved] = useState(false);
   const [invites, setInvites] = useState<InvitedPhone[]>([]);
   const [newInvite, setNewInvite] = useState("");
+  const [inviteAsBusiness, setInviteAsBusiness] = useState(false);
   const [inviteError, setInviteError] = useState<string | null>(null);
   const [invitesLoaded, setInvitesLoaded] = useState(false);
   const [waitlist, setWaitlist] = useState<WaitlistRequest[]>([]);
@@ -254,8 +255,9 @@ export function SettingsPage() {
     if (!phone) return;
     setInviteError(null);
     try {
-      setInvites(await addInvite(phone));
+      setInvites(await addInvite(phone, inviteAsBusiness ? "business" : undefined));
       setNewInvite("");
+      setInviteAsBusiness(false);
       // Approving clears that number's waitlist entry server-side, so the list below has to be
       // refetched — otherwise a number just invited still shows as waiting.
       setWaitlist(await fetchWaitlist().catch(() => waitlist));
@@ -960,7 +962,9 @@ export function SettingsPage() {
                   Only numbers on this list can message Marlowe and sign up. Add a number, then
                   send that person the WhatsApp number to message — no need to know their email in
                   advance. Use the full international number with its country code and no leading
-                  0 (e.g. 447911123456), since that's the form WhatsApp delivers.
+                  0 (e.g. 447911123456), since that's the form WhatsApp delivers. Tick "Business
+                  tester" to start them on the business edition (UK sole traders: receipts,
+                  bookkeeping); anyone can be switched later from the Portal's Admins tab.
                 </p>
                 <div className="card card-padded" style={{ marginBottom: 20 }}>
                   <form className="row" onSubmit={handleAddInvite}>
@@ -969,6 +973,14 @@ export function SettingsPage() {
                       onChange={(e) => setNewInvite(e.target.value)}
                       placeholder="447911123456"
                     />
+                    <label className="row" style={{ gap: 6, fontSize: 13, whiteSpace: "nowrap" }}>
+                      <input
+                        type="checkbox"
+                        checked={inviteAsBusiness}
+                        onChange={(e) => setInviteAsBusiness(e.target.checked)}
+                      />
+                      Business tester
+                    </label>
                     <button className="btn-primary" type="submit">
                       <IconPlus />
                       Invite
@@ -992,6 +1004,11 @@ export function SettingsPage() {
                       <div key={inv.phone} className="data-row row" style={{ justifyContent: "space-between" }}>
                         <div>
                           <span style={{ fontSize: 13.5 }}>{inv.phone}</span>{" "}
+                          {inv.edition === "business" && (
+                            <>
+                              <span className="badge-pill">Business</span>{" "}
+                            </>
+                          )}
                           <span className="muted" style={{ fontSize: 12 }}>
                             invited {new Date(inv.invitedAt).toLocaleDateString(undefined, {
                               day: "numeric",

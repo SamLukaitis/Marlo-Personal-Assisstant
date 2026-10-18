@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { composeReply } from "./routes.js";
+import { composeReply as composeReplyMessages } from "./routes.js";
+import { asText } from "./messages.js";
 import { openFamilySessionForPhone } from "./familyDb.js";
 import { listNotes, saveNote } from "./store.js";
 import { createFamily, findFamilyForPhone, joinFamilyByCode, requestLeave } from "./registry.js";
@@ -11,6 +12,10 @@ import {
   isLeaveConfirmation,
 } from "./leaving.js";
 import { setMemberName } from "./store.js";
+
+// These tests check wording; joining the messages back into text keeps them about that.
+const composeReply = async (...args: Parameters<typeof composeReplyMessages>) =>
+  asText(await composeReplyMessages(...args));
 
 // The confirmation half of leaving runs entirely without the model, which is the security
 // property worth testing: it can be exercised, and must behave, with no API key present.

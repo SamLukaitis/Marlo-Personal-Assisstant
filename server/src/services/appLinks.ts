@@ -5,8 +5,8 @@
 // can't redirect the link anywhere else. See docs/superpowers/specs/2026-10-12-app-handoff-links-design.md.
 import { DateTime } from "luxon";
 
-export type AppName = "uber" | "lyft" | "google_maps" | "opentable" | "resy" | "spotify" | "airbnb" | "booking_com";
-export const APP_NAMES: readonly AppName[] = ["uber", "lyft", "google_maps", "opentable", "resy", "spotify", "airbnb", "booking_com"];
+export type AppName = "uber" | "lyft" | "google_maps" | "opentable" | "resy" | "spotify" | "airbnb" | "booking_com" | "whatsapp";
+export const APP_NAMES: readonly AppName[] = ["uber", "lyft", "google_maps", "opentable", "resy", "spotify", "airbnb", "booking_com", "whatsapp"];
 
 export type AppLinkResult = { url: string; label: string } | { error: string };
 
@@ -257,6 +257,27 @@ function bookingCom(raw: Record<string, unknown>, ctx: Ctx): AppLinkResult {
   return { url: u.toString(), label: "Open in Booking.com" };
 }
 
+// A WhatsApp chat with the message already typed: the user only taps Send. With no number it opens
+// WhatsApp's contact picker instead. wa.me needs the full international number, so a local one
+// ("07700…") is refused rather than guessed into a country.
+function whatsapp(raw: Record<string, unknown>): AppLinkResult {
+  const message = text(raw.message, "message", 1000);
+  if (!message) throw new InputError("message is required for this app.");
+  const phoneText = text(raw.phone, "phone");
+  let path = "";
+  if (phoneText) {
+    const compact = phoneText.replace(/[\s().-]/g, "");
+    if (!/^(\+|00)?\d+$/.test(compact)) throw new InputError("phone must be a phone number (digits, optionally starting with +).");
+    if (!/^(\+|00)/.test(compact)) {
+      throw new InputError("phone must be the full international number (e.g. +44 7700 900123), not a local one.");
+    }
+    const digits = compact.replace(/^(\+|00)/, "");
+    if (digits.length < 7 || digits.length > 15) throw new InputError("phone must be 7 to 15 digits.");
+    path = digits;
+  }
+  return { url: `https://wa.me/${path}?text=${encodeURIComponent(message)}`, label: "Open in WhatsApp" };
+}
+
 const BUILDERS: Record<AppName, (raw: Record<string, unknown>, ctx: Ctx) => AppLinkResult> = {
   uber,
   lyft,
@@ -266,6 +287,7 @@ const BUILDERS: Record<AppName, (raw: Record<string, unknown>, ctx: Ctx) => AppL
   spotify,
   airbnb,
   booking_com: bookingCom,
+  whatsapp,
 };
 
 export function makeAppLink(raw: Record<string, unknown>, ctx: Ctx): AppLinkResult {

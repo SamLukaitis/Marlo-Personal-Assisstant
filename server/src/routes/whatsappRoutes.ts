@@ -4,7 +4,6 @@ import {
   isWhatsAppSignatureConfigured,
   verifyWebhookChallenge,
   verifyWebhookSignature,
-  sendWhatsAppMessage,
   sendWhatsAppTypingIndicator,
   extractIncomingMessages,
   type IncomingWhatsAppMessage,
@@ -22,6 +21,9 @@ import {
   handlePostConnectSetupReply,
   handleNameReply,
   handleFirstTaskReply,
+  handleBusinessReply,
+  handleFirstReceiptReply,
+  firstReceiptFollowUp,
 } from "../services/postConnectSetup.js";
 import { handlePendingActionReply } from "../services/actionHandlers.js";
 import { maybeUpdateConversationSummary } from "../services/conversationSummary.js";
@@ -29,6 +31,7 @@ import { maybeExtractMemory } from "../services/memoryExtraction.js";
 import { handleText, handleLocation } from "../services/chatDispatch.js";
 import { resolveQuotedMessageContext } from "../services/quotedMessage.js";
 import { queueForAssistant, looksComplete } from "../services/messageBatching.js";
+import { sendTextAndRecord, sendScriptedText } from "../services/whatsappReply.js";
 
 export const whatsappRoutes = Router();
 
@@ -65,7 +68,7 @@ async function handleMedia(
   forwarded?: boolean
 ): Promise<void> {
   const label = filename ?? caption ?? "a file";
-  const rowId = appendWhatsAppMessage(ownerId, from, "user", `[Sent ${label}]`);
+  const rowId = appendWhatsAppMessage(ownerId, from, "user", `[Sent ${label}]`, [messageId]);
 
   const doc = await ingestWhatsAppMedia({
     ownerId,
@@ -88,7 +91,7 @@ async function handleMedia(
   // the model has the actual document content to act on and confirm. A rare case where this media
   // message was itself a swipe-reply to something else gets that resolved context prepended —
   // see quotedMessage.ts.
-  const quotedContext = resolveQuotedMessageContext(ownerId, quotedMessageId, forwarded);
+  const quotedContext = resolveQuotedMessageContext(ownerId, quotedMessageId, forwarded, from);
   const docContext =
     (quotedContext ? `${quotedContext}\n\n` : "") +
     `[A document was just sent via WhatsApp and has already been downloaded and saved — no ` +
@@ -99,7 +102,17 @@ async function handleMedia(
   // A caption that reads as a complete thought ("what does this say?") takes the short debounce
   // path; no caption (or one that trails off) defaults to waiting longer, since a document often
   // arrives with the explanatory text as its own separate follow-up message.
-  queueForAssistant(ownerId, from, messageId, rowId, docContext, !!caption && looksComplete(caption));
+  // Mid business onboarding, "send me a receipt" was just asked: the next setup question follows
+  // the assistant's confirmation rather than racing it (undefined at any other time).
+  queueForAssistant(
+    ownerId,
+    from,
+    messageId,
+    rowId,
+    docContext,
+    !!caption && looksComplete(caption),
+    firstReceiptFollowUp(ownerId, from)
+  );
 }
 
 export async function handleIncoming(message: IncomingWhatsAppMessage): Promise<void> {
@@ -154,6 +167,10 @@ export async function handleIncoming(message: IncomingWhatsAppMessage): Promise<
   // steps in the chain — ask_name is the very first question asked.
   if (await handleNameReply(ownerId, message)) return;
   if (await handleFirstTaskReply(ownerId, message)) return;
+  // The business edition's two free-text steps (what the business does, a first receipt) — same
+  // shape as the two above. A receipt *photo* is not consumed here: see handleMedia.
+  if (await handleBusinessReply(ownerId, message)) return;
+  if (await handleFirstReceiptReply(ownerId, message)) return;
   // A tap answering one of postConnectSetup's yes/no button questions (daily briefing, Teams) —
   // handled entirely there and never reaches the assistant. Returns false for everything else
   // (nothing pending, a stray/late tap, or ordinary text/media), which falls through to normal
@@ -205,9 +222,7 @@ export async function handleIncoming(message: IncomingWhatsAppMessage): Promise<
       // plainly rather than staying silent, and log the raw type so it's visible which ones are
       // actually showing up in practice.
       console.log("whatsapp: unsupported message type", { ownerId, type: message.type });
-      const reply = "I can't read that message type yet — text me instead.";
-      appendWhatsAppMessage(ownerId, message.from, "assistant", reply);
-      await sendWhatsAppMessage(message.from, reply);
+      await sendTextAndRecord(ownerId, message.from, "I can't read that message type yet — text me instead.");
     } else {
       // A button tap with nothing pending for this owner — nothing sends buttons outside
       // registration/post-connect setup today, so this is always a stray/late tap. Log and ignore
@@ -219,10 +234,7 @@ export async function handleIncoming(message: IncomingWhatsAppMessage): Promise<
     }
   } catch (err) {
     console.error("whatsapp: failed to handle message", err);
-    await sendWhatsAppMessage(
-      message.from,
-      "Sorry, I hit an error handling that — check the server logs."
-    ).catch(() => {});
+    await sendScriptedText(message.from, "Sorry, I hit an error handling that — check the server logs.").catch(() => {});
   }
 }
 
@@ -247,9 +259,9 @@ whatsappRoutes.post("/webhooks/whatsapp", (req, res) => {
     return;
   }
 
-  // Scoped to Marlowe's own number so a second number on the same Meta app (Joyce — see
-  // src/joyce/) can't be answered by Marlowe, which would otherwise treat every family member
-  // as an unrecognised number and start its own signup flow at them.
+  // Scoped to Marlowe's own number so a second number on the same Meta app (Joyce) can't be
+  // answered by Marlowe, which would otherwise treat every family member as an unrecognised
+  // number and start its own signup flow at them.
   const messages = extractIncomingMessages(req.body, process.env.WHATSAPP_PHONE_NUMBER_ID);
   for (const m of messages) {
     if (alreadyProcessed(m.messageId)) continue;

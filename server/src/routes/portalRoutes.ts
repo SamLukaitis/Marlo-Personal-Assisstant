@@ -4,6 +4,9 @@ import {
   isAppOwner,
   listAdminCandidateUsers,
   setUserAdmin,
+  setUserEdition,
+  isEditionId,
+  getUser,
   listUnmetRequests,
   resolveUnmetRequest,
   addUnmetRequestNote,
@@ -71,6 +74,29 @@ portalRoutes.delete("/admins/:userId", (req, res) => {
     return;
   }
   setUserAdmin(targetId, false);
+  res.json(listAdminCandidateUsers());
+});
+
+// --- Editions ----------------------------------------------------------------------------------
+// Moves a user between products (docs/superpowers/specs/2026-10-16-business-edition-design.md).
+// Takes effect on their next message; nothing is deleted either way, so business books survive a
+// switch back to general and reappear if they're switched to business again.
+portalRoutes.post("/editions/:userId", (req, res) => {
+  const targetId = Number(req.params.userId);
+  if (!Number.isInteger(targetId)) {
+    res.status(400).json({ error: "invalid user id" });
+    return;
+  }
+  const edition = req.body?.edition;
+  if (!isEditionId(edition)) {
+    res.status(400).json({ error: "edition must be general or business" });
+    return;
+  }
+  if (!getUser(targetId)) {
+    res.status(404).json({ error: "no such user" });
+    return;
+  }
+  setUserEdition(targetId, edition);
   res.json(listAdminCandidateUsers());
 });
 
@@ -206,7 +232,7 @@ const MODEL_PRICE_PER_MTOK: Record<
 
 // estimatedCost is null for a model not in the price table above (e.g. one added after this
 // list was last updated) rather than silently reporting $0, which would understate real spend.
-function estimateCost(
+export function estimateCost(
   model: string,
   inputTokens: number,
   outputTokens: number,

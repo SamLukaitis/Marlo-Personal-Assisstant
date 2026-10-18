@@ -549,20 +549,24 @@ export const fetchTravelDays = (area = "schengen", days = 180) =>
 
 // Invite-only access is gated by phone number, not email — send a tester the WhatsApp number to
 // message and add their number here; no need to collect their email in advance.
+// "business" = the UK sole-trader edition (docs/superpowers/specs/2026-10-16-business-edition-design.md).
+export type Edition = "general" | "business";
+
 export interface InvitedPhone {
   phone: string;
   invitedAt: number;
+  edition: Edition;
 }
 
 export const fetchInvites = () => getJson<InvitedPhone[]>("/api/admin/invites");
 
-export async function addInvite(phone: string): Promise<InvitedPhone[]> {
+export async function addInvite(phone: string, edition?: Edition): Promise<InvitedPhone[]> {
   const res = await fetch(
     `${API_BASE}/api/admin/invites`,
     withCredentials({
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ phone }),
+      body: JSON.stringify(edition ? { phone, edition } : { phone }),
     })
   );
   if (!res.ok) {
@@ -788,9 +792,13 @@ export interface AdminCandidate {
   isAdmin: boolean;
   isAppOwner: boolean;
   createdAt: number;
+  edition: Edition;
+  phone: string | null;
 }
 
 export const fetchAdminCandidates = () => getJson<AdminCandidate[]>("/api/portal/admins");
+export const setUserEdition = (userId: number, edition: Edition) =>
+  mutateJson<AdminCandidate[]>(`/api/portal/editions/${userId}`, "POST", { edition });
 export const grantAdmin = (userId: number) =>
   mutateJson<AdminCandidate[]>(`/api/portal/admins/${userId}`, "POST");
 export const revokeAdmin = (userId: number) =>
@@ -927,6 +935,8 @@ export const USAGE_PURPOSE_LABELS: Record<string, string> = {
   conversation_summary: "WhatsApp memory summarization",
   document_extraction: "Document/photo extraction",
   pdf_gibberish_check: "PDF text-quality check",
+  joyce_chat: "Joyce chat (WhatsApp)",
+  joyce_file_reading: "Joyce reading photos/files",
 };
 
 export function usagePurposeLabel(purpose: string): string {
@@ -1021,3 +1031,69 @@ export async function sendChatMessage(messages: ChatMessage[]): Promise<string> 
   const data = await res.json();
   return data.reply as string;
 }
+
+// The server calls behind the Portal sections that both portals share — To-Do, requests, Logs
+// and Usage. Marlowe's Portal and Joyce's portal render the same components (PortalPage.tsx)
+// against different endpoints; Joyce's return the same shapes as Marlowe's.
+export interface PortalSectionsApi {
+  fetchTodos: () => Promise<AdminTodo[]>;
+  addTodo: (text: string) => Promise<AdminTodo[]>;
+  setTodoDone: (id: number, done: boolean) => Promise<AdminTodo[]>;
+  deleteTodo: (id: number) => Promise<AdminTodo[]>;
+  addTodoReply: (id: number, text: string) => Promise<AdminTodo[]>;
+  markTodoRepliesRead: (id: number) => Promise<AdminTodo[]>;
+  fetchRequests: (includeResolved?: boolean) => Promise<UnmetRequest[]>;
+  resolveRequest: (id: number) => Promise<{ ok: true }>;
+  addRequestNote: (id: number, text: string, includeResolved?: boolean) => Promise<UnmetRequest[]>;
+  fetchLogs: (limit?: number) => Promise<ServerLog[]>;
+  explainLog: (id: number) => Promise<{ explanation: string; cached: boolean }>;
+  fetchUsage: typeof fetchUsageSummary;
+}
+
+export const marlowePortalApi: PortalSectionsApi = {
+  fetchTodos: fetchAdminTodos,
+  addTodo: addAdminTodo,
+  setTodoDone: setAdminTodoDone,
+  deleteTodo: deleteAdminTodo,
+  addTodoReply: addAdminTodoReply,
+  markTodoRepliesRead: markAdminTodoRepliesRead,
+  fetchRequests: fetchUnmetRequests,
+  resolveRequest: resolveUnmetRequest,
+  addRequestNote: addUnmetRequestNote,
+  fetchLogs: fetchServerLogs,
+  explainLog: explainServerLog,
+  fetchUsage: fetchUsageSummary,
+};
+
+const JOYCE = "/api/joyce-portal";
+
+/** Switches in the Joyce portal that apply to every family (server: joycePortalRoutes.ts). */
+export interface JoyceSettings {
+  /** Families without Google Calendar fall back to Joyce's own calendar. */
+  builtInCalendar: boolean;
+}
+
+export const fetchJoyceSettings = () => getJson<JoyceSettings>(`${JOYCE}/settings`);
+export const updateJoyceSettings = (settings: JoyceSettings) =>
+  mutateJson<JoyceSettings>(`${JOYCE}/settings`, "PUT", settings);
+
+export const joycePortalApi: PortalSectionsApi = {
+  fetchTodos: () => getJson<AdminTodo[]>(`${JOYCE}/todos`),
+  addTodo: (text) => mutateJson<AdminTodo[]>(`${JOYCE}/todos`, "POST", { text }),
+  setTodoDone: (id, done) => mutateJson<AdminTodo[]>(`${JOYCE}/todos/${id}`, "PUT", { done }),
+  deleteTodo: (id) => mutateJson<AdminTodo[]>(`${JOYCE}/todos/${id}`, "DELETE"),
+  addTodoReply: (id, text) => mutateJson<AdminTodo[]>(`${JOYCE}/todos/${id}/replies`, "POST", { text }),
+  markTodoRepliesRead: (id) => mutateJson<AdminTodo[]>(`${JOYCE}/todos/${id}/read`, "POST"),
+  fetchRequests: (includeResolved = false) =>
+    getJson<UnmetRequest[]>(`${JOYCE}/unmet-requests?includeResolved=${includeResolved}`),
+  resolveRequest: (id) => mutateJson<{ ok: true }>(`${JOYCE}/unmet-requests/${id}/resolve`, "POST"),
+  addRequestNote: (id, text, includeResolved = false) =>
+    mutateJson<UnmetRequest[]>(`${JOYCE}/unmet-requests/${id}/notes?includeResolved=${includeResolved}`, "POST", {
+      text,
+    }),
+  fetchLogs: (limit = 200) => getJson<ServerLog[]>(`${JOYCE}/logs?limit=${limit}`),
+  // Same log table as the Portal's, so the Portal's explain endpoint serves both.
+  explainLog: explainServerLog,
+  fetchUsage: (days = 30, recentLimit = 50) =>
+    getJson<Awaited<ReturnType<typeof fetchUsageSummary>>>(`${JOYCE}/usage?days=${days}&recentLimit=${recentLimit}`),
+};

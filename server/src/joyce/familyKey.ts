@@ -82,6 +82,20 @@ export function phoneLookupHash(normalizedPhone: string): string {
   return crypto.createHmac("sha256", masterSecret()).update(normalizedPhone).digest("hex");
 }
 
+/**
+ * A short, stable label for a family in the admin portal ("Family 3F9A2C"), so admins can see
+ * that several flagged requests came from the same family without learning which family it is.
+ * Derived from the master secret, so it can't be computed from the family id alone, and it is
+ * never used to look anything up — it only ever appears on admin records.
+ */
+export function familyAdminLabel(familyId: string): string {
+  const digest = crypto
+    .createHmac("sha256", masterSecret())
+    .update(`admin-label:${familyId}`)
+    .digest("hex");
+  return `Family ${digest.slice(0, 6).toUpperCase()}`;
+}
+
 /** Encrypts a UTF-8 string under a family key. Returns "iv:authTag:ciphertext", all base64. */
 export function encryptFor(key: Buffer, plaintext: string): string {
   const iv = crypto.randomBytes(IV_LENGTH);

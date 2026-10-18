@@ -1,4 +1,4 @@
-# Building the "Marlowe" Apple Shortcut (version 1)
+# Building the "Marlowe" Apple Shortcut
 
 Marlowe can't build or install a Shortcut for you: iOS only imports signed Shortcuts, and signing
 needs a Mac. So one person builds it once, by hand, on an iPhone, and shares it as an iCloud link.
@@ -9,7 +9,16 @@ Follow this guide exactly. The server relies on every behaviour below. Design:
 
 One Shortcut named exactly **`Marlowe`** (capital M, nothing else in the name). The run link Marlowe
 sends is `shortcuts://run-shortcut?name=Marlowe&input=text&text=<fetch URL>`, so the name must match.
-This guide builds **version 1**, which the Shortcut announces in the header `X-Marlowe-Shortcut: 1`.
+The Shortcut announces its version in the header `X-Marlowe-Shortcut`. Marlowe only offers the
+steps that version can run (`STEPS_BY_VERSION` in `server/src/services/phoneSteps.ts`):
+
+| Version | Steps it has | Header value |
+|---|---|---|
+| **1** (first build, for testing) | alarm, timer, reminder, calendar_event, focus, low_power, text, call, open_url | `1` |
+| **2** (complete) | all 22 steps in the table below | `2` |
+
+Build the version 1 branches first and test them. When every branch in the table is in, change
+the header to `2` everywhere and follow section 6.
 
 How it behaves, and what the server relies on:
 
@@ -49,7 +58,7 @@ use **Get Dictionary from Input** / **Get Dictionary Value** on the response.
    the match **has no value** → **Show Alert** "This link isn't from Marlowe." → **Stop This
    Shortcut**. Then **Set Variable** `fetchUrl` to *Shortcut Input*.
 3. **Fetch the steps.** **Get Contents of URL** `fetchUrl`, method **GET**, header
-   `X-Marlowe-Shortcut` = `1`. If the request fails because the phone is offline, show "Couldn't
+   `X-Marlowe-Shortcut` = the version number (`1` or `2`). If the request fails because the phone is offline, show "Couldn't
    reach Marlowe" and stop. (The link is still unused in that case, so the user can tap it again.)
 4. **Message.** **Get Dictionary** from the response. **If** it **has key** `message` → **Show
    Alert** with the `message` value → **Stop This Shortcut**. (This is the HTTP 410 case: "already
@@ -66,7 +75,7 @@ use **Get Dictionary from Input** / **Get Dictionary Value** on the response.
       to nothing, so it is empty for steps that return no value.
    5. After the chain (still inside the loop), report the step (section 4).
 7. **Finish.** After the loop: **Get Contents of URL** `reportUrl`, method **POST**, header
-   `X-Marlowe-Shortcut` = `1`, request body **JSON** with one field: `done` (**Boolean**) = true.
+   `X-Marlowe-Shortcut` = the version number (`1` or `2`), request body **JSON** with one field: `done` (**Boolean**) = true.
 
 ### The 22 step types
 
@@ -106,7 +115,7 @@ expected: the server fails the run after 5 minutes of silence and tells the user
 ## 4. Reporting a step
 
 After every step (inside the loop, after the chain of Ifs): **Get Contents of URL** `reportUrl`,
-method **POST**, header `X-Marlowe-Shortcut` = `1`, request body **JSON**:
+method **POST**, header `X-Marlowe-Shortcut` = the version number (`1` or `2`), request body **JSON**:
 
 | Field | Type | Value |
 |---|---|---|
@@ -141,8 +150,9 @@ Until `MARLOWE_SHORTCUT_ICLOUD_URL` is set, phone actions stay off.
 
 ## 6. Updating (a new step type, or a fix)
 
-1. Add the new step to `server/src/services/phoneSteps.ts` and add a new key to `STEPS_BY_VERSION`
-   (never edit an old key).
+1. If the step isn't already in `STEPS_BY_VERSION` (`server/src/services/phoneSteps.ts`), add it
+   under a new key (never edit an old key). Going from version 1 to 2 needs no code change: key 2
+   already lists all 22 steps.
 2. Change the `X-Marlowe-Shortcut` header value everywhere in the Shortcut to the new number.
 3. Re-share with **Copy iCloud Link**. The link **changes** every time, so update
    `MARLOWE_SHORTCUT_ICLOUD_URL` and `MARLOWE_SHORTCUT_VERSION` on Railway (staging, then production).

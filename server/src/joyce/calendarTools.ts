@@ -8,6 +8,7 @@ import {
   getFamilyCalendar,
   getGoogleAccount,
   getGoogleAccountForMember,
+  listEventsBetween,
   listGoogleAccounts,
   type FamilyCalendarSetting,
   type GoogleAccountRow,
@@ -30,7 +31,10 @@ import {
 } from "./googleCalendar.js";
 import { createFamilyCalendar, familyCalendarAccounts, shareFamilyCalendarWithMe } from "./familyCalendar.js";
 
-// Joyce's Google Calendar tools. Same rule as every other Joyce tool (see assistant.ts): none
+// Joyce's Google Calendar tools. Only offered to a family whose calendar is Google (see
+// assistant.ts's calendarMode); a family on Joyce's own calendar, or with none, is only offered
+// connect_google_calendar (CONNECT_TOOLS).
+// Same rule as every other Joyce tool (see assistant.ts): none
 // takes a family, a member id or a phone number. `whose` is a name, resolved against this
 // family's members only, and an event ref only resolves through this family's own
 // google_accounts table. The model can pick *which* connected calendar; it can't reach one that
@@ -169,20 +173,29 @@ export const CALENDAR_TOOLS: Anthropic.Tool[] = [
   },
 ];
 
+/** All a family that hasn't connected Google is offered: the way to connect it. */
+export const CONNECT_TOOLS: Anthropic.Tool[] = CALENDAR_TOOLS.filter((t) => t.name === "connect_google_calendar");
+
 const CALENDAR_TOOL_NAMES = new Set(CALENDAR_TOOLS.map((t) => t.name));
 
 export function isCalendarTool(name: string): boolean {
   return CALENDAR_TOOL_NAMES.has(name);
 }
 
-export function connectLinkMessage(link: string): string {
+export function connectLinkMessage(link: string, builtInEventsLeft = 0): string {
   return (
     "Tap this link to connect your Google Calendar:\n" +
     `${link}\n\n` +
     "It works once, for the next ten minutes.\n\n" +
     "Worth knowing first: once it's connected, *everyone in this family* can see what's on your " +
     "calendar and ask me to add or change things on it. You can say \"disconnect my Google " +
-    "Calendar\" at any time."
+    "Calendar\" at any time." +
+    (builtInEventsLeft > 0
+      ? "\n\nThe family calendar moves to Google once you're connected. The " +
+        `${builtInEventsLeft === 1 ? "1 upcoming event" : `${builtInEventsLeft} upcoming events`} I've been ` +
+        "keeping won't move across by themselves, so ask me to list them before you connect if you'd " +
+        "like to add them to Google."
+      : "")
   );
 }
 
@@ -371,7 +384,12 @@ async function addToFamilyCalendar(
   for (const account of familyCalendarAccounts(session, family)) {
     try {
       const created = await createMemberEvent(session, account, family.calendarId, newEvent(session, input, times));
-      return { result: `Added to the family calendar ("${family.name}"), starting ${created.start} (ref ${created.ref}).` };
+      const clashes = await findGoogleClashes(session, created.start, created.end, created.ref);
+      return {
+        result:
+          `Added to the family calendar ("${family.name}"), starting ${created.start} (ref ${created.ref}).` +
+          clashNote(clashes),
+      };
     } catch (err) {
       lastError = err;
       lastAccount = account;
@@ -383,6 +401,63 @@ async function addToFamilyCalendar(
   }
   console.error("joyce: adding to the family calendar failed", lastError);
   return { result: describeGoogleError(lastError, lastAccount) };
+}
+
+/**
+ * Timed events on any calendar Joyce can see — the family calendar and every connected member's
+ * own — that overlap `start`–`end`, other than the event itself. Read a day either side, since
+ * each calendar reports in its own time zone, then compared as instants. All-day events aren't
+ * counted: "Leo's away" on the same day isn't a clash with a 3pm dentist the way two 3pms are.
+ * Best effort: a calendar that can't be read is skipped rather than failing the add.
+ */
+async function findGoogleClashes(
+  session: FamilySession,
+  start: string,
+  end: string,
+  selfRef: string
+): Promise<string[]> {
+  const startMs = Date.parse(start);
+  const endMs = Date.parse(end);
+  if (Number.isNaN(startMs) || Number.isNaN(endMs)) return [];
+  const from = addDays(start.slice(0, 10), -1);
+  const to = addDays(end.slice(0, 10), 1);
+
+  const family = getFamilyCalendar(session);
+  const reads: Promise<{ who: string; events: FamilyCalendarEvent[] }>[] = [];
+  if (family) {
+    const reader = familyCalendarAccounts(session, family)[0];
+    if (reader) {
+      reads.push(
+        listCalendarEvents(session, reader, { id: family.calendarId, name: family.name }, from, to, family.timeZone).then(
+          (events) => ({ who: "family calendar", events })
+        )
+      );
+    }
+  }
+  for (const account of listGoogleAccounts(session)) {
+    reads.push(
+      listMemberEvents(session, account, from, to, family?.calendarId).then((events) => ({
+        who: `${account.memberName ?? "someone"}'s calendar`,
+        events,
+      }))
+    );
+  }
+  const settled = await Promise.allSettled(reads);
+  const clashes: string[] = [];
+  for (const r of settled) {
+    if (r.status !== "fulfilled") continue;
+    for (const e of r.value.events) {
+      if (e.allDay || e.ref === selfRef) continue;
+      if (Date.parse(e.start) < endMs && Date.parse(e.end) > startMs) {
+        clashes.push(`  ${e.start} to ${e.end}: ${e.title} (${r.value.who})`);
+      }
+    }
+  }
+  return clashes;
+}
+
+function clashNote(clashes: string[]): string {
+  return clashes.length === 0 ? "" : `\nClashes with:\n${clashes.join("\n")}\nTell them.`;
 }
 
 export async function runCalendarTool(
@@ -397,9 +472,15 @@ export async function runCalendarTool(
         return { result: "Google Calendar connections aren't set up on this server yet. Tell the user it's not available right now." };
       }
       const token = issueGoogleConnectToken(ctx.normalizedPhone);
+      // The first Google connection moves the family off Joyce's own calendar (assistant.ts's
+      // calendarMode), and what's on it doesn't come along. Say so before they tap.
+      const builtInEventsLeft =
+        listGoogleAccounts(session).length === 0
+          ? listEventsBetween(session, Date.now(), Number.MAX_SAFE_INTEGER).length
+          : 0;
       return {
         result: "The connect link has been sent for you.",
-        forcedReply: connectLinkMessage(joyceGoogleConnectLink(token)),
+        forcedReply: connectLinkMessage(joyceGoogleConnectLink(token), builtInEventsLeft),
       };
     }
 
@@ -536,8 +617,11 @@ export async function runCalendarTool(
         }
 
         const created = await createMemberEvent(session, account, calendarId, newEvent(session, input, times));
+        const clashes = await findGoogleClashes(session, created.start, created.end, created.ref);
         return {
-          result: `Added to ${possessive(account)} ${calendarLabel}, starting ${created.start} (ref ${created.ref}).`,
+          result:
+            `Added to ${possessive(account)} ${calendarLabel}, starting ${created.start} (ref ${created.ref}).` +
+            clashNote(clashes),
         };
       } catch (err) {
         console.error("joyce: adding Google event failed", err);
@@ -570,7 +654,10 @@ export async function runCalendarTool(
           times: times as Exclude<typeof times, string>,
         });
         const where = family?.calendarId === calendarId ? "the family calendar" : `${possessive(account)} calendar`;
-        return { result: `Updated "${updated.title}" on ${where}, now starting ${updated.start}.` };
+        const clashes = times
+          ? await findGoogleClashes(session, updated.start, updated.end, String(input.event_ref))
+          : [];
+        return { result: `Updated "${updated.title}" on ${where}, now starting ${updated.start}.${clashNote(clashes)}` };
       } catch (err) {
         console.error("joyce: changing Google event failed", err);
         return { result: describeGoogleError(err, account) };

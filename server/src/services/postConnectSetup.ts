@@ -31,7 +31,7 @@ import {
 } from "../db/store.js";
 import { getBriefingSettings, saveBriefingSettings, hasBriefingSettings } from "./briefing.js";
 import { userLocalClock } from "./userTimezone.js";
-import { sendWhatsAppMessage, sendWhatsAppReplyButtons } from "../providers/whatsapp.js";
+import { sendScriptedText, sendScriptedButtons } from "./whatsappReply.js";
 import { hubListEvents } from "./hub.js";
 import { handleText } from "./chatDispatch.js";
 import { isPlausibleName } from "./plausibleName.js";
@@ -40,6 +40,7 @@ import { markOnboardingConnected } from "./onboardingAlertSuppression.js";
 import { scanAndCurateImportantEmailsForOnboarding } from "./importantEmailAlerts.js";
 import type { IncomingWhatsAppMessage } from "../providers/whatsapp.js";
 import type { NewsTopic } from "../providers/news.js";
+import { usesBusinessOnboarding, saveBusinessDescription } from "../editions/index.js";
 
 const BUTTON_IDS: Record<"ask_briefing" | "ask_teams", { yes: string; no: string }> = {
   ask_briefing: { yes: "briefing_yes", no: "briefing_no" },
@@ -57,7 +58,7 @@ function isSkip(text: string): boolean {
 }
 
 async function reply(phone: string, text: string): Promise<void> {
-  await sendWhatsAppMessage(phone, text);
+  await sendScriptedText(phone, text);
 }
 
 async function askName(ownerId: number, phone: string): Promise<void> {
@@ -73,8 +74,46 @@ async function askFirstTask(ownerId: number, phone: string): Promise<void> {
   setPendingSetup(ownerId, "ask_first_task");
 }
 
+// Business edition (docs/superpowers/specs/2026-10-16-business-edition-design.md §4): after the
+// name, ask what the business does (it sharpens receipt categorising), then invite a first receipt
+// so the core feature is seen inside setup, not discovered later.
+async function askBusiness(ownerId: number, phone: string): Promise<void> {
+  await reply(
+    phone,
+    "What does your business do? Something short like *plumber in Leeds* or *wedding photographer* is perfect — it helps me file your receipts right. Or say *skip*."
+  );
+  setPendingSetup(ownerId, "ask_business");
+}
+
+async function askFirstReceipt(ownerId: number, phone: string): Promise<void> {
+  await reply(
+    phone,
+    "Let's try it: send me a photo of any receipt or invoice and I'll add it to your books. Or say *skip* and we'll finish setting up."
+  );
+  setPendingSetup(ownerId, "ask_first_receipt");
+}
+
+// What follows the name question: the business steps for business users, the open first-task
+// question for everyone else.
+async function askAfterName(ownerId: number, phone: string): Promise<void> {
+  if (usesBusinessOnboarding(ownerId)) await askBusiness(ownerId, phone);
+  else await askFirstTask(ownerId, phone);
+}
+
 async function askBriefing(ownerId: number, phone: string): Promise<void> {
-  await sendWhatsAppReplyButtons(
+  if (usesBusinessOnboarding(ownerId)) {
+    await sendScriptedButtons(
+      phone,
+      "Want a short morning message with your email, calendar and any receipts that need a quick check — plus last week's money in and out on Mondays?",
+      [
+        { id: BUTTON_IDS.ask_briefing.yes, title: "Yes please" },
+        { id: BUTTON_IDS.ask_briefing.no, title: "No thanks" },
+      ]
+    );
+    setPendingSetup(ownerId, "ask_briefing");
+    return;
+  }
+  await sendScriptedButtons(
     phone,
     "Want a daily morning update with your email, calendar, and anything that looks like it needs a reply?",
     [
@@ -102,7 +141,7 @@ async function announceBriefingDefault(phone: string): Promise<void> {
 }
 
 async function askTeams(ownerId: number, phone: string): Promise<void> {
-  await sendWhatsAppReplyButtons(phone, "Want me to also search *Microsoft Teams* chats when you ask?", [
+  await sendScriptedButtons(phone, "Want me to also search *Microsoft Teams* chats when you ask?", [
     { id: BUTTON_IDS.ask_teams.yes, title: "Yes" },
     { id: BUTTON_IDS.ask_teams.no, title: "No thanks" },
   ]);
@@ -239,7 +278,7 @@ export async function startPostConnectSetup(
   // re-answer like "I already said Sam" getting stored as the permanent display name instead of
   // just their name).
   if (getSetting(ownerId, "user_name")) {
-    await askFirstTask(ownerId, phone);
+    await askAfterName(ownerId, phone);
   } else {
     await askName(ownerId, phone);
   }
@@ -264,20 +303,68 @@ export async function handleNameReply(
   // A blank reply is nothing to save and nothing for the assistant to answer — treat it as a skip
   // rather than forwarding an empty message.
   if (!name || isSkip(message.text)) {
-    await askFirstTask(ownerId, phone);
+    await askAfterName(ownerId, phone);
     return true;
   }
   // Reject sentence-shaped replies (e.g. "I already said Sam") rather than storing them
   // verbatim as the permanent display name — see plausibleName.ts.
   if (name && isPlausibleName(name)) {
     setSetting(ownerId, "user_name", name);
-    await askFirstTask(ownerId, phone);
+    await askAfterName(ownerId, phone);
     return true;
   }
   // Not a name and not a skip: hand it to the real assistant and move on once it's answered,
   // the same way ask_first_task treats a genuine request.
-  await forwardToAssistantThenAdvance(ownerId, message, askFirstTask);
+  await forwardToAssistantThenAdvance(ownerId, message, askAfterName);
   return true;
+}
+
+// A question back ("what can you do?") is a request for the assistant, not a business description.
+const QUESTION = /\?\s*$|^\s*(what|how|why|who|when|where|can|could|do|does|is|are|will|would|should)\b/i;
+
+// The ask_business step. A description is saved (capped, like the profile tool) and the chain
+// moves on; a skip or blank moves on without saving (the assistant asks again later, in chat);
+// a question goes to the assistant and the chain waits for its answer.
+export async function handleBusinessReply(ownerId: number, message: IncomingWhatsAppMessage): Promise<boolean> {
+  if (message.kind !== "text") return false;
+  if (getPendingSetup(ownerId) !== "ask_business") return false;
+  if (awaitingAssistantAnswer.has(ownerId)) return false;
+  const phone = message.from;
+  const answer = message.text.trim();
+  if (!answer || isSkip(answer)) {
+    await askFirstReceipt(ownerId, phone);
+    return true;
+  }
+  if (QUESTION.test(answer)) {
+    await forwardToAssistantThenAdvance(ownerId, message, askFirstReceipt);
+    return true;
+  }
+  saveBusinessDescription(ownerId, answer);
+  await askFirstReceipt(ownerId, phone);
+  return true;
+}
+
+// The ask_first_receipt step, for typed replies. A photo or PDF isn't handled here: it goes through
+// normal document handling (which files it in their books), and firstReceiptFollowUp below moves
+// the chain on once the assistant has confirmed it.
+export async function handleFirstReceiptReply(ownerId: number, message: IncomingWhatsAppMessage): Promise<boolean> {
+  if (message.kind !== "text") return false;
+  if (getPendingSetup(ownerId) !== "ask_first_receipt") return false;
+  if (awaitingAssistantAnswer.has(ownerId)) return false;
+  await advancePastFreeTextStep(ownerId, message, "No problem — you can send receipts any time.", askBriefing);
+  return true;
+}
+
+// Passed by whatsappRoutes.ts's handleMedia as the assistant's afterReply while ask_first_receipt
+// is pending, so the briefing question follows the "added to your books" reply instead of racing
+// it. The step stays pending until then (the assistant's onboarding note depends on it), and is
+// claimed inside the callback, so two photos sent together still advance the chain only once.
+export function firstReceiptFollowUp(ownerId: number, phone: string): (() => Promise<void>) | undefined {
+  if (getPendingSetup(ownerId) !== "ask_first_receipt") return undefined;
+  return async () => {
+    if (!claimPendingSetup(ownerId, "ask_first_receipt")) return;
+    await askBriefing(ownerId, phone);
+  };
 }
 
 // Owners whose message has been handed to the assistant but not answered yet. Their follow-up
@@ -303,7 +390,7 @@ async function forwardToAssistantThenAdvance(
     await next(ownerId, phone);
   };
   try {
-    await handleText(ownerId, phone, message.text, message.messageId, undefined, undefined, advance);
+    await handleText(ownerId, phone, message.text, message.messageId, message.quotedMessageId, message.forwarded, advance);
   } catch (err) {
     // Nothing was queued, so `advance` will never be called for us — don't strand the chain.
     console.error(`postConnectSetup: forwarding a setup-step message failed for owner ${ownerId}`, err);
@@ -375,17 +462,26 @@ export async function handlePostConnectSetupReply(
   switch (step) {
     case "ask_briefing": {
       const current = getBriefingSettings(ownerId);
+      // Business users were offered a money update, not headlines, so yes doesn't switch news on.
+      const business = usesBusinessOnboarding(ownerId);
       saveBriefingSettings(ownerId, {
         ...current,
         proactive: yes,
-        ...(yes ? { includeNews: true, topics: DEFAULT_BRIEFING_TOPICS } : {}),
+        ...(yes && !business ? { includeNews: true, topics: DEFAULT_BRIEFING_TOPICS } : {}),
       });
       if (yes) {
         // Stamped immediately so the scheduler (runDailyCheckForUser in scheduler.ts) treats
         // today as already sent — the first real proactive briefing goes out tomorrow morning,
         // not minutes after onboarding finishes.
         setSetting(ownerId, "last_proactive_send_date", userLocalClock(ownerId).dateKey);
-        await announceBriefingDefault(phone);
+        if (business) {
+          await reply(
+            phone,
+            "Great — I'll message you each morning, and on Mondays you'll get last week's money in and out too."
+          );
+        } else {
+          await announceBriefingDefault(phone);
+        }
       }
       await askTeamsOrFinish(ownerId, phone);
       return true;

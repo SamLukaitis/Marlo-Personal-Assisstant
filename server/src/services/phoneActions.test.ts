@@ -48,16 +48,16 @@ describe("fetchPhoneAction", () => {
   it("hands over the steps once, records the Shortcut version, then says gone", () => {
     const u = user();
     const { code } = make(u.id);
-    const first = pa.fetchPhoneAction(code, 1, T0 + 1);
+    const first = pa.fetchPhoneAction(code, 2, T0 + 1);
     expect(first).toMatchObject({ kind: "steps", steps: [{ type: "alarm", time: "05:15" }, { type: "get_battery" }] });
-    expect(getShortcutStatus(u.id)).toMatchObject({ version: 1, lastSeen: T0 + 1 });
-    expect(pa.fetchPhoneAction(code, 1, T0 + 2)).toMatchObject({ kind: "gone", message: expect.stringMatching(/already used/) });
+    expect(getShortcutStatus(u.id)).toMatchObject({ version: 2, lastSeen: T0 + 1 });
+    expect(pa.fetchPhoneAction(code, 2, T0 + 2)).toMatchObject({ kind: "gone", message: expect.stringMatching(/already used/) });
   });
 
   it("is gone when expired or unknown", () => {
     const u = user();
     const { code } = make(u.id);
-    expect(pa.fetchPhoneAction(code, 1, T0 + pa.CHAT_TTL_MS + 1)).toMatchObject({ kind: "gone", message: expect.stringMatching(/expired/) });
+    expect(pa.fetchPhoneAction(code, 2, T0 + pa.CHAT_TTL_MS + 1)).toMatchObject({ kind: "gone", message: expect.stringMatching(/expired/) });
     expect(pa.fetchPhoneAction("unknown-code", 1, T0)).toMatchObject({ kind: "gone" });
   });
 
@@ -65,7 +65,7 @@ describe("fetchPhoneAction", () => {
     const u = user();
     const { code } = make(u.id);
     expect(pa.fetchPhoneAction(code, 0, T0 + 1)).toMatchObject({ kind: "update", installUrl: "https://www.icloud.com/shortcuts/test" });
-    expect(pa.fetchPhoneAction(code, 1, T0 + 2)).toMatchObject({ kind: "steps" });
+    expect(pa.fetchPhoneAction(code, 2, T0 + 2)).toMatchObject({ kind: "steps" });
   });
 });
 
@@ -75,7 +75,7 @@ describe("viewPhoneAction", () => {
     const { code } = make(u.id);
     expect(pa.viewPhoneAction(code, T0 + 1)).toMatchObject({ state: "ready", label: "Test" });
     expect(pa.viewPhoneAction(code, T0 + 2)).toMatchObject({ state: "ready" });
-    expect(pa.fetchPhoneAction(code, 1, T0 + 3)).toMatchObject({ kind: "steps" });
+    expect(pa.fetchPhoneAction(code, 2, T0 + 3)).toMatchObject({ kind: "steps" });
     expect(pa.viewPhoneAction(code, T0 + 4)).toMatchObject({ state: "gone" });
   });
 });
@@ -83,7 +83,7 @@ describe("viewPhoneAction", () => {
 describe("reportPhoneStep", () => {
   function fetched(ownerId: number) {
     const { code } = make(ownerId);
-    pa.fetchPhoneAction(code, 1, T0);
+    pa.fetchPhoneAction(code, 2, T0);
     return code;
   }
 
@@ -160,7 +160,7 @@ describe("sweepStalledPhoneActions", () => {
   it("fails a run that went quiet at the next unreported step", async () => {
     const u = user();
     const { code } = make(u.id);
-    pa.fetchPhoneAction(code, 1, T0);
+    pa.fetchPhoneAction(code, 2, T0);
     await pa.reportPhoneStep(code, { index: 0, ok: true }, T0 + 1);
     await pa.sweepStalledPhoneActions(T0 + pa.STALL_MS - 1);
     expect(getPhoneActionByCodeHash(pa.hashCode(code))!.status).toBe("fetched");

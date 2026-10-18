@@ -111,6 +111,39 @@ describe("admins", () => {
   });
 });
 
+describe("editions", () => {
+  it("lists each user's edition and switches it", async () => {
+    const admin = makeAdmin("edition-switcher");
+    const target = findOrCreateUserByEmail(uniqueEmail("edition-target"));
+    const app = buildTestApp(admin.id);
+
+    const listed = await request(app).get("/api/portal/admins");
+    expect(listed.body.find((c: { id: number }) => c.id === target.id).edition).toBe("general");
+
+    const res = await request(app).post(`/api/portal/editions/${target.id}`).send({ edition: "business" });
+    expect(res.status).toBe(200);
+    expect(res.body.find((c: { id: number }) => c.id === target.id).edition).toBe("business");
+
+    const back = await request(app).post(`/api/portal/editions/${target.id}`).send({ edition: "general" });
+    expect(back.body.find((c: { id: number }) => c.id === target.id).edition).toBe("general");
+  });
+
+  it("rejects an unknown edition or user", async () => {
+    const admin = makeAdmin("edition-bad");
+    const target = findOrCreateUserByEmail(uniqueEmail("edition-bad-target"));
+    const app = buildTestApp(admin.id);
+    expect((await request(app).post(`/api/portal/editions/${target.id}`).send({ edition: "family" })).status).toBe(400);
+    expect((await request(app).post(`/api/portal/editions/abc`).send({ edition: "business" })).status).toBe(400);
+    expect((await request(app).post(`/api/portal/editions/99999999`).send({ edition: "business" })).status).toBe(404);
+  });
+
+  it("is admin-only", async () => {
+    const plain = findOrCreateUserByEmail(uniqueEmail("edition-plain"));
+    const app = buildTestApp(plain.id);
+    expect((await request(app).post(`/api/portal/editions/${plain.id}`).send({ edition: "business" })).status).toBe(403);
+  });
+});
+
 describe("unmet requests", () => {
   it("lists open ones and resolves them", async () => {
     const admin = makeAdmin("requests");

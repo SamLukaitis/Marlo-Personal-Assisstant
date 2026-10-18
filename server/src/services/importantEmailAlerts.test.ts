@@ -49,6 +49,7 @@ const {
   clearPendingSetup,
   getWhatsAppHistory,
   getAttentionItem,
+  setUserEdition,
 } = await import("../db/store.js");
 const { setUserTimezone } = await import("./userTimezone.js");
 const { markOnboardingConnected } = await import("./onboardingAlertSuppression.js");
@@ -59,6 +60,7 @@ const {
 } = await import("./importantEmailAlerts.js");
 const { setXeroForwardingEmail } = await import("./xero.js");
 const { getPendingInvoiceForward } = await import("./xeroInvoiceConfirmation.js");
+const { listLedgerEntries } = await import("../business/ledgerStore.js");
 
 let counter = 0;
 function uniqueEmail(prefix: string): string {
@@ -135,6 +137,40 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.useRealTimers();
+});
+
+describe("checkForImportantEmails — business income", () => {
+  it("logs a payout email as income awaiting review, without messaging the user", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("biz-income"));
+    setUserEdition(user.id, "business");
+    registerActivePhone(user.id);
+    await baseline(user.id);
+
+    mockHubListNewMessages.mockResolvedValueOnce([
+      fakeMessage({ id: "payout-1", from: "Stripe <notifications@stripe.com>", subject: "Your £250.00 payout is on the way" }),
+    ]);
+
+    await checkForImportantEmails(user.id);
+
+    expect(listLedgerEntries(user.id)).toEqual([
+      expect.objectContaining({ direction: "in", amountPence: 25000, status: "needs_review", sourceRef: "email:1:payout-1" }),
+    ]);
+    expect(vi.mocked(sendWhatsAppMessage)).not.toHaveBeenCalled();
+  });
+
+  it("leaves general users' books alone", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("gen-income"));
+    registerActivePhone(user.id);
+    await baseline(user.id);
+
+    mockHubListNewMessages.mockResolvedValueOnce([
+      fakeMessage({ id: "payout-2", from: "Stripe <notifications@stripe.com>", subject: "Your £250.00 payout is on the way" }),
+    ]);
+
+    await checkForImportantEmails(user.id);
+
+    expect(listLedgerEntries(user.id)).toHaveLength(0);
+  });
 });
 
 describe("checkForImportantEmails", () => {
@@ -790,6 +826,39 @@ describe("checkForImportantEmails — invoice forward offer", () => {
       messageId: "inv-1",
       subject: "Invoice from Acme",
     });
+  });
+
+  it("business edition without Xero: offers to add the invoice to their books", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("invoice-business"));
+    setUserEdition(user.id, "business");
+    registerActivePhone(user.id);
+    await baseline(user.id);
+
+    mockHubListNewMessages.mockResolvedValueOnce([fakeMessage({ id: "inv-biz-1", subject: "Invoice from Acme" })]);
+    mockClassify.mockResolvedValueOnce(new Map([[0, { category: "invoice_due", summary: "Your *Acme* invoice for *£120* is due.", needsAction: true }]]));
+
+    await checkForImportantEmails(user.id);
+
+    const [, text] = vi.mocked(sendWhatsAppMessage).mock.calls[0];
+    expect(text).toContain("add it to your books");
+    expect(text).not.toContain("Xero");
+    expect(getPendingInvoiceForward(user.id)).toMatchObject({ messageId: "inv-biz-1" });
+  });
+
+  it("business edition with Xero: offers both", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("invoice-business-xero"));
+    setUserEdition(user.id, "business");
+    registerActivePhone(user.id);
+    setXeroForwardingEmail(user.id, "abc123@bills.xero.com");
+    await baseline(user.id);
+
+    mockHubListNewMessages.mockResolvedValueOnce([fakeMessage({ id: "inv-biz-2" })]);
+    mockClassify.mockResolvedValueOnce(new Map([[0, { category: "invoice_due", summary: "Your *Acme* invoice for *£120* is due.", needsAction: true }]]));
+
+    await checkForImportantEmails(user.id);
+
+    const [, text] = vi.mocked(sendWhatsAppMessage).mock.calls[0];
+    expect(text).toContain("add it to your books and forward it to Xero");
   });
 
   it("does not offer to forward when Xero isn't connected", async () => {

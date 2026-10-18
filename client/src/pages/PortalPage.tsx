@@ -4,21 +4,11 @@ import {
   fetchAdminCandidates,
   grantAdmin,
   revokeAdmin,
-  fetchUnmetRequests,
+  setUserEdition,
   fetchPhoneActions,
-  resolveUnmetRequest,
-  addUnmetRequestNote,
-  fetchServerLogs,
-  explainServerLog,
-  fetchUsageSummary,
   usagePurposeLabel,
   usageOwnerLabel,
-  fetchAdminTodos,
-  addAdminTodo,
-  setAdminTodoDone,
-  deleteAdminTodo,
-  addAdminTodoReply,
-  markAdminTodoRepliesRead,
+  marlowePortalApi,
   fetchPosterNotes,
   addPosterNote,
   deletePosterNote,
@@ -34,6 +24,7 @@ import {
   type ApiUsageCallRow,
   type AdminTodo,
   type PosterNote,
+  type PortalSectionsApi,
 } from "../api/client";
 import { useAuth } from "../context/AuthContext";
 import { IconTrash, IconPlus, IconRefresh, IconChat } from "../components/icons";
@@ -75,20 +66,16 @@ const TOAST_DURATION_MS = 5000;
 // even while you're looking at Usage or Logs, not only while the To-Do tab itself is mounted.
 const NOTIFY_POLL_MS = 15_000;
 
-export function PortalPage() {
+/**
+ * Toasts when another admin replies to one of YOUR to-dos, whichever section is open. Shared by
+ * Marlowe's Portal and Joyce's portal, each watching its own to-do list through `api`.
+ */
+export function useTodoReplyToasts(api: PortalSectionsApi): Toast[] {
   const { user } = useAuth();
-  const [section, setSection] = useState<SectionKey>("todos");
-  const [version, setVersion] = useState<string>("");
   const [toasts, setToasts] = useState<Toast[]>([]);
   // null until the first poll completes — that first poll only baselines what's already there,
   // so opening the Portal with a backlog of old unread replies doesn't fire a toast for each one.
   const seenReplyIdsRef = useRef<Set<number> | null>(null);
-
-  useEffect(() => {
-    fetchPortalVersion()
-      .then((v) => setVersion(v.text))
-      .catch(() => {});
-  }, []);
 
   useEffect(() => {
     if (!user) return;
@@ -97,7 +84,7 @@ export function PortalPage() {
     async function poll() {
       let todos;
       try {
-        todos = await fetchAdminTodos();
+        todos = await api.fetchTodos();
       } catch {
         return; // transient network blip — next tick retries, nothing to notify about yet
       }
@@ -135,7 +122,34 @@ export function PortalPage() {
       cancelled = true;
       clearInterval(interval);
     };
-  }, [user]);
+  }, [user, api]);
+
+  return toasts;
+}
+
+export function ToastStack({ toasts }: { toasts: Toast[] }) {
+  return (
+    <div className="toast-stack">
+      {toasts.map((t) => (
+        <div key={t.id} className="toast">
+          {t.text}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+export function PortalPage() {
+  const { user } = useAuth();
+  const [section, setSection] = useState<SectionKey>("todos");
+  const [version, setVersion] = useState<string>("");
+  const toasts = useTodoReplyToasts(marlowePortalApi);
+
+  useEffect(() => {
+    fetchPortalVersion()
+      .then((v) => setVersion(v.text))
+      .catch(() => {});
+  }, []);
 
   if (!user?.isAdmin) return <Navigate to="/assistant" replace />;
 
@@ -165,24 +179,30 @@ export function PortalPage() {
           </nav>
 
           <div className="settings-panel">
-            {section === "todos" && <TodosTab />}
+            {section === "todos" && <TodosTab api={marlowePortalApi} />}
             {section === "notes" && <NotesTab />}
-            {section === "requests" && <RequestsTab />}
+            {section === "requests" && (
+              <RequestsTab
+                api={marlowePortalApi}
+                title="Unmet requests"
+                intro="Things users have asked Marlowe for that it couldn't do — a running signal of what to build next."
+              />
+            )}
             {section === "phone" && <PhoneActionsTab />}
-            {section === "logs" && <LogsTab />}
-            {section === "usage" && <UsageTab />}
+            {section === "logs" && <LogsTab api={marlowePortalApi} />}
+            {section === "usage" && (
+              <UsageTab
+                api={marlowePortalApi}
+                intro="Assistant calls across web and WhatsApp. Cost is an approximate estimate, not exact billing."
+                showOwners
+              />
+            )}
             {section === "admins" && <AdminsTab currentUserId={user.id} />}
           </div>
         </div>
       </div>
 
-      <div className="toast-stack">
-        {toasts.map((t) => (
-          <div key={t.id} className="toast">
-            {t.text}
-          </div>
-        ))}
-      </div>
+      <ToastStack toasts={toasts} />
     </div>
   );
 }
@@ -286,13 +306,14 @@ function TodoRow({
   );
 }
 
-function TodosTab() {
+export function TodosTab({ api }: { api: PortalSectionsApi }) {
   const [todos, setTodos] = useState<AdminTodo[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [text, setText] = useState("");
 
   function load() {
-    fetchAdminTodos()
+    api
+      .fetchTodos()
       .then(setTodos)
       .finally(() => setLoaded(true));
   }
@@ -301,21 +322,21 @@ function TodosTab() {
     load();
     const interval = setInterval(load, REPLY_POLL_MS);
     return () => clearInterval(interval);
-  }, []);
+  }, [api]);
 
   async function handleAdd(e: React.FormEvent) {
     e.preventDefault();
     if (!text.trim()) return;
-    setTodos(await addAdminTodo(text.trim()));
+    setTodos(await api.addTodo(text.trim()));
     setText("");
   }
 
   async function handleReply(id: number, replyText: string) {
-    setTodos(await addAdminTodoReply(id, replyText));
+    setTodos(await api.addTodoReply(id, replyText));
   }
 
   async function handleMarkRead(id: number) {
-    setTodos(await markAdminTodoRepliesRead(id));
+    setTodos(await api.markTodoRepliesRead(id));
   }
 
   const open = todos.filter((t) => !t.done);
@@ -347,8 +368,8 @@ function TodosTab() {
                 key={t.id}
                 todo={t}
                 done={false}
-                onSetDone={async (id, d) => setTodos(await setAdminTodoDone(id, d))}
-                onDelete={async (id) => setTodos(await deleteAdminTodo(id))}
+                onSetDone={async (id, d) => setTodos(await api.setTodoDone(id, d))}
+                onDelete={async (id) => setTodos(await api.deleteTodo(id))}
                 onReply={handleReply}
                 onMarkRead={handleMarkRead}
               />
@@ -364,8 +385,8 @@ function TodosTab() {
                     key={t.id}
                     todo={t}
                     done
-                    onSetDone={async (id, d) => setTodos(await setAdminTodoDone(id, d))}
-                    onDelete={async (id) => setTodos(await deleteAdminTodo(id))}
+                    onSetDone={async (id, d) => setTodos(await api.setTodoDone(id, d))}
+                    onDelete={async (id) => setTodos(await api.deleteTodo(id))}
                     onReply={handleReply}
                     onMarkRead={handleMarkRead}
                   />
@@ -511,35 +532,34 @@ function RequestRow({
   );
 }
 
-function RequestsTab() {
+export function RequestsTab({ api, title, intro }: { api: PortalSectionsApi; title: string; intro: string }) {
   const [requests, setRequests] = useState<UnmetRequest[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [includeResolved, setIncludeResolved] = useState(false);
 
   function load(resolved: boolean) {
     setLoaded(false);
-    fetchUnmetRequests(resolved)
+    api
+      .fetchRequests(resolved)
       .then(setRequests)
       .finally(() => setLoaded(true));
   }
 
-  useEffect(() => load(includeResolved), [includeResolved]);
+  useEffect(() => load(includeResolved), [includeResolved, api]);
 
   async function handleResolve(id: number) {
-    await resolveUnmetRequest(id);
+    await api.resolveRequest(id);
     setRequests((prev) => (includeResolved ? prev : prev.filter((r) => r.id !== id)));
   }
 
   async function handleAddNote(id: number, text: string) {
-    setRequests(await addUnmetRequestNote(id, text, includeResolved));
+    setRequests(await api.addRequestNote(id, text, includeResolved));
   }
 
   return (
     <>
-      <h2>Unmet requests</h2>
-      <p className="settings-section-intro">
-        Things users have asked Marlowe for that it couldn't do — a running signal of what to build next.
-      </p>
+      <h2>{title}</h2>
+      <p className="settings-section-intro">{intro}</p>
       <div className="row" style={{ marginBottom: 14, justifyContent: "space-between" }}>
         <label className="row" style={{ gap: 8, fontSize: 13 }}>
           <input
@@ -625,24 +645,25 @@ function PhoneActionsTab() {
   );
 }
 
-function LogsTab() {
+export function LogsTab({ api }: { api: PortalSectionsApi }) {
   const [logs, setLogs] = useState<ServerLog[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [explaining, setExplaining] = useState<Set<number>>(new Set());
 
   function load() {
     setLoaded(false);
-    fetchServerLogs()
+    api
+      .fetchLogs()
       .then(setLogs)
       .finally(() => setLoaded(true));
   }
 
-  useEffect(load, []);
+  useEffect(load, [api]);
 
   async function handleExplain(id: number) {
     setExplaining((prev) => new Set(prev).add(id));
     try {
-      const { explanation } = await explainServerLog(id);
+      const { explanation } = await api.explainLog(id);
       setLogs((prev) => prev.map((l) => (l.id === id ? { ...l, explanation } : l)));
     } catch (err) {
       setLogs((prev) =>
@@ -704,12 +725,27 @@ function LogsTab() {
 // Shared cell styles for the usage tables. Numeric columns are right-aligned on BOTH the header
 // and body cells — browsers give <th> its own default alignment rather than inheriting the row's
 // textAlign, so setting it only on the <tr> leaves titles floating away from their numbers.
-const thText = { padding: "8px 12px", textAlign: "left", whiteSpace: "nowrap" } as const;
-const thNum = { padding: "8px 12px", textAlign: "right", whiteSpace: "nowrap" } as const;
+// Headers stick to the top of their scroll box (usageScrollBox below), so column names stay
+// visible while scrolling a long table. The background stops rows showing through them.
+const thSticky = { position: "sticky", top: 0, background: "var(--surface)", zIndex: 1 } as const;
+const thText = { padding: "8px 12px", textAlign: "left", whiteSpace: "nowrap", ...thSticky } as const;
+const thNum = { padding: "8px 12px", textAlign: "right", whiteSpace: "nowrap", ...thSticky } as const;
+// The usage tables can run to hundreds of rows. Capping their height makes each one scroll inside
+// its own box instead of making the whole page very long.
+const usageScrollBox = { overflow: "auto", maxHeight: "min(480px, 60vh)" } as const;
 const tdText = { padding: "8px 12px" } as const;
 const tdNum = { padding: "8px 12px", textAlign: "right" } as const;
 
-function UsageTab() {
+export function UsageTab({
+  api,
+  intro,
+  showOwners = false,
+}: {
+  api: PortalSectionsApi;
+  intro: string;
+  // Off for Joyce, whose usage isn't recorded per family.
+  showOwners?: boolean;
+}) {
   const [rows, setRows] = useState<ApiUsageRow[]>([]);
   const [byPurpose, setByPurpose] = useState<ApiUsageByPurposeRow[]>([]);
   const [byOwner, setByOwner] = useState<ApiUsageByOwnerRow[]>([]);
@@ -717,11 +753,13 @@ function UsageTab() {
   const [recent, setRecent] = useState<ApiUsageCallRow[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [days, setDays] = useState(30);
-  const [messagesOnly, setMessagesOnly] = useState(true);
+  // Message text is only recorded for Marlowe admins' chats, so Joyce's tab never filters on it.
+  const [messagesOnly, setMessagesOnly] = useState(showOwners);
 
   function load(d: number, onlyMessages: boolean) {
     setLoaded(false);
-    fetchUsageSummary(d, 50, onlyMessages)
+    api
+      .fetchUsage(d, 50, onlyMessages)
       .then((r) => {
         setRows(r.rows);
         setByPurpose(r.byPurpose);
@@ -732,7 +770,7 @@ function UsageTab() {
       .finally(() => setLoaded(true));
   }
 
-  useEffect(() => load(days, messagesOnly), [days, messagesOnly]);
+  useEffect(() => load(days, messagesOnly), [days, messagesOnly, api]);
 
   const totalCalls = rows.reduce((sum, r) => sum + r.calls, 0);
   // "Tokens" everywhere on this tab means ALL tokens, cached included — matching what the
@@ -749,9 +787,7 @@ function UsageTab() {
   return (
     <>
       <h2>API usage</h2>
-      <p className="settings-section-intro">
-        Assistant calls across web and WhatsApp. Cost is an approximate estimate, not exact billing.
-      </p>
+      <p className="settings-section-intro">{intro}</p>
 
       <div className="row" style={{ marginBottom: 14, justifyContent: "space-between" }}>
         <select value={days} onChange={(e) => setDays(Number(e.target.value))}>
@@ -759,7 +795,7 @@ function UsageTab() {
           <option value={30}>Last 30 days</option>
           <option value={90}>Last 90 days</option>
         </select>
-        <button className="btn-secondary" onClick={() => load(days)}>
+        <button className="btn-secondary" onClick={() => load(days, messagesOnly)}>
           <IconRefresh /> Refresh
         </button>
       </div>
@@ -829,8 +865,8 @@ function UsageTab() {
             </div>
           )}
 
-          <h2 style={{ fontSize: 15, marginBottom: 10 }}>Who's using it</h2>
-          {byOwner.length === 0 ? (
+          {showOwners && <h2 style={{ fontSize: 15, marginBottom: 10 }}>Who's using it</h2>}
+          {!showOwners ? null : byOwner.length === 0 ? (
             <p className="muted">No assistant activity in this range.</p>
           ) : (
             <div className="card card-padded" style={{ marginBottom: 24 }}>
@@ -866,7 +902,7 @@ function UsageTab() {
           {rows.length === 0 ? (
             <p className="muted">No assistant activity in this range.</p>
           ) : (
-            <div className="card" style={{ overflowX: "auto" }}>
+            <div className="card" style={usageScrollBox}>
               <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
                 <thead>
                   <tr>
@@ -908,10 +944,12 @@ function UsageTab() {
             above only groups down to the day. Admins' own chats show the message and reply under
             the cost; nobody else's messages are ever shown.
           </p>
-          <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, marginBottom: 10 }}>
-            <input type="checkbox" checked={messagesOnly} onChange={(e) => setMessagesOnly(e.target.checked)} />
-            Only admins' own messages
-          </label>
+          {showOwners && (
+            <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, marginBottom: 10 }}>
+              <input type="checkbox" checked={messagesOnly} onChange={(e) => setMessagesOnly(e.target.checked)} />
+              Only admins' own messages
+            </label>
+          )}
           {recent.length === 0 ? (
             <p className="muted">
               {messagesOnly
@@ -919,13 +957,13 @@ function UsageTab() {
                 : "No assistant activity yet."}
             </p>
           ) : (
-            <div className="card" style={{ overflowX: "auto" }}>
+            <div className="card" style={usageScrollBox}>
               <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
                 <thead>
                   <tr>
                     <th style={thText}>When</th>
                     <th style={thText}>Purpose</th>
-                    <th style={thText}>Who</th>
+                    {showOwners && <th style={thText}>Who</th>}
                     <th style={thText}>Channel</th>
                     <th style={thText}>Model</th>
                     <th style={thNum}>Input tok.</th>
@@ -941,7 +979,7 @@ function UsageTab() {
                     <tr className="data-row">
                       <td style={{ ...tdText, whiteSpace: "nowrap" }}>{timeAgo(r.createdAt)}</td>
                       <td style={tdText}>{usagePurposeLabel(r.purpose)}</td>
-                      <td style={tdText}>{usageOwnerLabel(r)}</td>
+                      {showOwners && <td style={tdText}>{usageOwnerLabel(r)}</td>}
                       <td style={tdText}>{r.channel}</td>
                       <td style={tdText}>{r.model}</td>
                       <td style={tdNum}>{r.inputTokens.toLocaleString()}</td>
@@ -952,7 +990,7 @@ function UsageTab() {
                     </tr>
                     {r.userMessage != null && (
                       <tr>
-                        <td colSpan={10} style={{ padding: "0 12px 10px", fontSize: 12 }}>
+                        <td colSpan={showOwners ? 10 : 9} style={{ padding: "0 12px 10px", fontSize: 12 }}>
                           <div style={{ whiteSpace: "pre-wrap" }}>
                             <strong>Message:</strong> {r.userMessage}
                           </div>
@@ -996,11 +1034,25 @@ function AdminsTab({ currentUserId }: { currentUserId: number }) {
     }
   }
 
+  async function handleEdition(c: AdminCandidate) {
+    const next = c.edition === "business" ? "general" : "business";
+    const who = c.email ?? c.phone ?? `#${c.id}`;
+    if (!window.confirm(`Switch ${who} to the ${next} edition? It takes effect on their next message.`)) return;
+    setError(null);
+    try {
+      setCandidates(await setUserEdition(c.id, next));
+    } catch (err) {
+      setError((err as Error).message);
+    }
+  }
+
   return (
     <>
       <h2>Admins</h2>
       <p className="settings-section-intro">
         Anyone with Portal access can grant or remove it for anyone else who's been invited to the app.
+        This is also where you move someone between the general and business (UK sole trader)
+        editions. Switching never deletes anything: business books come back if they're switched back.
       </p>
       {error && <p className="error">{error}</p>}
       {!loaded ? (
@@ -1012,16 +1064,22 @@ function AdminsTab({ currentUserId }: { currentUserId: number }) {
               {/* Matches usageOwnerLabel (api/client.ts): a beta that's mostly phone-first would
                   otherwise render every phone-only row identically, with no way to tell them
                   apart or audit who holds a live "Make admin" button. */}
-              {c.email ?? `No email connected (#${c.id})`}
+              {c.email ?? (c.phone ? `${c.phone} (no email)` : `No email connected (#${c.id})`)}
               {c.id === currentUserId && <span className="muted"> (you)</span>}
               {c.isAppOwner && <span className="badge-pill" style={{ marginLeft: 8 }}>owner</span>}
               {c.isAdmin && !c.isAppOwner && <span className="badge-pill" style={{ marginLeft: 8 }}>admin</span>}
+              {c.edition === "business" && <span className="badge-pill" style={{ marginLeft: 8 }}>business</span>}
             </span>
-            {!c.isAppOwner && (
-              <button className={c.isAdmin ? "btn-danger" : "btn-primary"} onClick={() => handleToggle(c)}>
-                {c.isAdmin ? "Revoke" : "Make admin"}
+            <span className="row" style={{ gap: 8 }}>
+              <button className="btn-secondary" onClick={() => handleEdition(c)}>
+                {c.edition === "business" ? "Make general" : "Make business"}
               </button>
-            )}
+              {!c.isAppOwner && (
+                <button className={c.isAdmin ? "btn-danger" : "btn-primary"} onClick={() => handleToggle(c)}>
+                  {c.isAdmin ? "Revoke" : "Make admin"}
+                </button>
+              )}
+            </span>
           </div>
         ))
       )}

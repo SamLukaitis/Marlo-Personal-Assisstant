@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 vi.mock("../providers/whatsapp.js", () => ({
-  sendWhatsAppMessage: vi.fn(),
+  sendWhatsAppMessage: vi.fn().mockResolvedValue(undefined),
   // Resolves by default (rather than plain vi.fn(), which returns undefined) — handleIncoming
   // calls .catch() on this fire-and-forget call, which throws on a non-promise return value.
   sendWhatsAppTypingIndicator: vi.fn().mockResolvedValue(undefined),
@@ -19,6 +19,8 @@ vi.mock("../db/store.js", () => ({
   appendWhatsAppMessage: vi.fn(),
   getDocumentByWamid: vi.fn(),
   getWhatsAppMessageByWamid: vi.fn(),
+  getSentDocumentByWamid: vi.fn(),
+  getRecentWhatsAppMessagesForOwner: vi.fn().mockReturnValue([]),
   // Needed by services/userTimezone.js, which a location message runs for real (via
   // chatDispatch.js's handleLocation, not mocked here) to resolve/store a timezone deterministically.
   getSetting: vi.fn(),
@@ -51,9 +53,13 @@ vi.mock("../services/whatsappRegistration.js", async () => {
 vi.mock("../services/postConnectSetup.js", () => ({
   handleNameReply: vi.fn().mockResolvedValue(false),
   handleFirstTaskReply: vi.fn().mockResolvedValue(false),
+  handleBusinessReply: vi.fn().mockResolvedValue(false),
+  handleFirstReceiptReply: vi.fn().mockResolvedValue(false),
+  firstReceiptFollowUp: vi.fn().mockReturnValue(undefined),
   handlePostConnectSetupReply: vi.fn().mockResolvedValue(false),
 }));
-vi.mock("../services/whatsappReply.js", () => ({
+vi.mock("../services/whatsappReply.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../services/whatsappReply.js")>()),
   sendAssistantReply: vi.fn(),
 }));
 vi.mock("../services/actionHandlers.js", () => ({
@@ -75,9 +81,15 @@ const { resolveOwnerByPhone, appendWhatsAppMessage, getDocumentByWamid, getWhats
   "../db/store.js"
 );
 const { runAssistantChat } = await import("../ai/assistant.js");
-const { handleNameReply, handleFirstTaskReply, handlePostConnectSetupReply } = await import(
-  "../services/postConnectSetup.js"
-);
+const {
+  handleNameReply,
+  handleFirstTaskReply,
+  handleBusinessReply,
+  handleFirstReceiptReply,
+  firstReceiptFollowUp,
+  handlePostConnectSetupReply,
+} = await import("../services/postConnectSetup.js");
+const { ingestWhatsAppMedia } = await import("../services/documents.js");
 const { sendAssistantReply } = await import("../services/whatsappReply.js");
 const { handlePendingActionReply } = await import("../services/actionHandlers.js");
 const { handlePendingRegistration } = await import("../services/whatsappRegistration.js");
@@ -99,6 +111,9 @@ beforeEach(() => {
   vi.mocked(appendWhatsAppMessage).mockClear();
   vi.mocked(handleNameReply).mockReset().mockResolvedValue(false);
   vi.mocked(handleFirstTaskReply).mockReset().mockResolvedValue(false);
+  vi.mocked(handleBusinessReply).mockReset().mockResolvedValue(false);
+  vi.mocked(handleFirstReceiptReply).mockReset().mockResolvedValue(false);
+  vi.mocked(firstReceiptFollowUp).mockReset().mockReturnValue(undefined);
   vi.mocked(handlePostConnectSetupReply).mockReset().mockResolvedValue(false);
   vi.mocked(sendAssistantReply).mockClear();
   vi.mocked(handlePendingActionReply).mockReset().mockResolvedValue(false);
@@ -211,6 +226,45 @@ describe("handleIncoming — blocking free-text setup steps", () => {
 
 });
 
+describe("handleIncoming — business onboarding steps", () => {
+  it("a reply to the business question is consumed by handleBusinessReply", async () => {
+    vi.mocked(handleBusinessReply).mockResolvedValue(true);
+    await handleIncoming({ kind: "text", from: "447900000020", text: "Plumber in Leeds", messageId: "m20" });
+    expect(handleBusinessReply).toHaveBeenCalledWith(42, expect.objectContaining({ text: "Plumber in Leeds" }));
+    expect(runAssistantChat).not.toHaveBeenCalled();
+  });
+
+  it("a typed reply to the receipt invitation is consumed by handleFirstReceiptReply", async () => {
+    vi.mocked(handleFirstReceiptReply).mockResolvedValue(true);
+    await handleIncoming({ kind: "text", from: "447900000021", text: "skip", messageId: "m21" });
+    expect(handleFirstReceiptReply).toHaveBeenCalledWith(42, expect.objectContaining({ text: "skip" }));
+    expect(runAssistantChat).not.toHaveBeenCalled();
+  });
+
+  it("a receipt photo during setup is filed, confirmed by the assistant, then the chain moves on", async () => {
+    const followUp = vi.fn().mockResolvedValue(undefined);
+    vi.mocked(firstReceiptFollowUp).mockReturnValue(followUp);
+    vi.mocked(ingestWhatsAppMedia).mockResolvedValue({ extractedText: "Screwfix £48.20" } as never);
+    vi.mocked(runAssistantChat).mockResolvedValue({ text: "Added Screwfix £48.20 to your books." });
+
+    await handleIncoming({ kind: "media", from: "447900000022", mediaId: "media-1", mimeType: "image/jpeg", messageId: "m22" });
+    expect(followUp).not.toHaveBeenCalled(); // not before the assistant has replied
+    await flushBatch();
+
+    expect(runAssistantChat).toHaveBeenCalledTimes(1);
+    expect(followUp).toHaveBeenCalledTimes(1);
+  });
+
+  it("a photo outside that step has no follow-up", async () => {
+    vi.mocked(ingestWhatsAppMedia).mockResolvedValue({ extractedText: "x" } as never);
+    vi.mocked(runAssistantChat).mockResolvedValue({ text: "Saved." });
+    await handleIncoming({ kind: "media", from: "447900000023", mediaId: "media-2", mimeType: "image/jpeg", messageId: "m23" });
+    await flushBatch();
+    expect(firstReceiptFollowUp).toHaveBeenCalledWith(42, "447900000023");
+    expect(runAssistantChat).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe("handleIncoming — post-connect setup button taps", () => {
   it("short-circuits entirely when handlePostConnectSetupReply consumes the message", async () => {
     vi.mocked(handlePostConnectSetupReply).mockResolvedValue(true);
@@ -270,6 +324,7 @@ describe("handleIncoming — location messages", () => {
       "447900000020",
       "user",
       expect.stringMatching(/^\[User shared their location at \d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC: 51\.5074, -0\.1278 \(Big Ben, London SW1A 0AA\)\]$/),
+      ["m20"],
     ]);
     expect(runAssistantChat).toHaveBeenCalled();
     expect(sendAssistantReply).toHaveBeenCalledWith(
@@ -296,6 +351,7 @@ describe("handleIncoming — location messages", () => {
       "447900000021",
       "user",
       expect.stringMatching(/^\[User shared their location at \d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC: 51\.5, -0\.1\]$/),
+      ["m21"],
     ]);
   });
 });

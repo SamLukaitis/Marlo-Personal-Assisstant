@@ -322,6 +322,50 @@ describe("extractIncomingMessages — unsupported message types", () => {
   });
 });
 
+describe("extractIncomingMessages — which of our numbers it was sent to", () => {
+  // Joyce's number sits on the same Meta app as Marlowe's, so Marlowe's webhook can receive
+  // messages meant for her. Marlowe must ignore those rather than answer them.
+  const MARLOWE = "1237424532795312";
+  const JOYCE = "1429960503526492";
+  const payloadTo = (phoneNumberId?: string) => ({
+    entry: [
+      {
+        changes: [
+          {
+            value: {
+              ...(phoneNumberId ? { metadata: { phone_number_id: phoneNumberId } } : {}),
+              messages: [
+                { from: "447000000001", id: "wamid.n1", type: "text", text: { body: "hi" } },
+              ],
+            },
+          },
+        ],
+      },
+    ],
+  });
+
+  it("keeps a message sent to our own number", () => {
+    expect(extractIncomingMessages(payloadTo(MARLOWE), MARLOWE)).toHaveLength(1);
+  });
+
+  it("drops a message sent to a different number on the same app", () => {
+    expect(extractIncomingMessages(payloadTo(JOYCE), MARLOWE)).toEqual([]);
+  });
+
+  it("keeps a message with no metadata (simulator and older fixtures don't carry it)", () => {
+    expect(extractIncomingMessages(payloadTo(undefined), MARLOWE)).toHaveLength(1);
+  });
+
+  it("keeps everything when no number is given to filter by", () => {
+    expect(extractIncomingMessages(payloadTo(JOYCE))).toHaveLength(1);
+  });
+
+  it("filters per change, so a batch addressed to both numbers keeps only ours", () => {
+    const both = { entry: [...payloadTo(JOYCE).entry, ...payloadTo(MARLOWE).entry] };
+    expect(extractIncomingMessages(both, MARLOWE)).toHaveLength(1);
+  });
+});
+
 describe("extractIncomingMessages — location", () => {
   it("parses a dropped pin with a name and address into an IncomingLocationMessage", () => {
     const payload = {
@@ -476,6 +520,39 @@ describe("sendChoiceMessage", () => {
     expect(interactive).toHaveLength(1);
     expect(interactive[0].interactive.body.text).toBe("Ready to send this?");
     expect(bodies[bodies.length - 1].type).toBe("interactive");
+  });
+
+  // Every part must come back with its wamid and text, so a swipe on any of them can be resolved
+  // to that part — these used to be thrown away.
+  it("returns the wamid and text of every part it sends, plain pieces and the buttons", async () => {
+    let n = 0;
+    global.fetch = vi.fn().mockImplementation(async () => {
+      n += 1;
+      return { ok: true, text: async () => JSON.stringify({ messages: [{ id: `wamid.${n}` }] }) };
+    }) as unknown as typeof fetch;
+    const draft = `${"Lots of words here. ".repeat(80)}\n\nReady to send this?`;
+
+    const parts = await sendChoiceMessage("447000000001", draft, [
+      { id: "pa:abc:yes", title: "Send" },
+      { id: "pa:abc:no", title: "No" },
+    ]);
+
+    expect(parts.length).toBe(n);
+    expect(parts.map((p) => p.wamid)).toEqual(Array.from({ length: n }, (_, i) => `wamid.${i + 1}`));
+    expect(parts[0].text).toContain("Lots of words here.");
+    expect(parts[parts.length - 1].text).toBe("Ready to send this?");
+  });
+
+  it("returns the list message's wamid too", async () => {
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      text: async () => JSON.stringify({ messages: [{ id: "wamid.list" }] }),
+    }) as unknown as typeof fetch;
+    const choices = Array.from({ length: 5 }, (_, i) => ({ id: `pa:abc:${i}`, title: `Option ${i}` }));
+
+    const parts = await sendChoiceMessage("447000000001", "Which one?", choices);
+
+    expect(parts).toEqual([{ wamid: "wamid.list", text: "Which one?" }]);
   });
 
   it("falls back to a generic prompt when even the last paragraph is too long for the body", async () => {

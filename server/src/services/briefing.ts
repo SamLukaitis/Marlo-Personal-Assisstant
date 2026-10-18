@@ -28,6 +28,7 @@ import { phoneSuggestionsEnabled, PHONE_SUGGESTION_PROMPT, expandPhoneMarkers, s
 import type { CalendarEvent, UnifiedMessage } from "../providers/types.js";
 // Type-only: attention.ts imports this module at runtime, so a value import here would be a cycle.
 import type { AttentionBundle } from "./attention.js";
+import { editionBriefingFacts } from "../editions/index.js";
 
 // Briefing synthesis is a once-a-day, moderately complex writeup — the richer assistant tier
 // is the right fit, same as assistant.ts's routing, rather than the flat Opus default this
@@ -224,6 +225,8 @@ export interface BriefingDay {
   news: { topic: string; title: string }[];
   /** What the attention gate is holding for this briefing (attention.ts); absent or empty when nothing. */
   attention?: BriefingAttention;
+  /** Edition-specific fact lines (editions/index.ts), e.g. the business edition's money summary. */
+  extraFacts?: string[];
 }
 
 // Nothing on today, no new mail, nothing waiting on a reply. Decided here rather than left to the
@@ -235,7 +238,8 @@ export function isQuietDay(day: BriefingDay): boolean {
     day.unread.count === 0 &&
     day.todayEvents.length === 0 &&
     day.flagged.length === 0 &&
-    attentionFactLines(day.attention).length === 0
+    attentionFactLines(day.attention).length === 0 &&
+    !day.extraFacts?.length
   );
 }
 
@@ -272,6 +276,7 @@ export function briefingFactBlock(day: BriefingDay): string {
   return [
     `Right now it is ${day.localTime} on ${day.localWeekday}, the user's own local time.`,
     ...attentionFactLines(day.attention),
+    ...(day.extraFacts ?? []),
     isQuietDay(day)
       ? "QUIET DAY: nothing on their calendar today, no unread mail today, nothing waiting on a reply. Use the quiet-day check-in from your instructions. Anything worth acting on from the next-three-days list below still gets mentioned — a quiet day with a flight to pack for is still a quiet day, but they should hear about the flight."
       : "",
@@ -389,6 +394,7 @@ async function buildBriefingText(ownerId: number, attention?: BriefingAttention)
       flagged: flagged.map((m) => ({ subject: m.subject, from: senderDisplayName(m.from) })),
       news: news.map((h) => ({ topic: h.topic, title: h.title })),
       attention,
+      extraFacts: editionBriefingFacts(ownerId, clock.dateKey),
     },
     "daily_briefing",
     suggest ? PHONE_SUGGESTION_PROMPT : undefined

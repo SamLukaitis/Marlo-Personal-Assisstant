@@ -412,7 +412,7 @@ export async function createMemberEvent(
     location?: string;
     description?: string;
   }
-): Promise<{ ref: string; start: string }> {
+): Promise<{ ref: string; start: string; end: string }> {
   const res = await calendarFor(session, account).events.insert({
     calendarId,
     requestBody: {
@@ -425,6 +425,7 @@ export async function createMemberEvent(
   return {
     ref: makeEventRef(account.id, calendarId, res.data.id ?? ""),
     start: res.data.start?.dateTime ?? res.data.start?.date ?? "",
+    end: res.data.end?.dateTime ?? res.data.end?.date ?? "",
   };
 }
 
@@ -438,7 +439,7 @@ export async function updateMemberEvent(
     location?: string;
     times?: { start: calendar_v3.Schema$EventDateTime; end: calendar_v3.Schema$EventDateTime };
   }
-): Promise<{ title: string; start: string }> {
+): Promise<{ title: string; start: string; end: string }> {
   const res = await calendarFor(session, account).events.patch({
     calendarId,
     eventId,
@@ -451,6 +452,7 @@ export async function updateMemberEvent(
   return {
     title: res.data.summary ?? "(untitled)",
     start: res.data.start?.dateTime ?? res.data.start?.date ?? "",
+    end: res.data.end?.dateTime ?? res.data.end?.date ?? "",
   };
 }
 

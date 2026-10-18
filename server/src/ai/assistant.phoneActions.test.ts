@@ -28,8 +28,16 @@ describe("make_phone_action", () => {
   it("leaves out install_url once the Shortcut has run", async () => {
     const u = user();
     recordShortcutSeen(u.id, 1, Date.now());
-    const result = (await runTool(u.id, "make_phone_action", { label: "x", steps: [{ type: "get_battery" }] })) as Record<string, unknown>;
+    const result = (await runTool(u.id, "make_phone_action", { label: "x", steps: [{ type: "timer", minutes: 10 }] })) as Record<string, unknown>;
     expect(result.install_url).toBeUndefined();
+  });
+
+  it("refuses a step the user's version-1 Shortcut can't run, without an update link when none exists", async () => {
+    const u = user();
+    recordShortcutSeen(u.id, 1, Date.now());
+    const result = (await runTool(u.id, "make_phone_action", { label: "x", steps: [{ type: "get_location" }] })) as { error: string };
+    expect(result.error).toMatch(/version 1.*can't do "get_location"/);
+    expect(result.error).not.toMatch(/icloud/);
   });
 
   it("returns the validator's error", async () => {

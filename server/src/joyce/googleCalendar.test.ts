@@ -23,6 +23,10 @@ const g = vi.hoisted(() => ({
   failures: [] as { method: string; token: string; status: number }[],
 }));
 
+/** Google answers with the event's times as offset timestamps; these tests' calendars are in BST. */
+const asGoogleReturns = (t: { dateTime?: string; date?: string } | undefined) =>
+  t?.dateTime ? { dateTime: `${t.dateTime.length === 16 ? `${t.dateTime}:00` : t.dateTime}+01:00` } : t;
+
 vi.mock("googleapis", () => {
   class OAuth2 {
     creds: { access_token?: string } = {};
@@ -60,18 +64,20 @@ vi.mock("googleapis", () => {
         acl: { insert: record(auth, "acl.insert", {}), delete: record(auth, "acl.delete", {}) },
         events: {
           list: record(auth, "events.list", () => ({ items: g.events })),
-          insert: record(auth, "events.insert", (p: { requestBody: Record<string, unknown> }) => ({
+          insert: record(auth, "events.insert", (p: { requestBody: Record<string, never> }) => ({
             id: "evt-new",
-            start: p.requestBody.start,
+            start: asGoogleReturns(p.requestBody.start),
+            end: asGoogleReturns(p.requestBody.end),
           })),
           get: record(auth, "events.get", {
             summary: "Dentist",
             start: { dateTime: "2026-10-20T15:00:00+01:00" },
             end: { dateTime: "2026-10-20T15:30:00+01:00" },
           }),
-          patch: record(auth, "events.patch", (p: { requestBody: Record<string, unknown> }) => ({
+          patch: record(auth, "events.patch", (p: { requestBody: Record<string, never> }) => ({
             summary: "Dentist",
-            start: p.requestBody.start,
+            start: asGoogleReturns(p.requestBody.start),
+            end: asGoogleReturns(p.requestBody.end),
           })),
           delete: record(auth, "events.delete", {}),
         },
@@ -284,6 +290,36 @@ describe("calendar tools", () => {
       start: { dateTime: "2026-10-22T09:00" },
       end: { dateTime: "2026-10-22T09:30:00" },
     });
+  });
+
+  it("report a timed event the new one overlaps, but not all-day events or itself", async () => {
+    const { session } = familyOf("15553330026", "Sol");
+    connect(session, "sol@example.com", "sol-token");
+    g.events = [
+      { id: "e1", summary: "Football", start: { dateTime: "2026-10-20T15:30:00+01:00" }, end: { dateTime: "2026-10-20T16:30:00+01:00" } },
+      { id: "e2", summary: "Piano", start: { dateTime: "2026-10-20T17:00:00+01:00" }, end: { dateTime: "2026-10-20T18:00:00+01:00" } },
+      { id: "e3", summary: "Half term", start: { date: "2026-10-20" }, end: { date: "2026-10-21" } },
+      // What Google returns for the event just added.
+      { id: "evt-new", summary: "Dentist", start: { dateTime: "2026-10-20T15:00:00+01:00" }, end: { dateTime: "2026-10-20T16:00:00+01:00" } },
+    ];
+    const out = await tool(session, "15553330026", "add_calendar_event", { title: "Dentist", start: "2026-10-20T15:00" });
+    expect(out.result).toContain("Clashes with:");
+    expect(out.result).toContain("Football (Sol's calendar)");
+    expect(out.result).not.toContain("Piano");
+    expect(out.result).not.toContain("Half term");
+    expect(out.result).not.toMatch(/Dentist \(/);
+
+    g.events = [];
+    const clear = await tool(session, "15553330026", "add_calendar_event", { title: "Dentist", start: "2026-10-20T15:00" });
+    expect(clear.result).not.toContain("Clashes");
+  });
+
+  it("still add the event when a calendar can't be read for the clash check", async () => {
+    const { session } = familyOf("15553330027", "Tam");
+    connect(session, "tam@example.com", "tam-token");
+    g.failures = [{ method: "calendarList.list", token: "tam-token", status: 500 }];
+    const out = await tool(session, "15553330027", "add_calendar_event", { title: "Dentist", start: "2026-10-20T15:00" });
+    expect(out.result).toContain("Added to their own main calendar");
   });
 
   it("say so plainly when nobody has connected a calendar", async () => {

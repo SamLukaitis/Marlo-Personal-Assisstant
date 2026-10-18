@@ -93,6 +93,8 @@ I ran a real conversation end to end against the live API. All of this is workin
 - **Google Calendar** (added 2026-10-17): each member can connect their own, and Joyce can make
   a shared family calendar that new events go on by default. See
   `changelog/2026-10-17-joyce-google-calendar.md`.
+- **One calendar per family** (2026-10-18): Google once anyone connects it, otherwise Joyce's own,
+  with a Portal switch to turn Joyce's own off. See "Which calendar a family uses" below.
 
 Every test passes: 31 Joyce tests, and Marlowe's existing suite still green (1557 total).
 
@@ -148,6 +150,132 @@ Searching notes and documents now ranks by how many of the search words match. P
 needed the exact phrase, which the live test showed failing whenever the model searched in its own
 words.
 
+## Each member has their own conversation
+
+Changed 2026-10-17. Originally the whole family shared one conversation history, so Joyce's
+replies to one member sat in another's context with nothing saying who they were for — one
+person's "yes" could be read as answering something she'd said to someone else. Now each member
+has their own thread (`messages.thread_member_id`): when Joyce replies, she sees only her
+conversation with that person. Existing history was sorted into threads on upgrade (each reply of
+Joyce's goes to whoever she was answering).
+
+The original requirement — everything one member tells Joyce is available to the others — still
+holds, two ways: she saves what matters to notes, documents, reminders and the calendar, which are
+shared; and `search_family_chat` searches what every member has said to her (the last 1,000
+messages), with who said it and when. Members' chat is still in the same family file, under the
+same key; this changes what the model is shown, not who can reach the data.
+
+## Deleting a message, and everything made from it
+
+Added 2026-10-17. Someone sends something wrong or too personal, then swipe-replies to it with
+"delete this". Joyce removes the message and everything she built from it.
+
+**Provenance** (`joyce/provenance.ts`, `derivations` table). Everything Joyce stores in a turn is
+linked to the member's message that started it, and to the file it carried, if any; her reply is
+linked the same way. Deleting the message removes those: a trip letter, the trip event and note
+she made from it, and her reply. **Direct links only** (decided 2026-10-17): nothing is linked to
+what she merely read during a turn, and links don't chain on into later turns, so a delete never
+sweeps up something unrelated that happened to share a turn. The cost: something made later from
+the trip event (a packing note in another conversation), or her reply to someone else who later
+asked about it, stays. Links exist from 2026-10-17; deleting an older message removes only that
+message.
+
+**Who and when.** The sender, or the family admin (whoever started the family; for older
+families, the first member) for another member's message. **Only within 24 hours of it being
+sent**, for everyone: a message that's been around longer has usually been built on, and deleting
+a year-old one could take a large part of a family's memory with it. Older ones go to a
+developer: `npm run joyce:delete -- <member's phone> "<words>"` lists matches, `--id <n>` shows
+what would go, `--confirm` deletes (`server/src/scripts/joyceDeleteMessage.ts`).
+
+**How.** Like leaving, two steps: the model recognises the request (`request_delete`, using the
+swiped message, or a message id from `search_family_chat` when the admin names someone else's),
+Joyce lists exactly what will go with Delete/Keep buttons, and the answer is matched in code
+(`joyce/deleting.ts`) before the model runs. No tool deletes a message. Once done, the request
+("delete this, it had my PIN in it") is removed too, so nothing points back at what was deleted.
+
+**What it can't do.** WhatsApp gives a business no way to delete messages from people's phones, so
+the message stays in the sender's chat; Joyce says so. Reminders or relays already delivered can't
+be unsent. Usage records hold no content and aren't touched.
+
+## Timezones, reminders and the calendar
+
+Added 2026-10-17.
+
+**Timezone.** Each family has one, stored encrypted in `family_meta`
+(`joyce/familyTime.ts`). It's guessed from the phone number of whoever Joyce is talking to the
+first time it's needed (a copy of Marlowe's `phoneTimezoneGuess.ts`) and marked as a guess, so
+Joyce says which zone she assumed when she sets a time. A member can tell her otherwise
+(`set_family_timezone`); only city zones like `Europe/London` are accepted, never `UTC`/`GMT`,
+because Marlowe once let the model turn "the UK" into "UTC" and reminders fired an hour late. The
+model always works in local wall-clock times; storage is UTC.
+
+**Reminders that arrive.** `joyce/reminderDelivery.ts` runs every minute. It asks the registry's
+`reminder_schedule` (a family id and a due time, nothing else) which families have something due,
+opens only those, and messages each person the reminder is for: an ordinary message if they've
+written to Joyce in the last 24 hours, otherwise the `joyce_reminder` template. Each reminder gets
+one attempt; anyone it couldn't reach gets it the next time they message, through the old path.
+`reminder_deliveries` records who has had it, so nothing goes out twice. This needed Joyce to keep
+members' phone numbers, which she never did before: they're now stored encrypted in the family's
+own file (`members.phone_enc`), filled in from each member's next message.
+
+The template (`npm run joyce:templates -- 1574262347469069`):
+
+> Reminder: {{reminder_text}}
+>
+> Reply here if you need anything.
+
+Submitted 2026-10-17, UTILITY, en_GB. Until it's approved, reminders for people outside the
+24-hour window wait for their next message.
+
+**Calendar.** Events live in the family's file (`events`), with tools to add, list, change and
+delete them. Adding or moving one reports anything it clashes with: same person, or anything for
+the whole family. **Subscribe link:** `calendar_link` gives a private URL
+(`/joyce/calendar/<secret>.ics`) that Google Calendar or a phone can subscribe to, read-only.
+The registry keeps only a hash of the secret; the family's file keeps it encrypted so Joyce can
+hand it out again, and asking for a new one kills the old link. Google refreshes subscribed
+calendars every several hours, which no feed setting can change.
+
+**One tap** (2026-10-17). Joyce sends a page link (`/joyce/subscribe/<secret>`) rather than the
+feed address. On an iPhone, iPad or Mac the page hands straight to the Calendar app's "Subscribe?"
+prompt (a `webcal://` link — WhatsApp only makes http(s) links tappable, hence the page); elsewhere
+it shows Apple and Google Calendar buttons. The feed suggests a colour (`X-APPLE-CALENDAR-COLOR`,
+rose pink) and the name "Family (Joyce)"; whether Apple uses the colour isn't confirmed, and anyone
+can change it.
+
+**Not possible / later:** Apple has no API for an app to write into or read from someone's iCloud
+calendar, so a subscription is the only Apple route. Writing into Google (a "Family" calendar in
+each member's account, updated instantly) and reading members' busy times ("Sam's busy 2–4pm",
+never what) are possible through a Google sign-in with the narrow `calendar.app.created` and
+`calendar.freebusy` permissions, pending a decision and Google's app verification. Work Outlook
+calendars can publish an availability-only link Joyce could read without any sign-in.
+
+**Two new ways into a family besides a phone number:** the reminder sender (from the schedule)
+and the calendar link (by its secret). Both get a `FamilyData` with no acting member, neither is
+reachable from an AI tool or a WhatsApp message, and neither lets a caller name a family.
+
+## Admin portal
+
+Added 2026-10-17. Admins get a Joyce portal at `/joyce-portal`, next to Marlowe's Portal in the
+sidebar, built from the same components in terracotta instead of green. Four sections:
+
+- **Flagged requests.** Joyce has a `flag_unmet_request` tool, like Marlowe's, for things a
+  family asked for that she couldn't do. Admins can leave notes and mark them resolved.
+- **To-do list.** Its own list, separate from Marlowe's (same table, `product = 'joyce'`).
+- **Logs.** The server's log lines that start with `joyce:`. "Explain this" works as in the Portal.
+- **Usage.** Joyce's Claude calls (replies, and reading photos/files) with token counts and an
+  approximate cost. Recorded with no family attached, so there is no per-family breakdown.
+
+**This is the one place family-originated text leaves a family's encrypted file.** A flagged
+request's one-line summary is stored in `data/joyce/admin.db`, readable by admins, with an
+anonymous family label (`Family 3F9A2C`, an HMAC of the family id under the master key). Joyce is
+told to leave names and personal details out of the summary, but that is an instruction to the
+model, not a guarantee. The label lets admins see that several requests came from one family
+without learning which family. This was a deliberate choice (2026-10-17) over a summary with no
+family link at all. Nothing in the portal can open a family's database.
+
+The portal routes are in `server/src/routes/joycePortalRoutes.ts`, outside `src/joyce/`, because
+they need Marlowe's admin auth; Joyce's own code still imports nothing of Marlowe's.
+
 ## Problems I hit, and what I did about them
 
 **Marlowe would have answered Joyce's messages.** This was the real landmine. Meta configures a
@@ -174,12 +302,10 @@ a future change could route a family's message out through the wrong number.
 
 Roughly in the order I'd do them.
 
-1. **Timezones.** Store one per family (ask during onboarding, or guess from the phone's country
-   code) and convert reminder times. Reminders are close to useless until this exists.
-2. **Reminders actually arriving.** Right now a reminder is delivered the next time that person
-   messages Joyce, and she's honest about that. Real delivery needs a scheduler like Marlowe's,
-   plus WhatsApp message templates — outside the 24-hour window since a user's last message,
-   Meta only allows pre-approved templates, which have to be submitted and approved.
+1. ~~Timezones~~ — done 2026-10-17, see "Timezones, reminders and the calendar" below. One zone
+   per family; members abroad share it.
+2. ~~Reminders actually arriving~~ — done 2026-10-17, same section. Depends on Meta approving
+   the `joyce_reminder` template for anyone who hasn't messaged in 24 hours.
 3. ~~Documents and photos~~ — done 2026-10-03, see "Photos and files" above. Voice notes are
    still ignored.
 4. **Expiring or single-use join codes**, if permanent shareable codes feel too loose once real
@@ -247,6 +373,26 @@ tenant files would deserve a serious look before committing to the shared table.
 4. Send one message to Marlowe and one to Joyce and confirm each is answered by the right one and
    ignored by the other.
 
+## Which calendar a family uses
+
+Added 2026-10-18 (`joyce/calendarMode.ts`). Joyce has two calendars: her own (above) and Google
+(below). A family only ever uses one, so she never has two to choose between:
+
+- **Google** as soon as any member has connected it. Joyce is given only the Google tools, and her
+  own calendar's subscribe feed is served empty, so phones don't show a second "family calendar".
+- **Joyce's own** if nobody has connected Google and the switch in the Joyce portal (Settings) is
+  on. This is the default.
+- **None** if nobody has connected Google and the switch is off. Joyce can only offer to connect
+  Google. Used for testing Google on its own.
+
+The model is handed only the current mode's tools, worked out afresh on every round of a turn, and
+`runTool` refuses the others too (an old tool call earlier in the conversation could name one).
+Nothing is deleted on a change: built-in events stay in the family's file and come back if the
+switch is turned on again or everyone disconnects Google. They don't move to Google by themselves;
+the connect message says so when there are any. The switch lives in Joyce's `admin.db` (`settings`
+table) and applies to every family at once. Follow-ups are in
+`feature-to-do/joyce-calendar-followups.md`.
+
 ## Google Calendar
 
 Added 2026-10-17. Code in `joyce/googleCalendar.ts` (talking to Google), `joyce/calendarTools.ts`
@@ -271,6 +417,9 @@ is in `changelog/2026-10-17-joyce-google-calendar.md`. Points that matter for th
   other members, now that family events have their own place.
 - Not handled yet: if the owner deletes the family calendar in Google, Joyce reports errors
   rather than offering to make a new one.
+- Adding or moving a timed event reports clashes with timed events on the family calendar and
+  every connected member's own calendars (all-day events aren't counted). Best effort: a calendar
+  that can't be read is skipped.
 
 ## What this touched outside Joyce
 

@@ -85,6 +85,64 @@ export async function sendJoyceMessage(to: string, text: string): Promise<void> 
   });
 }
 
+// Meta's error code for a free-form message sent outside the 24-hour customer service window.
+export const JOYCE_WINDOW_CLOSED_ERROR = 131047;
+
+// Joyce's approved message templates — the only thing WhatsApp lets a business send someone who
+// hasn't messaged in the last 24 hours. Named body variables, like Marlowe's. Created on the
+// WhatsApp Business Account by scripts/createJoyceTemplates.ts; they must be approved by Meta
+// before sending works, and the language here must match what was submitted.
+export const JOYCE_REMINDER_TEMPLATE = {
+  name: "joyce_reminder",
+  language: "en_GB",
+  param: "reminder_text",
+} as const;
+
+export async function sendJoyceReminderTemplate(to: string, reminderText: string): Promise<void> {
+  await post({
+    messaging_product: "whatsapp",
+    to,
+    type: "template",
+    template: {
+      name: JOYCE_REMINDER_TEMPLATE.name,
+      language: { code: JOYCE_REMINDER_TEMPLATE.language },
+      components: [
+        {
+          type: "body",
+          parameters: [
+            // Template variables can't contain newlines or long runs of spaces.
+            {
+              type: "text",
+              parameter_name: JOYCE_REMINDER_TEMPLATE.param,
+              text: reminderText.replace(/\s+/g, " ").trim().slice(0, 900),
+            },
+          ],
+        },
+      ],
+    },
+  });
+}
+
+/** A message with up to three tappable reply buttons under it. */
+export async function sendJoyceButtons(
+  to: string,
+  text: string,
+  buttons: { id: string; title: string }[]
+): Promise<void> {
+  await post({
+    messaging_product: "whatsapp",
+    to,
+    type: "interactive",
+    interactive: {
+      type: "button",
+      body: { text },
+      action: {
+        buttons: buttons.map((b) => ({ type: "reply", reply: { id: b.id, title: b.title } })),
+      },
+    },
+  });
+}
+
 export async function sendJoyceTypingIndicator(messageId: string): Promise<void> {
   await post({
     messaging_product: "whatsapp",
@@ -112,6 +170,8 @@ export interface JoyceInboundMessage {
   media?: JoyceInboundMedia;
   /** Which of our numbers it was addressed to — see extractJoyceMessages. */
   toPhoneNumberId: string | undefined;
+  /** The message this one swipe-replied to, if it did. */
+  quotedMessageId?: string;
 }
 
 interface WebhookPayload {
@@ -123,6 +183,7 @@ interface WebhookPayload {
           from?: string;
           id?: string;
           type?: string;
+          context?: { id?: string };
           text?: { body?: string };
           image?: { id?: string; mime_type?: string; caption?: string };
           document?: { id?: string; mime_type?: string; filename?: string; caption?: string };
@@ -158,12 +219,14 @@ export function extractJoyceMessages(payload: WebhookPayload): JoyceInboundMessa
       const toPhoneNumberId = change.value?.metadata?.phone_number_id;
       for (const m of change.value?.messages ?? []) {
         if (!m.from || !m.id) continue;
+        // Spread into each message below, so one that isn't a swipe-reply has no such key at all.
+        const quote = m.context?.id ? { quotedMessageId: m.context.id } : {};
         if (m.type === "text" && m.text?.body) {
-          out.push({ from: m.from, messageId: m.id, text: m.text.body, toPhoneNumberId });
+          out.push({ from: m.from, messageId: m.id, text: m.text.body, toPhoneNumberId, ...quote });
         } else if (m.type === "interactive") {
           const title =
             m.interactive?.button_reply?.title ?? m.interactive?.list_reply?.title;
-          if (title) out.push({ from: m.from, messageId: m.id, text: title, toPhoneNumberId });
+          if (title) out.push({ from: m.from, messageId: m.id, text: title, toPhoneNumberId, ...quote });
         } else if (m.type === "image" && m.image?.id && m.image.mime_type) {
           out.push({
             from: m.from,
@@ -171,6 +234,7 @@ export function extractJoyceMessages(payload: WebhookPayload): JoyceInboundMessa
             text: m.image.caption ?? "",
             media: { mediaId: m.image.id, mimeType: m.image.mime_type },
             toPhoneNumberId,
+            ...quote,
           });
         } else if (m.type === "document" && m.document?.id && m.document.mime_type) {
           out.push({
@@ -183,6 +247,7 @@ export function extractJoyceMessages(payload: WebhookPayload): JoyceInboundMessa
               filename: m.document.filename,
             },
             toPhoneNumberId,
+            ...quote,
           });
         }
       }

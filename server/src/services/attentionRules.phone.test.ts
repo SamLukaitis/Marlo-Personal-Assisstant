@@ -61,3 +61,14 @@ describe("phoneStepsFor", () => {
     expect(Array.from((s!.steps[0] as { label: string }).label).length).toBeLessThanOrEqual(80);
   });
 });
+
+describe("phoneStepsFor — Shortcut version", () => {
+  it("offers no directions to a version-1 Shortcut, which can't run them", () => {
+    expect(phoneStepsFor({ summary: "Stay", kind: "hotel", merchant: "Hotel Eva, Faro", eventStart: "2026-10-13" }, zone, now, 1)).toBeNull();
+  });
+
+  it("still offers a flight alarm to a version-1 Shortcut", () => {
+    const s = phoneStepsFor({ summary: "Flight", kind: "flight", eventStart: "2026-10-13T08:15:00+01:00" }, zone, now, 1);
+    expect(s?.steps).toEqual([{ type: "alarm", time: "05:15", label: "Flight" }]);
+  });
+});

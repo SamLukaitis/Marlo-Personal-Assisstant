@@ -17,7 +17,7 @@ import {
   type PhoneStepJson,
   type PhoneStepResult,
 } from "../db/store.js";
-import { describeStep, unsupportedSteps, validateSteps, STEP_TYPES, type PhoneStep } from "./phoneSteps.js";
+import { describeStep, unsupportedSteps, validateSteps, supportedStepTypes, type PhoneStep } from "./phoneSteps.js";
 import { cleanText, InputError } from "./appLinks.js";
 import { handleFinishedPhoneAction, formatReportedValue, PROBLEM_TTL_MS } from "./phoneActionFollowups.js";
 
@@ -87,6 +87,17 @@ export type PhoneActionView =
   | { state: "gone"; installUrl: string };
 
 // The landing page only reads: WhatsApp's link preview and a second look must not use up the code.
+// The model sometimes writes a Marlowe link itself, copying the shape of an earlier one, or re-pastes
+// a link that was already used. Either way the user taps a dead link. Every action link in a reply
+// must be one that exists and is still unused; anything else is replaced so the user isn't misled.
+export function scrubUnknownActionLinks(text: string, now = Date.now()): string {
+  const prefix = actionPageUrl("").replace(/[.*+?^${}()|[\]\\/]/g, "\\$&");
+  return text.replace(new RegExp(`${prefix}([A-Za-z0-9_-]{22})(?![A-Za-z0-9_-])`, "g"), (link, code: string) => {
+    const row = getPhoneActionByCodeHash(hashCode(code));
+    return usable(row, now) ? link : "(that link isn't valid — ask me again for a fresh one)";
+  });
+}
+
 export function viewPhoneAction(code: string, now = Date.now()): PhoneActionView {
   const row = getPhoneActionByCodeHash(hashCode(code));
   if (!usable(row, now)) return { state: "gone", installUrl: shortcutInstallUrl() };
@@ -198,15 +209,28 @@ export async function sweepStalledPhoneActions(now = Date.now()): Promise<void> 
 
 const RECENT_RESULTS_MS = 2 * HOUR;
 
+// The Shortcut version this user's phone last reported, or the published one before it ever ran.
+// Everything Marlowe offers is checked against this, so a phone is never sent a step it can't run.
+export function userShortcutVersion(ownerId: number): number {
+  return getShortcutStatus(ownerId)?.version ?? currentShortcutVersion();
+}
+
 // Per-user context for the chat system prompt. Empty when the feature is off, so nothing about
 // phone actions reaches the model on servers without the Shortcut configured.
 export function phonePromptSection(ownerId: number, now = Date.now()): string {
   if (!isPhoneActionsConfigured()) return "";
   const lines = [
     "Phone actions: with make_phone_action you can send a one-tap link that runs steps on the user's iPhone through the Marlowe Shortcut " +
-      `(${STEP_TYPES.join(", ")}). Offer one whenever it saves them effort, not only when asked — e.g. an alarm before an early flight, ` +
+      `(${supportedStepTypes(userShortcutVersion(ownerId)).join(", ")}). Offer one whenever it saves them effort, not only when asked — e.g. an alarm before an early flight, ` +
       "a Focus during a long meeting, a text to say they're running late. Combine related steps into one link. Never say it's done — say \"tap to …\". " +
-      "Put the link on its own line. iPhone only.",
+      "Put the link on its own line. iPhone only. Never write a Marlowe link yourself or reuse one from earlier in the chat: " +
+      "every link must be the url make_phone_action just returned, and each link works only once.",
+    // Without these the model reaches for email when the user says "message mum", and refuses a
+    // calendar event when no Google/Microsoft calendar is connected.
+    "Picking the channel: when they ask you to \"message\" or \"text\" someone, use a phone text step. When they say WhatsApp, " +
+      "use make_app_link app=whatsapp (look the number up with search_contacts if you can). Use email only when they say email or give an email address. " +
+      "If they want something in their calendar and no calendar account is connected, use a calendar_event step instead of asking them to connect one. " +
+      "\"remind me…\" stays set_reminder (a WhatsApp nudge from you); use a reminder step only when they mention their Reminders app.",
   ];
   const status = getShortcutStatus(ownerId);
   if (!status) {
@@ -215,7 +239,10 @@ export function phonePromptSection(ownerId: number, now = Date.now()): string {
     lines.push(`Their Marlowe Shortcut is version ${status.version}.`);
     const problems = status.knownProblems.filter((p) => now - p.at <= PROBLEM_TTL_MS);
     if (problems.length) {
-      lines.push(`Known problems on their phone — don't repeat these unless they say it's fixed: ${problems.map((p) => `${p.detail} (${p.error})`).join("; ")}.`);
+      lines.push(
+        `Recent failures on their phone: ${problems.map((p) => `${p.detail} (${p.error})`).join("; ")}. ` +
+          "If they ask for one of these again, mention it failed last time, but still call make_phone_action — a new link is the only way to retry."
+      );
     }
   }
   const recent = listRecentFinishedPhoneActions(ownerId, now - RECENT_RESULTS_MS).map((a) => {
@@ -237,9 +264,10 @@ export function makePhoneActionForChat(
   now = Date.now()
 ): { url: string; summary: string[]; install_url?: string } | { error: string } {
   const status = getShortcutStatus(ownerId);
-  const validated = validateSteps(input.steps, status?.version ?? currentShortcutVersion());
+  const validated = validateSteps(input.steps, userShortcutVersion(ownerId));
   if ("error" in validated) {
-    return status && validated.error.includes("can't do")
+    // Only point at an update when a newer Shortcut than theirs has actually been published.
+    return status && status.version < currentShortcutVersion() && validated.error.includes("can't do")
       ? { error: `${validated.error} Ask them to add the updated Marlowe Shortcut: ${shortcutInstallUrl()}` }
       : validated;
   }
@@ -279,7 +307,7 @@ export const PHONE_SUGGESTION_PROMPT = [
 
 export function expandPhoneMarkers(ownerId: number, text: string, source: "briefing" | "digest", now = Date.now()): string {
   const enabled = phoneSuggestionsEnabled(ownerId);
-  const version = getShortcutStatus(ownerId)?.version ?? currentShortcutVersion();
+  const version = userShortcutVersion(ownerId);
   let made = 0;
   let matched = false;
   const out = text.replace(MARKER, (_whole, rawLabel: string, json: string) => {

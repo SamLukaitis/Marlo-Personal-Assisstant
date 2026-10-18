@@ -1,5 +1,8 @@
 Joyce can now work with Google Calendar: family members connect their own, Joyce can make a shared family calendar that new events go on, and anyone in the family can ask what's on or have Joyce add, move or delete events.
 
+(Merged with Joyce's built-in calendar on 2026-10-18 so each family only ever has one calendar; see
+`changelog/2026-10-18-joyce-one-calendar-per-family.md`.)
+
 ## What changed
 
 A family member says something like "connect my Google Calendar". Joyce replies with a link, which
@@ -34,8 +37,7 @@ If the family calendar didn't get added for someone, they can ask Joyce to add t
 Personal calendars are still read, so Joyce can answer "is Sam free on Saturday?"
 
 Times are read and written in each person's own Google Calendar time zone, so "3pm" means 3pm
-where that person is, not server time (Joyce's reminders are still UTC; see
-`feature-to-do/timezone-handling.md`). Events Joyce adds say "Added by Joyce for <name>" in their
+where that person is, not server time. Events Joyce adds say "Added by Joyce for <name>" in their
 notes, so it's clear later how they got there.
 
 "Disconnect my Google Calendar" removes your own connection; nobody can disconnect someone else's.
