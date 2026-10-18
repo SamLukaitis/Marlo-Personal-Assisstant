@@ -14,9 +14,15 @@
 //
 // Meta's rules this is written around: a body can't start or end with a variable, variables
 // need an example, and this account uses named variables. The name, language and variable name
-// must match JOYCE_REMINDER_TEMPLATE in joyce/whatsapp.ts. Never prints the token.
+// must match JOYCE_REMINDER_TEMPLATE / JOYCE_RELAY_TEMPLATE in joyce/whatsapp.ts. Never prints
+// the token.
+//
+// joyce_family_message is worded as a notification of activity in the recipient's own family
+// group, with fixed text either side of the message, rather than as a bare forwarded message:
+// Meta treats a template that's mostly one free-text variable as vague, and anything that reads
+// as promotional as MARKETING.
 import "dotenv/config";
-import { JOYCE_REMINDER_TEMPLATE } from "../joyce/whatsapp.js";
+import { JOYCE_RELAY_TEMPLATE, JOYCE_REMINDER_TEMPLATE } from "../joyce/whatsapp.js";
 
 const GRAPH = "https://graph.facebook.com/v21.0";
 const token = process.env.JOYCE_WHATSAPP_TOKEN ?? process.env.WHATSAPP_TOKEN;
@@ -36,6 +42,29 @@ const TEMPLATES = [
         example: {
           body_text_named_params: [
             { param_name: JOYCE_REMINDER_TEMPLATE.param, example: "Leo's dentist appointment at 4pm today" },
+          ],
+        },
+      },
+    ],
+  },
+  {
+    name: JOYCE_RELAY_TEMPLATE.name,
+    language: JOYCE_RELAY_TEMPLATE.language,
+    category: "UTILITY",
+    parameter_format: "NAMED",
+    components: [
+      {
+        type: "BODY",
+        text:
+          `Hi {{${JOYCE_RELAY_TEMPLATE.params.recipient}}}, you have a new message from ` +
+          `{{${JOYCE_RELAY_TEMPLATE.params.sender}}} in your family group:\n\n` +
+          `"{{${JOYCE_RELAY_TEMPLATE.params.message}}}"\n\n` +
+          "Reply here if you'd like me to pass anything back.",
+        example: {
+          body_text_named_params: [
+            { param_name: JOYCE_RELAY_TEMPLATE.params.recipient, example: "Ella" },
+            { param_name: JOYCE_RELAY_TEMPLATE.params.sender, example: "Jake" },
+            { param_name: JOYCE_RELAY_TEMPLATE.params.message, example: "I'll be home late tonight, so don't wait for me for dinner." },
           ],
         },
       },

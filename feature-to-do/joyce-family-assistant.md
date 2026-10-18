@@ -82,7 +82,9 @@ I ran a real conversation end to end against the live API. All of this is workin
   correctly attributed ("It's mango-tree-88 — Priya just shared that one").
 - **Who sent what, when**: every note, document, message and reminder records the member and
   timestamp.
-- **Passing messages between members**: "tell mum I'll be late Friday" is left for Priya and
+- **Passing messages between members**: "tell mum I'll be late Friday" goes to Priya straight
+  away (2026-10-18, `joyce/relayDelivery.ts`): an ordinary message if she's messaged Joyce in the
+  last 24 hours, otherwise the `joyce_family_message` template. If neither can be sent it's
   delivered the next time she messages.
 - **Reminders**, for one member or the whole family.
 - **Refusing to reach outside the family**, in her own words and without being asked to.
@@ -224,8 +226,16 @@ The template (`npm run joyce:templates -- 1574262347469069`):
 >
 > Reply here if you need anything.
 
-Submitted 2026-10-17, UTILITY, en_GB. Until it's approved, reminders for people outside the
-24-hour window wait for their next message.
+Submitted 2026-10-17, UTILITY, en_GB. Approved by 2026-10-18.
+
+Passed-on messages use a second template, `joyce_family_message` (submitted 2026-10-18,
+UTILITY, en_GB):
+
+> Hi {{recipient_name}}, you have a new message from {{sender_name}} in your family group:
+>
+> "{{message_text}}"
+>
+> Reply here if you'd like me to pass anything back.
 
 **Calendar.** Events live in the family's file (`events`), with tools to add, list, change and
 delete them. Adding or moving one reports anything it clashes with: same person, or anything for

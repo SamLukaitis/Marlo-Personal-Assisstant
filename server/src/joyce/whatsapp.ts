@@ -88,6 +88,10 @@ export async function sendJoyceMessage(to: string, text: string): Promise<void> 
 // Meta's error code for a free-form message sent outside the 24-hour customer service window.
 export const JOYCE_WINDOW_CLOSED_ERROR = 131047;
 
+// How long after someone's last message Joyce may send them an ordinary message. After that,
+// only an approved template gets through.
+export const CUSTOMER_SERVICE_WINDOW_MS = 24 * 60 * 60 * 1000;
+
 // Joyce's approved message templates — the only thing WhatsApp lets a business send someone who
 // hasn't messaged in the last 24 hours. Named body variables, like Marlowe's. Created on the
 // WhatsApp Business Account by scripts/createJoyceTemplates.ts; they must be approved by Meta
@@ -97,6 +101,44 @@ export const JOYCE_REMINDER_TEMPLATE = {
   language: "en_GB",
   param: "reminder_text",
 } as const;
+
+// A message one family member asked Joyce to pass to another ("tell Ella I'll be late"), for when
+// the recipient hasn't messaged in 24 hours. Worded as a notification of activity in their family
+// group, which is what keeps it in Meta's UTILITY category.
+export const JOYCE_RELAY_TEMPLATE = {
+  name: "joyce_family_message",
+  language: "en_GB",
+  params: { recipient: "recipient_name", sender: "sender_name", message: "message_text" },
+} as const;
+
+/** Template variables can't contain newlines or long runs of spaces. */
+const templateText = (v: string, max: number) => v.replace(/\s+/g, " ").trim().slice(0, max);
+
+export async function sendJoyceRelayTemplate(
+  to: string,
+  relay: { recipientName: string | null; senderName: string | null; message: string }
+): Promise<void> {
+  const p = JOYCE_RELAY_TEMPLATE.params;
+  await post({
+    messaging_product: "whatsapp",
+    to,
+    type: "template",
+    template: {
+      name: JOYCE_RELAY_TEMPLATE.name,
+      language: { code: JOYCE_RELAY_TEMPLATE.language },
+      components: [
+        {
+          type: "body",
+          parameters: [
+            { type: "text", parameter_name: p.recipient, text: templateText(relay.recipientName ?? "there", 60) },
+            { type: "text", parameter_name: p.sender, text: templateText(relay.senderName ?? "someone in your family", 60) },
+            { type: "text", parameter_name: p.message, text: templateText(relay.message, 700) },
+          ],
+        },
+      ],
+    },
+  });
+}
 
 export async function sendJoyceReminderTemplate(to: string, reminderText: string): Promise<void> {
   await post({

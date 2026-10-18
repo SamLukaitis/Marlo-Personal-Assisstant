@@ -8,6 +8,7 @@ import { sendJoyceMedia } from "./whatsapp.js";
 import { messages as toMessages, type JoyceButton, type JoyceMessage } from "./messages.js";
 import { recordDerivation, type Item } from "./provenance.js";
 import { requestDelete } from "./deleting.js";
+import { sendRelayNow } from "./relayDelivery.js";
 import { flagRequest, recordJoyceUsage } from "./adminRecords.js";
 import { calendarMode, type CalendarMode } from "./calendarMode.js";
 import {
@@ -247,8 +248,9 @@ const BASE_TOOLS: Anthropic.Tool[] = [
   {
     name: "pass_message",
     description:
-      "Leave a message for another family member. They receive it the next time they message " +
-      "you, so tell the sender it has been left rather than that it has been sent.",
+      "Pass a message on to another family member. It's sent to them straight away when " +
+      "WhatsApp allows; otherwise they get it the next time they message you. The result says " +
+      "which — tell the sender exactly that.",
     input_schema: {
       type: "object",
       properties: {
@@ -748,9 +750,13 @@ async function runTool(
           : `Nobody in this family is called "${to}". Check who_is_in_the_family and ask.`;
       }
       if (found.id === session.actor.id) return "That's the person you're talking to — no need to pass it on.";
-      const relayId = queueRelay(session, found.id, String(input.message));
+      const body = String(input.message);
+      const relayId = queueRelay(session, found.id, body);
       recordDerivation(session, { type: "relay", id: relayId }, state.sources);
-      return `Message left for ${found.displayName}; they'll get it next time they message you.`;
+      return (await sendRelayNow(session, relayId, found.id, body))
+        ? `Sent to ${found.displayName} just now.`
+        : `Left for ${found.displayName}: WhatsApp wouldn't let you message them right now, so ` +
+            "they'll get it the next time they message you.";
     }
     case "request_delete": {
       const target =

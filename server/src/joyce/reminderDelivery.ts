@@ -9,6 +9,7 @@ import {
   type ReminderToPush,
 } from "./store.js";
 import {
+  CUSTOMER_SERVICE_WINDOW_MS,
   JOYCE_WINDOW_CLOSED_ERROR,
   JoyceSendError,
   sendJoyceMessage,
@@ -28,7 +29,6 @@ import {
 // (store.ts's claimDueReminders), so a reminder is never lost and never sent twice.
 
 const TICK_MS = 60_000;
-const CUSTOMER_SERVICE_WINDOW_MS = 24 * 60 * 60 * 1000;
 
 function reminderText(reminder: ReminderToPush, recipient: ReminderRecipient): string {
   const fromSomeoneElse =

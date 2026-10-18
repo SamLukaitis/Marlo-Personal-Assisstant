@@ -123,9 +123,9 @@ const SCHEMA = `
   );
   CREATE INDEX IF NOT EXISTS idx_reminders_due ON reminders(due_at) WHERE delivered_at IS NULL;
 
-  -- "Pass messages from one family member to another": held here until the recipient next
-  -- messages Joyce, then delivered and marked. Deliberately not a push — see joyce/routes.ts on
-  -- WhatsApp's 24-hour rule.
+  -- "Pass messages from one family member to another". Sent straight away if the recipient has
+  -- messaged Joyce in the last 24 hours (relayDelivery.ts); otherwise held here until they next
+  -- message, because WhatsApp won't let Joyce message them first.
   CREATE TABLE IF NOT EXISTS relays (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     from_member_id INTEGER NOT NULL REFERENCES members(id),
