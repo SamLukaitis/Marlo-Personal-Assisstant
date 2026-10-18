@@ -1,4 +1,8 @@
 import { consumePendingLeave, leaveFamily, setOnboardingState } from "./registry.js";
+import { openFamilySessionForPhone } from "./familyDb.js";
+import { deleteMyGoogleAccount } from "./store.js";
+import { revokeJoyceGoogleToken } from "./googleCalendar.js";
+import { onMemberLeaving } from "./familyCalendar.js";
 
 // Leaving a family, in two steps.
 //
@@ -61,6 +65,20 @@ export function handlePendingLeave(
   if (!consumePendingLeave(normalizedPhone)) return null;
 
   if (!isLeaveConfirmation(text)) return { reply: NOT_CONFIRMED_MESSAGE, left: false };
+
+  // Their notes and documents stay with the family, but their calendar doesn't: it's still
+  // their live Google account, and the family shouldn't keep reading and editing it after
+  // they've gone. Done before leaving, while there's still a session to reach the row through.
+  // If they own the family calendar, the family stops using it — it stays in their Google
+  // account after they've gone. Otherwise they're unshared from it. See joyce/familyCalendar.ts.
+  const session = openFamilySessionForPhone(normalizedPhone);
+  if (session) onMemberLeaving(session);
+  const google = session ? deleteMyGoogleAccount(session) : null;
+  if (google) {
+    revokeJoyceGoogleToken(google).catch((err) =>
+      console.error("joyce: couldn't revoke Google token on leaving", err)
+    );
+  }
 
   if (!leaveFamily(normalizedPhone)) {
     // Only reachable if they were removed by something else between asking and confirming.

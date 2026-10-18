@@ -90,6 +90,9 @@ I ran a real conversation end to end against the live API. All of this is workin
   remembering to check.
 - **Leaving a family**, with a two-step confirmation (see below).
 - **Photos and files** (added 2026-10-03): see below.
+- **Google Calendar** (added 2026-10-17): each member can connect their own, and Joyce can make
+  a shared family calendar that new events go on by default. See
+  `changelog/2026-10-17-joyce-google-calendar.md`.
 
 Every test passes: 31 Joyce tests, and Marlowe's existing suite still green (1557 total).
 
@@ -230,11 +233,44 @@ tenant files would deserve a serious look before committing to the shared table.
    Generate the master key fresh — it must **not** be the same value as `ENCRYPTION_KEY`, and
    losing it makes every family's data permanently unreadable, so back it up off the server.
    `server/.env.example` has the full list with instructions.
-3. Point the webhook at `/webhooks/joyce` and subscribe it to messages. Note the WABA
-   webhook-subscription gotcha that bit us with Marlowe: subscribing the *app* is not the same as
-   subscribing the *WhatsApp Business Account*, and both are needed.
+3. Route Joyce's number to `/webhooks/joyce`. Meta has **one** callback URL per app (Marlowe's
+   `/webhooks/whatsapp`), so without this every message to Joyce lands on Marlowe's endpoint,
+   Marlowe drops it (wrong `phone_number_id`), and Joyce never hears it. The fix is a
+   *phone-number-level webhook override*, which applies to Joyce's number only:
+   `POST /{JOYCE_PHONE_NUMBER_ID}` with
+   `{"webhook_configuration":{"override_callback_uri":"https://<host>/webhooks/joyce","verify_token":"<JOYCE_WHATSAPP_VERIFY_TOKEN>"}}`.
+   Meta checks the URL when you set it, so the Joyce env vars must already be deployed. Check
+   it with `GET /{JOYCE_PHONE_NUMBER_ID}?fields=webhook_configuration`. Do **not** use the
+   WABA-level override; that would move Marlowe's traffic too. (Corrected 2026-10-16: an earlier
+   version of this step assumed both endpoints receive every message.) The WABA must also be
+   subscribed to the app, which it already is.
 4. Send one message to Marlowe and one to Joyce and confirm each is answered by the right one and
    ignored by the other.
+
+## Google Calendar
+
+Added 2026-10-17. Code in `joyce/googleCalendar.ts` (talking to Google), `joyce/calendarTools.ts`
+(the model's tools), `joyce/familyCalendar.ts` (the shared family calendar) and
+`joyce/googleRoutes.ts` (the connect and callback pages). The full story
+is in `changelog/2026-10-17-joyce-google-calendar.md`. Points that matter for the isolation design:
+
+- The browser that finishes Google's sign-in has no phone number, so the one-time link stands in
+  for one. It's minted for a phone hash in the registry (`google_connect_tokens`), and spending it
+  opens that phone's family as that member (`openFamilySessionForGoogleConnect`). That is the only
+  way into a family other than an inbound message, and it still takes no family id.
+- Event refs are `<account id>|<calendar id>|<event id>`. The account id is looked up in this
+  family's own `google_accounts` table, so a ref from anywhere else finds nothing.
+- Leaving a family deletes and revokes the leaver's Google connection.
+- The family calendar is a Google calendar owned by whoever asked for it. Its id is kept
+  encrypted in `family_meta`. Only the owner's account can share it, so new members are shared in
+  (and leavers unshared) through the owner's tokens. If the owner leaves, the family drops it.
+- New events go on the family calendar by default. Anyone can still ask for a specific person's
+  own calendar, and any member can change any connected member's calendar, because that's how the
+  rest of Joyce works (everyone sees everything). Joyce warns about this before anyone connects.
+  If that turns out too loose, the obvious tightening is to make personal calendars read-only to
+  other members, now that family events have their own place.
+- Not handled yet: if the owner deletes the family calendar in Google, Joyce reports errors
+  rather than offering to make a new one.
 
 ## What this touched outside Joyce
 

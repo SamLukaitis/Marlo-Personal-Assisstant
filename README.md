@@ -6,33 +6,39 @@ Marlowe can be used from the web app and, optionally, through WhatsApp. It is de
 
 ## What Marlowe does
 
-- **AI assistant:** Ask Claude questions about connected accounts and personal data. The assistant can search sources, summarize information, manage personal calendar events, create email drafts, maintain memory notes, and use other application tools.
+- **AI assistant:** Ask Claude questions about connected accounts and personal data. The assistant can search sources, summarize information, manage personal calendar events, create email drafts, and use other application tools.
+- **Memory:** Marlowe builds a personal profile from conversations in the background, brings up the facts relevant to each message, and lets you correct or forget things from chat.
 - **Google integration:** Gmail, Google Calendar, Google Drive, and Google Contacts through OAuth.
-- **Microsoft integration:** Outlook mail, Microsoft Calendar, OneDrive, Teams chats, and Microsoft contacts through OAuth.
+- **Microsoft integration:** Outlook mail (including sending, at parity with Gmail), Microsoft Calendar, OneDrive, Teams chats, and Microsoft contacts through OAuth.
 - **Multiple accounts:** Connect multiple Google and Microsoft accounts and search across them from one hub.
 - **Unified search:** Search email, cloud files, local files, chats, and saved documents in one place.
 - **Local files:** Configure folders such as Documents or Desktop for local filename search; no OAuth connection is required.
-- **WhatsApp channel:** Message Marlowe through Meta's official WhatsApp Cloud API. Incoming messages are routed to the correct user by their registered phone number.
+- **WhatsApp channel:** Message Marlowe through Meta's official WhatsApp Cloud API. Incoming messages are routed to the correct user by their registered phone number. New users can sign up with just a phone number and connect a mailbox later (or never). Marlowe sends a holding message when a reply is slow, and can unsubscribe you from promotional senders.
 - **Document capture:** Send supported images, PDFs, or Word documents through WhatsApp for extraction and later search.
-- **Briefings and reminders:** Generate daily briefings and schedule proactive WhatsApp notifications while the server is running. Unprompted messages go through one gate (`server/src/services/attention.ts`): only urgent things interrupt (max 4 a day, quiet hours 22:00–07:00), bookings, renewals and bills become reminders at the right moment, and the rest is acknowledged in the briefing or evening recap.
+- **Briefings, alerts and reminders:** A morning briefing that talks about people rather than email subject lines, and an evening recap written the same way. Unprompted messages go through one gate (`server/src/services/attention.ts`): only urgent things interrupt (max 4 a day, quiet hours 22:00–07:00), bookings, renewals and bills become reminders at the right moment, and the rest is acknowledged in the briefing or evening recap. Emails from real people are grouped into one daily digest by default (switchable from WhatsApp). These run on the user's own timezone (see *Current limitations*).
 - **Travel tools:** Record location check-ins, inspect travel history, and calculate country/Schengen/EU day counts from the check-in timeline.
 - **News, weather, and markets:** Optional external information providers are available through the assistant and briefing features.
 - **Places and travel times (optional):** With `GOOGLE_MAPS_API_KEY` set, the assistant finds real nearby places and driving/walking times through Google's Maps Grounding Lite MCP server. On WhatsApp it can ask for your location with a one-tap "Send location" button.
 - **App hand-off links:** Marlowe sends links that open Uber, Lyft, Google Maps, OpenTable, Resy, Spotify, Airbnb or Booking.com already filled in (`server/src/services/appLinks.ts`); you confirm in the app. There's no setup and no API keys.
 - **Phone actions (optional):** With the one-time "Marlowe" Apple Shortcut installed, Marlowe sends one-tap links that set alarms, timers and reminders, change Focus and phone settings, text or call from your number, run your own Shortcuts, and send your location, battery, sleep or a typed answer back (`server/src/services/phoneActions.ts`). It offers them in chat, the briefing, the evening digest and on booking reminders. Off until `MARLOWE_SHORTCUT_ICLOUD_URL` is set; see `docs/marlowe-shortcut-build-guide.md`.
-- **Administration:** Admin users have access to a separate portal for operational tools, logs, user administration, and application health information.
+- **Features page:** `/features` explains to users what Marlowe can do, with example things to say, and shows which optional tools are switched on.
+- **Administration:** Admin users have access to a separate portal for operational tools, logs, user administration, the waitlist of uninvited numbers, and application health information. Admin-only test tools include the WhatsApp Simulator (try conversations without the live number) and the Briefing Lab (`/briefing-lab`, for judging briefing drafts).
+
+## Joyce — family WhatsApp assistant (optional)
+
+Joyce is a separate assistant on her own WhatsApp number that a family shares. Members can save notes, photos and documents (PDF, Word, text), and any member of the family can search them or ask for a file back. Each member can also connect their own Google Calendar. Joyce can make a shared family calendar in Google, separate from everyone's own, which every connected member sees in their Google Calendar app. New events go on it unless someone asks for a particular person's calendar. Anyone in the family can ask what's on, or have Joyce add, move or delete events. Connecting needs `GOOGLE_CLIENT_ID`/`GOOGLE_CLIENT_SECRET` (the same Google app as Marlowe) and Joyce's callback URL, `<SERVER_URL>/joyce/google/callback`, added to that app's authorised redirect URIs. Joyce shares no data with Marlowe: each family's data sits in its own database file, encrypted with its own key derived from `JOYCE_MASTER_KEY`. Joyce stays switched off until the `JOYCE_*` settings are filled in (see `server/.env.example`). Design notes: `feature-to-do/joyce-family-assistant.md`.
 
 ## Safety and privacy boundaries
 
-- Access is **invite-only**. An administrator must invite an email address before that person can use the application.
+- Access is **invite-only**. An administrator must invite a person's phone number before they can use the application.
 - Each user's connected accounts, documents, settings, memories, phone numbers, and conversations are isolated by tenant-aware API routes.
 - Marlowe never sends email on its own: every email it writes is shown to the user first and only sent after they explicitly tap Send (otherwise it's saved to their Drafts).
 - Phone actions never run without a tap on the user's iPhone. Texts and calls show iOS's own send/call screen. Links work once; chat links expire after 24 hours, and briefing, digest and reminder links after up to 36 hours.
 - Calendar actions are limited to the user's own calendar; it does not invite other people to events.
 - Archiving email is non-destructive; messages are not deleted by the assistant.
 - WhatsApp webhooks use Meta verification/signature checks, and only registered phone numbers are routed to a user's assistant.
-- OAuth tokens and uploaded documents are encrypted at rest with AES-256-GCM. Keep `ENCRYPTION_KEY` backed up separately: losing it makes encrypted data unrecoverable.
-- Location history, extracted document text, and WhatsApp conversation history are currently stored as application data and should be treated as sensitive.
+- OAuth tokens and uploaded documents are encrypted at rest with AES-256-GCM. Keep `ENCRYPTION_KEY` (and `JOYCE_MASTER_KEY`, if Joyce is used) backed up separately: losing either makes the data it protects unrecoverable.
+- **Not yet encrypted at rest:** WhatsApp chat history, memory facts, location check-ins, conversation summaries, text extracted from documents, and error logs. See `feature-to-do/data-safety-review.md` for the full review and next steps.
 
 ## Architecture
 
@@ -50,6 +56,7 @@ Important server areas include:
 - `server/src/routes/` — authentication, account, assistant, search, documents, travel, admin, portal, and webhook APIs
 - `server/src/services/` — hub aggregation, briefings, alerts, reminders, documents, travel calculations, scheduling, and encryption
 - `server/src/db/` — SQLite access and migrations
+- `server/src/joyce/` — Joyce, the family assistant (kept separate from Marlowe's data)
 - `client/src/pages/` — assistant, calendar, chats, files, travel, settings, onboarding, and admin portal screens
 
 ## Requirements
@@ -105,11 +112,11 @@ npm run dev
 
 Open <http://localhost:5173>. The client expects the API at `http://localhost:4000` by default; change `VITE_API_BASE` in `client/.env` if needed.
 
-Because access is invite-only, invite a user from the server directory before they sign in:
+Because access is invite-only, invite a user's phone number (international format, no `+`) from the server directory before they sign up:
 
 ```bash
 cd server
-npm run invite -- someone@example.com
+npm run invite -- 447911123456
 ```
 
 ## Production build and start
@@ -135,7 +142,7 @@ npm run build            # Compile TypeScript to dist/
 npm start                # Run the compiled API
 npm test                 # Run the Vitest suite
 npm run eval:grounding   # Run assistant grounding evaluations
-npm run invite -- EMAIL  # Invite a user
+npm run invite -- PHONE  # Invite a user by phone number
 npm run whatsapp:check -- <WABA_ID> --subscribe
 ```
 
@@ -178,6 +185,7 @@ The exact WhatsApp setup, phone allowlisting, location automation examples, encr
 - The application is private and invite-only; it is not currently packaged as a public SaaS.
 - Proactive jobs depend on the server process and its in-process schedulers.
 - Email alerts are polling-based rather than provider push notifications.
+- **Timezones need more work.** A user's timezone comes from their Settings pick, otherwise from the most recent shared location or travel check-in, otherwise it's guessed from their phone number's country. It doesn't follow someone who travels unless they share a location, and the phone-number guess is wrong for people living outside their number's country. Briefings, digests and reminders can arrive at the wrong local time as a result.
 - Travel day calculations depend on the accuracy and frequency of location check-ins and are not legal advice.
 - WhatsApp is a new assistant channel; it does not read a user's existing personal WhatsApp conversations.
 - Provider availability and search results depend on the permissions and connection health of each account.

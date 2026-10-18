@@ -22,6 +22,7 @@ than deleted, since they still explain the reasoning behind what was built.
 - [proactive-message-self-awareness.md](proactive-message-self-awareness.md)
 - [app-connections-gateway.md](app-connections-gateway.md)
 - [marlowe-shortcut-followups.md](marlowe-shortcut-followups.md)
+- [timezone-handling.md](timezone-handling.md)
 - [done-admin-version-check.md](done-admin-version-check.md)
 - [done-admin-portal.md](done-admin-portal.md)
 - [done-real-person-alert-content-filter.md](done-real-person-alert-content-filter.md)

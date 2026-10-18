@@ -3,7 +3,8 @@ import path from "node:path";
 import { decryptFor, deriveFamilyKey, phoneLookupHash } from "./familyKey.js";
 import {
   FAMILY_DB_DIR,
-  findFamilyForPhone,
+  consumeGoogleConnectToken,
+  findFamilyForPhoneHash,
   type FamilyRecord,
 } from "./registry.js";
 
@@ -17,7 +18,9 @@ import {
 // else's, because someone else's isn't in the file that's open.
 //
 // The second barrier is that a FamilySession is the only way to reach a family database, and the
-// only way to get one is `openFamilySessionForPhone(phone)` with an inbound WhatsApp number.
+// only way to get one is `openFamilySessionForPhone(phone)` with an inbound WhatsApp number (or
+// a one-time Google connect link that such a message minted — see
+// openFamilySessionForGoogleConnect below).
 // Nothing in this module takes a family id from a caller, there is no "list all families", and
 // no store function accepts one either. That is what makes the assistant safe by construction
 // rather than by instruction: Joyce's tools (joyce/assistant.ts) are handed an already-opened
@@ -116,6 +119,21 @@ const SCHEMA = `
     delivered_at INTEGER
   );
   CREATE INDEX IF NOT EXISTS idx_relays_undelivered ON relays(to_member_id) WHERE delivered_at IS NULL;
+
+  -- A member's connected Google account (joyce/googleCalendar.ts). One per member: connecting
+  -- again replaces it. Tokens are encrypted with the family key like everything else, so the
+  -- file on its own gives no access to anyone's calendar. time_zone is the primary calendar's,
+  -- read at connect time, and is what calendar times are read and written in.
+  CREATE TABLE IF NOT EXISTS google_accounts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    member_id INTEGER NOT NULL UNIQUE REFERENCES members(id),
+    email_enc TEXT NOT NULL,
+    access_token_enc TEXT,
+    refresh_token_enc TEXT,
+    expiry_date INTEGER,
+    time_zone TEXT NOT NULL,
+    connected_at INTEGER NOT NULL
+  );
 `;
 
 // Opening a SQLite file is cheap but not free, and better-sqlite3 handles are safe to reuse, so
@@ -180,9 +198,8 @@ function openFamilyDb(record: FamilyRecord): { db: Database.Database; key: Buffe
  */
 function upsertMember(
   db: Database.Database,
-  normalizedPhone: string
+  phoneHash: string
 ): { id: number; display_name_enc: string | null } {
-  const phoneHash = phoneLookupHash(normalizedPhone);
   const now = Date.now();
   db.prepare(
     `INSERT INTO members (phone_hash, display_name_enc, joined_at, last_seen_at)
@@ -194,9 +211,9 @@ function upsertMember(
     .get(phoneHash) as { id: number; display_name_enc: string | null };
 }
 
-function sessionFor(record: FamilyRecord, normalizedPhone: string): FamilySession {
+function sessionFor(record: FamilyRecord, phoneHash: string): FamilySession {
   const { db, key } = openFamilyDb(record);
-  const row = upsertMember(db, normalizedPhone);
+  const row = upsertMember(db, phoneHash);
   return {
     familyId: record.familyId,
     db,
@@ -217,8 +234,23 @@ function sessionFor(record: FamilyRecord, normalizedPhone: string): FamilySessio
  * "give them a default family".
  */
 export function openFamilySessionForPhone(normalizedPhone: string): FamilySession | null {
-  const record = findFamilyForPhone(normalizedPhone);
-  return record ? sessionFor(record, normalizedPhone) : null;
+  const phoneHash = phoneLookupHash(normalizedPhone);
+  const record = findFamilyForPhoneHash(phoneHash);
+  return record ? sessionFor(record, phoneHash) : null;
+}
+
+/**
+ * The second way in, for the browser finishing a Google Calendar connection, which has a
+ * connect link rather than a phone number. The link was minted by an inbound message from one
+ * phone (registry.ts's issueGoogleConnectToken), so spending it opens that phone's family as
+ * that member — the same session the message itself would have had, and still no family id
+ * anywhere. Null if the link is unknown, expired, already used, or the member has since left.
+ */
+export function openFamilySessionForGoogleConnect(token: string): FamilySession | null {
+  const phoneHash = consumeGoogleConnectToken(token);
+  if (!phoneHash) return null;
+  const record = findFamilyForPhoneHash(phoneHash);
+  return record ? sessionFor(record, phoneHash) : null;
 }
 
 /**
@@ -229,7 +261,7 @@ export function openFamilySessionForNewMember(
   record: FamilyRecord,
   normalizedPhone: string
 ): FamilySession {
-  return sessionFor(record, normalizedPhone);
+  return sessionFor(record, phoneLookupHash(normalizedPhone));
 }
 
 /** Test-only: drops cached handles so a suite can reopen files it deleted between cases. */

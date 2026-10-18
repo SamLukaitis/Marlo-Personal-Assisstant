@@ -433,3 +433,174 @@ export function claimRelaysFor(session: FamilySession): RelayRow[] {
     createdAt: r.created_at,
   }));
 }
+
+// --- Google accounts ---------------------------------------------------------------------------
+
+export interface GoogleAccountRow {
+  id: number;
+  memberId: number;
+  memberName: string | null;
+  isSelf: boolean;
+  email: string;
+  accessToken: string | null;
+  refreshToken: string | null;
+  expiryDate: number | null;
+  timeZone: string;
+}
+
+/**
+ * Connects a Google account for the person talking, replacing any they had before — one per
+ * member. Google sometimes leaves out the refresh token on a repeat sign-in, so an existing one
+ * is kept rather than overwritten with nothing.
+ */
+export function saveMyGoogleAccount(
+  session: FamilySession,
+  account: {
+    email: string;
+    accessToken: string | null;
+    refreshToken: string | null;
+    expiryDate: number | null;
+    timeZone: string;
+  }
+): void {
+  const enc = (v: string | null) => (v === null ? null : encryptFor(session.key, v));
+  session.db
+    .prepare(
+      `INSERT INTO google_accounts
+         (member_id, email_enc, access_token_enc, refresh_token_enc, expiry_date, time_zone, connected_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(member_id) DO UPDATE SET
+         email_enc = excluded.email_enc,
+         access_token_enc = excluded.access_token_enc,
+         refresh_token_enc = COALESCE(excluded.refresh_token_enc, google_accounts.refresh_token_enc),
+         expiry_date = excluded.expiry_date,
+         time_zone = excluded.time_zone,
+         connected_at = excluded.connected_at`
+    )
+    .run(
+      session.actor.id,
+      encryptFor(session.key, account.email),
+      enc(account.accessToken),
+      enc(account.refreshToken),
+      account.expiryDate,
+      account.timeZone,
+      Date.now()
+    );
+}
+
+const GOOGLE_ACCOUNT_SELECT = `
+  SELECT g.id, g.member_id, g.email_enc, g.access_token_enc, g.refresh_token_enc, g.expiry_date,
+         g.time_zone, mem.display_name_enc
+    FROM google_accounts g JOIN members mem ON mem.id = g.member_id`;
+
+function decryptGoogleAccountRow(
+  session: FamilySession,
+  r: {
+    id: number;
+    member_id: number;
+    email_enc: string;
+    access_token_enc: string | null;
+    refresh_token_enc: string | null;
+    expiry_date: number | null;
+    time_zone: string;
+    display_name_enc: string | null;
+  }
+): GoogleAccountRow {
+  const dec = (v: string | null) => (v === null ? null : decryptFor(session.key, v));
+  return {
+    id: r.id,
+    memberId: r.member_id,
+    memberName: dec(r.display_name_enc),
+    isSelf: r.member_id === session.actor.id,
+    email: decryptFor(session.key, r.email_enc),
+    accessToken: dec(r.access_token_enc),
+    refreshToken: dec(r.refresh_token_enc),
+    expiryDate: r.expiry_date,
+    timeZone: r.time_zone,
+  };
+}
+
+export function listGoogleAccounts(session: FamilySession): GoogleAccountRow[] {
+  return (session.db.prepare(`${GOOGLE_ACCOUNT_SELECT} ORDER BY g.id ASC`).all() as never[]).map(
+    (r) => decryptGoogleAccountRow(session, r)
+  );
+}
+
+/** One account by id, within this family's file only — an id from anywhere else finds nothing. */
+export function getGoogleAccount(session: FamilySession, id: number): GoogleAccountRow | null {
+  const row = session.db.prepare(`${GOOGLE_ACCOUNT_SELECT} WHERE g.id = ?`).get(id);
+  return row ? decryptGoogleAccountRow(session, row as never) : null;
+}
+
+export function getGoogleAccountForMember(
+  session: FamilySession,
+  memberId: number
+): GoogleAccountRow | null {
+  const row = session.db.prepare(`${GOOGLE_ACCOUNT_SELECT} WHERE g.member_id = ?`).get(memberId);
+  return row ? decryptGoogleAccountRow(session, row as never) : null;
+}
+
+/** Stores tokens Google refreshed mid-request, so the next request doesn't refresh them again. */
+export function updateGoogleTokens(
+  session: FamilySession,
+  id: number,
+  tokens: { accessToken: string | null; refreshToken?: string; expiryDate: number | null }
+): void {
+  session.db
+    .prepare(
+      `UPDATE google_accounts
+          SET access_token_enc = ?, expiry_date = ?,
+              refresh_token_enc = COALESCE(?, refresh_token_enc)
+        WHERE id = ?`
+    )
+    .run(
+      tokens.accessToken === null ? null : encryptFor(session.key, tokens.accessToken),
+      tokens.expiryDate,
+      tokens.refreshToken ? encryptFor(session.key, tokens.refreshToken) : null,
+      id
+    );
+}
+
+/**
+ * Disconnects the person talking — only ever their own account, never another member's. Returns
+ * what was removed so the caller can revoke it at Google too, or null if they had none.
+ */
+export function deleteMyGoogleAccount(session: FamilySession): GoogleAccountRow | null {
+  const existing = getGoogleAccountForMember(session, session.actor.id);
+  if (!existing) return null;
+  session.db.prepare(`DELETE FROM google_accounts WHERE member_id = ?`).run(session.actor.id);
+  return existing;
+}
+
+// --- The family calendar -------------------------------------------------------------------------
+
+export interface FamilyCalendarSetting {
+  calendarId: string;
+  name: string;
+  timeZone: string;
+  /** The member whose Google account owns it — the only one who can share it with others. */
+  ownerMemberId: number;
+}
+
+const FAMILY_CALENDAR_KEY = "google_family_calendar";
+
+/** The family's shared Google calendar, if one has been made. Kept encrypted in family_meta. */
+export function getFamilyCalendar(session: FamilySession): FamilyCalendarSetting | null {
+  const row = session.db
+    .prepare(`SELECT value FROM family_meta WHERE key = ?`)
+    .get(FAMILY_CALENDAR_KEY) as { value: string } | undefined;
+  return row ? (JSON.parse(decryptFor(session.key, row.value)) as FamilyCalendarSetting) : null;
+}
+
+export function setFamilyCalendar(session: FamilySession, setting: FamilyCalendarSetting): void {
+  session.db
+    .prepare(
+      `INSERT INTO family_meta (key, value) VALUES (?, ?)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value`
+    )
+    .run(FAMILY_CALENDAR_KEY, encryptFor(session.key, JSON.stringify(setting)));
+}
+
+export function clearFamilyCalendar(session: FamilySession): void {
+  session.db.prepare(`DELETE FROM family_meta WHERE key = ?`).run(FAMILY_CALENDAR_KEY);
+}

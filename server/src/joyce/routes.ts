@@ -7,6 +7,7 @@ import { applyName, handleOnboarding, needsName } from "./onboarding.js";
 import { handlePendingLeave } from "./leaving.js";
 import { runJoyceTurn } from "./assistant.js";
 import { saveFamilyFile } from "./files.js";
+import { joyceGoogleRoutes } from "./googleRoutes.js";
 import {
   downloadJoyceMedia,
   extractJoyceMessages,
@@ -19,12 +20,16 @@ import {
   type JoyceInboundMessage,
 } from "./whatsapp.js";
 
-// Joyce's webhook. Mounted on its own path so that, if her number is put on a separate Meta app,
-// the two products never share an endpoint at all. When she shares Marlowe's app (the likely
-// starting point, since it's one WhatsApp Business Account), both numbers' messages arrive at
-// both endpoints and the phone_number_id guard below is what keeps them apart.
+// Joyce's webhook, on its own path. Meta has one callback URL per app, so when Joyce shares
+// Marlowe's app her number needs a phone-number-level webhook override pointing here (see
+// "Going live" in feature-to-do/joyce-family-assistant.md); without it her messages only reach
+// Marlowe's endpoint, which drops them. The phone_number_id guard below is a second line of
+// defence in case Marlowe's traffic is ever delivered here too.
 
 export const joyceRoutes = Router();
+
+// Connecting a family member's Google Calendar — see joyce/googleRoutes.ts.
+joyceRoutes.use(joyceGoogleRoutes);
 
 joyceRoutes.get("/webhooks/joyce", (req, res) => {
   const mode = req.query["hub.mode"] as string;

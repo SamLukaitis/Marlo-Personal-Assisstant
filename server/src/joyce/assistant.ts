@@ -4,13 +4,17 @@ import { requestLeave, rotateJoinCode } from "./registry.js";
 import { LEAVE_WARNING } from "./leaving.js";
 import { loadFamilyFile } from "./files.js";
 import { sendJoyceMedia } from "./whatsapp.js";
+import { CALENDAR_TOOLS, isCalendarTool, runCalendarTool } from "./calendarTools.js";
+import { nowIn } from "./googleCalendar.js";
 import {
   appendMessage,
   claimDueReminders,
   claimRelaysFor,
   createReminder,
   findMemberByName,
+  getFamilyCalendar,
   listDocuments,
+  listGoogleAccounts,
   listMembers,
   listNotes,
   listUpcomingReminders,
@@ -187,7 +191,38 @@ const TOOLS: Anthropic.Tool[] = [
       "asking about leaving rather than asking to leave.",
     input_schema: { type: "object", properties: {}, additionalProperties: false },
   },
+  ...CALENDAR_TOOLS,
 ];
+
+/** Who has connected a Google Calendar, and what time it is for each of them. */
+function calendarLines(session: FamilySession): string[] {
+  const accounts = listGoogleAccounts(session);
+  if (accounts.length === 0) {
+    return [
+      "Nobody in this family has connected a Google Calendar yet. If someone asks about their " +
+        "calendar or wants something put in it, offer to connect theirs.",
+    ];
+  }
+  const now = new Date();
+  const family = getFamilyCalendar(session);
+  return [
+    "These family members have connected their Google Calendar, which you can read and add to " +
+      "or change for anyone in the family:",
+    ...accounts.map(
+      (a) => `- ${a.memberName ?? "(unnamed)"}: it's ${nowIn(a.timeZone, now)} for them (${a.timeZone})`
+    ),
+    family
+      ? `The family has a shared Google calendar, "${family.name}" (${family.timeZone}, where it's ` +
+        `${nowIn(family.timeZone, now)}). New events go on it unless someone asks for a specific ` +
+        "person's own calendar."
+      : "The family has no shared family calendar yet, so new events go on the person's own " +
+        "calendar. If someone wants a family calendar, or is adding something for the whole " +
+        "family, offer to make one (create_family_calendar).",
+    "Calendar times are always in that calendar's own time zone. Check the calendar before " +
+      "answering anything about plans or who's free. Calendar events are separate from your " +
+      "reminders, which are still UTC.",
+  ];
+}
 
 function systemPrompt(session: FamilySession): string {
   const members = listMembers(session)
@@ -204,6 +239,8 @@ function systemPrompt(session: FamilySession): string {
     `You are currently talking to ${session.actor.displayName ?? "someone who hasn't given a name yet"}.`,
     `The current time is ${new Date().toISOString()} (UTC). All reminder times are UTC.`,
     "",
+    ...calendarLines(session),
+    "",
     "Be warm and brief — this is WhatsApp, not email. Two or three sentences is usually plenty. " +
       "Use WhatsApp formatting (*bold*) sparingly and never Markdown headings or tables.",
     "",
@@ -218,9 +255,9 @@ function systemPrompt(session: FamilySession): string {
 }
 
 /**
- * Lets a tool override whatever the model would have said. Only the leave flow uses it: the
- * warning has to go out word for word, and a model asked to "relay this verbatim" will
- * paraphrase it sooner or later.
+ * Lets a tool override whatever the model would have said. The leave flow and the Google
+ * Calendar connect link use it: the leave warning has to go out word for word, and a model asked
+ * to "relay this verbatim" will paraphrase it sooner or later — or, for the link, mistype a URL.
  */
 interface TurnState {
   forcedReply: string | null;
@@ -233,6 +270,11 @@ async function runTool(
   input: Record<string, unknown>
 ): Promise<string> {
   const { session } = ctx;
+  if (isCalendarTool(name)) {
+    const outcome = await runCalendarTool(ctx, name, input);
+    if (outcome.forcedReply) state.forcedReply = outcome.forcedReply;
+    return outcome.result;
+  }
   switch (name) {
     case "save_note": {
       saveNote(session, String(input.title), String(input.body));
