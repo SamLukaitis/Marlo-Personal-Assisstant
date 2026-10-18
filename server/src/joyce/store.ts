@@ -612,11 +612,31 @@ export function queueRelay(session: FamilySession, toMemberId: number, body: str
   return Number(res.lastInsertRowid);
 }
 
+/** Marks a relay as handed over, once Joyce has sent it straight to them (relayDelivery.ts). */
+export function markRelayDelivered(session: FamilySession, id: number): void {
+  session.db.prepare(`UPDATE relays SET delivered_at = ? WHERE id = ?`).run(Date.now(), id);
+}
+
+/** A member's name, phone and when they last messaged, for sending to them. Phone is null if unknown. */
+export function getMemberContact(
+  family: FamilyData,
+  memberId: number
+): { name: string | null; phone: string | null; lastSeenAt: number } | null {
+  const row = family.db
+    .prepare(`SELECT display_name_enc, phone_enc, last_seen_at FROM members WHERE id = ?`)
+    .get(memberId) as { display_name_enc: string | null; phone_enc: string | null; last_seen_at: number } | undefined;
+  if (!row) return null;
+  return {
+    name: row.display_name_enc === null ? null : decryptFor(family.key, row.display_name_enc),
+    phone: row.phone_enc === null ? null : decryptFor(family.key, row.phone_enc),
+    lastSeenAt: row.last_seen_at,
+  };
+}
+
 /**
  * Undelivered messages left for whoever is currently messaging, marked delivered as they're
- * handed over. Pull rather than push: WhatsApp only allows a business to message someone freely
- * within 24 hours of their last message, so a relay waits for the recipient to say something —
- * see the note in joyce/routes.ts.
+ * handed over. A relay is sent straight away when the recipient has messaged Joyce in the last
+ * 24 hours (relayDelivery.ts); this catches the rest, when they next say something.
  */
 export function claimRelaysFor(session: FamilySession): RelayRow[] {
   const rows = session.db
