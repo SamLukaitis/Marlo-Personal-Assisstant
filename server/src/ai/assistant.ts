@@ -2280,21 +2280,26 @@ export function buildSystemPrompt(ownerId: number, conversationSummary?: string)
     .join("\n\n");
 }
 
-function withCacheControlOnLastBlock(message: Anthropic.MessageParam): Anthropic.MessageParam {
+// ttl "1h" costs 2x the input price to write; the default 5-minute ttl costs 1.25x. Only worth
+// the 1h premium for a prefix the user's NEXT message (often minutes later) will read back.
+function withCacheControlOnLastBlock(message: Anthropic.MessageParam, ttl: "5m" | "1h"): Anthropic.MessageParam {
   const blocks =
     typeof message.content === "string" ? [{ type: "text" as const, text: message.content }] : message.content;
   if (blocks.length === 0) return message;
   return {
     ...message,
     content: blocks.map((block, i) =>
-      i === blocks.length - 1 ? { ...block, cache_control: { type: "ephemeral" as const, ttl: "1h" as const } } : block
+      i === blocks.length - 1 ? { ...block, cache_control: { type: "ephemeral" as const, ttl } } : block
     ),
   };
 }
 
 // Two breakpoints inside `messages` (tools + system use the other two of Anthropic's four):
 // - the LAST block of the last message, so each tool-loop turn within one reply reads every
-//   earlier turn back at the cached rate (feature-to-do/token-cost-reduction.md #2);
+//   earlier turn back at the cached rate (feature-to-do/token-cost-reduction.md #2). 5-minute ttl:
+//   it's only ever read by the next loop turn seconds later, and it often covers big web_search
+//   results that are never read again — at the 1h rate those writes were most of a search
+//   reply's cost (e.g. 41k written for one "live music in Leeds" message, ~90% of its $0.27);
 // - `stableIndex`: the message just before the latest user message. The latest user message
 //   carries a per-message relevant-memory block (ai/memoryRetrieval.ts) that is never stored in
 //   history, so the NEXT user turn's prefix diverges there — this breakpoint caches everything
@@ -2309,7 +2314,11 @@ function withMessagesCacheBreakpoint(
   if (messages.length === 0) return messages;
   const last = messages.length - 1;
   return messages.map((m, i) =>
-    i === last || (i === stableIndex && stableIndex < last) ? withCacheControlOnLastBlock(m) : m
+    i === stableIndex && stableIndex < last
+      ? withCacheControlOnLastBlock(m, "1h")
+      : i === last
+        ? withCacheControlOnLastBlock(m, "5m")
+        : m
   );
 }
 
@@ -2384,7 +2393,16 @@ export async function runAssistantChat(
   // take up to 8 turns for one user message, e.g. several tool round-trips) and recorded once,
   // via finish() below, rather than once per turn — admins want "how many times was the assistant
   // actually asked something" and "how many tokens did that cost", not internal loop iterations.
-  const usageTotals = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0 };
+  const usageTotals = {
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheReadTokens: 0,
+    cacheCreationTokens: 0,
+    // Part of cacheCreationTokens written at the cheaper 5-minute rate, so the Portal can price
+    // the two separately, plus web searches, billed per search on top of tokens.
+    cacheWrite5mTokens: 0,
+    webSearches: 0,
+  };
   // Maps calls made while answering this one user message — same blast-radius guard as
   // web_search's max_uses. Counted synchronously inside the map below, so parallel calls in one
   // response are counted too.
@@ -2405,7 +2423,8 @@ export async function runAssistantChat(
       usageTotals.outputTokens,
       usageTotals.cacheReadTokens,
       usageTotals.cacheCreationTokens,
-      isAdmin(ownerId) ? { userMessage: lastUserMessage, replyText } : undefined
+      isAdmin(ownerId) ? { userMessage: lastUserMessage, replyText } : undefined,
+      { cacheWrite5mTokens: usageTotals.cacheWrite5mTokens, webSearches: usageTotals.webSearches }
     );
     // A phone-action link the model typed itself (or re-pasted after it was used) is dead on tap.
     if (isPhoneActionsConfigured() && reply.text) return { ...reply, text: scrubUnknownActionLinks(reply.text) };
@@ -2429,6 +2448,19 @@ export async function runAssistantChat(
     // re-reads on every turn is reported separately here, and it's most of the real bill.
     usageTotals.cacheReadTokens += response.usage?.cache_read_input_tokens ?? 0;
     usageTotals.cacheCreationTokens += response.usage?.cache_creation_input_tokens ?? 0;
+    usageTotals.cacheWrite5mTokens += response.usage?.cache_creation?.ephemeral_5m_input_tokens ?? 0;
+    usageTotals.webSearches += response.usage?.server_tool_use?.web_search_requests ?? 0;
+    // One line per loop turn, so a costly message in the Portal can be traced to the turn (and
+    // the searches) behind it in the Railway logs.
+    if (response.usage) {
+      const u = response.usage;
+      console.log(
+        `[assistant-usage] owner=${ownerId} turn=${turn} model=${model} stop=${response.stop_reason} ` +
+          `in=${u.input_tokens} out=${u.output_tokens} cacheRead=${u.cache_read_input_tokens ?? 0} ` +
+          `cacheWrite=${u.cache_creation_input_tokens ?? 0} (5m=${u.cache_creation?.ephemeral_5m_input_tokens ?? 0} ` +
+          `1h=${u.cache_creation?.ephemeral_1h_input_tokens ?? 0}) searches=${u.server_tool_use?.web_search_requests ?? 0}`
+      );
+    }
 
     const toolUses = response.content.filter(
       (block): block is Anthropic.ToolUseBlock => block.type === "tool_use"

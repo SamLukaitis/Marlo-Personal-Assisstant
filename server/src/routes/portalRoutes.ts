@@ -219,16 +219,17 @@ portalRoutes.post("/logs/:id/explain", async (req, res) => {
 
 // Approximate list pricing ($ per million tokens) — for a rough cost estimate only, not exact
 // billing. Update here if Anthropic's pricing changes; the Usage tab labels this "approximate".
-// cacheRead is 10% of the input rate; cacheWrite is 2× because the app's only cache breakpoints
-// use the 1-hour TTL (ai/assistant.ts) — if a 5-minute-TTL breakpoint is ever added, its writes
-// cost 1.25× instead and this flat 2× will slightly overstate them.
+// cacheRead is 10% of the input rate; cacheWrite is the 1-hour-TTL rate (2×) and cacheWrite5m the
+// 5-minute rate (1.25×) — ai/assistant.ts uses both, and api_usage records how much was 5-minute.
 const MODEL_PRICE_PER_MTOK: Record<
   string,
-  { input: number; output: number; cacheRead: number; cacheWrite: number }
+  { input: number; output: number; cacheRead: number; cacheWrite: number; cacheWrite5m: number }
 > = {
-  "claude-haiku-4-5": { input: 1, output: 5, cacheRead: 0.1, cacheWrite: 2 },
-  "claude-sonnet-5": { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 6 },
+  "claude-haiku-4-5": { input: 1, output: 5, cacheRead: 0.1, cacheWrite: 2, cacheWrite5m: 1.25 },
+  "claude-sonnet-5": { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 6, cacheWrite5m: 3.75 },
 };
+// web_search is billed per search ($10 per 1,000) on top of the tokens its results add.
+const WEB_SEARCH_PRICE = 0.01;
 
 // estimatedCost is null for a model not in the price table above (e.g. one added after this
 // list was last updated) rather than silently reporting $0, which would understate real spend.
@@ -237,7 +238,10 @@ export function estimateCost(
   inputTokens: number,
   outputTokens: number,
   cacheReadTokens: number,
-  cacheCreationTokens: number
+  cacheCreationTokens: number,
+  // The part of cacheCreationTokens written at the 5-minute rate; the rest is priced at 1-hour.
+  cacheWrite5mTokens = 0,
+  webSearches = 0
 ): number | null {
   const price = MODEL_PRICE_PER_MTOK[model];
   if (!price) return null;
@@ -245,7 +249,9 @@ export function estimateCost(
     (inputTokens / 1_000_000) * price.input +
     (outputTokens / 1_000_000) * price.output +
     (cacheReadTokens / 1_000_000) * price.cacheRead +
-    (cacheCreationTokens / 1_000_000) * price.cacheWrite
+    ((cacheCreationTokens - cacheWrite5mTokens) / 1_000_000) * price.cacheWrite +
+    (cacheWrite5mTokens / 1_000_000) * price.cacheWrite5m +
+    webSearches * WEB_SEARCH_PRICE
   );
 }
 
@@ -255,7 +261,15 @@ portalRoutes.get("/usage", (req, res) => {
 
   const rows = getApiUsageSummary(sinceMs).map((r) => ({
     ...r,
-    estimatedCost: estimateCost(r.model, r.inputTokens, r.outputTokens, r.cacheReadTokens, r.cacheCreationTokens),
+    estimatedCost: estimateCost(
+      r.model,
+      r.inputTokens,
+      r.outputTokens,
+      r.cacheReadTokens,
+      r.cacheCreationTokens,
+      r.cacheWrite5mTokens,
+      r.webSearches
+    ),
   }));
 
   // A model-agnostic cost estimate per purpose — getApiUsageByPurpose() doesn't break down by
@@ -295,7 +309,15 @@ portalRoutes.get("/usage", (req, res) => {
     // pre-login calls — making per-user cost unreadable the moment phone-first accounts exist.
     // The sentinel is only for rows with no owner at all, which genuinely do belong together.
     const key = r.ownerId === null ? "no-owner" : `id:${r.ownerId}`;
-    const cost = estimateCost(r.model, r.inputTokens, r.outputTokens, r.cacheReadTokens, r.cacheCreationTokens);
+    const cost = estimateCost(
+      r.model,
+      r.inputTokens,
+      r.outputTokens,
+      r.cacheReadTokens,
+      r.cacheCreationTokens,
+      r.cacheWrite5mTokens,
+      r.webSearches
+    );
     const existing = ownerTotals.get(key) ?? {
       ownerId: r.ownerId,
       ownerExists: r.ownerExists,
@@ -365,7 +387,15 @@ portalRoutes.get("/usage", (req, res) => {
       ...r,
       userMessage: stillAdmin(r.ownerId) ? r.userMessage : null,
       replyText: stillAdmin(r.ownerId) ? r.replyText : null,
-      estimatedCost: estimateCost(r.model, r.inputTokens, r.outputTokens, r.cacheReadTokens, r.cacheCreationTokens),
+      estimatedCost: estimateCost(
+      r.model,
+      r.inputTokens,
+      r.outputTokens,
+      r.cacheReadTokens,
+      r.cacheCreationTokens,
+      r.cacheWrite5mTokens,
+      r.webSearches
+    ),
     }));
 
   res.json({ rows, byPurpose, byOwner, projection, recent, approx: true });

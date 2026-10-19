@@ -43,7 +43,8 @@ describe("runAssistantChat — messages cache breakpoint (feature-to-do/token-co
     const last = messages[messages.length - 1];
     expect(Array.isArray(last.content)).toBe(true);
     const lastBlock = (last.content as Array<{ cache_control?: unknown }>).slice(-1)[0];
-    expect(lastBlock.cache_control).toEqual({ type: "ephemeral", ttl: "1h" });
+    // 5-minute ttl: it's only read by the next loop turn, so the 1h write premium is wasted.
+    expect(lastBlock.cache_control).toEqual({ type: "ephemeral", ttl: "5m" });
   });
 
   it("moves the breakpoint onto the new last message each turn, without leaving a stale one on an earlier message", async () => {
@@ -122,6 +123,10 @@ describe("runAssistantChat — relevant-memory injection and stable-history brea
     const messages = sentMessages(0);
     const marked = messages.flatMap((m, i) => blocksOf(m).filter((b) => b.cache_control).map(() => i));
     expect(marked).toEqual([1, 2]);
+    // The stable history is read back by the user's next message, so it keeps the 1h ttl; the
+    // per-reply tail only needs 5 minutes. 1h must come first — Anthropic rejects the reverse.
+    expect(blocksOf(messages[1]).slice(-1)[0].cache_control).toEqual({ type: "ephemeral", ttl: "1h" });
+    expect(blocksOf(messages[2]).slice(-1)[0].cache_control).toEqual({ type: "ephemeral", ttl: "5m" });
   });
 
   it("keeps the history prefix byte-identical across turns while the injected block changes", async () => {
