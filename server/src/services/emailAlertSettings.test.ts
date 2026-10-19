@@ -81,3 +81,35 @@ describe("email alert settings", () => {
     expect(realPersonAlertsEnabledSince(user.id)).toBeGreaterThanOrEqual(before);
   });
 });
+
+describe("email alert mutes", () => {
+  it("matches on every part given, case-insensitively", async () => {
+    const { isMutedEmail } = await import("./emailAlertSettings.js");
+    const mutes = [{ from: "railway.app", subject: "crash" }];
+    expect(isMutedEmail(mutes, { from: "Railway <notify@Railway.app>", subject: "Deployment CRASHED" })).toBe(true);
+    // Same sender, a different kind of mail: still comes through.
+    expect(isMutedEmail(mutes, { from: "Railway <notify@railway.app>", subject: "Your invoice" })).toBe(false);
+    expect(isMutedEmail([{ subject: "newsletter" }], { from: "a@b.com", subject: "Weekly Newsletter" })).toBe(true);
+  });
+
+  it("adds, de-duplicates, lists and removes mutes", async () => {
+    const { addEmailAlertMute, listEmailAlertMutes, removeEmailAlertMutes } = await import("./emailAlertSettings.js");
+    const user = newUser("mutes");
+    expect(addEmailAlertMute(user.id, {})).toBeNull();
+    expect(addEmailAlertMute(user.id, { from: "  railway.app ", subject: "crash" })).toEqual({ from: "railway.app", subject: "crash" });
+    addEmailAlertMute(user.id, { from: "Railway.app", subject: "Crash" });
+    addEmailAlertMute(user.id, { from: "railway.app", subject: "build failed" });
+    addEmailAlertMute(user.id, { from: "linkedin" });
+    expect(listEmailAlertMutes(user.id)).toHaveLength(3);
+    // A bare sender removes every mute on it.
+    expect(removeEmailAlertMutes(user.id, { from: "railway.app" })).toBe(2);
+    expect(listEmailAlertMutes(user.id)).toEqual([{ from: "linkedin" }]);
+  });
+
+  it("tolerates a corrupted setting", async () => {
+    const { listEmailAlertMutes } = await import("./emailAlertSettings.js");
+    const user = newUser("mutes-corrupt");
+    setSetting(user.id, "email_alert_mutes", "{not json");
+    expect(listEmailAlertMutes(user.id)).toEqual([]);
+  });
+});

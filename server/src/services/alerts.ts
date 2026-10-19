@@ -3,7 +3,7 @@ import { hasAlerted, markAlerted, getSetting, setSetting, listPhoneNumbersForUse
 import { triageRealPersonEmails, type TriageGist } from "./realPersonTriage.js";
 import { IMPORTANT_EMAIL_ENTITY_TYPE, type ImportantEmailEntityData } from "./importantEmailAlerts.js";
 import { isWhatsAppConfigured } from "../providers/whatsapp.js";
-import { realPersonAlertMode, realPersonAlertsEnabledSince } from "./emailAlertSettings.js";
+import { isMutedEmail, listEmailAlertMutes, realPersonAlertMode, realPersonAlertsEnabledSince } from "./emailAlertSettings.js";
 import { queueForEmailDigest } from "./emailDigest.js";
 import { isOnboardingSuppressionActive } from "./onboardingAlertSuppression.js";
 import { submitAttentionItem } from "./attention.js";
@@ -60,9 +60,20 @@ export async function checkForNewImportantMessages(ownerId: number): Promise<voi
     logScan(`first scan: baselined ${baselined} as existing mail`);
   }
 
-  const unseen = candidates.filter((m) => !hasAlerted(ownerId, messageKey(m)));
+  // Senders/subjects the user asked never to hear about (emailAlertSettings.ts's mutes) are settled
+  // here, before any gate that would leave them pending.
+  const mutes = listEmailAlertMutes(ownerId);
+  let muted = 0;
+  const unseen = candidates.filter((m) => {
+    if (hasAlerted(ownerId, messageKey(m))) return false;
+    if (!isMutedEmail(mutes, m)) return true;
+    markAlerted(ownerId, messageKey(m));
+    muted++;
+    return false;
+  });
   if (unseen.length === 0) {
-    if (candidates.length === 0) logScan("no real-person mail (all automated or no sender)");
+    if (muted > 0) logScan(`skipped ${muted} the user muted`);
+    else if (candidates.length === 0) logScan("no real-person mail (all automated or no sender)");
     else logScan("nothing new (already handled)");
     return;
   }

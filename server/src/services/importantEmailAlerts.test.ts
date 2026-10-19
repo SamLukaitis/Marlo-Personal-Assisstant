@@ -959,3 +959,23 @@ describe("checkForImportantEmails — invoice forward offer", () => {
   });
 });
 
+
+describe("checkForImportantEmails — muted senders", () => {
+  it("never classifies or alerts on automated mail the user muted", async () => {
+    const { addEmailAlertMute } = await import("./emailAlertSettings.js");
+    const user = findOrCreateUserByEmail(uniqueEmail("important-muted"));
+    registerActivePhone(user.id);
+    await baseline(user.id);
+    addEmailAlertMute(user.id, { from: "railway.app", subject: "crash" });
+    mockHubListNewMessages.mockResolvedValueOnce([
+      fakeMessage({ id: "crash", from: "Railway <notifications@railway.app>", subject: "Deployment crashed" }),
+      fakeMessage({ id: "flight", subject: "Your flight has changed" }),
+    ]);
+
+    await checkForImportantEmails(user.id);
+
+    expect(mockClassify).toHaveBeenCalledTimes(1);
+    expect(mockClassify.mock.calls[0][0]).toEqual([expect.objectContaining({ subject: "Your flight has changed" })]);
+    expect(hasAlerted(user.id, "important-email:1:crash")).toBe(true);
+  });
+});

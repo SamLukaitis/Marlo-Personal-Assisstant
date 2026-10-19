@@ -642,3 +642,54 @@ describe("staticDigestMessage", () => {
     expect(text).toContain("• Dr Patel (Your results)");
   });
 });
+
+// Reported: the evening recap re-raised Steven Coates's thread an hour after the user had gone
+// through it with Marlowe, because the queue only knew what had arrived, not what had been said.
+describe("things already handled in chat", () => {
+  it("dropFromEmailDigest removes that email and the rest of its thread from the same sender", async () => {
+    const { dropFromEmailDigest } = await import("./emailDigest.js");
+    const user = newUser("digest-drop");
+    queueForEmailDigest(user.id, [
+      email("m1", "Steven Coates <steven@accora.com>", "Quote for the beds"),
+      email("m2", "Steven Coates <steven@accora.com>", "RE: Quote for the beds"),
+      email("m3", "Steven Coates <steven@accora.com>", "Invoice"),
+      email("m4", "Sarah <sarah@example.com>", "Quote for the beds"),
+    ]);
+
+    dropFromEmailDigest(user.id, { accountId: 1, id: "m2", from: "steven@accora.com", subject: "Re: quote for the beds" });
+
+    expect(queuedEmailDigestCount(user.id)).toBe(2);
+  });
+
+  it("hands the model the day's chat and tells it to leave out what's been settled", async () => {
+    const { appendWhatsAppMessage } = await import("../db/store.js");
+    const user = newUser("digest-chat");
+    const phone = registerActivePhone(user.id);
+    setLocalTime("20:00");
+    appendWhatsAppMessage(user.id, phone, "user", "I've already called Steven about the Accora quote, it's sorted");
+    queueForEmailDigest(user.id, [email("m1", "Steven Coates <steven@accora.com>", "Accora quote")]);
+
+    setLocalTime("21:05");
+    await flushEmailDigestIfDue(user.id);
+
+    expect(lastCall!.facts).toContain("Them: I've already called Steven about the Accora quote, it's sorted");
+    expect(lastCall!.system).toContain("already dealt with");
+  });
+
+  it("drops queued mail the user muted after it was queued", async () => {
+    const { addEmailAlertMute } = await import("./emailAlertSettings.js");
+    const user = newUser("digest-muted");
+    registerActivePhone(user.id);
+    queueForEmailDigest(user.id, [
+      email("m1", "Steven Coates <steven@accora.com>", "Accora quote"),
+      email("m2", "Sarah Jones <sarah@example.com>", "Lunch on Sunday?"),
+    ]);
+    addEmailAlertMute(user.id, { from: "accora.com" });
+
+    setLocalTime("21:05");
+    await flushEmailDigestIfDue(user.id);
+
+    expect(lastCall!.facts).toContain("Sarah Jones");
+    expect(lastCall!.facts).not.toContain("Steven");
+  });
+});

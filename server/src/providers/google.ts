@@ -125,6 +125,18 @@ function isBulk(msg: gmail_v1.Schema$Message): boolean {
   return (msg.labelIds ?? []).some((l) => BULK_CATEGORY_LABELS.has(l)) || header(msg, "List-Unsubscribe") !== "";
 }
 
+// history.list's labelId filter is not a guarantee: its messagesAdded entries also carry the user's
+// own drafts (one new id per autosave while they type a reply) and sent replies on inbox threads.
+// Those reached the background scans as "new mail" and came back as "X needs a reply" alerts about
+// the user's own unsent draft. Only mail actually sitting in the inbox, written by someone else,
+// counts as incoming.
+const OWN_MAIL_LABELS = new Set(["DRAFT", "SENT"]);
+
+export function isIncomingInboxMessage(msg: Pick<gmail_v1.Schema$Message, "labelIds">): boolean {
+  const labels = msg.labelIds ?? [];
+  return labels.includes("INBOX") && !labels.some((l) => OWN_MAIL_LABELS.has(l));
+}
+
 // Every metadata-format fetch asks for these — List-Unsubscribe only for isBulk above.
 const METADATA_HEADERS = ["Subject", "From", "List-Unsubscribe"];
 
@@ -305,7 +317,7 @@ export async function googleListNewMessages(
         format: "metadata",
         metadataHeaders: METADATA_HEADERS,
       });
-      return toUnified(account, full.data);
+      return isIncomingInboxMessage(full.data) ? toUnified(account, full.data) : null;
     } catch (err) {
       // history.list reports what was added to the inbox; anything deleted or moved out again
       // before this fan-out runs 404s here. Unlike the quota failure the checkpoint handling above

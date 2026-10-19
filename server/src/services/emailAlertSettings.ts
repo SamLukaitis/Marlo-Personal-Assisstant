@@ -78,3 +78,70 @@ export function setEmailDigestTime(ownerId: number, time: string): void {
 export function setImportantEmailAlertsEnabled(ownerId: number, enabled: boolean): void {
   setSetting(ownerId, IMPORTANT_KEY, enabled ? "true" : "false");
 }
+
+// Things the user has said they never want to hear about ("stop telling me about Railway crash
+// emails") without switching a whole kind of alert off. Each mute matches on the sender (name or
+// address), the subject, or both — every part given has to appear, case-insensitively. Applied to
+// both kinds of email ping and to the daily digest; the mail itself is left alone in the inbox.
+export interface EmailAlertMute {
+  from?: string;
+  subject?: string;
+}
+
+const MUTES_KEY = "email_alert_mutes";
+const MAX_MUTES = 100;
+const MAX_MUTE_PART = 100;
+
+export function listEmailAlertMutes(ownerId: number): EmailAlertMute[] {
+  try {
+    const parsed = JSON.parse(getSetting(ownerId, MUTES_KEY) ?? "[]");
+    return Array.isArray(parsed) ? parsed.filter((m) => m && (m.from || m.subject)) : [];
+  } catch {
+    return [];
+  }
+}
+
+function cleanPart(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const flat = value.replace(/\s+/g, " ").trim().slice(0, MAX_MUTE_PART);
+  return flat || undefined;
+}
+
+function sameMute(a: EmailAlertMute, b: EmailAlertMute): boolean {
+  return (a.from ?? "").toLowerCase() === (b.from ?? "").toLowerCase() &&
+    (a.subject ?? "").toLowerCase() === (b.subject ?? "").toLowerCase();
+}
+
+// Returns the cleaned mute, or null when neither part has any text.
+export function addEmailAlertMute(ownerId: number, mute: { from?: unknown; subject?: unknown }): EmailAlertMute | null {
+  const from = cleanPart(mute.from);
+  const subject = cleanPart(mute.subject);
+  if (!from && !subject) return null;
+  const clean: EmailAlertMute = { ...(from ? { from } : {}), ...(subject ? { subject } : {}) };
+  const existing = listEmailAlertMutes(ownerId).filter((m) => !sameMute(m, clean));
+  setSetting(ownerId, MUTES_KEY, JSON.stringify([...existing, clean].slice(-MAX_MUTES)));
+  return clean;
+}
+
+// Removes every mute whose parts match what's given (a bare `from` removes all mutes on that sender).
+export function removeEmailAlertMutes(ownerId: number, mute: { from?: unknown; subject?: unknown }): number {
+  const from = cleanPart(mute.from)?.toLowerCase();
+  const subject = cleanPart(mute.subject)?.toLowerCase();
+  if (!from && !subject) return 0;
+  const all = listEmailAlertMutes(ownerId);
+  const kept = all.filter(
+    (m) => !((!from || (m.from ?? "").toLowerCase() === from) && (!subject || (m.subject ?? "").toLowerCase() === subject))
+  );
+  setSetting(ownerId, MUTES_KEY, JSON.stringify(kept));
+  return all.length - kept.length;
+}
+
+export function isMutedEmail(mutes: EmailAlertMute[], m: { from: string; subject: string }): boolean {
+  const from = m.from.toLowerCase();
+  const subject = m.subject.toLowerCase();
+  return mutes.some(
+    (mute) =>
+      (!mute.from || from.includes(mute.from.toLowerCase())) &&
+      (!mute.subject || subject.includes(mute.subject.toLowerCase()))
+  );
+}

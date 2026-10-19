@@ -1954,3 +1954,43 @@ describe("make_app_link", () => {
     expect(prompt).toMatch(/never (say|claim).*(booked|ordered|playing)/i);
   });
 });
+
+// Reported: asked which email an alert was about, the assistant named two message ids that
+// didn't exist, confidently, before ever fetching one. A miss now says so outright.
+describe("get_message with an id that doesn't exist", () => {
+  beforeEach(() => mockHubGetMessage.mockReset());
+
+  it("returns an error telling the model not to guess ids, instead of a bare null", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("get-message-miss"));
+    mockHubGetMessage.mockResolvedValue(null);
+    const result = await runTool(user.id, "get_message", { account_id: 1, message_id: "1a135c80f647bc87" });
+    expect(result).toEqual({ error: expect.stringContaining("never typed from memory or guessed") });
+  });
+
+  it("the system prompt forbids naming an email's id or details from memory", () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("get-message-rule"));
+    expect(buildSystemPrompt(user.id)).toContain("An id only exists if a tool returned it");
+  });
+});
+
+describe("mute_email_alerts tool", () => {
+  it("adds, lists and removes a mute", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("mute-tool"));
+    expect(await runTool(user.id, "mute_email_alerts", { action: "add" })).toEqual({ error: "pass from and/or subject" });
+    const added = await runTool(user.id, "mute_email_alerts", { action: "add", from: "railway.app", subject: "crash" });
+    expect(added).toMatchObject({ ok: true, muted: { from: "railway.app", subject: "crash" } });
+    expect(await runTool(user.id, "mute_email_alerts", { action: "list" })).toEqual({
+      mutes: [{ from: "railway.app", subject: "crash" }],
+    });
+    expect(await runTool(user.id, "mute_email_alerts", { action: "remove", from: "railway.app" })).toEqual({
+      ok: true,
+      removed: 1,
+      mutes: [],
+    });
+  });
+
+  it("is offered to every user", () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("mute-tool-offered"));
+    expect(buildToolsForOwner(user.id).map((t) => t.name)).toContain("mute_email_alerts");
+  });
+});
