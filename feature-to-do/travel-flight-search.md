@@ -24,8 +24,9 @@ travel MCP servers with no sign-in.
   days), bags, stops, times and airlines, and can price in GBP. Things Marlowe would have to point
   out: cheapest results mix airlines on separate tickets (self-transfer) and fly home to a
   different London airport, and booking goes through Kiwi, not the airline. Kiwi earns from those
-  bookings, so the search is free. No published terms for server use were found. Good candidate
-  for a **backup** when SerpApi is unset or out of searches; check Kiwi's terms before relying on it.
+  bookings, so the search is free. No published terms for server use were found. Built in as the
+  backup on 2026-10-19 (`changelog/2026-10-19-kiwi-flight-backup.md`). Still to do: find or ask
+  for Kiwi's terms for server use; `KIWI_FLIGHTS=off` turns it off if they rule it out.
 - **Entry requirements and baggage:** neither lastminute.com nor SlickTrip covers these. They need another source (web
   search over official/airline pages, or an API like Sherpa).
 

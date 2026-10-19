@@ -20,3 +20,8 @@ process.env.ENCRYPTION_KEY = "0".repeat(64);
 // at import time if it's missing. Deliberately a *different* value from ENCRYPTION_KEY above —
 // a test that accidentally decrypted Joyce data with Marlowe's key, or vice versa, should fail.
 process.env.JOYCE_MASTER_KEY = "1".repeat(64);
+
+// The Kiwi.com flight backup (providers/kiwiFlights.ts) is on by default and needs no key, so
+// without this every test that builds Marlowe's tools would offer search_flights and could reach
+// the real Kiwi server. Tests that cover it turn it back on themselves.
+process.env.KIWI_FLIGHTS = "off";
