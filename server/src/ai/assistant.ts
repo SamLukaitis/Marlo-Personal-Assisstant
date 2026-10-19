@@ -85,6 +85,8 @@ import { STEP_TYPES } from "../services/phoneSteps.js";
 import { resolveReminderTime, ReminderTimeError, type ReminderTimeInput } from "../services/reminderTime.js";
 import { resolveUserTimezone, userLocalClock } from "../services/userTimezone.js";
 import { makeAppLink, APP_NAMES } from "../services/appLinks.js";
+import { shortenResultLinks } from "../services/shortLinks.js";
+import { CHAT_VOICE } from "./chatVoice.js";
 
 // Added to a tool result when the user's timezone is only inferred from their phone number, so the
 // reply names the zone it used instead of silently acting on a guess.
@@ -1854,7 +1856,7 @@ export async function runTool(
       };
       if (isFlightsConfigured()) {
         try {
-          return await searchFlights(query);
+          return shortenResultLinks(ownerId, await searchFlights(query));
         } catch (err) {
           console.warn("search_flights: SerpApi lookup failed", err);
           if (!isKiwiFlightsEnabled()) return { error: `Couldn't reach Google Flights: ${(err as Error).message}` };
@@ -1863,7 +1865,7 @@ export async function runTool(
       // Kiwi has no returnFor step (its round trips already include the return), so a SerpApi
       // token is simply ignored there.
       try {
-        return await searchKiwiFlights(query);
+        return shortenResultLinks(ownerId, await searchKiwiFlights(query));
       } catch (err) {
         console.warn("search_flights: Kiwi.com lookup failed", err);
         return { error: `Couldn't reach a flight search: ${(err as Error).message}` };
@@ -1892,14 +1894,14 @@ export async function runTool(
       if (nights > 30) return { error: "Hotel search covers stays of up to 30 nights." };
       if (isHotelsConfigured()) {
         try {
-          return await searchHotels(query);
+          return shortenResultLinks(ownerId, await searchHotels(query));
         } catch (err) {
           console.warn("search_hotels: SerpApi lookup failed", err);
           if (!isLastminuteHotelsEnabled()) return { error: `Couldn't reach Google Hotels: ${(err as Error).message}` };
         }
       }
       try {
-        return await searchLastminuteHotels(query);
+        return shortenResultLinks(ownerId, await searchLastminuteHotels(query));
       } catch (err) {
         console.warn("search_hotels: lastminute.com lookup failed", err);
         return { error: `Couldn't reach a hotel search: ${(err as Error).message}` };
@@ -2284,7 +2286,7 @@ const FLIGHTS_RULE =
   "- Use search_flights for flight prices, availability and comparing dates or routes — never quote a fare from memory or from web_search when it can be searched. Say prices are what Google Flights shows right now and can change, give the price for what was searched (round trip or one way, number of travellers), and end with the googleFlightsUrl. If the result's source is Kiwi.com, say the prices are from Kiwi.com instead, give each option you recommend with its own bookingUrl, and say booking is through Kiwi.com rather than the airline. Point out anything that would surprise them: an overnight leg, a long layover, a return to a different airport, out and back on separate tickets, which bags the price includes, a flight often delayed. Never say you've booked or held a seat — they book from the link. For baggage allowances or entry/visa rules, use only what the result's notes say or what web_search finds on the airline's or government's own site, and name that source.";
 
 const HOTELS_RULE =
-  "- Use search_hotels for hotel prices and availability on given dates — never quote a room rate from memory or from web_search when it can be searched. Say prices are what Google Hotels shows right now and can change, and be clear whether a price is per night or for the whole stay, and for how many people. Mention free cancellation, a deal, or a hotel far from the centre when the result says so. For Google Hotels results, give each hotel's website if there is one and end with the googleHotelsUrl. If the result's source is lastminute.com, say the prices are from lastminute.com, give each hotel you recommend with its own bookingUrl, and say it opens a Booking.com search for that hotel where the price may be different. Never say you've booked or held a room — they book from the link.";
+  "- Use search_hotels for hotel prices and availability on given dates — never quote a room rate from memory or from web_search when it can be searched. Say prices are what Google Hotels shows right now and can change, and be clear whether a price is per night or for the whole stay, and for how many people. Mention free cancellation, a deal, or a hotel far from the centre when the result says so. For Google Hotels results, give the website of a hotel you recommend if it has one (one or two at most, not one per hotel listed) and end with the googleHotelsUrl. If the result's source is lastminute.com, say the prices are from lastminute.com, give each hotel you recommend with its own bookingUrl, and say it opens a Booking.com search for that hotel where the price may be different. Never say you've booked or held a room — they book from the link.";
 
 function buildRules(enabled: Set<ToolKey>): string {
   const base = [
@@ -2335,7 +2337,6 @@ function buildRules(enabled: Set<ToolKey>): string {
     '- When one message asks for multiple things (e.g. "save this and also add it to my calendar"), do all of them in that same turn using your tools — don\'t complete only the first one and wait to be asked again for the rest.',
     "- When several accounts are connected and the user's request is ambiguous about which one, search across all of them or ask.",
     "- Every message/event/file result carries an accountEmail field. Whenever more than one Gmail/Outlook account is connected and you're discussing, summarizing, or listing specific messages or events, say which inbox (by its email address) each one came from — don't leave the user to guess or assume it's their only/main account.",
-    "- Keep answers concise and lead with the direct answer.",
   ];
   return ["Rules:", ...base, ...(enabled.has("travel") ? travel : []), ...tail].join("\n");
 }
@@ -2459,6 +2460,7 @@ export function buildSystemPrompt(ownerId: number, conversationSummary?: string)
       : "",
     onboardingNote,
     buildRules(getEnabledTools(ownerId)),
+    CHAT_VOICE,
     phonePromptSection(ownerId),
     getEdition(ownerId).promptSection(ownerId),
   ]
