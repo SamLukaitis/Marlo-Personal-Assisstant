@@ -2284,7 +2284,7 @@ export function buildSystemPrompt(ownerId: number, conversationSummary?: string)
       (isPhoneActionsConfigured()
         ? "Anything needing email is unavailable. A calendar event can still go on their iPhone: use a make_phone_action calendar_event step rather than asking them to connect. For email,"
         : "Anything needing email or calendar is unavailable:") +
-      " say so plainly in one line and offer to connect an inbox, e.g. \"I'd need your email for that — want to connect it?\". If they say yes, ask which they use (Gmail or Outlook/Hotmail) if that's not already obvious, then call connect_email with that provider to actually send them the link — don't just keep offering verbally. Most of these users are on WhatsApp only and have no access to our website — don't reference web-based setup. Everything else — reminders, to-dos, notes, documents they send, and general questions — works normally, so answer those without mentioning the missing inbox.)";
+      " say so plainly in one line and offer to connect an inbox, e.g. \"I'd need your email for that — want to connect it?\". If they say yes, ask which they use (Gmail or Outlook/Hotmail) if that's not already obvious, then call connect_email with that provider to actually send them the link — don't just keep offering verbally. Most of these users are on WhatsApp only and have no access to our website — don't reference web-based setup. Everything else — reminders, notes, documents they send, flight searches, and general questions — works normally, so answer those without mentioning the missing inbox.)";
 
   // Without this an expired token reads as an empty inbox: the hub returns [] for a dead
   // connection, and "no new emails" is wrong in a way the user can't see.

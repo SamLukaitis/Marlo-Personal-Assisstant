@@ -408,6 +408,31 @@ describe("handlePendingRegistration — declining email creates a phone-only acc
     expect(sendWhatsAppMessage).not.toHaveBeenCalledWith(phone, expect.stringContaining("email"));
   });
 
+  // Phone-only testers were promised "to-dos", which Marlowe doesn't have, and given no idea of
+  // what does work without a mailbox. The reply now names things that need no email at all.
+  it("tells them what works without email, and promises nothing that doesn't exist", async () => {
+    const phone = freshPhone();
+    addInvitedPhone(phone);
+    upsertPendingRegistration(phone, { step: "awaiting_email_confirm", name: "Sam" });
+
+    await handlePendingRegistration({
+      kind: "interactive",
+      from: phone,
+      messageId: "m1",
+      buttonId: "email_confirm_no",
+    });
+
+    const reply = vi
+      .mocked(sendWhatsAppMessage)
+      .mock.calls.map(([, text]) => text)
+      .find((text) => text.startsWith("No problem"));
+    expect(reply).toBeDefined();
+    expect(reply).not.toMatch(/to-?dos?\b/i);
+    expect(reply).toMatch(/remind/i);
+    expect(reply).toMatch(/flight/i);
+    expect(reply).toMatch(/photo/i);
+  });
+
   // A sentence is not a name (plausibleName.ts) — it must not become a permanent display name.
   it("stores no name when what they typed was not a plausible one", async () => {
     const phone = freshPhone();

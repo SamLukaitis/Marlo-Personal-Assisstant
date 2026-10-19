@@ -277,7 +277,8 @@ function TravelFilmstrip() {
               </div>
             </div>
             <p className="filmstrip-card-note">
-              Forward any attachment directly to your dedicated Marlowe inbox or WhatsApp thread.
+              Send a photo, PDF or Word document to Marlowe on WhatsApp, or ask it to save an
+              attachment from your email.
             </p>
           </article>
 
@@ -289,11 +290,11 @@ function TravelFilmstrip() {
                 <Plane size={22} />
               </div>
               <div className="filmstrip-folder-title">Travel Documents</div>
-              <div className="filmstrip-folder-sub">Auto-Sorted Folder</div>
+              <div className="filmstrip-folder-sub">Saved in Marlowe</div>
             </div>
             <p className="filmstrip-card-note">
-              Marlowe extracts data points and files the document into your linked cloud storage
-              automatically.
+              Marlowe reads the dates, reference and details and saves them with the original, so
+              you can ask about it later or have the file sent back.
             </p>
           </article>
 
@@ -470,8 +471,9 @@ export function HomePage() {
               <span className="home-eyebrow">Built around you</span>
               <h2 className="home-h2">Your hub only has what you asked for.</h2>
               <p className="home-lede">
-                Pick your tools when you sign up. Whatever you skip never appears — no dead tabs
-                for features you don't use, no settings for accounts you never connected.
+                Optional tools stay off until you want them: ask Marlowe, or switch them on in
+                Settings. Whatever you don't use never appears — no dead tabs for features you
+                don't use, no settings for accounts you never connected.
               </p>
               <div className="tool-grid">
                 <div className="tool-card">

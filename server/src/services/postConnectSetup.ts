@@ -159,10 +159,18 @@ async function sendClosingMessage(phone: string): Promise<void> {
       "to them to build ASAP. Any request I can't meet already gets flagged to them automatically :)"
   );
   // Its own message rather than a third paragraph above: the chain otherwise ends on a statement,
-  // and someone who has just finished tapping through setup is left with no obvious next move. The
-  // open question is the handoff into ordinary chat — pending_setup is already cleared by both
-  // callers of this function, so whatever they reply goes straight to the assistant.
-  await reply(phone, "Anything you need help with right now, or any questions?");
+  // and someone who has just finished tapping through setup is left with no obvious next move. An
+  // open "any questions?" here still left new testers guessing what to ask, so it's a few concrete
+  // things to try instead — the handoff into ordinary chat. pending_setup is already cleared by
+  // both callers of this function, so whatever they reply goes straight to the assistant.
+  await reply(
+    phone,
+    "A few things to try:\n\n" +
+      "• \"What's on my calendar this week?\"\n" +
+      "• \"Find me flights from London to Barcelona 20–23 Nov\"\n" +
+      "• Send me a photo of a receipt or booking and I'll save the details\n" +
+      "• \"Remind me at 6pm to call Mum\""
+  );
 }
 
 // Only Microsoft-connected owners can have anything in Teams — asking everyone made the chain
