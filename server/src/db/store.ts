@@ -147,6 +147,30 @@ db.exec(`
     parked_at INTEGER NOT NULL
   );
   CREATE INDEX IF NOT EXISTS idx_replay_parked_phones_owner ON replay_parked_phones(owner_id);
+  -- A person's Marlowe linked to their family on Joyce (src/bridge/). One row per owner and the
+  -- phone that consented. The settings are what they chose at linking; trips and availability
+  -- have no effect until those features are built.
+  CREATE TABLE IF NOT EXISTS family_links (
+    owner_id INTEGER NOT NULL REFERENCES users(id),
+    phone TEXT NOT NULL,
+    trips_mode TEXT NOT NULL DEFAULT 'ask',
+    availability_on INTEGER NOT NULL DEFAULT 1,
+    linked_at INTEGER NOT NULL,
+    PRIMARY KEY(owner_id, phone)
+  );
+  -- Everything this person's Marlowe has put into Joyce: a short label and the id of the Joyce
+  -- item, never the content. Lets them see what was shared and lets an unlink take it back.
+  CREATE TABLE IF NOT EXISTS family_link_shares (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    owner_id INTEGER NOT NULL REFERENCES users(id),
+    phone TEXT NOT NULL,
+    category TEXT NOT NULL,
+    label TEXT NOT NULL,
+    joyce_item_id INTEGER NOT NULL,
+    created_at INTEGER NOT NULL,
+    removed_at INTEGER
+  );
+  CREATE INDEX IF NOT EXISTS idx_family_link_shares_owner ON family_link_shares(owner_id, phone);
   CREATE TABLE IF NOT EXISTS user_enabled_tools (
     owner_id INTEGER NOT NULL REFERENCES users(id),
     tool_key TEXT NOT NULL,
@@ -2156,6 +2180,112 @@ export function getRecentWhatsAppMessagesForOwner(ownerId: number, phone: string
 
 export function normalizePhone(phone: string): string {
   return phone.replace(/[^0-9]/g, "");
+}
+
+export interface FamilyLinkRow {
+  ownerId: number;
+  phone: string;
+  tripsMode: "ask" | "auto" | "off";
+  availabilityOn: boolean;
+  linkedAt: number;
+}
+
+export interface FamilyShareRow {
+  id: number;
+  category: string;
+  label: string;
+  joyceItemId: number;
+  createdAt: number;
+  removedAt: number | null;
+}
+
+function toFamilyLink(r: {
+  owner_id: number;
+  phone: string;
+  trips_mode: string;
+  availability_on: number;
+  linked_at: number;
+}): FamilyLinkRow {
+  return {
+    ownerId: r.owner_id,
+    phone: r.phone,
+    tripsMode: r.trips_mode as FamilyLinkRow["tripsMode"],
+    availabilityOn: r.availability_on === 1,
+    linkedAt: r.linked_at,
+  };
+}
+
+export function getFamilyLink(ownerId: number, phone: string): FamilyLinkRow | null {
+  const row = db
+    .prepare(`SELECT * FROM family_links WHERE owner_id = ? AND phone = ?`)
+    .get(ownerId, normalizePhone(phone)) as Parameters<typeof toFamilyLink>[0] | undefined;
+  return row ? toFamilyLink(row) : null;
+}
+
+// Linking again just changes the settings: the row, and when it was first linked, stay.
+export function upsertFamilyLink(
+  ownerId: number,
+  phone: string,
+  patch: { tripsMode?: FamilyLinkRow["tripsMode"]; availabilityOn?: boolean } = {}
+): FamilyLinkRow {
+  const normalized = normalizePhone(phone);
+  const existing = getFamilyLink(ownerId, normalized);
+  const tripsMode = patch.tripsMode ?? existing?.tripsMode ?? "ask";
+  const availabilityOn = patch.availabilityOn ?? existing?.availabilityOn ?? true;
+  db.prepare(
+    `INSERT INTO family_links (owner_id, phone, trips_mode, availability_on, linked_at) VALUES (?, ?, ?, ?, ?)
+     ON CONFLICT(owner_id, phone) DO UPDATE SET trips_mode = excluded.trips_mode, availability_on = excluded.availability_on`
+  ).run(ownerId, normalized, tripsMode, availabilityOn ? 1 : 0, Date.now());
+  return getFamilyLink(ownerId, normalized) as FamilyLinkRow;
+}
+
+export function deleteFamilyLink(ownerId: number, phone: string): void {
+  db.prepare(`DELETE FROM family_links WHERE owner_id = ? AND phone = ?`).run(ownerId, normalizePhone(phone));
+}
+
+export function logFamilyShare(
+  ownerId: number,
+  phone: string,
+  category: string,
+  label: string,
+  joyceItemId: number
+): void {
+  db.prepare(
+    `INSERT INTO family_link_shares (owner_id, phone, category, label, joyce_item_id, created_at) VALUES (?, ?, ?, ?, ?, ?)`
+  ).run(ownerId, normalizePhone(phone), category, label, joyceItemId, Date.now());
+}
+
+export function listFamilyShares(
+  ownerId: number,
+  phone: string,
+  opts: { includeRemoved?: boolean } = {}
+): FamilyShareRow[] {
+  const rows = db
+    .prepare(
+      `SELECT id, category, label, joyce_item_id AS joyceItemId, created_at AS createdAt, removed_at AS removedAt
+         FROM family_link_shares
+        WHERE owner_id = ? AND phone = ? ${opts.includeRemoved ? "" : "AND removed_at IS NULL"}
+        ORDER BY id`
+    )
+    .all(ownerId, normalizePhone(phone)) as FamilyShareRow[];
+  return rows;
+}
+
+export function markFamilySharesRemoved(ownerId: number, phone: string): void {
+  db.prepare(
+    `UPDATE family_link_shares SET removed_at = ? WHERE owner_id = ? AND phone = ? AND removed_at IS NULL`
+  ).run(Date.now(), ownerId, normalizePhone(phone));
+}
+
+// True once this number has sent Marlowe at least one WhatsApp message — the proof that whoever
+// holds the number really uses it. A number added to an account from the web Settings page has no
+// such proof, so the Joyce link is never offered to it.
+export function hasInboundWhatsAppMessage(ownerId: number, phone: string): boolean {
+  return (
+    db
+      .prepare(`SELECT 1 FROM whatsapp_messages WHERE owner_id = ? AND phone = ? AND role = 'user' LIMIT 1`)
+      .get(ownerId, normalizePhone(phone)) !== undefined
+  );
 }
 
 export interface UserPhoneNumberRow {
@@ -4274,6 +4404,8 @@ export function deleteUserCompletely(ownerId: number): { deletedDocumentPaths: s
     db.prepare(`DELETE FROM phone_shortcut_status WHERE owner_id = ?`).run(ownerId);
     db.prepare(`DELETE FROM read_emails WHERE owner_id = ?`).run(ownerId);
     db.prepare(`DELETE FROM user_enabled_tools WHERE owner_id = ?`).run(ownerId);
+    db.prepare(`DELETE FROM family_links WHERE owner_id = ?`).run(ownerId);
+    db.prepare(`DELETE FROM family_link_shares WHERE owner_id = ?`).run(ownerId);
     db.prepare(`DELETE FROM pending_setup WHERE owner_id = ?`).run(ownerId);
     db.prepare(`DELETE FROM onboarding_step_events WHERE owner_id = ?`).run(ownerId);
     db.prepare(`DELETE FROM pending_actions WHERE owner_id = ?`).run(ownerId);

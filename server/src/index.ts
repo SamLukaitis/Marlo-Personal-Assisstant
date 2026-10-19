@@ -16,6 +16,7 @@ import { briefingRoutes } from "./routes/briefingRoutes.js";
 import { memoryRoutes } from "./routes/memoryRoutes.js";
 import { whatsappRoutes } from "./routes/whatsappRoutes.js";
 import { joyceRoutes } from "./joyce/routes.js";
+import { registerBridge } from "./bridge/index.js";
 import { startJoyceReminderDelivery } from "./joyce/reminderDelivery.js";
 import { isJoyceConfigured } from "./joyce/familyKey.js";
 import { isJoyceWhatsAppConfigured } from "./joyce/whatsapp.js";
@@ -86,6 +87,9 @@ app.use(whatsappRoutes);
 // Joyce — the family assistant on her own WhatsApp number. Entirely separate storage from
 // Marlowe's: see src/joyce/familyDb.ts for why nothing here can reach the other's data.
 app.use(joyceRoutes);
+// The link between a person's Marlowe and their family on Joyce: Joyce tells it when someone joins
+// or leaves a family, and Marlowe's assistant hands things over through it (src/bridge/).
+registerBridge();
 
 // Public: the one route a phone automation (iOS Shortcuts / Android Tasker) hits without any
 // interactive login — gated by its own shared-secret header, resolved to an owner internally.

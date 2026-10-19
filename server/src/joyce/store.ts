@@ -210,18 +210,40 @@ export interface NoteRow {
   createdAt: number;
 }
 
-export function saveNote(session: FamilySession, title: string, body: string): number {
+export function saveNote(
+  session: FamilySession,
+  title: string,
+  body: string,
+  source?: "marlowe"
+): number {
   const res = session.db
     .prepare(
-      `INSERT INTO notes (member_id, title_enc, body_enc, created_at) VALUES (?, ?, ?, ?)`
+      `INSERT INTO notes (member_id, title_enc, body_enc, created_at, source) VALUES (?, ?, ?, ?, ?)`
     )
     .run(
       session.actor.id,
       encryptFor(session.key, title),
       encryptFor(session.key, body),
-      Date.now()
+      Date.now(),
+      source ?? null
     );
   return Number(res.lastInsertRowid);
+}
+
+/** Records on the member's row that they've linked (or unlinked) their Marlowe. */
+export function setMarloweLinked(session: FamilySession, linked: boolean): void {
+  session.db.prepare(`UPDATE members SET marlowe_linked = ? WHERE id = ?`).run(linked ? 1 : 0, session.actor.id);
+}
+
+/**
+ * Deletes a note this member's Marlowe handed over. Refuses anything else: a note the member typed
+ * to Joyce themselves, or one handed over by another member, is not theirs to take back this way.
+ */
+export function deleteMarloweNote(session: FamilySession, noteId: number): boolean {
+  const res = session.db
+    .prepare(`DELETE FROM notes WHERE id = ? AND source = 'marlowe' AND member_id = ?`)
+    .run(noteId, session.actor.id);
+  return res.changes > 0;
 }
 
 function decryptNoteRows(

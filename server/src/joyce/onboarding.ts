@@ -11,6 +11,7 @@ import {
 import { openFamilySessionForNewMember, type FamilySession } from "./familyDb.js";
 import { setFamilyAdmin, setFamilyJoinCode, setMemberName } from "./store.js";
 import { messages, type JoyceButton, type JoyceMessage } from "./messages.js";
+import { fireFamilyJoined } from "./hooks.js";
 
 // Getting someone from "a number that has never messaged Joyce" to "a named member of a family".
 // Three questions at most: who I am, new family or existing one, and what to call you.
@@ -109,6 +110,7 @@ export function handleOnboarding(normalizedPhone: string, text: string): Onboard
     setFamilyJoinCode(session, joinCode);
     // Whoever starts the family is its admin — see deleting.ts for what that allows.
     setFamilyAdmin(session);
+    fireFamilyJoined(normalizedPhone);
     return { done: true, session, reply: [...welcomeNewFamily(joinCode), ...messages(askName(1))] };
   }
 
@@ -146,6 +148,7 @@ function applyJoinCode(normalizedPhone: string, rawCode: string): OnboardingResu
   const session = openFamilySessionForNewMember(outcome.family, normalizedPhone);
   // The code just worked, so it's the family's current one.
   setFamilyJoinCode(session, formatJoinCode(normalizeJoinCode(rawCode)!));
+  fireFamilyJoined(normalizedPhone);
   return {
     done: true,
     session,
