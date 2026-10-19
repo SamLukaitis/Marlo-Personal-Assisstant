@@ -244,17 +244,22 @@ function airbnb(raw: Record<string, unknown>, ctx: Ctx): AppLinkResult {
   return { url: u.toString(), label: "Open in Airbnb" };
 }
 
+// Also used by providers/lastminuteHotels.ts, with a hotel's name and city as `search`.
+export function bookingComSearchUrl(search: string, checkIn?: string, checkOut?: string, guests?: number): string {
+  const u = new URL("https://www.booking.com/searchresults.html");
+  u.searchParams.set("ss", search);
+  if (checkIn && checkOut) {
+    u.searchParams.set("checkin", checkIn);
+    u.searchParams.set("checkout", checkOut);
+  }
+  if (guests) u.searchParams.set("group_adults", String(guests));
+  u.searchParams.set("no_rooms", "1");
+  return u.toString();
+}
+
 function bookingCom(raw: Record<string, unknown>, ctx: Ctx): AppLinkResult {
   const s = stay(raw, ctx);
-  const u = new URL("https://www.booking.com/searchresults.html");
-  u.searchParams.set("ss", s.city);
-  if (s.checkIn && s.checkOut) {
-    u.searchParams.set("checkin", s.checkIn);
-    u.searchParams.set("checkout", s.checkOut);
-  }
-  if (s.guests) u.searchParams.set("group_adults", String(s.guests));
-  u.searchParams.set("no_rooms", "1");
-  return { url: u.toString(), label: "Open in Booking.com" };
+  return { url: bookingComSearchUrl(s.city, s.checkIn, s.checkOut, s.guests), label: "Open in Booking.com" };
 }
 
 // A WhatsApp chat with the message already typed: the user only taps Send. With no number it opens

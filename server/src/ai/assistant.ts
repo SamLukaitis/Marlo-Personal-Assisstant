@@ -75,6 +75,8 @@ import { fetchWeather } from "../providers/weather.js";
 import { isMapsConfigured, searchPlaces, computeRoute } from "../providers/maps.js";
 import { isFlightsConfigured, searchFlights, type Cabin, type FlightSearchInput } from "../providers/flights.js";
 import { isKiwiFlightsEnabled, searchKiwiFlights } from "../providers/kiwiFlights.js";
+import { isHotelsConfigured, nightsBetween, searchHotels, type HotelSearchInput, type HotelSort } from "../providers/hotels.js";
+import { isLastminuteHotelsEnabled, searchLastminuteHotels } from "../providers/lastminuteHotels.js";
 import { fetchQuotes, DEFAULT_SYMBOLS } from "../providers/markets.js";
 import { countTravelDays } from "../services/travelDays.js";
 import { isPhoneActionsConfigured, makePhoneActionForChat, phonePromptSection, scrubUnknownActionLinks } from "../services/phoneActions.js";
@@ -1249,6 +1251,40 @@ const FLIGHT_TOOLS: Anthropic.Tool[] = [
 
 export const MAX_FLIGHT_SEARCHES_PER_MESSAGE = 4;
 
+// Google Hotels via SerpApi (providers/hotels.ts) when SERPAPI_API_KEY is set, with lastminute.com's
+// public MCP (providers/lastminuteHotels.ts) as the backup when it isn't or a search fails — the
+// same arrangement as search_flights, and constant for the life of the process like it.
+function isHotelSearchAvailable(): boolean {
+  return isHotelsConfigured() || isLastminuteHotelsEnabled();
+}
+
+const HOTEL_TOOLS: Anthropic.Tool[] = [
+  {
+    name: "search_hotels",
+    description:
+      "Live hotel prices and availability for a city or area and check-in/check-out dates, from Google Hotels (or lastminute.com as a backup — the result's source says when): name, stars, guest rating, price per night and for the whole stay, free cancellation, amenities, what each booking site charges, and links. Search only — you can't book; the user books from the link. " +
+      "Use this whenever the user gives dates or asks what a stay costs or what's available; use find_places for places without prices. Call get_current_time first for relative dates ('next weekend'). " +
+      "To compare areas or date pairs, call once for each (all in the same turn).",
+    input_schema: {
+      type: "object",
+      properties: {
+        location: { type: "string", description: "City or area, e.g. 'Lisbon' or 'Alfama, Lisbon'." },
+        check_in: { type: "string", description: "YYYY-MM-DD." },
+        check_out: { type: "string", description: "YYYY-MM-DD, after check_in." },
+        adults: { type: "number", description: "Adults sharing one room. Default 2; pass 1 when they're travelling alone." },
+        sort: { type: "string", enum: ["relevance", "lowest_price", "highest_rating"], description: "Default relevance." },
+        max_price_per_night: { type: "number", description: "Highest nightly price in the search currency. Convert a total budget to per night first." },
+        min_stars: { type: "number", enum: [2, 3, 4, 5], description: "Only hotels with at least this many stars." },
+        free_cancellation: { type: "boolean", description: "Only places with free cancellation." },
+        currency: { type: "string", description: "ISO code for the user's currency, default GBP." },
+      },
+      required: ["location", "check_in", "check_out"],
+    },
+  },
+];
+
+export const MAX_HOTEL_SEARCHES_PER_MESSAGE = 2;
+
 // Only sent when MARLOWE_SHORTCUT_ICLOUD_URL is set (see services/phoneActions.ts) — one tool for
 // every on-phone step, so the step list grows without adding tools.
 const PHONE_ACTION_TOOLS: Anthropic.Tool[] = [
@@ -1319,6 +1355,7 @@ export function buildToolsForOwner(
   }
   if (isMapsConfigured()) assembled.push(...MAPS_TOOLS);
   if (isFlightSearchAvailable()) assembled.push(...FLIGHT_TOOLS);
+  if (isHotelSearchAvailable()) assembled.push(...HOTEL_TOOLS);
   if (isPhoneActionsConfigured()) assembled.push(...PHONE_ACTION_TOOLS);
   if (familyToolsAvailable(ownerId, phone)) assembled.push(...FAMILY_LINK_TOOLS);
   // The user's edition (editions/index.ts) drops tools that don't belong in that product and adds
@@ -1832,6 +1869,42 @@ export async function runTool(
         return { error: `Couldn't reach a flight search: ${(err as Error).message}` };
       }
     }
+    case "search_hotels": {
+      if (!isHotelSearchAvailable()) return { error: "Hotel search isn't set up on this server." };
+      const sorts: HotelSort[] = ["relevance", "lowest_price", "highest_rating"];
+      const optStr = (v: unknown) => (typeof v === "string" && v.trim() ? v.trim() : undefined);
+      const query: HotelSearchInput = {
+        location: String(input.location ?? "").trim(),
+        checkIn: String(input.check_in ?? "").trim(),
+        checkOut: String(input.check_out ?? "").trim(),
+        ...(typeof input.adults === "number" ? { adults: input.adults } : {}),
+        ...(sorts.includes(input.sort as HotelSort) ? { sort: input.sort as HotelSort } : {}),
+        ...(typeof input.max_price_per_night === "number" && input.max_price_per_night > 0 ? { maxPricePerNight: input.max_price_per_night } : {}),
+        ...(input.min_stars === 2 || input.min_stars === 3 || input.min_stars === 4 || input.min_stars === 5 ? { minStars: input.min_stars } : {}),
+        ...(input.free_cancellation === true ? { freeCancellation: true } : {}),
+        ...(optStr(input.currency) ? { currency: optStr(input.currency) } : {}),
+      };
+      if (!query.location) return { error: "Give a city or area to search." };
+      const isoDate = /^\d{4}-\d{2}-\d{2}$/;
+      if (!isoDate.test(query.checkIn) || !isoDate.test(query.checkOut)) return { error: "check_in and check_out must be dates as YYYY-MM-DD." };
+      const nights = nightsBetween(query.checkIn, query.checkOut);
+      if (nights < 1) return { error: "check_out must be after check_in." };
+      if (nights > 30) return { error: "Hotel search covers stays of up to 30 nights." };
+      if (isHotelsConfigured()) {
+        try {
+          return await searchHotels(query);
+        } catch (err) {
+          console.warn("search_hotels: SerpApi lookup failed", err);
+          if (!isLastminuteHotelsEnabled()) return { error: `Couldn't reach Google Hotels: ${(err as Error).message}` };
+        }
+      }
+      try {
+        return await searchLastminuteHotels(query);
+      } catch (err) {
+        console.warn("search_hotels: lastminute.com lookup failed", err);
+        return { error: `Couldn't reach a hotel search: ${(err as Error).message}` };
+      }
+    }
     case "get_markets": {
       const requested = (input.symbols as string[] | undefined) ?? [];
       const quotes = await fetchQuotes(requested.length ? requested : DEFAULT_SYMBOLS);
@@ -2210,6 +2283,9 @@ const WEB_SEARCH_RULE_WITH_MAPS =
 const FLIGHTS_RULE =
   "- Use search_flights for flight prices, availability and comparing dates or routes — never quote a fare from memory or from web_search when it can be searched. Say prices are what Google Flights shows right now and can change, give the price for what was searched (round trip or one way, number of travellers), and end with the googleFlightsUrl. If the result's source is Kiwi.com, say the prices are from Kiwi.com instead, give each option you recommend with its own bookingUrl, and say booking is through Kiwi.com rather than the airline. Point out anything that would surprise them: an overnight leg, a long layover, a return to a different airport, out and back on separate tickets, which bags the price includes, a flight often delayed. Never say you've booked or held a seat — they book from the link. For baggage allowances or entry/visa rules, use only what the result's notes say or what web_search finds on the airline's or government's own site, and name that source.";
 
+const HOTELS_RULE =
+  "- Use search_hotels for hotel prices and availability on given dates — never quote a room rate from memory or from web_search when it can be searched. Say prices are what Google Hotels shows right now and can change, and be clear whether a price is per night or for the whole stay, and for how many people. Mention free cancellation, a deal, or a hotel far from the centre when the result says so. For Google Hotels results, give each hotel's website if there is one and end with the googleHotelsUrl. If the result's source is lastminute.com, say the prices are from lastminute.com, give each hotel you recommend with its own bookingUrl, and say it opens a Booking.com search for that hotel where the price may be different. Never say you've booked or held a room — they book from the link.";
+
 function buildRules(enabled: Set<ToolKey>): string {
   const base = [
     "- Always look up real data with your tools before answering questions about email, calendar, or files — never invent contents.",
@@ -2248,6 +2324,7 @@ function buildRules(enabled: Set<ToolKey>): string {
     "- There are TWO separate paths to Xero, both already built: (1) a WhatsApp photo/PDF filed as a receipt forwards automatically, no confirmation needed. (2) Email is scanned periodically (every few minutes) for invoice-looking automated mail; ONLY when that scan actually flags one do you get a pending confirmation to offer 'reply yes to forward' (see below) — the scan hasn't necessarily run yet or matched a given email, so no pending confirmation does NOT mean email invoices are unsupported. If the user asks about a specific email invoice with nothing pending, never claim this feature only works for WhatsApp — instead offer to call extract_email_attachment on it directly, which also triggers the same automatic Xero forwarding once it's saved as a receipt with a real expense, just without the alert/confirm step.",
     isMapsConfigured() ? WEB_SEARCH_RULE_WITH_MAPS : WEB_SEARCH_RULE_NO_MAPS,
     ...(isFlightSearchAvailable() ? [FLIGHTS_RULE] : []),
+    ...(isHotelSearchAvailable() ? [HOTELS_RULE] : []),
   ];
   const travel = [
     "- Use list_travel_checkins for questions about where the user has physically been or when they arrived somewhere — this is automatic location history, separate from documents.",
@@ -2530,6 +2607,7 @@ export async function runAssistantChat(
   // response are counted too.
   let mapsCalls = 0;
   let flightSearches = 0;
+  let hotelSearches = 0;
   const channel = phone ? "whatsapp" : "web";
   function finish(reply: AssistantReply): AssistantReply {
     // Admins (Jake and Sam) see what each of their own messages cost in the Portal, so the text
@@ -2713,6 +2791,14 @@ export async function runAssistantChat(
             type: "tool_result" as const,
             tool_use_id: toolUse.id,
             content: "Error: flight search limit reached for this message — answer with what you already have.",
+            is_error: true,
+          };
+        }
+        if (toolUse.name === "search_hotels" && ++hotelSearches > MAX_HOTEL_SEARCHES_PER_MESSAGE) {
+          return {
+            type: "tool_result" as const,
+            tool_use_id: toolUse.id,
+            content: "Error: hotel search limit reached for this message — answer with what you already have.",
             is_error: true,
           };
         }

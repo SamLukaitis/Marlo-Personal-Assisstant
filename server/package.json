@@ -16,7 +16,8 @@
     "joyce:delete": "tsx src/scripts/joyceDeleteMessage.ts",
     "maps:probe": "tsx src/scripts/mapsProbe.ts",
     "travel:probe": "tsx src/scripts/travelMcpProbe.ts",
-    "flights:probe": "tsx src/scripts/flightsProbe.ts"
+    "flights:probe": "tsx src/scripts/flightsProbe.ts",
+    "hotels:probe": "tsx src/scripts/hotelsProbe.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.112.5",
