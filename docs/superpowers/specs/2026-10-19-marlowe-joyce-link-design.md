@@ -182,9 +182,12 @@ for the later projects (trips, availability, expense ledger, forwarded messages)
   email or background processing, the plan starts with a per-turn tool filter and a test.
 - **No circular import:** Joyce's onboarding exposes a hook (`onFamilyJoined`) that the bridge
   registers at server start. Joyce still imports nothing from Marlowe or the bridge.
-- **Follow-up nudge:** goes through the attention gate like any proactive message. After the second
-  unanswered ask it stops. The person can ask Marlowe to link at any time, and can re-link after
-  unlinking.
+- **Follow-up nudge:** not built in the first version (changed at implementation, 2026-10-19): the
+  offer is sent once, and the person can ask Marlowe to link at any time and re-link after
+  unlinking. A single reminder through the attention gate is listed in `feature-to-do/`.
+- **Walkthrough and removal as built:** the offer and settings walkthrough are plain messages that
+  the model carries on through tools (no buttons), and removal on unlink uses the audit log's note
+  ids plus the `notes.source` marker rather than the provenance table.
 
 ## Left to the builder
 
