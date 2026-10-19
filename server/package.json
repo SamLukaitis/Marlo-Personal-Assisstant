@@ -14,7 +14,9 @@
     "whatsapp:check": "tsx src/scripts/whatsappCheck.ts",
     "joyce:templates": "tsx src/scripts/createJoyceTemplates.ts",
     "joyce:delete": "tsx src/scripts/joyceDeleteMessage.ts",
-    "maps:probe": "tsx src/scripts/mapsProbe.ts"
+    "maps:probe": "tsx src/scripts/mapsProbe.ts",
+    "travel:probe": "tsx src/scripts/travelMcpProbe.ts",
+    "flights:probe": "tsx src/scripts/flightsProbe.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.112.5",
