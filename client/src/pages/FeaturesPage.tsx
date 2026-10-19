@@ -1,6 +1,7 @@
 import type { MouseEvent } from "react";
 import { Link } from "react-router-dom";
 import type { Tool } from "../api/client";
+import { useAuth } from "../context/AuthContext";
 import { useTools } from "../context/ToolsContext";
 import { prefersReducedMotion } from "../lib/motionPrefs";
 import "./features.css";
@@ -101,6 +102,13 @@ const CHAPTERS: Chapter[] = [
         whatsappOnly: true,
       },
       {
+        id: "muting",
+        title: "Muting one sender or kind of email",
+        body: "Stop hearing about one sender, or one kind of email from them, without turning alerts off. The emails still arrive in your inbox; Marlowe just stops messaging you about them and leaves them out of the digest. You can see your mutes and undo one any time.",
+        examples: ["Stop telling me about Railway crash emails", "Never ping me about LinkedIn", "What have I muted?"],
+        whatsappOnly: true,
+      },
+      {
         id: "contacts",
         title: "Contacts",
         body: "Give a name and Marlowe looks up the email address in your connected accounts, so you don't need the address when you ask it to write to someone.",
@@ -112,6 +120,12 @@ const CHAPTERS: Chapter[] = [
         body: "Look through and search your recent Teams direct messages and group chats. Your chats also appear on the Chats page.",
         examples: ["What did James say in Teams about the launch?"],
         requiresTool: "teams",
+      },
+      {
+        id: "joyce",
+        title: "Sending things to your family on Joyce",
+        body: "Joyce is a separate family assistant on WhatsApp. If your family uses her, Marlowe offers to link the two when you join, and nothing is shared until you say yes. Once linked, ask Marlowe to pass something on and it's saved as a note any family member can ask Joyce for. You can see what you've shared, or unlink and take it back, whenever you like.",
+        examples: ["Send the builder's number to Joyce", "What have I shared with the family?", "Unlink me from Joyce"],
       },
     ],
   },
@@ -188,11 +202,23 @@ const CHAPTERS: Chapter[] = [
   {
     id: "travel",
     title: "Travel",
-    intro: "Bookings, trips, getting around, and counting days abroad.",
+    intro: "Finding flights and places to stay, your bookings and trips, getting around, and counting days abroad.",
     topics: [
       {
+        id: "flight-search",
+        title: "Searching for flights",
+        body: "Give Marlowe where you're going and when, and it looks up live flights: prices, times and stops, across airlines, nearby dates and other routes, with return options for a round trip. Each result has a link to book on the airline's or the search site's own page. Marlowe only searches; it never books or pays for anything.",
+        examples: ["Find me flights from London to Barcelona 20–23 Nov", "What's the cheapest way to get to Lisbon next weekend?"],
+      },
+      {
+        id: "places-to-stay",
+        title: "Places to stay",
+        body: "Marlowe can suggest hotels and areas from Google Maps, with ratings and a map link, and give you a Booking.com or Airbnb link with the city, your dates and the number of guests already filled in. It can't see live hotel prices or availability, so the link is where you check those and book.",
+        examples: ["Find me a hotel in Porto for 12 to 15 March", "Show me Airbnbs in Edinburgh for two, first weekend of December"],
+      },
+      {
         id: "bookings",
-        title: "Flights and hotels",
+        title: "Your flight and hotel bookings",
         body: "Send Marlowe a confirmation (a screenshot, a PDF, or the email it came in) and it saves the booking: dates, reference number, flight or hotel name. Ask about it later without digging through your inbox.",
         examples: ["When is my flight to Berlin?", "What's the reference for the hotel in Rome?"],
       },
@@ -219,6 +245,12 @@ const CHAPTERS: Chapter[] = [
         title: "Travel times",
         body: "Driving or walking distance and time between two places. Public transport isn't supported yet.",
         examples: ["How long to walk from here to the station?"],
+      },
+      {
+        id: "app-links",
+        title: "Rides, tables and music in your apps",
+        body: "For things Marlowe can't do itself, it sends a link that opens the app with the details already filled in: Uber or Lyft for a ride, OpenTable or Resy for a restaurant table, Spotify for music, and Google Maps for directions. You check and confirm in the app; Marlowe never books, orders or pays for anything.",
+        examples: ["Get me an Uber to Paddington", "Book a table for four at Dishoom on Saturday at 8", "Put on something relaxing on Spotify"],
       },
       {
         id: "schengen",
@@ -365,7 +397,12 @@ function jumpTo(e: MouseEvent, id: string) {
 }
 
 export function FeaturesPage() {
+  const { user } = useAuth();
   const { isEnabled, loaded } = useTools();
+  // This page is public (the WhatsApp "help" reply links here, and phone-only users have no way
+  // to sign in), so a signed-out visitor has no tools to be on or off. Their on/off tags and the
+  // "Turn it on in Settings" note only make sense for someone signed in.
+  const showToolState = Boolean(user) && loaded;
 
   return (
     <div className="main scrollable">
@@ -412,20 +449,20 @@ export function FeaturesPage() {
 
             <div className="card features-topics">
               {chapter.topics.map((topic) => {
-                const toolOn = topic.requiresTool && loaded && isEnabled(topic.requiresTool);
+                const toolOn = topic.requiresTool && showToolState && isEnabled(topic.requiresTool);
                 return (
                   <article key={topic.id} id={topic.id} className="features-topic">
                     <div className="features-topic-head">
                       <h3>{topic.title}</h3>
                       {topic.whatsappOnly && <span className="features-tag">WhatsApp</span>}
-                      {topic.requiresTool && loaded && (
+                      {topic.requiresTool && showToolState && (
                         <span className={`features-tag${toolOn ? " on" : ""}`}>
                           {TOOL_LABELS[topic.requiresTool]} {toolOn ? "on" : "off"}
                         </span>
                       )}
                     </div>
                     <p>{topic.body}</p>
-                    {topic.requiresTool && loaded && !toolOn && (
+                    {topic.requiresTool && showToolState && !toolOn && (
                       <p className="features-tool-note">
                         This is optional. <Link to="/settings?section=tools">Turn it on in Settings</Link>.
                       </p>
