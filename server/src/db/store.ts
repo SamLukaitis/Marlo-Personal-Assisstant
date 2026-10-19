@@ -1247,6 +1247,20 @@ db.exec(`
   );
 `);
 
+// Short links Marlowe sends in place of long booking/search URLs (Google Flights, Google Hotels,
+// Kiwi.com, Booking.com), so a WhatsApp reply isn't half URL. /go/<code> redirects to `url`.
+// services/shortLinks.ts is the only writer; only URLs Marlowe itself stored can be reached.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS short_links (
+    code       TEXT PRIMARY KEY,
+    owner_id   INTEGER NOT NULL REFERENCES users(id),
+    url        TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    expires_at INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_short_links_expires ON short_links(expires_at);
+`);
+
 // Which provider account a person actually signed in with, keyed on the provider's own immutable
 // ids — for Microsoft, "<tenant id>:<object id>" from the id_token. Microsoft sign-in used to find
 // the user by Graph's `mail`, which any Entra tenant admin can set to someone else's address; see
@@ -3104,6 +3118,28 @@ export function listPhoneActionsForPortal(limit = 200): (PhoneActionRow & { emai
   ).map((r) => ({ ...phoneActionFromDb(r), email: r.email }));
 }
 
+export function insertShortLink(l: { code: string; ownerId: number; url: string; createdAt: number; expiresAt: number }): void {
+  db.prepare(`INSERT INTO short_links (code, owner_id, url, created_at, expires_at) VALUES (?, ?, ?, ?, ?)`).run(
+    l.code,
+    l.ownerId,
+    l.url,
+    l.createdAt,
+    l.expiresAt
+  );
+}
+
+// null once expired, so an old link can't be kept alive just by being tapped.
+export function getShortLinkUrl(code: string, now = Date.now()): string | null {
+  const row = db.prepare(`SELECT url FROM short_links WHERE code = ? AND expires_at > ?`).get(code, now) as
+    | { url: string }
+    | undefined;
+  return row?.url ?? null;
+}
+
+export function deleteExpiredShortLinks(now = Date.now()): number {
+  return db.prepare(`DELETE FROM short_links WHERE expires_at <= ?`).run(now).changes;
+}
+
 export function getShortcutStatus(ownerId: number): ShortcutStatusRow | null {
   const row = db
     .prepare(
@@ -4405,6 +4441,7 @@ export function deleteUserCompletely(ownerId: number): { deletedDocumentPaths: s
     db.prepare(`DELETE FROM attention_items WHERE owner_id = ?`).run(ownerId);
     db.prepare(`DELETE FROM phone_actions WHERE owner_id = ?`).run(ownerId);
     db.prepare(`DELETE FROM phone_shortcut_status WHERE owner_id = ?`).run(ownerId);
+    db.prepare(`DELETE FROM short_links WHERE owner_id = ?`).run(ownerId);
     db.prepare(`DELETE FROM read_emails WHERE owner_id = ?`).run(ownerId);
     db.prepare(`DELETE FROM user_enabled_tools WHERE owner_id = ?`).run(ownerId);
     db.prepare(`DELETE FROM family_links WHERE owner_id = ?`).run(ownerId);
