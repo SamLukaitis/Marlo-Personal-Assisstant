@@ -27,7 +27,7 @@ than deleted, since they still explain the reasoning behind what was built.
 - [joyce-calendar-followups.md](joyce-calendar-followups.md)
 - [marlowe-joyce-next-steps.md](marlowe-joyce-next-steps.md) (link built; trips, availability, expenses, forwarded messages still open)
 - [choice-buttons-not-typed-lists.md](choice-buttons-not-typed-lists.md)
-- [travel-flight-search.md](travel-flight-search.md)
+- [travel-flight-search.md](travel-flight-search.md) (flight and hotel search built; baggage, entry rules and price alerts still open)
 - [email-alert-mutes-settings-ui.md](email-alert-mutes-settings-ui.md)
 - [sonnet-5-5-and-fast-first-for-all.md](sonnet-5-5-and-fast-first-for-all.md) (part 2, Sonnet 5.5, done; part 1 still open)
 - [done-admin-version-check.md](done-admin-version-check.md)

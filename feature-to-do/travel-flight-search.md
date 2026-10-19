@@ -1,6 +1,6 @@
-# Flight search, travel requirements and baggage limits
+# Flight and hotel search, travel requirements and baggage limits
 
-Let Marlowe search and compare flights, check entry requirements (visas, passport rules) and tell
+Let Marlowe search and compare flights and hotels, check entry requirements (visas, passport rules) and tell
 you the baggage allowance for a flight.
 
 ## What we found (probe, 2026-10-16)
@@ -44,7 +44,21 @@ Flight search is built on SerpApi's Google Flights engine, not an MCP (see
 - **Price alerts:** watch a route and message the user when the price drops. This would go through
   the attention gate (`services/attention.ts`).
 
-## If we ever use the lastminute.com MCP
+## Hotel search (built 2026-10-19)
 
-Read lastminute.com's terms for automated or commercial use of their MCP. The booking links carry
-their affiliate tags.
+`search_hotels` uses SerpApi's Google Hotels engine, with lastminute.com's MCP
+(`search_only_hotel`, after `resolve_destination_id`) as the no-key backup, the same arrangement as
+flights. See `changelog/2026-10-19-hotel-search.md`. Still to do:
+
+- Run `npm run hotels:probe` once `SERPAPI_API_KEY` is set, to check the Google Hotels field
+  mapping against a real response (only checked against SerpApi's docs so far).
+- lastminute.com booking links: the backup currently links to a Booking.com search for each hotel.
+  lastminute's own link needs `select_hotel_options` then `generate_booking_link` per hotel, which
+  would add two calls and more waiting.
+- Flights and hotels share SerpApi's 250 free searches a month. Watch usage once testers start.
+
+## lastminute.com terms
+
+Now in use for the hotel backup. Read lastminute.com's terms for automated or commercial use of
+their MCP before relying on it widely; `LASTMINUTE_HOTELS=off` turns it off without a code change.
+Their booking links carry their affiliate tags (Marlowe doesn't use them yet).

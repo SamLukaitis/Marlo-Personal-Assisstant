@@ -197,6 +197,12 @@ const CHAPTERS: Chapter[] = [
         examples: ["When is my flight to Berlin?", "What's the reference for the hotel in Rome?"],
       },
       {
+        id: "travel-prices",
+        title: "Flight and hotel prices",
+        body: "Marlowe searches live flight and hotel prices for your dates. It compares airlines, times and stops, or hotels by price, stars, rating and free cancellation, and sends links so you can book. It never books anything itself.",
+        examples: ["Flights from London to Barcelona on 20 November", "Find me a hotel in Lisbon 12 to 15 November under £150 a night"],
+      },
+      {
         id: "trip-nudges",
         title: "Before you go",
         body: "The day before a saved flight, Marlowe sends a message around when online check-in usually opens. On the morning of a hotel check-in, you get a reminder about the hotel too.",
