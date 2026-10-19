@@ -235,6 +235,16 @@ function migrate(db: Database.Database): void {
   if (!columns("events").includes("about_label_enc")) {
     db.exec(`ALTER TABLE events ADD COLUMN about_label_enc TEXT`);
   }
+  // Whether this member has linked their Marlowe to the family (src/bridge/). Only a flag: the
+  // consent and settings live on Marlowe's side, and nothing of Marlowe's is stored here.
+  if (!columns("members").includes("marlowe_linked")) {
+    db.exec(`ALTER TABLE members ADD COLUMN marlowe_linked INTEGER NOT NULL DEFAULT 0`);
+  }
+  // 'marlowe' for a note a member's Marlowe handed over, so it can be told apart and removed if
+  // that member later unlinks.
+  if (!columns("notes").includes("source")) {
+    db.exec(`ALTER TABLE notes ADD COLUMN source TEXT`);
+  }
 }
 
 // Opening a SQLite file is cheap but not free, and better-sqlite3 handles are safe to reuse, so

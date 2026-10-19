@@ -6,7 +6,8 @@ assistant, Joyce belongs to a *family group*: everything any member tells her, e
 can ask about.
 
 All the code is in `server/src/joyce/`. Nothing outside that directory changed except a handful of
-small things, listed under "What this touched outside Joyce" below.
+small things, listed under "What this touched outside Joyce" below. (Since 2026-10-19 there is also
+an opt-in link to Marlowe, in `server/src/bridge/`: see "Linked to Marlowe".)
 
 ## The requirement that shaped everything
 
@@ -99,6 +100,14 @@ I ran a real conversation end to end against the live API. All of this is workin
   with a Portal switch to turn Joyce's own off. See "Which calendar a family uses" below.
 
 Every test passes: 31 Joyce tests, and Marlowe's existing suite still green (1557 total).
+
+## Linked to Marlowe (2026-10-19)
+
+Joyce still imports nothing from Marlowe. A person who uses both can opt in to a link through
+`server/src/bridge/`, which is the only code that imports both. Joyce's side is small: two hooks in
+`joyce/hooks.ts` (someone joined, someone left), a `members.marlowe_linked` flag, and a
+`notes.source = 'marlowe'` marker on notes handed over. Consent, settings and the audit log live in
+Marlowe's database. Details: `changelog/2026-10-19-marlowe-joyce-link.md`.
 
 ## Leaving a family
 
