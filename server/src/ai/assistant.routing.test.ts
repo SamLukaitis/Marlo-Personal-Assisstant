@@ -64,6 +64,8 @@ describe("runAssistantChat — fast-first routing", () => {
 
     expect(reply.text).toBe("Here's a careful answer.");
     expect(sent(1).model).toBe(MODEL_STRONG);
+    expect(sent(1).output_config).toEqual({ effort: "medium" });
+    expect(sent(1).thinking).toEqual({ type: "adaptive" });
     // The fast model's escalate call is dropped, not replayed to the strong model.
     expect(JSON.stringify(mockCreate.mock.calls[1][0].messages)).not.toContain("escalate_to_stronger_model");
     expect(sent(1).tools.map((t) => t.name)).not.toContain("escalate_to_stronger_model");

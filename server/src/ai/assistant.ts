@@ -2535,12 +2535,13 @@ export async function runAssistantChat(
       max_tokens: 4096,
       // The fast model keeps its default adaptive thinking at low effort: quick lookups don't need
       // more, and anything that does should escalate. The legacy cheap tier (Haiku 4.5) gets no
-      // thinking, as before.
+      // thinking, as before. The strong model (Sonnet 5.5) runs at medium: Sonnet 5.5 recalibrated
+      // its effort levels, and medium is the recommended start for multistep tool use.
       ...(model === MODEL_FAST
         ? { output_config: { effort: "low" as const } }
         : model === MODEL_SIMPLE
           ? {}
-          : { thinking: { type: "adaptive" as const } }),
+          : { thinking: { type: "adaptive" as const }, output_config: { effort: "medium" as const } }),
       system: [{ type: "text", text: system, cache_control: { type: "ephemeral", ttl: "1h" } }],
       tools: buildToolsForOwner(ownerId, model),
       messages: withMessagesCacheBreakpoint(messages, stableHistoryIndex),

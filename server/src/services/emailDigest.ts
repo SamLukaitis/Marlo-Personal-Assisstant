@@ -347,6 +347,8 @@ export async function renderDigest(
   const response = await getClient().messages.create({
     model: MODEL,
     max_tokens: 512,
+    // Same job as the briefing (facts into a short recap), so the same low effort.
+    output_config: { effort: "low" },
     system: extraSystem ? `${digestSystemPrompt(voice)}
 
 ${extraSystem}` : digestSystemPrompt(voice),

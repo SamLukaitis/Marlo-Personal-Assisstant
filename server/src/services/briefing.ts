@@ -329,6 +329,9 @@ export async function renderBriefing(
   const response = await anthropic.messages.create({
     model: MODEL,
     max_tokens: 1024,
+    // Turning a fixed list of facts into prose doesn't need much thinking, and at low effort the
+    // model skips it on most days, which also keeps thinking from eating into max_tokens.
+    output_config: { effort: "low" },
     system: extraSystem ? `${briefingSystemPrompt(voice)}
 
 ${extraSystem}` : briefingSystemPrompt(voice),

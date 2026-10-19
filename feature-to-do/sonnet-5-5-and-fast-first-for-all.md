@@ -11,6 +11,7 @@ word list or the escalate tool's description in `server/src/ai/modelRouting.ts` 
 **2. Done (2026-10-19): the strong model is now Claude Sonnet 5.5** (changelog
 2026-10-19-sonnet-5-5-strong-model.md). None of the strong-model calls disabled thinking or forced
 `tool_choice` (the forced calls all run on the cheap Haiku 4.5 tier), so it was a swap of the
-default model id. Still worth doing: compare replies, briefings and digests for a few days, and
-try an explicit effort level (`medium` for chat, `low` for the briefing and digest) since Sonnet
-5.5 recalibrated what each level means.
+default model id, plus explicit effort levels (`medium` for chat on the strong model, `low` for
+the briefing and digest). Still worth doing: compare replies, briefings and digests for a few
+days; if they're worse, raise the effort in `ai/assistant.ts`, `services/briefing.ts` or
+`services/emailDigest.ts`.

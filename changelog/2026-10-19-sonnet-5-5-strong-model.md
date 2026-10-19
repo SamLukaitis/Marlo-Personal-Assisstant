@@ -17,6 +17,11 @@ the strong-model calls do either: chat uses adaptive thinking, and every forced 
 code runs on the cheap Haiku 4.5 tier. Replies are read by block type, so the thinking blocks
 Sonnet 5.5 returns don't get mistaken for the answer.
 
-**Not changed:** Joyce still defaults to `claude-sonnet-5` (`JOYCE_MODEL`). No effort level is
-set, so the strong model uses its default (`high`); Sonnet 5.5 recalibrated what each level means,
-so comparing `medium`/`low` is a follow-up in `feature-to-do/sonnet-5-5-and-fast-first-for-all.md`.
+**Effort levels:** Sonnet 5.5 recalibrated what each effort level means, so they are now set
+explicitly instead of left at the default (`high`): chat on the strong model runs at `medium`
+(`ai/assistant.ts`), and the briefing and email digest at `low` (they turn a fixed list of facts
+into prose, and at `low` the model mostly skips thinking, so it can't eat into their small
+`max_tokens`). Document extraction keeps the default, since a misread code or number costs more
+than the tokens. If replies get worse, raise these first.
+
+**Not changed:** Joyce still defaults to `claude-sonnet-5` (`JOYCE_MODEL`).
