@@ -25,8 +25,8 @@ no tools to switch. Signed-in users still get their sidebar (`OptionalSidebarLay
   Settings.
 
 **Features page:** added topics, with example phrases, for flight search, places to stay (Google
-Maps plus a Booking.com or Airbnb link with the dates filled in, and plainly no live hotel
-prices), app hand-off links (Uber, Lyft, OpenTable, Resy, Spotify, Google Maps), muting one sender
+Maps plus a Booking.com or Airbnb link with the dates filled in; it says nothing either way about
+live hotel prices, which are added separately), app hand-off links (Uber, Lyft, OpenTable, Resy, Spotify, Google Maps), muting one sender
 or kind of email, and sending things to Joyce for people linked to a family.
 
 **End of onboarding:** the last message after connecting email was "Anything you need help with

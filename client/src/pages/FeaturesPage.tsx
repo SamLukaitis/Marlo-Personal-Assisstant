@@ -213,7 +213,7 @@ const CHAPTERS: Chapter[] = [
       {
         id: "places-to-stay",
         title: "Places to stay",
-        body: "Marlowe can suggest hotels and areas from Google Maps, with ratings and a map link, and give you a Booking.com or Airbnb link with the city, your dates and the number of guests already filled in. It can't see live hotel prices or availability, so the link is where you check those and book.",
+        body: "Marlowe can suggest hotels and areas from Google Maps, with ratings and a map link, and give you a Booking.com or Airbnb link with the city, your dates and the number of guests already filled in, ready for you to book there.",
         examples: ["Find me a hotel in Porto for 12 to 15 March", "Show me Airbnbs in Edinburgh for two, first weekend of December"],
       },
       {
