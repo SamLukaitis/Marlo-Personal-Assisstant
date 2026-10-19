@@ -43,6 +43,7 @@ import {
   getPendingSetup,
   addUnmetRequest,
   recordApiUsage,
+  recordFeatureMessage,
   isAdmin,
   listPhoneNumbersForUser,
   type ToolKey,
@@ -50,7 +51,8 @@ import {
   type RegistrationProvider,
 } from "../db/store.js";
 import { retrieveRelevantMemory } from "./memoryRetrieval.js";
-import { applyEditionTools, getEdition, isToolExcluded, runEditionTool } from "../editions/index.js";
+import { allEditionToolNames, applyEditionTools, getEdition, isToolExcluded, runEditionTool } from "../editions/index.js";
+import { DOCUMENT_SENT_MARKER, DOCUMENT_SENT_TOOL, type CatalogTool } from "../services/featureUsage.js";
 import { sendConnectLink } from "../services/connectMailboxLink.js";
 import { mailboxLabel } from "../services/mailboxLabel.js";
 import { dropFromEmailDigest } from "../services/emailDigest.js";
@@ -1376,6 +1378,24 @@ export function buildToolsForOwner(
   return result;
 }
 
+// Every tool Marlowe can offer, for the Portal's Feature use tab: switchedOn is false for one this
+// server isn't set up for (no Maps key, no Shortcut…), so it reads as "not available" rather than
+// "nobody wanted it". The escalate tool is how routing works, not a feature, so it's left out.
+export function assistantToolCatalog(): CatalogTool[] {
+  const names = (tools: Anthropic.ToolUnion[]) => tools.map((t) => t.name);
+  const on = (list: string[], switchedOn = true) => list.map((name) => ({ name, switchedOn }));
+  return [
+    ...on(names(ALWAYS_ON_TOOLS)),
+    ...on(TOOL_KEYS.flatMap((key) => names(CONDITIONAL_TOOLS[key]))),
+    ...on(names(MAPS_TOOLS), isMapsConfigured()),
+    ...on(names(FLIGHT_TOOLS), isFlightSearchAvailable()),
+    ...on(names(HOTEL_TOOLS), isHotelSearchAvailable()),
+    ...on(names(PHONE_ACTION_TOOLS), isPhoneActionsConfigured()),
+    ...on(names(FAMILY_LINK_TOOLS)),
+    ...on(allEditionToolNames()),
+  ];
+}
+
 function forModel(doc: DocumentRow) {
   const { storedPath: _storedPath, ...rest } = doc;
   return rest;
@@ -2611,6 +2631,14 @@ export async function runAssistantChat(
   let flightSearches = 0;
   let hotelSearches = 0;
   const channel = phone ? "whatsapp" : "web";
+  // Tools this reply used, for the Portal's Feature use tab. Names only, kept for every user.
+  const toolsUsed = new Map<string, number>();
+  const countTool = (name: string) => toolsUsed.set(name, (toolsUsed.get(name) ?? 0) + 1);
+  // The messages this reply answers: everything since Marlowe last spoke (several, when batched).
+  const lastAssistantIndex = trimmedHistory.map((m) => m.role).lastIndexOf("assistant");
+  if (trimmedHistory.slice(lastAssistantIndex + 1).some((m) => m.content.includes(DOCUMENT_SENT_MARKER))) {
+    countTool(DOCUMENT_SENT_TOOL);
+  }
   function finish(reply: AssistantReply): AssistantReply {
     // Admins (Jake and Sam) see what each of their own messages cost in the Portal, so the text
     // is kept alongside the cost for them only. Never for anyone else's account.
@@ -2635,6 +2663,14 @@ export async function runAssistantChat(
       );
     }
     recordReplyModel(ownerId, model);
+    const webSearches = [...usageByModel.values()].reduce((sum, u) => sum + u.webSearches, 0);
+    if (webSearches > 0) toolsUsed.set("web_search", webSearches);
+    // Bookkeeping only: never let it cost the user their reply.
+    try {
+      recordFeatureMessage(ownerId, channel, toolsUsed);
+    } catch (err) {
+      console.error("runAssistantChat: recording feature use failed", err);
+    }
     // A phone-action link the model typed itself (or re-pasted after it was used) is dead on tap.
     if (isPhoneActionsConfigured() && reply.text) return { ...reply, text: scrubUnknownActionLinks(reply.text) };
     return reply;
@@ -2719,6 +2755,11 @@ export async function runAssistantChat(
     // response are ignored rather than run.
     const choiceUse = toolUses.find((t) => t.name === "ask_user_choice");
     if (choiceUse) {
+      countTool("ask_user_choice");
+      // A confirm offers the real tool (send_email, delete_calendar_event…), which only runs once
+      // they tap Yes. Counted here, as what they came for.
+      const confirmTool = (choiceUse.input as Record<string, unknown>).confirm_tool;
+      if (typeof confirmTool === "string" && confirmTool) countTool(confirmTool);
       return finish(buildChoiceReply(ownerId, choiceUse.input as Record<string, unknown>));
     }
 
@@ -2729,6 +2770,7 @@ export async function runAssistantChat(
     // say (same reasoning as the flag_unmet_request + text case below).
     const reactionUse = toolUses.find((t) => t.name === "react_to_message");
     if (reactionUse) {
+      countTool("react_to_message");
       const reactionText = joinTextBlocks(response.content);
       if (reactionText) {
         return finish({ text: reactionText });
@@ -2743,6 +2785,7 @@ export async function runAssistantChat(
     // so there it becomes a plain question instead of "tap below" with nothing to tap.
     const locationUse = toolUses.find((t) => t.name === "request_location");
     if (locationUse) {
+      countTool("request_location");
       if (!phone) {
         return finish({ text: "Where are you? Tell me the area or an address and I'll look it up." });
       }
@@ -2761,6 +2804,7 @@ export async function runAssistantChat(
     const flagUse = toolUses.find((t) => t.name === "flag_unmet_request");
     const flagText = joinTextBlocks(response.content);
     if (flagUse && flagText && toolUses.length === 1) {
+      countTool("flag_unmet_request");
       await runTool(ownerId, "flag_unmet_request", flagUse.input as Record<string, unknown>, phone);
       return finish({ text: flagText });
     }
@@ -2769,6 +2813,8 @@ export async function runAssistantChat(
 
     const toolResults: Anthropic.ToolResultBlockParam[] = await Promise.all(
       toolUses.map(async (toolUse) => {
+        // Counted before the limits below: a search refused for being over the limit was still asked for.
+        if (!CONFIRM_REQUIRED_TOOLS.has(toolUse.name)) countTool(toolUse.name);
         if (CONFIRM_REQUIRED_TOOLS.has(toolUse.name)) {
           return {
             type: "tool_result" as const,

@@ -11,6 +11,8 @@ import {
   recordApiUsage,
   insertPhoneAction,
   updatePhoneAction,
+  recordFeatureMessage,
+  setSetting,
 } from "../db/store.js";
 import type { AuthedRequest } from "../middleware/auth.js";
 
@@ -485,5 +487,40 @@ describe("GET /phone-actions", () => {
       email: owner.email, source: "chat", label: "Work mode", status: "failed",
       steps: ["turn Work Focus on"], failure: "turn Work Focus on: Focus not found",
     });
+  });
+});
+
+describe("GET /feature-usage", () => {
+  it("shows what each person uses by tool name, and can leave admins out", async () => {
+    const admin = makeAdmin("feature-admin");
+    const tester = findOrCreateUserByEmail(uniqueEmail("feature-tester"));
+    setSetting(tester.id, "user_name", "Priya");
+    recordFeatureMessage(tester.id, "whatsapp", new Map([["set_reminder", 1]]));
+    recordFeatureMessage(tester.id, "whatsapp", new Map());
+    recordFeatureMessage(admin.id, "web", new Map([["search_flights", 1]]));
+
+    const all = await request(buildTestApp(admin.id)).get("/api/portal/feature-usage");
+    expect(all.status).toBe(200);
+    const priya = all.body.people.find((p: { ownerId: number }) => p.ownerId === tester.id);
+    expect(priya).toMatchObject({ label: `Priya (${tester.email})`, isAdmin: false, messages: 2 });
+    expect(priya.topAreas).toEqual(
+      expect.arrayContaining([
+        { label: "Reminders", messages: 1 },
+        { label: "Just conversation (no tools)", messages: 1 },
+      ])
+    );
+    expect(all.body.people.some((p: { ownerId: number }) => p.ownerId === admin.id)).toBe(true);
+    // Tools nobody has used are listed too, with zero.
+    expect(all.body.tools.some((t: { uses: number }) => t.uses === 0)).toBe(true);
+
+    const testers = await request(buildTestApp(admin.id)).get("/api/portal/feature-usage?testersOnly=1");
+    expect(testers.body.people.some((p: { ownerId: number }) => p.ownerId === admin.id)).toBe(false);
+    expect(testers.body.people.some((p: { ownerId: number }) => p.ownerId === tester.id)).toBe(true);
+  });
+
+  it("is admin-only", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("feature-nonadmin"));
+    const res = await request(buildTestApp(user.id)).get("/api/portal/feature-usage");
+    expect(res.status).toBe(403);
   });
 });
