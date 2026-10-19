@@ -201,7 +201,7 @@ export function staticDigestMessage(ownerId: number, queue: DigestEmail[], atten
 
 // The model that writes the recap — same tier as the briefing, since this is the same job (turn a
 // day's facts into one human paragraph) and the voice has to match.
-const MODEL = process.env.ASSISTANT_MODEL_COMPLEX ?? "claude-sonnet-5";
+const MODEL = process.env.ASSISTANT_MODEL_COMPLEX ?? "claude-sonnet-5-5";
 
 // One sender's mail for the day, already grouped: a chain of replies on one thread is one entry
 // with a count, not five. Subjects are given to the model so it can tell what someone wants — it is

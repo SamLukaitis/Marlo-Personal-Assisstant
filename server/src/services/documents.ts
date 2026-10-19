@@ -47,7 +47,7 @@ export function resolveDocumentCategory(raw: unknown): DocumentCategory | null {
 
 // Extraction is a one-time cost per uploaded file — worth the richer tier since a wrong digit
 // in a transcribed code/number is worse than the marginal savings of a cheaper model.
-const EXTRACTION_MODEL = process.env.ASSISTANT_MODEL_COMPLEX ?? "claude-sonnet-5";
+const EXTRACTION_MODEL = process.env.ASSISTANT_MODEL_COMPLEX ?? "claude-sonnet-5-5";
 
 const SUPPORTED_IMAGE_TYPES = new Set(["image/jpeg", "image/png", "image/gif", "image/webp"]);
 
