@@ -29,8 +29,11 @@ import {
   addPosterNote,
   deletePosterNote,
   listPhoneActionsForPortal,
+  listFeatureMessages,
+  featureUserLabels,
 } from "../db/store.js";
-import { getClient, MODEL_SIMPLE } from "../ai/assistant.js";
+import { getClient, MODEL_SIMPLE, assistantToolCatalog } from "../ai/assistant.js";
+import { summariseFeatureUsage } from "../services/featureUsage.js";
 import { buildVersionText } from "../services/version.js";
 import { describeStep, type PhoneStep } from "../services/phoneSteps.js";
 import type { AuthedRequest } from "../middleware/auth.js";
@@ -402,6 +405,34 @@ portalRoutes.get("/usage", (req, res) => {
     }));
 
   res.json({ rows, byPurpose, byOwner, projection, recent, approx: true });
+});
+
+// --- Feature use ----------------------------------------------------------------------------
+
+// What people use Marlowe for, by area and by tool, including what nobody has used. Tool names
+// only: no message text is recorded for this (services/featureUsage.ts). testersOnly leaves out
+// admins, whose own testing would otherwise drown out everyone else's use.
+portalRoutes.get("/feature-usage", (req, res) => {
+  const days = Math.min(Number(req.query.days) || 30, 365);
+  const sinceMs = Date.now() - days * 24 * 60 * 60 * 1000;
+  const testersOnly = req.query.testersOnly === "1";
+  const adminCache = new Map<number, boolean>();
+  const admin = (id: number | null) => {
+    if (id === null) return false;
+    if (!adminCache.has(id)) adminCache.set(id, isAdmin(id));
+    return adminCache.get(id)!;
+  };
+  const rows = listFeatureMessages(sinceMs).filter((r) => !testersOnly || !admin(r.ownerId));
+  const summary = summariseFeatureUsage(rows, assistantToolCatalog());
+  const labels = featureUserLabels(summary.people.flatMap((p) => (p.ownerId === null ? [] : [p.ownerId])));
+  res.json({
+    ...summary,
+    people: summary.people.map((p) => ({
+      ...p,
+      label: p.ownerId === null ? "No user yet" : labels.get(p.ownerId)!,
+      isAdmin: admin(p.ownerId),
+    })),
+  });
 });
 
 // --- To-do list -----------------------------------------------------------------------------

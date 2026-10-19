@@ -50,6 +50,11 @@ const BUSINESS: Edition = {
 
 const EDITIONS: Record<EditionId, Edition> = { general: GENERAL, business: BUSINESS };
 
+// Every edition's own tools, for the Portal's list of everything Marlowe can do.
+export function allEditionToolNames(): string[] {
+  return Object.values(EDITIONS).flatMap((e) => e.extraTools.map((t) => t.name));
+}
+
 export function getEdition(ownerId: number): Edition {
   return EDITIONS[getUserEdition(ownerId)];
 }

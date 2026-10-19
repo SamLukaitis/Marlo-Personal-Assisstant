@@ -27,6 +27,7 @@ vi.mock("../db/store.js", () => ({
   setSetting: vi.fn(),
   getEnabledTools: vi.fn().mockReturnValue(new Set()),
   listCheckins: vi.fn().mockReturnValue([]),
+  recordFeatureMessage: vi.fn(),
 }));
 vi.mock("../ai/assistant.js", () => ({
   runAssistantChat: vi.fn(),
@@ -77,9 +78,8 @@ vi.mock("../services/memoryExtraction.js", () => ({
 // timers past the delay before asserting. See flushBatch() below.
 
 const { sendWhatsAppMessage } = await import("../providers/whatsapp.js");
-const { resolveOwnerByPhone, appendWhatsAppMessage, getDocumentByWamid, getWhatsAppMessageByWamid } = await import(
-  "../db/store.js"
-);
+const { resolveOwnerByPhone, appendWhatsAppMessage, getDocumentByWamid, getWhatsAppMessageByWamid, recordFeatureMessage } =
+  await import("../db/store.js");
 const { runAssistantChat } = await import("../ai/assistant.js");
 const {
   handleNameReply,
@@ -302,6 +302,8 @@ describe("handleIncoming — unsupported message types", () => {
       "447900000009",
       "I can't read that message type yet — text me instead."
     );
+    // Counted for the Portal's Feature use tab, so we can see what people try to send.
+    expect(recordFeatureMessage).toHaveBeenCalledWith(expect.anything(), "whatsapp", new Map([["unsupported:sticker", 1]]));
     logSpy.mockRestore();
   });
 });

@@ -298,6 +298,22 @@ db.exec(`
     created_at            INTEGER NOT NULL
   );
   CREATE INDEX IF NOT EXISTS idx_api_usage_created ON api_usage(created_at);
+  -- Feature use (Portal → Feature use): one row per message Marlowe answered, plus one row per
+  -- tool that message used. Tool names only, never the message text, so this is safe to keep for
+  -- every user, not just admins (services/featureUsage.ts).
+  CREATE TABLE IF NOT EXISTS feature_messages (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    owner_id   INTEGER REFERENCES users(id),
+    channel    TEXT NOT NULL,
+    created_at INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_feature_messages_created ON feature_messages(created_at);
+  CREATE TABLE IF NOT EXISTS feature_message_tools (
+    message_id INTEGER NOT NULL REFERENCES feature_messages(id),
+    tool_name  TEXT NOT NULL,
+    uses       INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_feature_message_tools_message ON feature_message_tools(message_id);
   CREATE TABLE IF NOT EXISTS admin_todos (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     text       TEXT NOT NULL,
@@ -3980,6 +3996,64 @@ export function recordApiUsage(
 // Enough to recognise which message it was; the full conversation stays where it already lives.
 const API_USAGE_TEXT_MAX = 500;
 
+// One answered message and the tools it used (name → how many times). An empty map is still
+// recorded: "answered without any tool" is part of what people use Marlowe for.
+export function recordFeatureMessage(ownerId: number | null, channel: string, tools: Map<string, number>): void {
+  db.transaction(() => {
+    const { lastInsertRowid } = db
+      .prepare(`INSERT INTO feature_messages (owner_id, channel, created_at) VALUES (?, ?, ?)`)
+      .run(ownerId, channel, Date.now());
+    const insertTool = db.prepare(`INSERT INTO feature_message_tools (message_id, tool_name, uses) VALUES (?, ?, ?)`);
+    for (const [name, uses] of tools) insertTool.run(lastInsertRowid, name, uses);
+  })();
+}
+
+export interface FeatureMessageRow {
+  messageId: number;
+  ownerId: number | null;
+  channel: string;
+  createdAt: number;
+  // null for a message that used no tools (LEFT JOIN).
+  toolName: string | null;
+  uses: number | null;
+}
+
+// One row per message+tool. Grouped in services/featureUsage.ts rather than here, since a message
+// counts once per area however many of that area's tools it used.
+export function listFeatureMessages(sinceMs: number): FeatureMessageRow[] {
+  return db
+    .prepare(
+      `SELECT m.id AS messageId, m.owner_id AS ownerId, m.channel, m.created_at AS createdAt,
+              t.tool_name AS toolName, t.uses
+       FROM feature_messages m LEFT JOIN feature_message_tools t ON t.message_id = m.id
+       WHERE m.created_at >= ?
+       ORDER BY m.id`
+    )
+    .all(sinceMs) as FeatureMessageRow[];
+}
+
+// What the Feature use tab calls each person: the name they gave Marlowe, else their email, else
+// their phone number.
+export function featureUserLabels(ownerIds: number[]): Map<number, string> {
+  const labels = new Map<number, string>();
+  const userRow = db.prepare(
+    `SELECT email,
+       (SELECT phone FROM user_phone_numbers p WHERE p.user_id = users.id ORDER BY p.created_at ASC LIMIT 1) AS phone
+     FROM users WHERE id = ?`
+  );
+  for (const id of ownerIds) {
+    const row = userRow.get(id) as { email: string | null; phone: string | null } | undefined;
+    if (!row) {
+      labels.set(id, `Deleted account (#${id})`);
+      continue;
+    }
+    const name = getSetting(id, "user_name");
+    const contact = row.email ?? (row.phone ? `+${row.phone}` : null);
+    labels.set(id, name ? (contact ? `${name} (${contact})` : name) : (contact ?? `#${id}`));
+  }
+  return labels;
+}
+
 export interface ApiUsageSummaryRow {
   day: string;
   channel: string;
@@ -4458,6 +4532,10 @@ export function deleteUserCompletely(ownerId: number): { deletedDocumentPaths: s
     ).run(ownerId, ownerId);
     db.prepare(`DELETE FROM unmet_requests WHERE owner_id = ?`).run(ownerId);
     db.prepare(`DELETE FROM api_usage WHERE owner_id = ?`).run(ownerId);
+    db.prepare(
+      `DELETE FROM feature_message_tools WHERE message_id IN (SELECT id FROM feature_messages WHERE owner_id = ?)`
+    ).run(ownerId);
+    db.prepare(`DELETE FROM feature_messages WHERE owner_id = ?`).run(ownerId);
     // admin_todos.created_by and poster_notes.author_id both declare NOT NULL REFERENCES
     // users(id) (Portal admin feature, commit 686d173). Same bug shape as the pending_setup/
     // pending_actions and document_match_keys fixes above: an admin (including the app owner

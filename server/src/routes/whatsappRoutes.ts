@@ -14,6 +14,7 @@ import {
   appendWhatsAppMessage,
   markWamidSeenIfNew,
   cancelUntilReplyRemindersForOwner,
+  recordFeatureMessage,
 } from "../db/store.js";
 import { ingestWhatsAppMedia } from "../services/documents.js";
 import { handlePendingRegistration } from "../services/whatsappRegistration.js";
@@ -31,6 +32,7 @@ import { maybeExtractMemory } from "../services/memoryExtraction.js";
 import { handleText, handleLocation } from "../services/chatDispatch.js";
 import { resolveQuotedMessageContext } from "../services/quotedMessage.js";
 import { queueForAssistant, looksComplete } from "../services/messageBatching.js";
+import { DOCUMENT_SENT_MARKER, UNSUPPORTED_TOOL_PREFIX } from "../services/featureUsage.js";
 import { sendTextAndRecord, sendScriptedText } from "../services/whatsappReply.js";
 
 export const whatsappRoutes = Router();
@@ -94,7 +96,7 @@ async function handleMedia(
   const quotedContext = resolveQuotedMessageContext(ownerId, quotedMessageId, forwarded, from);
   const docContext =
     (quotedContext ? `${quotedContext}\n\n` : "") +
-    `[A document was just sent via WhatsApp and has already been downloaded and saved — no ` +
+    `${DOCUMENT_SENT_MARKER} and has already been downloaded and saved — no ` +
     `need to save it again, just confirm and/or act on it. Extracted content:\n${doc.extractedText}` +
     (caption
       ? `\n\nThe user's message alongside it was: "${caption}"`
@@ -222,6 +224,13 @@ export async function handleIncoming(message: IncomingWhatsAppMessage): Promise<
       // plainly rather than staying silent, and log the raw type so it's visible which ones are
       // actually showing up in practice.
       console.log("whatsapp: unsupported message type", { ownerId, type: message.type });
+      // Counted in the Portal's Feature use tab: lots of voice notes means voice is worth building.
+      // Bookkeeping only, so a failure here mustn't stop the reply below.
+      try {
+        recordFeatureMessage(ownerId, "whatsapp", new Map([[`${UNSUPPORTED_TOOL_PREFIX}${message.type}`, 1]]));
+      } catch (err) {
+        console.error("whatsapp: recording feature use failed", err);
+      }
       await sendTextAndRecord(ownerId, message.from, "I can't read that message type yet — text me instead.");
     } else {
       // A button tap with nothing pending for this owner — nothing sends buttons outside
