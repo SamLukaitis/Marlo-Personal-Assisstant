@@ -27,6 +27,7 @@ than deleted, since they still explain the reasoning behind what was built.
 - [joyce-calendar-followups.md](joyce-calendar-followups.md)
 - [choice-buttons-not-typed-lists.md](choice-buttons-not-typed-lists.md)
 - [travel-flight-search.md](travel-flight-search.md)
+- [email-alert-mutes-settings-ui.md](email-alert-mutes-settings-ui.md)
 - [done-admin-version-check.md](done-admin-version-check.md)
 - [done-admin-portal.md](done-admin-portal.md)
 - [done-real-person-alert-content-filter.md](done-real-person-alert-content-filter.md)

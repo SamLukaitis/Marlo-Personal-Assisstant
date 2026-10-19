@@ -271,8 +271,17 @@ async function fetchNewMessages(accounts: AccountRow[]): Promise<UnifiedMessage[
   const connectedAt = new Map(accounts.map((a) => [a.id, a.connectedAt]));
   return messages.filter((m) => {
     const floor = connectedAt.get(m.accountId);
-    return !floor || new Date(m.receivedAt).getTime() >= floor;
+    if (floor && new Date(m.receivedAt).getTime() < floor) return false;
+    // The user's own mail is never "new mail" for the scanners to alert on — google.ts already
+    // drops drafts and sent replies by label; this catches whatever a provider still lets through.
+    return !isFromAccountOwner(m);
   });
+}
+
+// True when the message was written from the mailbox it sits in (the user's own reply or draft).
+export function isFromAccountOwner(m: Pick<UnifiedMessage, "from" | "accountEmail">): boolean {
+  const address = (m.from.match(/<([^>]+)>/)?.[1] ?? m.from).trim().toLowerCase();
+  return !!address && address === m.accountEmail.trim().toLowerCase();
 }
 
 // Backs the three background "what's new" scans (alerts.ts, importantEmailAlerts.ts,

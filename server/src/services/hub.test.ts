@@ -303,6 +303,25 @@ describe("hubListNewMessages", () => {
     expect(mockGoogleListNewMessages).not.toHaveBeenCalled();
   });
 
+  // The user's own reply or draft must never reach the scanners as incoming mail — they turned it
+  // into "needs a reply" alerts about something the user had just written themselves.
+  it("drops mail written from the mailbox's own address", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("hub-new-own"));
+    const email = uniqueEmail("inbox-new-own");
+    const account = upsertAccount(user.id, { provider: "google", email, accessToken: "t", refreshToken: "r", expiryDate: null });
+    mockGoogleListNewMessages.mockResolvedValueOnce({
+      messages: [
+        { ...fakeMessage(account.id, "own"), accountEmail: email, from: `Me <${email.toUpperCase()}>` },
+        { ...fakeMessage(account.id, "theirs"), accountEmail: email },
+      ],
+      historyId: null,
+    });
+
+    const results = await hubListNewMessages(user.id);
+
+    expect(results.map((m) => m.id)).toEqual(["theirs"]);
+  });
+
   it("persists metadata for whatever it returns, same as hubListMessages", async () => {
     const user = findOrCreateUserByEmail(uniqueEmail("hub-new-cache"));
     const account = upsertAccount(user.id, {

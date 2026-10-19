@@ -521,3 +521,24 @@ describe("checkForNewImportantMessages triage", () => {
   });
 
 });
+
+describe("checkForNewImportantMessages — muted senders", () => {
+  it("never alerts on mail the user muted, and settles it so it isn't retried", async () => {
+    const { addEmailAlertMute } = await import("./emailAlertSettings.js");
+    const user = findOrCreateUserByEmail(uniqueEmail("alerts-muted"));
+    registerActivePhone(user.id);
+    await baseline(user.id);
+    addEmailAlertMute(user.id, { from: "steven@accora.com" });
+    mockHubListNewMessages.mockResolvedValueOnce([
+      fakeMessage({ id: "muted", from: "Steven <steven@accora.com>", subject: "Quote" }),
+      fakeMessage({ id: "kept", from: "jane@example.com", subject: "Lunch?" }),
+    ]);
+
+    await checkForNewImportantMessages(user.id);
+
+    expect(sendWhatsAppMessage).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(sendWhatsAppMessage).mock.calls[0][1]).toContain("Lunch?");
+    expect(hasAlerted(user.id, "1:muted")).toBe(true);
+    expect(mockTriage.mock.calls[0][0]).toHaveLength(1);
+  });
+});

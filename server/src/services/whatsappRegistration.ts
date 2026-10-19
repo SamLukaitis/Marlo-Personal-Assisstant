@@ -35,6 +35,7 @@ import { sendScriptedText, sendScriptedButtons } from "./whatsappReply.js";
 import { startPostConnectSetup } from "./postConnectSetup.js";
 import { isPlausibleName } from "./plausibleName.js";
 import { sendConnectLink } from "./connectMailboxLink.js";
+import { SERVER_URL } from "../config.js";
 import { getRegistrationAssistReply } from "../ai/assistant.js";
 import type { IncomingWhatsAppMessage } from "../providers/whatsapp.js";
 
@@ -72,17 +73,13 @@ export const MARLOWE_WAITLIST_REMINDER_TEXT =
 export const MARLOWE_WAITLIST_APPROVED_TEXT =
   "You're in! Message me whenever you're ready and I'll get you set up.";
 
-// The "help"/"menu" reply for an already-registered user (chatDispatch.ts's handleText) — same
-// capabilities rundown, but asks what they need instead of re-asking their name, since they're
-// long past that step.
+// The "help"/"menu" reply for an already-registered user (chatDispatch.ts's handleText). Points at
+// the public features page (client/src/pages/FeaturesPage.tsx) rather than listing capabilities
+// here — a hand-written list drifted out of date as features shipped, and the page is kept current.
 export const MARLOWE_HELP_TEXT =
-  "👋 Here's what I can do:\n\n" +
-  "• Read your email & calendar, help you reply and schedule\n" +
-  "• Send a morning update each day\n" +
-  "• Answer questions like \"what's on today?\"\n" +
-  "• Save photos of tickets/receipts/documents\n" +
-  "• Text \"help\" anytime for this list again\n\n" +
-  "What do you need?";
+  "👋 Everything I can do is here:\n" +
+  `${SERVER_URL}/features\n\n` +
+  "Or just tell me what you need. Text \"help\" anytime for this link again.";
 
 const HELP_TRIGGERS = new Set(["help", "menu", "what can you do"]);
 export function isHelpTrigger(text: string): boolean {

@@ -61,7 +61,7 @@ function fakeAccount(overrides: Partial<AccountRow> = {}): AccountRow {
 }
 
 function fullMessage(id: string) {
-  return { data: { id, internalDate: String(Date.now()), payload: { headers: [] }, labelIds: [] } };
+  return { data: { id, internalDate: String(Date.now()), payload: { headers: [] }, labelIds: ["INBOX"] } };
 }
 
 beforeEach(() => {
@@ -184,5 +184,31 @@ describe("googleListNewMessages — bulk-mail signals", () => {
   it("asks Gmail for the List-Unsubscribe header", async () => {
     await listOne(messageWith("m1", ["INBOX"]));
     expect(mockMessagesGet.mock.calls[0][0].metadataHeaders).toContain("List-Unsubscribe");
+  });
+});
+
+// The user's own drafts (a new id per autosave while they type) and sent replies show up in
+// history.list's messagesAdded even with labelId INBOX, and came back as "needs a reply" alerts.
+describe("googleListNewMessages — the user's own mail", () => {
+  function messageWith(id: string, labelIds: string[]) {
+    return { data: { id, internalDate: String(Date.now()), payload: { headers: [] }, labelIds } };
+  }
+
+  it.each([
+    ["a draft", ["DRAFT"]],
+    ["a draft reply on an inbox thread", ["DRAFT", "INBOX"]],
+    ["a sent reply", ["SENT"]],
+    ["mail sent to themselves", ["SENT", "INBOX"]],
+    ["archived mail", ["CATEGORY_PERSONAL"]],
+  ])("drops %s", async (_label, labelIds) => {
+    mockHistoryList.mockResolvedValue({
+      data: { history: [{ messagesAdded: [{ message: { id: "own" } }, { message: { id: "in" } }] }], historyId: "200" },
+    });
+    mockMessagesGet.mockImplementation(async ({ id }: { id: string }) =>
+      id === "own" ? messageWith("own", labelIds) : messageWith("in", ["INBOX", "UNREAD"])
+    );
+    const result = await googleListNewMessages(fakeAccount());
+    expect(result.messages.map((m) => m.id)).toEqual(["in"]);
+    expect(result.historyId).toBe("200");
   });
 });
