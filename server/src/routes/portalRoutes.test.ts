@@ -377,6 +377,24 @@ describe("usage", () => {
     expect(row.estimatedCost).toBeCloseTo(3.3, 5);
   });
 
+  it("prices 5-minute cache writes at 1.25x and adds $0.01 per web search", async () => {
+    const admin = makeAdmin("usage-5m-search-pricing");
+    const someUser = findOrCreateUserByEmail(uniqueEmail("usage-5m-owner"));
+    // claude-sonnet-5: 1M cache writes, 400K of them 5-minute ($3.75/MTok) and 600K 1-hour ($6/MTok)
+    // = $1.50 + $3.60, plus 3 searches at $0.01 = $5.13.
+    recordApiUsage(someUser.id, "web", "claude-sonnet-5", "search_pricing_test_marker", 0, 0, 0, 1_000_000, undefined, {
+      cacheWrite5mTokens: 400_000,
+      webSearches: 3,
+    });
+    const app = buildTestApp(admin.id);
+
+    const res = await request(app).get("/api/portal/usage?days=1");
+    expect(res.status).toBe(200);
+    const row = res.body.rows.find((r: { purpose: string }) => r.purpose === "search_pricing_test_marker");
+    expect(row).toMatchObject({ cacheWrite5mTokens: 400_000, webSearches: 3 });
+    expect(row.estimatedCost).toBeCloseTo(5.13, 5);
+  });
+
   it("reports estimatedCost as null for a model with no entry in the price table", async () => {
     const admin = makeAdmin("usage-unknown-model");
     const someUser = findOrCreateUserByEmail(uniqueEmail("usage-owner-2"));
