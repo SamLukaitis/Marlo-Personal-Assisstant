@@ -364,7 +364,7 @@ describe("usage", () => {
   it("prices cache reads at 10% of the input rate and 1h-TTL cache writes at 2x", async () => {
     const admin = makeAdmin("usage-cache-pricing");
     const someUser = findOrCreateUserByEmail(uniqueEmail("usage-cache-owner"));
-    // claude-sonnet-5: cacheRead $0.30/MTok, cacheWrite $6/MTok -> 1M reads + 500K writes = $3.30.
+    // claude-sonnet-5: cacheRead $0.20/MTok, cacheWrite $4/MTok -> 1M reads + 500K writes = $2.20.
     // No plain input/output tokens, so the whole estimate comes from the cache columns — this is
     // the regression test for the original bug where cached tokens were invisible to the tracker.
     recordApiUsage(someUser.id, "web", "claude-sonnet-5", "cache_pricing_test_marker", 0, 0, 1_000_000, 500_000);
@@ -374,14 +374,14 @@ describe("usage", () => {
     expect(res.status).toBe(200);
     const row = res.body.rows.find((r: { purpose: string }) => r.purpose === "cache_pricing_test_marker");
     expect(row).toMatchObject({ cacheReadTokens: 1_000_000, cacheCreationTokens: 500_000 });
-    expect(row.estimatedCost).toBeCloseTo(3.3, 5);
+    expect(row.estimatedCost).toBeCloseTo(2.2, 5);
   });
 
   it("prices 5-minute cache writes at 1.25x and adds $0.01 per web search", async () => {
     const admin = makeAdmin("usage-5m-search-pricing");
     const someUser = findOrCreateUserByEmail(uniqueEmail("usage-5m-owner"));
-    // claude-sonnet-5: 1M cache writes, 400K of them 5-minute ($3.75/MTok) and 600K 1-hour ($6/MTok)
-    // = $1.50 + $3.60, plus 3 searches at $0.01 = $5.13.
+    // claude-sonnet-5: 1M cache writes, 400K of them 5-minute ($2.50/MTok) and 600K 1-hour ($4/MTok)
+    // = $1.00 + $2.40, plus 3 searches at $0.01 = $3.43.
     recordApiUsage(someUser.id, "web", "claude-sonnet-5", "search_pricing_test_marker", 0, 0, 0, 1_000_000, undefined, {
       cacheWrite5mTokens: 400_000,
       webSearches: 3,
@@ -392,7 +392,7 @@ describe("usage", () => {
     expect(res.status).toBe(200);
     const row = res.body.rows.find((r: { purpose: string }) => r.purpose === "search_pricing_test_marker");
     expect(row).toMatchObject({ cacheWrite5mTokens: 400_000, webSearches: 3 });
-    expect(row.estimatedCost).toBeCloseTo(5.13, 5);
+    expect(row.estimatedCost).toBeCloseTo(3.43, 5);
   });
 
   it("reports estimatedCost as null for a model with no entry in the price table", async () => {
@@ -437,7 +437,7 @@ describe("usage", () => {
     vi.useFakeTimers();
     try {
       vi.setSystemTime(new Date("2026-03-10T12:00:00Z"));
-      // $3/Mtok input, $15/Mtok output for claude-sonnet-5 (see MODEL_PRICE_PER_MTOK) -> $0.06 that day.
+      // $2/Mtok input, $10/Mtok output for claude-sonnet-5 (see MODEL_PRICE_PER_MTOK) -> $0.04 that day.
       recordApiUsage(someUser.id, "web", "claude-sonnet-5", "assistant_chat", 10_000, 2_000, 0, 0);
 
       vi.setSystemTime(new Date("2026-03-11T09:00:00Z"));
@@ -448,8 +448,8 @@ describe("usage", () => {
       const res = await request(app).get("/api/portal/usage?days=7");
       expect(res.status).toBe(200);
       expect(res.body.projection.day).toBe("2026-03-10");
-      expect(res.body.projection.dayCost).toBeCloseTo(0.06, 5);
-      expect(res.body.projection.projectedMonthlyCost).toBeCloseTo(1.8, 5);
+      expect(res.body.projection.dayCost).toBeCloseTo(0.04, 5);
+      expect(res.body.projection.projectedMonthlyCost).toBeCloseTo(1.2, 5);
     } finally {
       vi.useRealTimers();
     }
