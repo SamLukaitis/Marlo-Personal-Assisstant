@@ -226,7 +226,9 @@ const MODEL_PRICE_PER_MTOK: Record<
   { input: number; output: number; cacheRead: number; cacheWrite: number; cacheWrite5m: number }
 > = {
   "claude-haiku-4-5": { input: 1, output: 5, cacheRead: 0.1, cacheWrite: 2, cacheWrite5m: 1.25 },
-  "claude-sonnet-5": { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 6, cacheWrite5m: 3.75 },
+  // Haiku 5.5's rates for prompts up to 100K tokens (a chat message never gets near that).
+  "claude-haiku-5-5": { input: 0.1, output: 0.5, cacheRead: 0.01, cacheWrite: 0.2, cacheWrite5m: 0.125 },
+  "claude-sonnet-5": { input: 2, output: 10, cacheRead: 0.2, cacheWrite: 4, cacheWrite5m: 2.5 },
 };
 // web_search is billed per search ($10 per 1,000) on top of the tokens its results add.
 const WEB_SEARCH_PRICE = 0.01;

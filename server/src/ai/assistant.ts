@@ -125,30 +125,19 @@ import {
 } from "../services/hub.js";
 import { unsubscribeFromMessage } from "../services/unsubscribe.js";
 import type { UnifiedMessage } from "../providers/types.js";
+import {
+  MODEL_FAST,
+  MODEL_STRONG,
+  isFastFirstEnabled,
+  recordReplyModel,
+  routeModel,
+  startSticky,
+  supportsDynamicWebSearch,
+} from "./modelRouting.js";
 
-// Cheap tier for lookups/summaries, richer tier for anything needing judgment or drafting.
-// No classifier call to pick between them — that would add an extra API round-trip for a
-// decision that keyword matching on the latest message handles for free.
+// Cheap tier for the one-shot helpers below (registration assist, help widget) and background
+// jobs. Which model answers a chat message is decided in ai/modelRouting.ts.
 export const MODEL_SIMPLE = process.env.ASSISTANT_MODEL_SIMPLE ?? "claude-haiku-4-5";
-const MODEL_COMPLEX = process.env.ASSISTANT_MODEL_COMPLEX ?? "claude-sonnet-5";
-
-const COMPLEX_PATTERNS = [
-  /\bdraft\b/i, /\bwrite\b/i, /\bcompose\b/i, /\breply to\b/i, /\brespond to\b/i,
-  /\bplan\b/i, /\banaly[sz]e\b/i, /\bcompare\b/i, /\bshould i\b/i, /\bwhy\b/i,
-  /\bdecide\b/i, /\bstrategy\b/i, /\bnegotiate\b/i, /\bin depth\b/i, /\bdetailed\b/i,
-  /\brecommend\b/i, /\bthink about\b/i, /\bhow many days\b/i,
-];
-const SIMPLE_PATTERNS = [
-  /\bsummari[sz]e\b/i, /\bwhat'?s (new|on|unread|upcoming)\b/i, /\bany new\b/i,
-  /\blist\b/i, /\bshow me\b/i, /\bwhat (is|are)\b/i, /\bcheck\b/i, /\bfind\b/i,
-  /\bsearch\b/i, /\bwhen is\b/i, /\bunread\b/i, /\btoday'?s\b/i, /\barchive\b/i,
-];
-
-function chooseModel(latestUserMessage: string): string {
-  if (COMPLEX_PATTERNS.some((p) => p.test(latestUserMessage))) return MODEL_COMPLEX;
-  if (SIMPLE_PATTERNS.some((p) => p.test(latestUserMessage))) return MODEL_SIMPLE;
-  return MODEL_COMPLEX; // unmatched phrasing defaults to the safer tier, not the cheapest
-}
 
 // How many prior turns get resent as raw history. Anything older than this is no longer sent
 // verbatim, but for WhatsApp conversations it isn't lost either — see
@@ -1290,9 +1279,34 @@ const PHONE_ACTION_TOOLS: Anthropic.Tool[] = [
   },
 ];
 
-export function buildToolsForOwner(ownerId: number): Anthropic.ToolUnion[] {
+// Only offered to the fast model under fast-first routing (ai/modelRouting.ts). runAssistantChat
+// handles it as a hard stop: the fast model's turn is dropped and the strong model answers.
+const ESCALATE_TOOL: Anthropic.Tool = {
+  name: "escalate_to_stronger_model",
+  description:
+    "Hand this message to a stronger model. Call it ALONE, before any other tool, when the request " +
+    "needs careful reasoning, judgement, nuanced or sensitive writing, a multi-step plan, or you're " +
+    "not confident you can answer it well. Don't call it for lookups, quick facts, reminders, or " +
+    "simple questions you can answer.",
+  input_schema: {
+    type: "object",
+    properties: {
+      reason: { type: "string", description: "A few words on why, e.g. \"needs a careful plan\"." },
+    },
+    required: ["reason"],
+  },
+};
+
+// model decides two things: the web_search version (only Opus/Sonnet support result filtering)
+// and, for the fast model under fast-first routing, the escalate tool. Defaults to the strong
+// model so callers that only care about tool names see the usual set.
+export function buildToolsForOwner(ownerId: number, model: string = MODEL_STRONG): Anthropic.ToolUnion[] {
   const enabled = getEnabledTools(ownerId);
-  const assembled: Anthropic.ToolUnion[] = [...ALWAYS_ON_TOOLS];
+  const assembled: Anthropic.ToolUnion[] = ALWAYS_ON_TOOLS.map((t) =>
+    "type" in t && t.type === "web_search_20250305" && supportsDynamicWebSearch(model)
+      ? { name: "web_search" as const, type: "web_search_20260209" as const, max_uses: t.max_uses }
+      : t
+  );
   for (const key of TOOL_KEYS) {
     if (enabled.has(key)) assembled.push(...CONDITIONAL_TOOLS[key]);
   }
@@ -1302,6 +1316,7 @@ export function buildToolsForOwner(ownerId: number): Anthropic.ToolUnion[] {
   // The user's edition (editions/index.ts) drops tools that don't belong in that product and adds
   // its own — before the cache breakpoint below, so it still lands on the true last tool.
   const result = applyEditionTools(ownerId, assembled);
+  if (model === MODEL_FAST && isFastFirstEnabled(ownerId)) result.push(ESCALATE_TOOL);
   // Cache breakpoint must be on the LAST tool schema in the array — which tool that is now
   // depends on which conditional tools are enabled, so it's set dynamically here rather than
   // hardcoded on one specific tool definition like before.
@@ -2415,8 +2430,10 @@ export async function runAssistantChat(
   const trimmedHistory = history.slice(-MAX_HISTORY_MESSAGES);
   const lastUserMessage =
     [...trimmedHistory].reverse().find((m) => m.role === "user")?.content ?? "";
-  const model = chooseModel(lastUserMessage);
-  const useThinking = model !== MODEL_SIMPLE; // skip extended thinking for cheap lookup turns
+  const route = routeModel(ownerId, lastUserMessage);
+  // let: the fast model can hand over to the strong one mid-reply (escalate tool or a refusal).
+  let model = route.model;
+  console.log(`[assistant-route] owner=${ownerId} model=${model} reason=${route.reason}`);
 
   // The latest two user messages are the retrieval query, so a follow-up like "and what about
   // her?" still pulls the memories the previous message did.
@@ -2456,16 +2473,27 @@ export async function runAssistantChat(
   // take up to 8 turns for one user message, e.g. several tool round-trips) and recorded once,
   // via finish() below, rather than once per turn — admins want "how many times was the assistant
   // actually asked something" and "how many tokens did that cost", not internal loop iterations.
-  const usageTotals = {
-    inputTokens: 0,
-    outputTokens: 0,
-    cacheReadTokens: 0,
-    cacheCreationTokens: 0,
+  // Kept per model: an escalated reply is billed at two different rates, so it's recorded as one
+  // row per model (the fast model's abandoned attempt, then the strong model's answer).
+  type UsageTotals = {
+    inputTokens: number;
+    outputTokens: number;
+    cacheReadTokens: number;
+    cacheCreationTokens: number;
     // Part of cacheCreationTokens written at the cheaper 5-minute rate, so the Portal can price
     // the two separately, plus web searches, billed per search on top of tokens.
-    cacheWrite5mTokens: 0,
-    webSearches: 0,
+    cacheWrite5mTokens: number;
+    webSearches: number;
   };
+  const usageByModel = new Map<string, UsageTotals>();
+  function usageFor(m: string): UsageTotals {
+    let u = usageByModel.get(m);
+    if (!u) {
+      u = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, cacheWrite5mTokens: 0, webSearches: 0 };
+      usageByModel.set(m, u);
+    }
+    return u;
+  }
   // Maps calls made while answering this one user message — same blast-radius guard as
   // web_search's max_uses. Counted synchronously inside the map below, so parallel calls in one
   // response are counted too.
@@ -2477,18 +2505,25 @@ export async function runAssistantChat(
     // is kept alongside the cost for them only. Never for anyone else's account.
     const replyText =
       reply.text || reply.choice?.question || (reply.reaction ? `(reacted ${reply.reaction.emoji})` : "");
-    recordApiUsage(
-      ownerId,
-      channel,
-      model,
-      "assistant_chat",
-      usageTotals.inputTokens,
-      usageTotals.outputTokens,
-      usageTotals.cacheReadTokens,
-      usageTotals.cacheCreationTokens,
-      isAdmin(ownerId) ? { userMessage: lastUserMessage, replyText } : undefined,
-      { cacheWrite5mTokens: usageTotals.cacheWrite5mTokens, webSearches: usageTotals.webSearches }
-    );
+    // Earlier models first, so the row carrying the message text (the answering model's) is the
+    // newest one and the Portal lists it on top.
+    const models = [...usageByModel.keys()].filter((m) => m !== model).concat(usageByModel.has(model) ? [model] : []);
+    for (const m of models) {
+      const u = usageByModel.get(m)!;
+      recordApiUsage(
+        ownerId,
+        channel,
+        m,
+        m === model ? "assistant_chat" : "assistant_chat_escalated",
+        u.inputTokens,
+        u.outputTokens,
+        u.cacheReadTokens,
+        u.cacheCreationTokens,
+        m === model && isAdmin(ownerId) ? { userMessage: lastUserMessage, replyText } : undefined,
+        { cacheWrite5mTokens: u.cacheWrite5mTokens, webSearches: u.webSearches }
+      );
+    }
+    recordReplyModel(ownerId, model);
     // A phone-action link the model typed itself (or re-pasted after it was used) is dead on tap.
     if (isPhoneActionsConfigured() && reply.text) return { ...reply, text: scrubUnknownActionLinks(reply.text) };
     return reply;
@@ -2498,13 +2533,21 @@ export async function runAssistantChat(
     const response = await anthropic.messages.create({
       model,
       max_tokens: 4096,
-      ...(useThinking ? { thinking: { type: "adaptive" as const } } : {}),
+      // The fast model keeps its default adaptive thinking at low effort: quick lookups don't need
+      // more, and anything that does should escalate. The legacy cheap tier (Haiku 4.5) gets no
+      // thinking, as before.
+      ...(model === MODEL_FAST
+        ? { output_config: { effort: "low" as const } }
+        : model === MODEL_SIMPLE
+          ? {}
+          : { thinking: { type: "adaptive" as const } }),
       system: [{ type: "text", text: system, cache_control: { type: "ephemeral", ttl: "1h" } }],
-      tools: buildToolsForOwner(ownerId),
+      tools: buildToolsForOwner(ownerId, model),
       messages: withMessagesCacheBreakpoint(messages, stableHistoryIndex),
     });
     // response.usage is absent in some existing tests' mocked responses — tolerate that rather
     // than letting a usage-tracking side effect break the actual conversation flow.
+    const usageTotals = usageFor(model);
     usageTotals.inputTokens += response.usage?.input_tokens ?? 0;
     usageTotals.outputTokens += response.usage?.output_tokens ?? 0;
     // input_tokens above is ONLY the uncached tail — the cached tools+system prefix this loop
@@ -2528,6 +2571,21 @@ export async function runAssistantChat(
     const toolUses = response.content.filter(
       (block): block is Anthropic.ToolUseBlock => block.type === "tool_use"
     );
+
+    // The fast model handed over (or refused): drop this response and let the strong model answer
+    // from the same point. Anything the fast model already did this reply (earlier tool calls and
+    // their results) stays in `messages`, so nothing runs twice. Wins over every other tool call in
+    // the same response, which is also dropped.
+    if (model === MODEL_FAST) {
+      const escalateUse = toolUses.find((t) => t.name === "escalate_to_stronger_model");
+      if (escalateUse || response.stop_reason === "refusal") {
+        const why = escalateUse ? String((escalateUse.input as Record<string, unknown>).reason ?? "") : "refusal";
+        console.log(`[assistant-route] owner=${ownerId} escalated to ${MODEL_STRONG}: ${why}`);
+        model = MODEL_STRONG;
+        startSticky(ownerId);
+        continue;
+      }
+    }
 
     // Anthropic pauses a long-running server-tool turn (web_search) with stop_reason "pause_turn"
     // rather than finishing it — the content so far is complete and valid, and feeding it straight
