@@ -39,6 +39,7 @@ import { startScheduler } from "./services/scheduler.js";
 import { startReminderScheduler } from "./services/reminderScheduler.js";
 import { installLogCapture } from "./services/logCapture.js";
 import { configureTrustProxy } from "./config.js";
+import { isFlightsConfigured } from "./providers/flights.js";
 
 // Installed before anything else has a chance to log, so every console.error/console.warn from
 // here on (including ones during route registration below) is captured for the admin Portal.
@@ -263,6 +264,13 @@ app.get(/^(?!\/api|\/auth|\/health|\/webhooks).*/, (_req, res) => {
 
 const server = app.listen(PORT, () => {
   console.log(`Server listening on http://localhost:${PORT}`);
+  // A warning, so it shows in the Portal's Logs tab: without it the only sign that SerpApi isn't
+  // being used is that replies quote Kiwi.com and lastminute.com prices.
+  if (!isFlightsConfigured()) {
+    console.warn(
+      "travel search: SERPAPI_API_KEY isn't set, so flight search uses Kiwi.com and hotel search uses lastminute.com instead of Google Flights and Google Hotels"
+    );
+  }
 });
 
 // Only useful while the server keeps running — see README known limitations.

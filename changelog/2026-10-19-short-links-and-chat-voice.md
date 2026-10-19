@@ -41,3 +41,11 @@ direct answer", at the end of a long list of tool rules. It's now its own sectio
 A user's own "persona" setting still wins over these defaults. The morning briefing and evening
 round-up keep their own, warmer voice in `server/src/services/proactiveVoice.ts`, and Joyce is
 unchanged.
+
+### Seeing which flight and hotel search is in use
+
+If `SERPAPI_API_KEY` isn't set, the server now logs a warning at startup saying that flight search
+is using Kiwi.com and hotel search is using lastminute.com. It appears in the Portal's Logs tab.
+When the key is set but a SerpApi search fails (a wrong key, or the month's searches are used up),
+the existing `search_flights: SerpApi lookup failed` / `search_hotels: SerpApi lookup failed`
+warnings appear there with SerpApi's own error message.
