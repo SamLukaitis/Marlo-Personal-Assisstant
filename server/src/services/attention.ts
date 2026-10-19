@@ -10,6 +10,7 @@ import {
   listAttentionItems,
   countCappedAttentionSentSince,
   listPhoneNumbersForUser,
+  getAccount,
   type AttentionDetails,
   type AttentionItemRow,
   type AttentionSource,
@@ -39,6 +40,7 @@ import {
   ackLine,
   briefLine,
   phoneStepsFor,
+  CONNECTION_BROKEN_CATEGORY,
 } from "./attentionRules.js";
 import { createPhoneAction, phoneSuggestionsEnabled, userShortcutVersion, PROACTIVE_TTL_MS } from "./phoneActions.js";
 import { getEdition } from "../editions/index.js";
@@ -91,6 +93,10 @@ function historyNoteFor(details: AttentionDetails): string | undefined {
   });
 }
 
+function connectionStillBroken(ownerId: number, details: AttentionDetails): boolean {
+  return details.accountId !== undefined && !!getAccount(ownerId, details.accountId)?.authBroken;
+}
+
 interface PreparedItem {
   item: AttentionItemRow;
   text: string;
@@ -107,6 +113,11 @@ function prepareItem(
   cappedSent: number
 ): PreparedItem | SubmitOutcome {
   const zone = getUserTimezone(ownerId);
+  // Held overnight, a broken-connection alert may be stale by morning: they reconnected meanwhile.
+  if (item.category === CONNECTION_BROKEN_CATEGORY && !connectionStillBroken(ownerId, item.details)) {
+    updateAttentionItem(ownerId, item.id, { status: "dropped" });
+    return "dropped";
+  }
   if (inQuietHours(now, zone) && !QUIET_HOURS_EXEMPT_CATEGORIES.includes(item.category)) {
     updateAttentionItem(ownerId, item.id, { surfaceAt: nextAllowedTime(now, zone, briefingTimeFor(ownerId)) });
     return "deferred";
@@ -331,7 +342,11 @@ function collect(
     }
     // An interrupt held overnight for an early briefing goes into that briefing, not a ping after it.
     if (item.tier === "interrupt" && opts.upcoming && item.surfaceAt !== null && item.surfaceAt <= now + BRIEFING_LOOKAHEAD_MS) {
-      bundle.upcoming.push(interruptText(item.category, item.details, false));
+      // The briefing already says which mailbox it couldn't read (briefing.ts's connectionNoticeLines),
+      // from the account's live state — so this one is folded without a line of its own.
+      if (item.category !== CONNECTION_BROKEN_CATEGORY) {
+        bundle.upcoming.push(interruptText(item.category, item.details, false));
+      }
       bundle.foldIds.push(item.id);
       continue;
     }

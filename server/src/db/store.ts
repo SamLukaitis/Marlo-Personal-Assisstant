@@ -1383,10 +1383,13 @@ export function updateAccountTokens(
   });
 }
 
-export function markAccountAuthBroken(ownerId: number, id: number): void {
-  db.prepare(
-    `UPDATE accounts SET auth_broken = 1, auth_broken_at = ? WHERE id = ? AND owner_id = ? AND auth_broken = 0`
-  ).run(Date.now(), id, ownerId);
+// True only on the healthy -> broken transition, so a caller can act once per breakage rather
+// than on every failed poll of an account that's already flagged.
+export function markAccountAuthBroken(ownerId: number, id: number): boolean {
+  const result = db
+    .prepare(`UPDATE accounts SET auth_broken = 1, auth_broken_at = ? WHERE id = ? AND owner_id = ? AND auth_broken = 0`)
+    .run(Date.now(), id, ownerId);
+  return result.changes > 0;
 }
 
 export function markAccountAuthHealthy(ownerId: number, id: number): void {
@@ -2788,7 +2791,7 @@ export function recordProactiveDelivery(ownerId: number, itemKey: string, phone:
 
 export type AttentionTier = "interrupt" | "scheduled" | "brief" | "drop";
 export type AttentionStatus = "pending" | "sent" | "held" | "folded" | "dropped";
-export type AttentionSource = "email" | "document" | "booking" | "reconciliation";
+export type AttentionSource = "email" | "document" | "booking" | "reconciliation" | "connection";
 
 export interface AttentionDetails {
   summary: string; // one concrete sentence, specifics in *bold*

@@ -25,3 +25,5 @@ process.env.JOYCE_MASTER_KEY = "1".repeat(64);
 // without this every test that builds Marlowe's tools would offer search_flights and could reach
 // the real Kiwi server. Tests that cover it turn it back on themselves.
 process.env.KIWI_FLIGHTS = "off";
+// Same for the lastminute.com hotel backup (providers/lastminuteHotels.ts) and search_hotels.
+process.env.LASTMINUTE_HOTELS = "off";

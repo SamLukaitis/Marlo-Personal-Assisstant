@@ -586,10 +586,11 @@ describe("handlePostConnectSetupReply", () => {
     expect(sendWhatsAppMessage).toHaveBeenCalledWith(PHONE, expect.stringContaining("Sam"));
   });
 
-  // The chain used to end on a statement, leaving someone who had just tapped through setup with
-  // no obvious next move — so the closing message is followed by an open question, as its own
-  // message. pending_setup is already cleared by then, so their answer reaches the assistant.
-  it("follows the closing message with an open question, as a separate message", async () => {
+  // The chain used to end on a statement, and then on an open "any questions?" — which still left
+  // a new tester guessing what to ask. So the closing message is followed, as its own message, by
+  // a few concrete things to try: one each for the calendar, flights, a photo, and a reminder.
+  // pending_setup is already cleared by then, so whatever they send reaches the assistant.
+  it("follows the closing message with concrete things to try, as a separate message", async () => {
     const ownerId = newOwnerId();
     await pastFirstTask(ownerId);
 
@@ -598,7 +599,12 @@ describe("handlePostConnectSetupReply", () => {
     const texts = vi.mocked(sendWhatsAppMessage).mock.calls.map(([, text]) => text);
     const closingIndex = texts.findIndex((text) => text.includes("All set"));
     expect(closingIndex).toBeGreaterThanOrEqual(0);
-    expect(texts[closingIndex + 1]).toMatch(/anything you need help with|any questions/i);
+    const tryThese = texts[closingIndex + 1];
+    expect(tryThese).toMatch(/calendar|diary|week/i);
+    expect(tryThese).toMatch(/flight/i);
+    expect(tryThese).toMatch(/photo/i);
+    expect(tryThese).toMatch(/remind/i);
+    expect(tryThese).not.toMatch(/anything you need help with/i);
     expect(getPendingSetup(ownerId)).toBeNull();
   });
 
@@ -697,7 +703,7 @@ describe("handlePostConnectSetupReply — a double tap is handled once", () => {
     ]);
 
     expect([first, second].filter(Boolean)).toHaveLength(1);
-    // The closing message pair ("All set!" + "Anything you need help with right now...") plus the
+    // The closing message pair ("All set!" + the things-to-try list) plus the
     // briefing-default announcement — sent once, not twice.
     const closings = vi
       .mocked(sendWhatsAppMessage)

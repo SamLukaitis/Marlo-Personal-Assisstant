@@ -6,8 +6,10 @@ import {
   setSetting,
   recordApiUsage,
   listCheckins,
+  listAccounts,
   type TravelCheckinRow,
 } from "../db/store.js";
+import { mailboxLabel } from "./mailboxLabel.js";
 import { hubListMessages, hubListEvents, hubFlaggedMessages, senderDisplayName } from "./hub.js";
 import { fetchHeadlines, type NewsTopic } from "../providers/news.js";
 import { fetchWeather, type WeatherReport } from "../providers/weather.js";
@@ -227,6 +229,20 @@ export interface BriefingDay {
   attention?: BriefingAttention;
   /** Edition-specific fact lines (editions/index.ts), e.g. the business edition's money summary. */
   extraFacts?: string[];
+  /** Mailboxes whose connection has expired, e.g. "Gmail (a@example.com)" — their mail and events are missing above. */
+  brokenConnections?: string[];
+}
+
+// Added after the model's text rather than left to it: on a day with a dead connection the
+// briefing must say so, and a 70-word limit with "drop things" instructions could drop it.
+// "Reply reconnect" rather than a link: see connectionAlert.ts.
+export function connectionNoticeLines(ownerId: number): string[] {
+  return listAccounts(ownerId)
+    .filter((a) => a.authBroken && (a.provider === "google" || a.provider === "microsoft"))
+    .map(
+      (a) =>
+        `⚠️ I couldn't read your *${mailboxLabel(a.provider)}* (${a.email}) today — the connection has expired. Reply *reconnect* and I'll send you a link to fix it.`
+    );
 }
 
 // Nothing on today, no new mail, nothing waiting on a reply. Decided here rather than left to the
@@ -239,7 +255,8 @@ export function isQuietDay(day: BriefingDay): boolean {
     day.todayEvents.length === 0 &&
     day.flagged.length === 0 &&
     attentionFactLines(day.attention).length === 0 &&
-    !day.extraFacts?.length
+    !day.extraFacts?.length &&
+    !day.brokenConnections?.length
   );
 }
 
@@ -277,6 +294,9 @@ export function briefingFactBlock(day: BriefingDay): string {
     `Right now it is ${day.localTime} on ${day.localWeekday}, the user's own local time.`,
     ...attentionFactLines(day.attention),
     ...(day.extraFacts ?? []),
+    day.brokenConnections?.length
+      ? `CONNECTION PROBLEM: couldn't read ${day.brokenConnections.join(" or ")} today — the connection has expired, so its mail and calendar are missing from the facts below. Never describe their inbox or their day as empty or quiet because of it. A line telling them how to reconnect is added after your message, so don't write one yourself.`
+      : "",
     isQuietDay(day)
       ? "QUIET DAY: nothing on their calendar today, no unread mail today, nothing waiting on a reply. Use the quiet-day check-in from your instructions. Anything worth acting on from the next-three-days list below still gets mentioned — a quiet day with a flight to pack for is still a quiet day, but they should hear about the flight."
       : "",
@@ -395,17 +415,23 @@ async function buildBriefingText(ownerId: number, attention?: BriefingAttention)
       news: news.map((h) => ({ topic: h.topic, title: h.title })),
       attention,
       extraFacts: editionBriefingFacts(ownerId, clock.dateKey),
+      // Read after the hub calls above, which are what flag a dead connection.
+      brokenConnections: listAccounts(ownerId)
+        .filter((a) => a.authBroken)
+        .map((a) => `${mailboxLabel(a.provider)} (${a.email})`),
     },
     "daily_briefing",
     suggest ? PHONE_SUGGESTION_PROMPT : undefined
   );
+  let body: string;
   try {
-    return expandPhoneMarkers(ownerId, text, "briefing");
+    body = expandPhoneMarkers(ownerId, text, "briefing");
   } catch (err) {
     // The briefing is the product; a phone-link failure must not cost the user their morning.
     console.error("briefing: phone marker expansion failed, sending without links", err);
-    return stripPhoneMarkers(text);
+    body = stripPhoneMarkers(text);
   }
+  return [body, ...connectionNoticeLines(ownerId)].join("\n\n");
 }
 
 // A briefing cached earlier today (e.g. the Assistant page opened it) doesn't know about attention

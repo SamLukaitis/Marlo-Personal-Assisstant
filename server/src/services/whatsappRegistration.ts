@@ -90,12 +90,16 @@ const EMAIL_CONFIRM_BUTTON_IDS = { yes: "email_confirm_yes", no: "email_confirm_
 
 // The one fixed reply to declining to connect an email — see handleEmailConfirmTap's "no" branch
 // and handleAwaitingEmailConfirmText's decline-pattern regex for why this must never be left to
-// the AI assist reply.
+// the AI assist reply. Lists only things that work with no mailbox at all, as things to say, so
+// a phone-only tester has somewhere to start — it once promised "to-dos", which Marlowe doesn't
+// have.
 const EMAIL_CONFIRM_NO_TEXT =
   "No problem. If you want to connect your email in the future just let me know. In the " +
-  "meantime, I can keep track of reminders, to-dos and notes, hold on to any photos and " +
-  "documents you send me or answer any questions you may have. Can I help you with " +
-  "anything at the moment?";
+  "meantime, here are a few things to try:\n\n" +
+  "• \"Remind me at 6pm to call Mum\"\n" +
+  "• \"Find me flights from London to Barcelona 20–23 Nov\"\n" +
+  "• Send me a photo of a receipt, ticket or booking and I'll save the details\n" +
+  "• \"What's the weather in Lisbon this weekend?\"";
 
 const PROVIDER_BUTTON_IDS: Record<RegistrationProvider, string> = {
   google: "register_google",

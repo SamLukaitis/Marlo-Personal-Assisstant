@@ -1,5 +1,5 @@
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
-import { AuthedLayout } from "./components/AuthedLayout";
+import { AuthedLayout, OptionalSidebarLayout } from "./components/AuthedLayout";
 import { RequireAuth } from "./components/RequireAuth";
 import { ToolsProvider } from "./context/ToolsContext";
 import { HomePage } from "./pages/HomePage";
@@ -27,6 +27,11 @@ function App() {
           {/* Lands here after the WhatsApp-native registration flow's OAuth round trip — no
               session exists yet at this point, so this must stay outside RequireAuth. */}
           <Route path="/connected" element={<ConnectedPage />} />
+          {/* Public too: the WhatsApp "help" reply links here, and phone-only users have no way to
+              sign in. Signed-in users still get their sidebar. */}
+          <Route element={<OptionalSidebarLayout />}>
+            <Route path="/features" element={<FeaturesPage />} />
+          </Route>
 
           <Route
             path="/onboarding"
@@ -54,7 +59,6 @@ function App() {
             <Route path="/calendar" element={<CalendarPage />} />
             <Route path="/files" element={<FilesPage />} />
             <Route path="/travel" element={<TravelPage />} />
-            <Route path="/features" element={<FeaturesPage />} />
             <Route path="/settings" element={<SettingsPage />} />
             <Route path="/portal" element={<PortalPage />} />
             <Route path="/joyce-portal" element={<JoycePortalPage />} />

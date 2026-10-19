@@ -19,6 +19,7 @@ const {
   getPendingRegistration,
   consumePendingRegistrationToken,
   getUser,
+  markAccountAuthBroken,
 } = await import("../db/store.js");
 
 let counter = 0;
@@ -185,5 +186,49 @@ describe("connect_email tool", () => {
     if (resolution.kind !== "ok") return;
     expect(resolution.userId).toBe(user.id);
     expect(getUser(user.id)?.email).toBe(email);
+  });
+});
+
+// A dead token (revoked, expired, Google's 7-day Testing-mode limit) is the one case where a user
+// who already has a mailbox needs a link: the same one-tap link, sent as a reconnect.
+describe("connect_email for a broken connection", () => {
+  it("sends a reconnect link for the provider whose connection has expired", async () => {
+    const phone = freshPhone();
+    const user = phoneOnlyAccount(phone);
+    const account = upsertAccount(user.id, {
+      provider: "google",
+      email: `broken-${phone}@example.com`,
+      accessToken: "t",
+      refreshToken: "r",
+      expiryDate: null,
+    });
+    markAccountAuthBroken(user.id, account.id);
+
+    const result = await runTool(user.id, "connect_email", { provider: "google" });
+
+    expect(result).toEqual({ ok: true });
+    expect(sendWhatsAppCtaUrl).toHaveBeenCalledWith(
+      phone,
+      expect.stringContaining("reconnect *Gmail*"),
+      "Reconnect Gmail",
+      expect.stringContaining("/auth/google/register")
+    );
+  });
+
+  it("still refuses when the connected mailbox is healthy", async () => {
+    const phone = freshPhone();
+    const user = phoneOnlyAccount(phone);
+    upsertAccount(user.id, {
+      provider: "google",
+      email: `healthy-${phone}@example.com`,
+      accessToken: "t",
+      refreshToken: "r",
+      expiryDate: null,
+    });
+
+    const result = await runTool(user.id, "connect_email", { provider: "google" });
+
+    expect(result).toEqual({ error: expect.stringContaining("already has a mailbox connected") });
+    expect(sendWhatsAppCtaUrl).not.toHaveBeenCalled();
   });
 });
