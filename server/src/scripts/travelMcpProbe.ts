@@ -9,6 +9,7 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 const SERVERS: Record<string, string> = {
   lastminute: "https://mcp.lastminute.com/mcp",
   slicktrip: "https://mcp.slicktrip.com/mcp",
+  kiwi: "https://mcp.kiwi.com",
 };
 
 async function connect(name: string, url: string): Promise<Client> {

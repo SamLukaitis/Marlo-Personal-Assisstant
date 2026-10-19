@@ -11,7 +11,7 @@
 // its own 1-hour cache for free, so nothing is cached here.
 export const SERPAPI_URL = "https://serpapi.com/search.json";
 const TIMEOUT_MS = 25_000;
-const MAX_FLIGHTS = 6;
+export const MAX_FLIGHTS = 6;
 const MAX_RAW_CHARS = 3000;
 
 export type Cabin = "economy" | "premium_economy" | "business" | "first";
@@ -53,9 +53,15 @@ export interface FlightOption {
   layovers?: { airport?: string; durationMinutes?: number; overnight?: boolean }[];
   notes?: string[];
   returnFor?: string;
+  // Kiwi.com backup only (providers/kiwiFlights.ts): a round trip comes back whole, with its
+  // return legs and a per-option booking link, instead of a returnFor follow-up search.
+  returnLegs?: FlightLeg[];
+  bookingUrl?: string;
 }
 
 export interface FlightSearchResult {
+  // Set only on Kiwi.com backup results; absent means Google Flights.
+  source?: string;
   roundTrip: boolean;
   currency: string;
   priceIs: string;

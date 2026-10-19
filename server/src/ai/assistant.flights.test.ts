@@ -14,6 +14,12 @@ vi.mock("../providers/flights.js", () => ({
   searchFlights: (...args: unknown[]) => mockSearchFlights(...args),
 }));
 
+const mockSearchKiwi = vi.fn();
+vi.mock("../providers/kiwiFlights.js", () => ({
+  isKiwiFlightsEnabled: () => process.env.KIWI_FLIGHTS?.trim().toLowerCase() !== "off",
+  searchKiwiFlights: (...args: unknown[]) => mockSearchKiwi(...args),
+}));
+
 import { runAssistantChat, runTool, buildToolsForOwner, buildSystemPrompt } from "./assistant.js";
 import { findOrCreateUserByEmail } from "../db/store.js";
 
@@ -25,10 +31,12 @@ function newUser(prefix: string) {
 }
 
 const RESULT = { roundTrip: false, currency: "GBP", priceIs: "one-way for 1 adult(s), GBP", flights: [] };
+const KIWI_RESULT = { ...RESULT, source: "Kiwi.com (backup)" };
 
 beforeEach(() => {
   mockCreate.mockReset();
   mockSearchFlights.mockReset().mockResolvedValue(RESULT);
+  mockSearchKiwi.mockReset().mockResolvedValue(KIWI_RESULT);
   process.env.ANTHROPIC_API_KEY = "test-key";
   process.env.SERPAPI_API_KEY = "serp-key";
 });
@@ -107,6 +115,46 @@ describe("runTool — search_flights", () => {
     mockSearchFlights.mockRejectedValueOnce(new Error("Invalid API key"));
     const result = await runTool(newUser("flights-fail").id, "search_flights", { from: "LHR", to: "BCN", depart_date: "2026-11-20" });
     expect(result).toEqual({ error: "Couldn't reach Google Flights: Invalid API key" });
+  });
+});
+
+describe("runTool — search_flights Kiwi.com backup", () => {
+  const query = { from: "LHR", to: "BCN", depart_date: "2026-11-20" };
+
+  beforeEach(() => {
+    process.env.KIWI_FLIGHTS = "on";
+  });
+
+  it("is offered with no SerpApi key, and goes straight to Kiwi", async () => {
+    delete process.env.SERPAPI_API_KEY;
+    const user = newUser("kiwi-only");
+    expect(buildToolsForOwner(user.id).map((t) => t.name)).toContain("search_flights");
+    expect(buildSystemPrompt(user.id)).toContain("Use search_flights");
+
+    const result = await runTool(user.id, "search_flights", query);
+    expect(mockSearchFlights).not.toHaveBeenCalled();
+    expect(mockSearchKiwi).toHaveBeenCalledWith({ from: "LHR", to: "BCN", departDate: "2026-11-20" });
+    expect(result).toEqual(KIWI_RESULT);
+  });
+
+  it("uses Google Flights first when it works", async () => {
+    const result = await runTool(newUser("kiwi-unused").id, "search_flights", query);
+    expect(result).toEqual(RESULT);
+    expect(mockSearchKiwi).not.toHaveBeenCalled();
+  });
+
+  it("falls back to Kiwi when a SerpApi search fails", async () => {
+    mockSearchFlights.mockRejectedValueOnce(new Error("Your account has run out of searches."));
+    const result = await runTool(newUser("kiwi-fallback").id, "search_flights", query);
+    expect(mockSearchKiwi).toHaveBeenCalledTimes(1);
+    expect(result).toEqual(KIWI_RESULT);
+  });
+
+  it("returns a short error when both fail", async () => {
+    mockSearchFlights.mockRejectedValueOnce(new Error("Invalid API key"));
+    mockSearchKiwi.mockRejectedValueOnce(new Error("fetch failed"));
+    const result = await runTool(newUser("kiwi-both-fail").id, "search_flights", query);
+    expect(result).toEqual({ error: "Couldn't reach a flight search: fetch failed" });
   });
 });
 
