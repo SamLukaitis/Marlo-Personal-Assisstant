@@ -69,7 +69,9 @@ export type ConnectLinkResult = "sent" | "throttled" | "no_pending_row";
 // "enable_send" is the reconnect for an Outlook mailbox connected before Mail.Send was requested
 // (microsoft.ts's SCOPES) — same link, same callback, which recognises the mailbox as already
 // connected and skips the new-user setup chain (authRoutes.ts's isReconnect).
-export type ConnectLinkPurpose = "connect" | "enable_send";
+// "reconnect" is the same link for a mailbox whose connection stopped working (a revoked or expired
+// token — see hub.ts's isAuthError), sent by connect_email when that account is marked broken.
+export type ConnectLinkPurpose = "connect" | "enable_send" | "reconnect";
 
 export async function sendConnectLink(
   phone: string,
@@ -111,6 +113,15 @@ export async function sendConnectLink(
     await sendScriptedLink(
       phone,
       `Tap below to reconnect *${PROVIDER_LABEL[provider]}* and allow sending — it only takes a moment. I'll still never send anything without you approving it first. This link works for ten minutes.`,
+      `Reconnect ${PROVIDER_LABEL[provider]}`,
+      link
+    );
+    return "sent";
+  }
+  if (purpose === "reconnect") {
+    await sendScriptedLink(
+      phone,
+      `Tap below to reconnect *${PROVIDER_LABEL[provider]}* — sign in with the same account and I'll pick up where I left off. This link works for ten minutes.`,
       `Reconnect ${PROVIDER_LABEL[provider]}`,
       link
     );

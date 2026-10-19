@@ -52,6 +52,7 @@ import {
 import { retrieveRelevantMemory } from "./memoryRetrieval.js";
 import { applyEditionTools, getEdition, isToolExcluded, runEditionTool } from "../editions/index.js";
 import { sendConnectLink } from "../services/connectMailboxLink.js";
+import { mailboxLabel } from "../services/mailboxLabel.js";
 import { dropFromEmailDigest } from "../services/emailDigest.js";
 import {
   addEmailAlertMute,
@@ -994,7 +995,7 @@ const ALWAYS_ON_TOOLS: Anthropic.ToolUnion[] = [
   {
     name: "connect_email",
     description:
-      "Send the user a one-tap link to connect their Gmail or Outlook/Hotmail mailbox. Call this when a user with no mailbox connected (see the note in your context about missing email/calendar access) asks to connect one, or accepts your own offer to do so. Ask which provider they use first if it isn't already obvious from the conversation, the same way onboarding does ('Do you use Gmail or Outlook/Hotmail?') — this tool needs to know which. Only for a user with nothing connected yet; adding or swapping a second mailbox isn't supported.",
+      "Send the user a one-tap link to connect their Gmail or Outlook/Hotmail mailbox. Call this when a user with no mailbox connected (see the note in your context about missing email/calendar access) asks to connect one, or accepts your own offer to do so. Ask which provider they use first if it isn't already obvious from the conversation, the same way onboarding does ('Do you use Gmail or Outlook/Hotmail?') — this tool needs to know which. Also call it to reconnect an account marked \"connection expired\" in your context, with that account's provider. Otherwise only for a user with nothing connected yet; adding or swapping a second mailbox isn't supported.",
     input_schema: {
       type: "object",
       properties: {
@@ -1918,7 +1919,11 @@ export async function runTool(
       // resolveRegistrationUser (authRoutes.ts) already refuses to attach a second/different
       // address to an account that has one, so this check exists to give the model a clean reply
       // to relay instead of sending a link that would just fail at the OAuth callback.
-      if (listAccounts(ownerId).length > 0) {
+      // The one exception is a connection that has stopped working (revoked, expired, Google's
+      // 7-day limit for an app in Testing mode): the same link, sent as a reconnect.
+      const accounts = listAccounts(ownerId);
+      const brokenAccount = accounts.find((a) => a.authBroken && a.provider === input.provider);
+      if (accounts.length > 0 && !brokenAccount) {
         return { error: "This account already has a mailbox connected — connecting a second one isn't supported." };
       }
       const phoneNumber = listPhoneNumbersForUser(ownerId)[0]?.phone;
@@ -1931,7 +1936,11 @@ export async function runTool(
       if (provider !== "google" && provider !== "microsoft") {
         return { error: `unknown provider: ${provider}` };
       }
-      const result = await sendConnectLink(phoneNumber, provider as RegistrationProvider);
+      const result = await sendConnectLink(
+        phoneNumber,
+        provider as RegistrationProvider,
+        brokenAccount ? "reconnect" : "connect"
+      );
       switch (result) {
         case "sent":
           return { ok: true };
@@ -2263,6 +2272,7 @@ export function buildSystemPrompt(ownerId: number, conversationSummary?: string)
     ? accounts
         .map((a) => {
           const restrictions = [
+            a.authBroken && "connection expired, needs reconnecting",
             !a.canRead && "reading disabled",
             !a.canSend && "sending disabled",
             !a.canDelete && "archiving/deleting disabled",
@@ -2275,6 +2285,18 @@ export function buildSystemPrompt(ownerId: number, conversationSummary?: string)
         ? "Anything needing email is unavailable. A calendar event can still go on their iPhone: use a make_phone_action calendar_event step rather than asking them to connect. For email,"
         : "Anything needing email or calendar is unavailable:") +
       " say so plainly in one line and offer to connect an inbox, e.g. \"I'd need your email for that — want to connect it?\". If they say yes, ask which they use (Gmail or Outlook/Hotmail) if that's not already obvious, then call connect_email with that provider to actually send them the link — don't just keep offering verbally. Most of these users are on WhatsApp only and have no access to our website — don't reference web-based setup. Everything else — reminders, to-dos, notes, documents they send, and general questions — works normally, so answer those without mentioning the missing inbox.)";
+
+  // Without this an expired token reads as an empty inbox: the hub returns [] for a dead
+  // connection, and "no new emails" is wrong in a way the user can't see.
+  const broken = accounts.filter((a) => a.authBroken);
+  const brokenRule = broken.length
+    ? "An account marked \"connection expired\" can't be read right now: searches and lookups on it come back empty " +
+      "because of the dead connection, not because there's nothing there. When a result is empty or is missing that " +
+      "account, never say nothing was found — say plainly that you couldn't reach their " +
+      broken.map((a) => `${mailboxLabel(a.provider)} (${a.email})`).join(" or ") +
+      " because the connection expired, and offer to send a link to reconnect it. If they say yes, or reply " +
+      "\"reconnect\", call connect_email with that account's provider."
+    : "";
 
   const folders = listLocalFolders(ownerId);
   const folderList = folders.length
@@ -2345,6 +2367,7 @@ export function buildSystemPrompt(ownerId: number, conversationSummary?: string)
     `You are ${name}, a personal assistant that manages the user's connected accounts. ${todayLine}`,
     persona ? `The user described how they want you to behave:\n${persona}` : "",
     `Connected accounts:\n${accountList}`,
+    brokenRule,
     `Local computer folders searchable by file name:\n${folderList}`,
     `What you know about the user (core profile). You may naturally bring up one of these when it's ` +
       `genuinely relevant to what's being discussed — the way someone who was actually paying ` +
