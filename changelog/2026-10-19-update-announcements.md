@@ -35,5 +35,10 @@ npm run whatsapp:templates -- 1574262347469069 --create   # submit
 npm run whatsapp:templates -- 1574262347469069            # check: should say APPROVED, MARKETING
 ```
 
+On Windows PowerShell, `npm run ... -- --create` loses the `--create` (PowerShell drops the `--`), so
+the script only reports "not created yet". Run it directly instead:
+`npx tsx src/scripts/createMarloweTemplates.ts 1574262347469069 --create`. The template was
+submitted this way on 2026-10-19.
+
 Until it's approved, people outside the 24-hour window will fail and show up in "failed" (and
 in the Portal's Logs). Use "Retry failed" once it's approved.

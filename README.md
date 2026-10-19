@@ -159,6 +159,8 @@ npm run invite -- PHONE  # Invite a user by phone number
 npm run whatsapp:check -- <WABA_ID> --subscribe
 npm run joyce:templates -- 1574262347469069           # Joyce's template approval status (--create to submit)
 npm run whatsapp:templates -- 1574262347469069        # marlowe_whats_new (update announcements) approval status (--create to submit)
+# Windows PowerShell drops the `--`, so npm swallows --create there. Use instead:
+# npx tsx src/scripts/createMarloweTemplates.ts 1574262347469069 --create
 ```
 
 ### Client
