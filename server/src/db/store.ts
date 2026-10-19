@@ -1263,6 +1263,20 @@ db.exec(`
   );
 `);
 
+// Product-update announcements an admin sent from the Portal's Updates tab
+// (services/announcements.ts). Who got each one is in proactive_deliveries under
+// "announcement:<id>", so a re-send only reaches the numbers that failed.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS announcements (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    text       TEXT NOT NULL,
+    sent_by    INTEGER REFERENCES users(id),
+    created_at INTEGER NOT NULL,
+    sent       INTEGER NOT NULL DEFAULT 0,
+    failed     INTEGER NOT NULL DEFAULT 0
+  );
+`);
+
 // Short links Marlowe sends in place of long booking/search URLs (Google Flights, Google Hotels,
 // Kiwi.com, Booking.com), so a WhatsApp reply isn't half URL. /go/<code> redirects to `url`.
 // services/shortLinks.ts is the only writer; only URLs Marlowe itself stored can be reached.
@@ -3134,6 +3148,40 @@ export function listPhoneActionsForPortal(limit = 200): (PhoneActionRow & { emai
   ).map((r) => ({ ...phoneActionFromDb(r), email: r.email }));
 }
 
+export interface AnnouncementRow {
+  id: number;
+  text: string;
+  sentBy: number | null;
+  createdAt: number;
+  sent: number;
+  failed: number;
+}
+
+export function insertAnnouncement(text: string, sentBy: number, now = Date.now()): number {
+  const info = db.prepare(`INSERT INTO announcements (text, sent_by, created_at) VALUES (?, ?, ?)`).run(text, sentBy, now);
+  return Number(info.lastInsertRowid);
+}
+
+export function getAnnouncement(id: number): AnnouncementRow | null {
+  return (
+    (db
+      .prepare(`SELECT id, text, sent_by AS sentBy, created_at AS createdAt, sent, failed FROM announcements WHERE id = ?`)
+      .get(id) as AnnouncementRow | undefined) ?? null
+  );
+}
+
+export function setAnnouncementCounts(id: number, sent: number, failed: number): void {
+  db.prepare(`UPDATE announcements SET sent = ?, failed = ? WHERE id = ?`).run(sent, failed, id);
+}
+
+export function listAnnouncements(limit = 20): AnnouncementRow[] {
+  return db
+    .prepare(
+      `SELECT id, text, sent_by AS sentBy, created_at AS createdAt, sent, failed FROM announcements ORDER BY id DESC LIMIT ?`
+    )
+    .all(limit) as AnnouncementRow[];
+}
+
 export function insertShortLink(l: { code: string; ownerId: number; url: string; createdAt: number; expiresAt: number }): void {
   db.prepare(`INSERT INTO short_links (code, owner_id, url, created_at, expires_at) VALUES (?, ?, ?, ?, ?)`).run(
     l.code,
@@ -4516,6 +4564,8 @@ export function deleteUserCompletely(ownerId: number): { deletedDocumentPaths: s
     db.prepare(`DELETE FROM phone_actions WHERE owner_id = ?`).run(ownerId);
     db.prepare(`DELETE FROM phone_shortcut_status WHERE owner_id = ?`).run(ownerId);
     db.prepare(`DELETE FROM short_links WHERE owner_id = ?`).run(ownerId);
+    // Kept as a record of what was announced, just no longer tied to the deleted admin.
+    db.prepare(`UPDATE announcements SET sent_by = NULL WHERE sent_by = ?`).run(ownerId);
     db.prepare(`DELETE FROM read_emails WHERE owner_id = ?`).run(ownerId);
     db.prepare(`DELETE FROM user_enabled_tools WHERE owner_id = ?`).run(ownerId);
     db.prepare(`DELETE FROM family_links WHERE owner_id = ?`).run(ownerId);
