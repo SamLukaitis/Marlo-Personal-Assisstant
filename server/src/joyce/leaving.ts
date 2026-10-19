@@ -3,6 +3,7 @@ import { openFamilySessionForPhone } from "./familyDb.js";
 import { deleteMyGoogleAccount } from "./store.js";
 import { revokeJoyceGoogleToken } from "./googleCalendar.js";
 import { onMemberLeaving } from "./familyCalendar.js";
+import { fireFamilyLeft } from "./hooks.js";
 
 // Leaving a family, in two steps.
 //
@@ -84,6 +85,8 @@ export function handlePendingLeave(
     // Only reachable if they were removed by something else between asking and confirming.
     return { reply: "You're not in a family group at the moment.", left: false };
   }
+
+  fireFamilyLeft(normalizedPhone);
 
   // Skip the introduction next time they write: they've just met Joyce, and LEFT_MESSAGE already
   // asks the new-or-join question, so their next message should be read as the answer to it.
