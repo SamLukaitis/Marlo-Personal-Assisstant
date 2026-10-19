@@ -14,7 +14,7 @@
 import { isAdmin } from "../db/store.js";
 
 export const MODEL_FAST = process.env.ASSISTANT_MODEL_FAST ?? "claude-haiku-5-5";
-export const MODEL_STRONG = process.env.ASSISTANT_MODEL_COMPLEX ?? "claude-sonnet-5";
+export const MODEL_STRONG = process.env.ASSISTANT_MODEL_COMPLEX ?? "claude-sonnet-5-5";
 // Legacy cheap tier, used when fast-first routing is off for this owner.
 const MODEL_LEGACY_SIMPLE = process.env.ASSISTANT_MODEL_SIMPLE ?? "claude-haiku-4-5";
 

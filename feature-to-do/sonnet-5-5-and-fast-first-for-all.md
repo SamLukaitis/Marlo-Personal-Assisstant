@@ -8,7 +8,9 @@ it for a few days, check the Portal's Usage tab: how many messages have an
 looks fine, set `ASSISTANT_FAST_FIRST=all` on Railway. If it escalates a lot, adjust the heavy-task
 word list or the escalate tool's description in `server/src/ai/modelRouting.ts` / `assistant.ts`.
 
-**2. Move the strong model from Claude Sonnet 5 to Claude Sonnet 5.5.** Same price, smarter. It
-isn't a straight swap: Sonnet 5.5 rejects `thinking: {type: "disabled"}`, rejects forced
-`tool_choice`, and recalibrates effort levels, so the main chat, briefing, email digest and
-document extraction calls each need checking. Do it as its own change and compare replies.
+**2. Done (2026-10-19): the strong model is now Claude Sonnet 5.5** (changelog
+2026-10-19-sonnet-5-5-strong-model.md). None of the strong-model calls disabled thinking or forced
+`tool_choice` (the forced calls all run on the cheap Haiku 4.5 tier), so it was a swap of the
+default model id. Still worth doing: compare replies, briefings and digests for a few days, and
+try an explicit effort level (`medium` for chat, `low` for the briefing and digest) since Sonnet
+5.5 recalibrated what each level means.
