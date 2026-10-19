@@ -5,6 +5,7 @@ import {
   listPhoneNumbersForUser,
   createPendingAction,
   recordApiUsage,
+  getWhatsAppHistory,
 } from "../db/store.js";
 import { getClient } from "../ai/assistant.js";
 import {
@@ -26,6 +27,8 @@ import { emailReferenceNote } from "./emailReference.js";
 import {
   emailDigestTime,
   formatDigestTime,
+  isMutedEmail,
+  listEmailAlertMutes,
   realPersonAlertModeChosen,
   realPersonAlertsEnabled,
 } from "./emailAlertSettings.js";
@@ -81,6 +84,66 @@ export function queueForEmailDigest(ownerId: number, emails: DigestEmail[]): voi
     ...readQueue(ownerId),
     ...emails.map(({ id, accountId, from, subject, gist, needsReply }) => ({ id, accountId, from, subject, gist, needsReply })),
   ]);
+}
+
+// "Re: Fwd: Quote" and "quote" are the same conversation.
+function threadSubject(subject: string): string {
+  return subject.replace(/^\s*((re|fwd?|aw|sv)\s*:\s*)+/i, "").replace(/\s+/g, " ").trim().toLowerCase();
+}
+
+function senderAddress(from: string): string {
+  return (from.match(/<([^>]+)>/)?.[1] ?? from).trim().toLowerCase();
+}
+
+// Takes an email off today's digest once the user has dealt with it in chat — opened it with
+// Marlowe, or replied to it — along with the rest of that thread from the same sender. Without
+// this the digest re-flagged a thread the user had already handled an hour earlier, since the
+// queue only knew what had arrived, not what had been talked about. `from` is the other person
+// (the sender of a mail they read, or the recipient of their reply).
+export function dropFromEmailDigest(
+  ownerId: number,
+  email: { accountId?: number; id?: string; from: string; subject: string }
+): void {
+  const queue = readQueue(ownerId);
+  if (queue.length === 0) return;
+  const address = senderAddress(email.from);
+  const subject = threadSubject(email.subject);
+  const kept = queue.filter(
+    (m) =>
+      !(
+        (email.id !== undefined && m.id === email.id && m.accountId === email.accountId) ||
+        (address && senderAddress(m.from) === address && threadSubject(m.subject) === subject)
+      )
+  );
+  if (kept.length !== queue.length) writeQueue(ownerId, kept);
+}
+
+// What the user and Marlowe said to each other in the day before the digest, so the model can
+// leave out anything already sorted in conversation ("I've called Steven about that") — the queue
+// itself can't know about something the user only said out loud. Bounded per message and overall:
+// this is context for skipping things, not something to summarise.
+const CHAT_LOOKBACK_MS = 24 * 60 * 60 * 1000;
+const CHAT_ROWS = 40;
+const CHAT_LINE_MAX = 300;
+const CHAT_TOTAL_MAX = 6000;
+
+export function recentChatForDigest(ownerId: number, now = Date.now()): string[] {
+  const rows = listPhoneNumbersForUser(ownerId)
+    .flatMap((r) => getWhatsAppHistory(r.phone, CHAT_ROWS))
+    .filter((row) => row.createdAt >= now - CHAT_LOOKBACK_MS)
+    .sort((a, b) => a.createdAt - b.createdAt);
+  const lines: string[] = [];
+  let total = 0;
+  // Newest first while budgeting, so the most recent conversation is what survives the cap.
+  for (const row of [...rows].reverse()) {
+    const text = row.content.replace(/\s+/g, " ").trim();
+    if (!text) continue;
+    const line = `${row.role === "user" ? "Them" : "You"}: ${text.length > CHAT_LINE_MAX ? `${text.slice(0, CHAT_LINE_MAX - 1)}…` : text}`;
+    if (total + line.length > CHAT_TOTAL_MAX) break;
+    lines.unshift(line);
+    total += line.length;
+  }
+  return lines;
 }
 
 export function queuedEmailDigestCount(ownerId: number): number {
@@ -167,6 +230,8 @@ export interface DigestDay {
   attention?: DigestAttention;
   /** Tomorrow's events, only fetched when phone suggestions are on. */
   tomorrowEvents?: string[];
+  /** The last day's chat with them, oldest first — see recentChatForDigest. */
+  chatToday?: string[];
 }
 
 export function digestSystemPrompt(voice: ProactiveVoice): string {
@@ -191,6 +256,8 @@ export function digestSystemPrompt(voice: ProactiveVoice): string {
     `This is only about who emailed. You have no calendar, no weather and no news here, so don't reach for any — and don't imply you know what else their day held.`,
 
     `The one exception: some facts may be things you've been keeping track of for them. "Worth knowing" items get a few words each. "Noted" items are things you've quietly filed — mention them briefly so they know you've got it, and say when you'll bring each one up again. Keep the specifics that matter (who or what, the date, the amount) and drop the rest. They don't count toward the three-person limit; fold several into one sentence, and with these the message may run to about 80 words. If nobody emailed, just cover these.`,
+
+    `You may also be shown what the two of you already said in chat today. Anything that conversation shows is already dealt with — an email you went through together, a reply they sent, something they said they've handled or don't care about — leave out completely, even if it's in the list. Never re-raise it as needing them. If that leaves nothing worth saying, write one short line saying nothing else needs them.`,
 
     `Don't ask them a question and don't offer to do anything. Something else may be appended after your message, so end on a complete thought rather than a lead-in.`,
 
@@ -222,6 +289,9 @@ export function digestFactBlock(day: DigestDay): string {
     day.attention?.noted.length
       ? `Noted, each with when you'll bring it up again: ${day.attention.noted.join(" | ")}`
       : "",
+    day.chatToday?.length
+      ? `Already said in chat today, oldest first — leave out anything settled here:\n${day.chatToday.join("\n")}`
+      : "",
   ]
     .filter(Boolean)
     .join("\n\n");
@@ -247,6 +317,7 @@ async function digestText(ownerId: number, queue: DigestEmail[], attention?: Dig
     senders: groupBySenderAndSubject(queue).slice(0, MAX_NAMED_TO_MODEL),
     attention,
     tomorrowEvents,
+    chatToday: recentChatForDigest(ownerId),
   };
   const voice: ProactiveVoice = {
     assistantName: getSetting(ownerId, "assistant_name") ?? "Marlowe",
@@ -342,6 +413,9 @@ export async function flushEmailDigestIfDue(ownerId: number): Promise<void> {
 
   // They turned people's emails off since these were queued, so they don't want them sent.
   if (!realPersonAlertsEnabled(ownerId)) writeQueue(ownerId, []);
+  // A mute added since these were queued applies to today's digest too.
+  const mutes = listEmailAlertMutes(ownerId);
+  if (mutes.length > 0) writeQueue(ownerId, readQueue(ownerId).filter((m) => !isMutedEmail(mutes, m)));
 
   const queue = readQueue(ownerId);
   const now = Date.now();

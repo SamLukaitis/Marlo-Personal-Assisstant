@@ -32,6 +32,7 @@ import { tidySnippet } from "./htmlToText.js";
 import { submitAttentionItem } from "./attention.js";
 import { enrichImportantEmail } from "./importantEmailEnrichment.js";
 import { getUserTimezone } from "./userTimezone.js";
+import { isMutedEmail, listEmailAlertMutes } from "./emailAlertSettings.js";
 import type { AttentionDetails } from "../db/store.js";
 import type { UnifiedMessage } from "../providers/types.js";
 import { onAutomatedMail } from "../editions/index.js";
@@ -157,8 +158,8 @@ export async function checkForImportantEmails(ownerId: number): Promise<void> {
     return;
   }
 
-  const unscanned = candidates.filter((m) => !hasAlerted(ownerId, messageKey(m)));
-  if (unscanned.length === 0) return;
+  const notYetScanned = candidates.filter((m) => !hasAlerted(ownerId, messageKey(m)));
+  if (notYetScanned.length === 0) return;
 
   // Never interleave alerts with postConnectSetup's own questions — hold everything (unmarked,
   // checkpoint held) until the chain's closing message has gone out, then alert as normal.
@@ -172,8 +173,18 @@ export async function checkForImportantEmails(ownerId: number): Promise<void> {
   // the same message again on a retry: the ledger dedupes on the message id.
   onAutomatedMail(
     ownerId,
-    unscanned.map((m) => ({ ...m, from: m.from ?? "" }))
+    notYetScanned.map((m) => ({ ...m, from: m.from ?? "" }))
   );
+
+  // Mail the user muted (emailAlertSettings.ts) is settled now — after the business-edition hook
+  // above, which isn't an alert, and before paying to classify something that will never be sent.
+  const mutes = listEmailAlertMutes(ownerId);
+  const unscanned = notYetScanned.filter((m) => {
+    if (!isMutedEmail(mutes, m)) return true;
+    markAlerted(ownerId, messageKey(m));
+    return false;
+  });
+  if (unscanned.length === 0) return;
 
   // Cheap deliverability gates before the paid classification call, same precedent as alerts.ts
   // and reconciliation.ts — this feature is on by default, so every deployment without WhatsApp
@@ -318,8 +329,13 @@ export async function scanAndCurateImportantEmailsForOnboarding(
   // "checked, nothing important".
   if (messages.length === 0) return null;
 
+  const mutes = listEmailAlertMutes(ownerId);
   const candidates = messages.filter(
-    (m) => isImportantEmailCandidate(m) && isWithinOnboardingLookback(m) && !hasAlerted(ownerId, messageKey(m))
+    (m) =>
+      isImportantEmailCandidate(m) &&
+      isWithinOnboardingLookback(m) &&
+      !hasAlerted(ownerId, messageKey(m)) &&
+      !isMutedEmail(mutes, m)
   );
   if (candidates.length === 0) return { lines: [], moreCount: 0 };
 

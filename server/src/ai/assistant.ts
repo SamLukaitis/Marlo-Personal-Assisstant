@@ -52,9 +52,13 @@ import {
 import { retrieveRelevantMemory } from "./memoryRetrieval.js";
 import { applyEditionTools, getEdition, isToolExcluded, runEditionTool } from "../editions/index.js";
 import { sendConnectLink } from "../services/connectMailboxLink.js";
+import { dropFromEmailDigest } from "../services/emailDigest.js";
 import {
+  addEmailAlertMute,
   emailDigestTime,
   importantEmailAlertsEnabled,
+  listEmailAlertMutes,
+  removeEmailAlertMutes,
   isValidDigestTime,
   realPersonAlertMode,
   realPersonAlertsEnabled,
@@ -226,7 +230,7 @@ const ALWAYS_ON_TOOLS: Anthropic.ToolUnion[] = [
       type: "object",
       properties: {
         account_id: { type: "number" },
-        message_id: { type: "string" },
+        message_id: { type: "string", description: "Copied exactly from a tool result — never typed from memory." },
       },
       required: ["account_id", "message_id"],
     },
@@ -955,7 +959,7 @@ const ALWAYS_ON_TOOLS: Anthropic.ToolUnion[] = [
   {
     name: "set_email_alerts",
     description:
-      "Turn the user's email pings on or off, or batch them into a daily digest. There are two independent kinds: `people` — a ping whenever a real person (not a newsletter or notification) emails them; `important` — Marlowe watching automated mail (flights, bookings, bills, renewals, deliveries, security alerts): urgent changes like a flight change come straight away, bookings/bills/renewals become reminders at the right moment, and the rest goes into the briefing or evening summary. Both are on by default, and real people's emails are by default held for one summary message a day (people_mode \"digest\", sent at digest_time, default 21:00); the morning briefing is separate and unaffected. Pass only what the user asked to change: \"stop telling me when people email me\" is people:false alone; \"stop all pings about emails\" / \"no more email alerts\" is both false. \"Ping me the moment someone emails me\" / \"I want every email straight away\" is people_mode:\"instant\"; \"go back to the daily summary\" is people_mode:\"digest\"; \"send the summary at 6pm\" is digest_time:\"18:00\". If it's unclear which they mean, ask rather than guessing.",
+      "Turn the user's email pings on or off, or batch them into a daily digest. There are two independent kinds: `people` — a ping whenever a real person (not a newsletter or notification) emails them; `important` — Marlowe watching automated mail (flights, bookings, bills, renewals, deliveries, security alerts): urgent changes like a flight change come straight away, bookings/bills/renewals become reminders at the right moment, and the rest goes into the briefing or evening summary. Both are on by default, and real people's emails are by default held for one summary message a day (people_mode \"digest\", sent at digest_time, default 21:00); the morning briefing is separate and unaffected. Pass only what the user asked to change: \"stop telling me when people email me\" is people:false alone; \"stop all pings about emails\" / \"no more email alerts\" is both false. \"Ping me the moment someone emails me\" / \"I want every email straight away\" is people_mode:\"instant\"; \"go back to the daily summary\" is people_mode:\"digest\"; \"send the summary at 6pm\" is digest_time:\"18:00\". To stop pings about one sender or one kind of email (\"stop telling me about Railway crash emails\"), use mute_email_alerts instead — never turn a whole kind off for that. If it's unclear which they mean, ask rather than guessing.",
     input_schema: {
       type: "object",
       properties: {
@@ -968,6 +972,20 @@ const ALWAYS_ON_TOOLS: Anthropic.ToolUnion[] = [
         },
         digest_time: { type: "string", description: `24h "HH:MM" in the user's own local time: when the daily digest is sent.` },
       },
+    },
+  },
+  {
+    name: "mute_email_alerts",
+    description:
+      "Stop (or start again) pings and digest mentions for one sender or one kind of email, without turning email alerts off. Call this when the user says they don't want to hear about something specific — \"stop telling me about Railway crash emails\", \"never ping me about LinkedIn\", \"I don't care about Uber receipts\". A mute matches when every part given appears (case-insensitive) in the email: `from` against the sender's name and address, `subject` against the subject. Keep parts short and distinctive — a domain or name for from (\"railway.app\"), a keyword for subject (\"crash\") — and give both when the user only wants one kind of mail from a sender muted. If you know which email they mean, look it up first so from/subject match what it really says. The mail itself stays in the inbox. action \"list\" returns current mutes; \"remove\" undoes one (a bare from removes every mute on that sender).",
+    input_schema: {
+      type: "object",
+      properties: {
+        action: { type: "string", enum: ["add", "remove", "list"] },
+        from: { type: "string", description: "Part of the sender's name or address, e.g. \"railway.app\"." },
+        subject: { type: "string", description: "A word or phrase in the subject, e.g. \"crashed\"." },
+      },
+      required: ["action"],
     },
   },
   {
@@ -1337,6 +1355,11 @@ export function trimSnippetForList(message: UnifiedMessage): UnifiedMessage {
 // Exported for its own unit test — same reasoning as forModel/resolveDocumentCategory
 // elsewhere: this is the one bit of pure logic worth testing directly, without needing a live
 // hub/provider call in the loop.
+export const MESSAGE_NOT_FOUND_ERROR =
+  "No email with that id in that account. Message ids must be copied exactly from a list_recent_messages, " +
+  "search_messages, list_flagged_emails or search_read_emails result — never typed from memory or guessed. " +
+  "Look the email up again with one of those, and don't say anything about it until you have.";
+
 export function messageForModel(message: UnifiedMessage | null): unknown {
   if (!message?.attachments) return message;
   return {
@@ -1386,10 +1409,15 @@ export async function runTool(
           limit: (input.limit as number | undefined) ?? SEARCH_MESSAGES_DEFAULT_LIMIT,
         })
       ).map(trimSnippetForList);
-    case "get_message":
-      return messageForModel(
-        await hubGetMessage(ownerId, input.account_id as number, input.message_id as string)
-      );
+    case "get_message": {
+      const message = await hubGetMessage(ownerId, input.account_id as number, input.message_id as string);
+      // Said outright, not a bare null: the model has invented plausible-looking ids and then
+      // explained the email anyway. A miss has to read as "you don't have this email".
+      if (!message) return { error: MESSAGE_NOT_FOUND_ERROR };
+      // They've now been through this email with Marlowe, so tonight's digest mustn't raise it again.
+      dropFromEmailDigest(ownerId, message);
+      return messageForModel(message);
+    }
     case "list_upcoming_events":
       return hubListEvents(ownerId, (input.days as number | undefined) ?? 7);
     case "find_free_time": {
@@ -1416,14 +1444,18 @@ export async function runTool(
         input.subject as string,
         input.body as string
       );
-    case "send_email":
-      return hubSendMessage(
+    case "send_email": {
+      const sent = await hubSendMessage(
         ownerId,
         input.account_id as number,
         input.to as string,
         input.subject as string,
         input.body as string
       );
+      // Replied — so that thread is answered and the digest has nothing to chase.
+      dropFromEmailDigest(ownerId, { from: input.to as string, subject: input.subject as string });
+      return sent;
+    }
     case "search_contacts":
       return hubSearchContacts(ownerId, input.query as string);
     case "create_calendar_event":
@@ -1837,6 +1869,19 @@ export async function runTool(
         digest_time: emailDigestTime(ownerId),
       };
     }
+    case "mute_email_alerts": {
+      if (input.action === "list") return { mutes: listEmailAlertMutes(ownerId) };
+      if (input.action === "add") {
+        const mute = addEmailAlertMute(ownerId, { from: input.from, subject: input.subject });
+        if (!mute) return { error: "pass from and/or subject" };
+        return { ok: true, muted: mute, mutes: listEmailAlertMutes(ownerId) };
+      }
+      if (input.action === "remove") {
+        const removed = removeEmailAlertMutes(ownerId, { from: input.from, subject: input.subject });
+        return { ok: true, removed, mutes: listEmailAlertMutes(ownerId) };
+      }
+      return { error: 'action must be "add", "remove" or "list"' };
+    }
     case "set_tool_enabled": {
       const tool = input.tool as string;
       if (!TOOL_KEYS.includes(tool as ToolKey)) {
@@ -2136,6 +2181,7 @@ const FLIGHTS_RULE =
 function buildRules(enabled: Set<ToolKey>): string {
   const base = [
     "- Always look up real data with your tools before answering questions about email, calendar, or files — never invent contents.",
+    "- Never write an email's message id, sender, subject, time or contents from memory. An id only exists if a tool returned it — copy it exactly from that result, never reconstruct or guess one. When explaining which email an alert or earlier reply was about, find it first (list_flagged_emails, search_read_emails or search_messages), then get_message it, and only then answer. If you can't find it, say so plainly instead of naming a likely one.",
     "- ask_user_choice renders real tappable buttons/a list on WhatsApp instead of asking in prose — use it for confirm-before-destructive-action and for disambiguating between candidates (see the archive and search_contacts rules below for the two concrete cases). Call it alone, as the only tool call in your turn.",
     "- For a ride, directions, a restaurant table, music, a place to stay or a WhatsApp message to someone, use make_app_link to give the user a link that opens the app already filled in — never hand-write Uber/Lyft/OpenTable/Resy/Spotify/Airbnb/Booking.com links. Never say or claim you've booked, ordered or started playing anything: say it's ready for them to confirm in the app. If they want you to complete the booking or payment yourself, explain that you set it up and they confirm in the app, and call flag_unmet_request in the same turn.",
     "- Never state that something does NOT exist (no booking, no email, nothing on file, calendar is empty, etc.) without calling the relevant tool in THIS turn first. You do not retain tool results from earlier turns — only your own past reply text — so a memory of having checked before is not verification. If a user pushes back on something you said, that is a signal to re-run the tool, not to just apologize or reverse yourself from reasoning alone.",
@@ -2297,21 +2343,26 @@ export function buildSystemPrompt(ownerId: number, conversationSummary?: string)
     .join("\n\n");
 }
 
-function withCacheControlOnLastBlock(message: Anthropic.MessageParam): Anthropic.MessageParam {
+// ttl "1h" costs 2x the input price to write; the default 5-minute ttl costs 1.25x. Only worth
+// the 1h premium for a prefix the user's NEXT message (often minutes later) will read back.
+function withCacheControlOnLastBlock(message: Anthropic.MessageParam, ttl: "5m" | "1h"): Anthropic.MessageParam {
   const blocks =
     typeof message.content === "string" ? [{ type: "text" as const, text: message.content }] : message.content;
   if (blocks.length === 0) return message;
   return {
     ...message,
     content: blocks.map((block, i) =>
-      i === blocks.length - 1 ? { ...block, cache_control: { type: "ephemeral" as const, ttl: "1h" as const } } : block
+      i === blocks.length - 1 ? { ...block, cache_control: { type: "ephemeral" as const, ttl } } : block
     ),
   };
 }
 
 // Two breakpoints inside `messages` (tools + system use the other two of Anthropic's four):
 // - the LAST block of the last message, so each tool-loop turn within one reply reads every
-//   earlier turn back at the cached rate (feature-to-do/token-cost-reduction.md #2);
+//   earlier turn back at the cached rate (feature-to-do/token-cost-reduction.md #2). 5-minute ttl:
+//   it's only ever read by the next loop turn seconds later, and it often covers big web_search
+//   results that are never read again — at the 1h rate those writes were most of a search
+//   reply's cost (e.g. 41k written for one "live music in Leeds" message, ~90% of its $0.27);
 // - `stableIndex`: the message just before the latest user message. The latest user message
 //   carries a per-message relevant-memory block (ai/memoryRetrieval.ts) that is never stored in
 //   history, so the NEXT user turn's prefix diverges there — this breakpoint caches everything
@@ -2326,7 +2377,11 @@ function withMessagesCacheBreakpoint(
   if (messages.length === 0) return messages;
   const last = messages.length - 1;
   return messages.map((m, i) =>
-    i === last || (i === stableIndex && stableIndex < last) ? withCacheControlOnLastBlock(m) : m
+    i === stableIndex && stableIndex < last
+      ? withCacheControlOnLastBlock(m, "1h")
+      : i === last
+        ? withCacheControlOnLastBlock(m, "5m")
+        : m
   );
 }
 
@@ -2401,7 +2456,16 @@ export async function runAssistantChat(
   // take up to 8 turns for one user message, e.g. several tool round-trips) and recorded once,
   // via finish() below, rather than once per turn — admins want "how many times was the assistant
   // actually asked something" and "how many tokens did that cost", not internal loop iterations.
-  const usageTotals = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0 };
+  const usageTotals = {
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheReadTokens: 0,
+    cacheCreationTokens: 0,
+    // Part of cacheCreationTokens written at the cheaper 5-minute rate, so the Portal can price
+    // the two separately, plus web searches, billed per search on top of tokens.
+    cacheWrite5mTokens: 0,
+    webSearches: 0,
+  };
   // Maps calls made while answering this one user message — same blast-radius guard as
   // web_search's max_uses. Counted synchronously inside the map below, so parallel calls in one
   // response are counted too.
@@ -2422,7 +2486,8 @@ export async function runAssistantChat(
       usageTotals.outputTokens,
       usageTotals.cacheReadTokens,
       usageTotals.cacheCreationTokens,
-      isAdmin(ownerId) ? { userMessage: lastUserMessage, replyText } : undefined
+      isAdmin(ownerId) ? { userMessage: lastUserMessage, replyText } : undefined,
+      { cacheWrite5mTokens: usageTotals.cacheWrite5mTokens, webSearches: usageTotals.webSearches }
     );
     // A phone-action link the model typed itself (or re-pasted after it was used) is dead on tap.
     if (isPhoneActionsConfigured() && reply.text) return { ...reply, text: scrubUnknownActionLinks(reply.text) };
@@ -2446,6 +2511,19 @@ export async function runAssistantChat(
     // re-reads on every turn is reported separately here, and it's most of the real bill.
     usageTotals.cacheReadTokens += response.usage?.cache_read_input_tokens ?? 0;
     usageTotals.cacheCreationTokens += response.usage?.cache_creation_input_tokens ?? 0;
+    usageTotals.cacheWrite5mTokens += response.usage?.cache_creation?.ephemeral_5m_input_tokens ?? 0;
+    usageTotals.webSearches += response.usage?.server_tool_use?.web_search_requests ?? 0;
+    // One line per loop turn, so a costly message in the Portal can be traced to the turn (and
+    // the searches) behind it in the Railway logs.
+    if (response.usage) {
+      const u = response.usage;
+      console.log(
+        `[assistant-usage] owner=${ownerId} turn=${turn} model=${model} stop=${response.stop_reason} ` +
+          `in=${u.input_tokens} out=${u.output_tokens} cacheRead=${u.cache_read_input_tokens ?? 0} ` +
+          `cacheWrite=${u.cache_creation_input_tokens ?? 0} (5m=${u.cache_creation?.ephemeral_5m_input_tokens ?? 0} ` +
+          `1h=${u.cache_creation?.ephemeral_1h_input_tokens ?? 0}) searches=${u.server_tool_use?.web_search_requests ?? 0}`
+      );
+    }
 
     const toolUses = response.content.filter(
       (block): block is Anthropic.ToolUseBlock => block.type === "tool_use"

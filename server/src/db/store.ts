@@ -433,6 +433,15 @@ if (!apiUsageColumnsNow.includes("user_message")) {
     ALTER TABLE api_usage ADD COLUMN reply_text TEXT;
   `);
 }
+// cache_write_5m_tokens is the part of cache_creation_tokens written at the 5-minute rate (1.25x
+// input) rather than the 1-hour rate (2x), so the Portal's estimate can price each correctly.
+// web_searches counts web_search uses, which Anthropic bills per search on top of tokens.
+if (!apiUsageColumnsNow.includes("web_searches")) {
+  db.exec(`
+    ALTER TABLE api_usage ADD COLUMN cache_write_5m_tokens INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE api_usage ADD COLUMN web_searches INTEGER NOT NULL DEFAULT 0;
+  `);
+}
 
 // Bootstraps the very first non-owner admin without needing an existing admin to grant it through
 // the Portal's Admins tab first (a chicken-and-egg problem otherwise) — and deliberately doesn't
@@ -3774,12 +3783,14 @@ export function recordApiUsage(
   cacheReadTokens: number,
   cacheCreationTokens: number,
   // Only passed for admin accounts' assistant chats — see the user_message migration above.
-  message?: { userMessage: string; replyText: string }
+  message?: { userMessage: string; replyText: string },
+  extra?: { cacheWrite5mTokens?: number; webSearches?: number }
 ): void {
   db.prepare(
     `INSERT INTO api_usage (owner_id, channel, model, purpose, input_tokens, output_tokens,
-                            cache_read_tokens, cache_creation_tokens, user_message, reply_text, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+                            cache_read_tokens, cache_creation_tokens, user_message, reply_text,
+                            cache_write_5m_tokens, web_searches, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   ).run(
     ownerId,
     channel,
@@ -3791,6 +3802,8 @@ export function recordApiUsage(
     cacheCreationTokens,
     message ? message.userMessage.slice(0, API_USAGE_TEXT_MAX) : null,
     message ? message.replyText.slice(0, API_USAGE_TEXT_MAX) : null,
+    extra?.cacheWrite5mTokens ?? 0,
+    extra?.webSearches ?? 0,
     Date.now()
   );
 }
@@ -3808,6 +3821,8 @@ export interface ApiUsageSummaryRow {
   outputTokens: number;
   cacheReadTokens: number;
   cacheCreationTokens: number;
+  cacheWrite5mTokens: number;
+  webSearches: number;
 }
 
 // Grouped in SQL rather than fetched-and-reduced in JS — this table only grows over time, so
@@ -3824,7 +3839,9 @@ export function getApiUsageSummary(sinceMs: number): ApiUsageSummaryRow[] {
          SUM(input_tokens) AS inputTokens,
          SUM(output_tokens) AS outputTokens,
          SUM(cache_read_tokens) AS cacheReadTokens,
-         SUM(cache_creation_tokens) AS cacheCreationTokens
+         SUM(cache_creation_tokens) AS cacheCreationTokens,
+         SUM(cache_write_5m_tokens) AS cacheWrite5mTokens,
+         SUM(web_searches) AS webSearches
        FROM api_usage
        WHERE created_at >= ?
        GROUP BY day, channel, model, purpose
@@ -3840,6 +3857,8 @@ export interface ApiUsageByPurposeRow {
   outputTokens: number;
   cacheReadTokens: number;
   cacheCreationTokens: number;
+  cacheWrite5mTokens: number;
+  webSearches: number;
 }
 
 // A flatter "what's actually costing us tokens" view than getApiUsageSummary's day-by-day
@@ -3854,7 +3873,9 @@ export function getApiUsageByPurpose(sinceMs: number): ApiUsageByPurposeRow[] {
          SUM(input_tokens) AS inputTokens,
          SUM(output_tokens) AS outputTokens,
          SUM(cache_read_tokens) AS cacheReadTokens,
-         SUM(cache_creation_tokens) AS cacheCreationTokens
+         SUM(cache_creation_tokens) AS cacheCreationTokens,
+         SUM(cache_write_5m_tokens) AS cacheWrite5mTokens,
+         SUM(web_searches) AS webSearches
        FROM api_usage
        WHERE created_at >= ?
        GROUP BY purpose
@@ -3877,6 +3898,8 @@ export interface ApiUsageByOwnerModelRow {
   outputTokens: number;
   cacheReadTokens: number;
   cacheCreationTokens: number;
+  cacheWrite5mTokens: number;
+  webSearches: number;
 }
 
 // Grouped by owner AND model (not just owner) so the caller can apply per-model pricing before
@@ -3898,7 +3921,9 @@ export function getApiUsageByOwner(sinceMs: number): ApiUsageByOwnerModelRow[] {
          SUM(u.input_tokens) AS inputTokens,
          SUM(u.output_tokens) AS outputTokens,
          SUM(u.cache_read_tokens) AS cacheReadTokens,
-         SUM(u.cache_creation_tokens) AS cacheCreationTokens
+         SUM(u.cache_creation_tokens) AS cacheCreationTokens,
+         SUM(u.cache_write_5m_tokens) AS cacheWrite5mTokens,
+         SUM(u.web_searches) AS webSearches
        FROM api_usage u LEFT JOIN users us ON us.id = u.owner_id
        WHERE u.created_at >= ?
        GROUP BY u.owner_id, u.model
@@ -3920,6 +3945,8 @@ export interface ApiUsageCallRow {
   outputTokens: number;
   cacheReadTokens: number;
   cacheCreationTokens: number;
+  cacheWrite5mTokens: number;
+  webSearches: number;
   createdAt: number;
   // Null except on admin accounts' assistant chats (see the user_message migration).
   userMessage: string | null;
@@ -3939,6 +3966,7 @@ export function listRecentApiUsage(limit: number, messagesOnly = false): ApiUsag
               us.email AS ownerEmail, u.channel, u.model, u.purpose,
               u.input_tokens AS inputTokens, u.output_tokens AS outputTokens,
               u.cache_read_tokens AS cacheReadTokens, u.cache_creation_tokens AS cacheCreationTokens,
+              u.cache_write_5m_tokens AS cacheWrite5mTokens, u.web_searches AS webSearches,
               u.created_at AS createdAt, u.user_message AS userMessage, u.reply_text AS replyText
        FROM api_usage u LEFT JOIN users us ON us.id = u.owner_id
        ${messagesOnly ? "WHERE u.user_message IS NOT NULL" : ""}
