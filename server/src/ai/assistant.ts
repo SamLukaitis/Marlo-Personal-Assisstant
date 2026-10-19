@@ -77,6 +77,7 @@ import { isKiwiFlightsEnabled, searchKiwiFlights } from "../providers/kiwiFlight
 import { fetchQuotes, DEFAULT_SYMBOLS } from "../providers/markets.js";
 import { countTravelDays } from "../services/travelDays.js";
 import { isPhoneActionsConfigured, makePhoneActionForChat, phonePromptSection, scrubUnknownActionLinks } from "../services/phoneActions.js";
+import { FAMILY_LINK_TOOLS, FAMILY_TOOL_NAMES, familyToolsAvailable, runFamilyLinkTool } from "./familyLinkTools.js";
 import { STEP_TYPES } from "../services/phoneSteps.js";
 import { resolveReminderTime, ReminderTimeError, type ReminderTimeInput } from "../services/reminderTime.js";
 import { resolveUserTimezone, userLocalClock } from "../services/userTimezone.js";
@@ -1300,7 +1301,12 @@ const ESCALATE_TOOL: Anthropic.Tool = {
 // model decides two things: the web_search version (only Opus/Sonnet support result filtering)
 // and, for the fast model under fast-first routing, the escalate tool. Defaults to the strong
 // model so callers that only care about tool names see the usual set.
-export function buildToolsForOwner(ownerId: number, model: string = MODEL_STRONG): Anthropic.ToolUnion[] {
+export function buildToolsForOwner(
+  ownerId: number,
+  model: string = MODEL_STRONG,
+  // Set only on a WhatsApp turn from the person themselves; the Joyce link tools need it.
+  phone?: string
+): Anthropic.ToolUnion[] {
   const enabled = getEnabledTools(ownerId);
   const assembled: Anthropic.ToolUnion[] = ALWAYS_ON_TOOLS.map((t) =>
     "type" in t && t.type === "web_search_20250305" && supportsDynamicWebSearch(model)
@@ -1313,6 +1319,7 @@ export function buildToolsForOwner(ownerId: number, model: string = MODEL_STRONG
   if (isMapsConfigured()) assembled.push(...MAPS_TOOLS);
   if (isFlightSearchAvailable()) assembled.push(...FLIGHT_TOOLS);
   if (isPhoneActionsConfigured()) assembled.push(...PHONE_ACTION_TOOLS);
+  if (familyToolsAvailable(ownerId, phone)) assembled.push(...FAMILY_LINK_TOOLS);
   // The user's edition (editions/index.ts) drops tools that don't belong in that product and adds
   // its own — before the cache breakpoint below, so it still lands on the true last tool.
   const result = applyEditionTools(ownerId, assembled);
@@ -1408,6 +1415,7 @@ export async function runTool(
   if (requiredKey && !getEnabledTools(ownerId).has(requiredKey)) {
     return { error: `tool not enabled: ${name}` };
   }
+  if (FAMILY_TOOL_NAMES.has(name)) return runFamilyLinkTool(ownerId, name, input, phone);
   switch (name) {
     case "list_recent_messages":
       return (
@@ -2542,7 +2550,7 @@ export async function runAssistantChat(
           ? {}
           : { thinking: { type: "adaptive" as const } }),
       system: [{ type: "text", text: system, cache_control: { type: "ephemeral", ttl: "1h" } }],
-      tools: buildToolsForOwner(ownerId, model),
+      tools: buildToolsForOwner(ownerId, model, phone),
       messages: withMessagesCacheBreakpoint(messages, stableHistoryIndex),
     });
     // response.usage is absent in some existing tests' mocked responses — tolerate that rather
