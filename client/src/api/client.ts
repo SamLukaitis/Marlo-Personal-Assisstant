@@ -847,6 +847,47 @@ export interface PortalPhoneAction {
 }
 export const fetchPhoneActions = () => getJson<PortalPhoneAction[]>("/api/portal/phone-actions");
 
+// Portal → Feature use. Built from tool names only (server/src/services/featureUsage.ts).
+export interface FeatureAreaRow {
+  area: string;
+  label: string;
+  messages: number;
+  people: number;
+}
+
+export interface FeatureToolRow {
+  tool: string;
+  label: string;
+  // "helper" tools are how Marlowe replies (buttons, reactions), not something people come for.
+  area: string | null;
+  areaLabel: string;
+  uses: number;
+  messages: number;
+  people: number;
+  lastUsedAt: number | null;
+  // false: this server isn't set up for it (e.g. no Maps key), so nobody could have used it.
+  switchedOn: boolean;
+}
+
+export interface FeaturePersonRow {
+  ownerId: number | null;
+  label: string;
+  isAdmin: boolean;
+  messages: number;
+  topAreas: { label: string; messages: number }[];
+  lastActiveAt: number;
+}
+
+export interface FeatureUsage {
+  totals: { messages: number; people: number; messagesWithTools: number };
+  areas: FeatureAreaRow[];
+  tools: FeatureToolRow[];
+  people: FeaturePersonRow[];
+}
+
+export const fetchFeatureUsage = (days = 30, testersOnly = false) =>
+  getJson<FeatureUsage>(`/api/portal/feature-usage?days=${days}${testersOnly ? "&testersOnly=1" : ""}`);
+
 export interface ServerLog {
   id: number;
   level: string;
@@ -1014,6 +1055,35 @@ export const addPosterNote = (text: string) => mutateJson<PosterNote[]>("/api/po
 export const deletePosterNote = (id: number) => mutateJson<{ ok: true }>(`/api/portal/notes/${id}`, "DELETE");
 
 export const fetchPortalVersion = () => getJson<{ text: string }>("/api/portal/version");
+
+// Product-update announcements sent to every Marlowe user's WhatsApp (server/src/services/announcements.ts).
+export interface Announcement {
+  id: number;
+  text: string;
+  sentBy: number | null;
+  createdAt: number;
+  sent: number;
+  failed: number;
+}
+
+export interface AnnouncementsOverview {
+  recipients: number;
+  maxChars: number;
+  history: Announcement[];
+}
+
+export interface AnnouncementCounts {
+  sent: number;
+  failed: number;
+}
+
+export const fetchAnnouncements = () => getJson<AnnouncementsOverview>("/api/portal/announcements");
+export const sendTestAnnouncement = (text: string) =>
+  mutateJson<AnnouncementCounts>("/api/portal/announcements/test", "POST", { text });
+export const sendAnnouncement = (text: string) =>
+  mutateJson<AnnouncementCounts & { id: number }>("/api/portal/announcements", "POST", { text });
+export const retryAnnouncement = (id: number) =>
+  mutateJson<AnnouncementCounts>(`/api/portal/announcements/${id}/retry`, "POST");
 
 export async function sendChatMessage(messages: ChatMessage[]): Promise<string> {
   const res = await fetch(

@@ -8,6 +8,7 @@ import { ingestWhatsAppLink } from "./documents.js";
 import { findSaveableUrl, type FetchFailureReason } from "./safeLinkFetcher.js";
 import { isHelpTrigger, MARLOWE_HELP_TEXT } from "./whatsappRegistration.js";
 import { isVersionTrigger, buildVersionText } from "./version.js";
+import { updatesTrigger, setProductUpdates, STOPPED_REPLY, STARTED_REPLY } from "./announcements.js";
 import { resolveQuotedMessageContext } from "./quotedMessage.js";
 import { sendTextAndRecord } from "./whatsappReply.js";
 import { queueForAssistant, looksComplete } from "./messageBatching.js";
@@ -123,6 +124,16 @@ export async function handleText(
   // tells the truth) even if the assistant/tool layer itself is what's broken or stale.
   if (isVersionTrigger(text)) {
     await sendTextAndRecord(ownerId, from, buildVersionText());
+    await afterReply?.();
+    return;
+  }
+
+  // "stop updates" / "start updates": the opt-out the Portal's update announcements tell people
+  // about. Answered without the model so it always works and always says the same thing.
+  const updates = updatesTrigger(text);
+  if (updates) {
+    setProductUpdates(ownerId, updates === "start");
+    await sendTextAndRecord(ownerId, from, updates === "start" ? STARTED_REPLY : STOPPED_REPLY);
     await afterReply?.();
     return;
   }

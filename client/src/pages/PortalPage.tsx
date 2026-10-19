@@ -13,6 +13,13 @@ import {
   addPosterNote,
   deletePosterNote,
   fetchPortalVersion,
+  fetchFeatureUsage,
+  fetchAnnouncements,
+  sendTestAnnouncement,
+  sendAnnouncement,
+  retryAnnouncement,
+  type AnnouncementsOverview,
+  type FeatureUsage,
   type AdminCandidate,
   type UnmetRequest,
   type PortalPhoneAction,
@@ -32,10 +39,12 @@ import { IconTrash, IconPlus, IconRefresh, IconChat } from "../components/icons"
 const SECTIONS = [
   { key: "todos", label: "To-Do" },
   { key: "notes", label: "Poster Board" },
+  { key: "updates", label: "Send Update" },
   { key: "requests", label: "Unmet Requests" },
   { key: "phone", label: "Phone Actions" },
   { key: "logs", label: "Logs" },
   { key: "usage", label: "Usage" },
+  { key: "features", label: "Feature use" },
   { key: "admins", label: "Admins" },
 ] as const;
 
@@ -181,6 +190,7 @@ export function PortalPage() {
           <div className="settings-panel">
             {section === "todos" && <TodosTab api={marlowePortalApi} />}
             {section === "notes" && <NotesTab />}
+            {section === "updates" && <UpdatesTab />}
             {section === "requests" && (
               <RequestsTab
                 api={marlowePortalApi}
@@ -197,6 +207,7 @@ export function PortalPage() {
                 showOwners
               />
             )}
+            {section === "features" && <FeatureUseTab />}
             {section === "admins" && <AdminsTab currentUserId={user.id} />}
           </div>
         </div>
@@ -455,6 +466,122 @@ function NotesTab() {
             <p className="muted" style={{ margin: "8px 0 0", fontSize: 12 }}>
               {n.authorEmail ?? "No email connected"} — {timeAgo(n.createdAt)}
             </p>
+          </div>
+        ))
+      )}
+    </>
+  );
+}
+
+function UpdatesTab() {
+  const [overview, setOverview] = useState<AnnouncementsOverview | null>(null);
+  const [text, setText] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [status, setStatus] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  function load() {
+    fetchAnnouncements()
+      .then(setOverview)
+      .catch((err: Error) => setError(err.message));
+  }
+
+  useEffect(load, []);
+
+  async function run(action: () => Promise<string>) {
+    setBusy(true);
+    setError(null);
+    setStatus(null);
+    try {
+      setStatus(await action());
+      load();
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function counts(c: { sent: number; failed: number }): string {
+    return `Sent to ${c.sent} number${c.sent === 1 ? "" : "s"}${c.failed ? `, ${c.failed} failed (see Logs)` : ""}.`;
+  }
+
+  const trimmed = text.trim();
+  const max = overview?.maxChars ?? 900;
+  const tooLong = trimmed.length > max;
+
+  return (
+    <>
+      <h2>Send an update</h2>
+      <p className="settings-section-intro">
+        Tell every Marlowe user on WhatsApp what's new. It goes out under the heading "What's new in Marlowe", ending with how to
+        stop these ("stop updates"). People who haven't messaged Marlowe in the last 24 hours get it through the approved
+        marlowe_whats_new template. Joyce families aren't included.
+      </p>
+      <div className="card card-padded" style={{ marginBottom: 20 }}>
+        <textarea
+          rows={6}
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          placeholder="e.g. Marlowe can now search live hotel prices. Try: find me a hotel in Lisbon 12–15 Nov."
+          style={{ width: "100%" }}
+        />
+        <div className="row" style={{ justifyContent: "space-between", marginTop: 10, gap: 8, flexWrap: "wrap" }}>
+          <span className="muted" style={{ fontSize: 12, color: tooLong ? "var(--danger, #b42318)" : undefined }}>
+            {trimmed.length}/{max} characters
+            {overview && ` · goes to ${overview.recipients} number${overview.recipients === 1 ? "" : "s"}`}
+          </span>
+          <div className="row" style={{ gap: 8 }}>
+            <button
+              className="btn-secondary"
+              disabled={busy || !trimmed || tooLong}
+              onClick={() => run(async () => `Test: ${counts(await sendTestAnnouncement(trimmed))}`)}
+            >
+              Send me a test
+            </button>
+            <button
+              className="btn-primary"
+              disabled={busy || !trimmed || tooLong}
+              onClick={() => {
+                if (!window.confirm(`Send this update to ${overview?.recipients ?? "every"} number(s)? This can't be undone.`)) return;
+                void run(async () => {
+                  const result = counts(await sendAnnouncement(trimmed));
+                  setText("");
+                  return result;
+                });
+              }}
+            >
+              {busy ? "Sending…" : "Send to everyone"}
+            </button>
+          </div>
+        </div>
+        {status && <p style={{ margin: "10px 0 0" }}>{status}</p>}
+        {error && <p style={{ margin: "10px 0 0", color: "var(--danger, #b42318)" }}>{error}</p>}
+      </div>
+
+      <h3>Sent</h3>
+      {!overview ? (
+        <p className="muted">Loading…</p>
+      ) : overview.history.length === 0 ? (
+        <p className="muted">No updates sent yet.</p>
+      ) : (
+        overview.history.map((a) => (
+          <div key={a.id} className="card card-padded" style={{ marginBottom: 10 }}>
+            <p style={{ margin: 0, fontSize: 13.5, whiteSpace: "pre-wrap" }}>{a.text}</p>
+            <div className="row" style={{ justifyContent: "space-between", marginTop: 8, gap: 8 }}>
+              <span className="muted" style={{ fontSize: 12 }}>
+                {timeAgo(a.createdAt)} · {counts(a)}
+              </span>
+              {a.failed > 0 && (
+                <button
+                  className="btn-secondary"
+                  disabled={busy}
+                  onClick={() => run(async () => `Retry: ${counts(await retryAnnouncement(a.id))}`)}
+                >
+                  <IconRefresh /> Retry failed
+                </button>
+              )}
+            </div>
           </div>
         ))
       )}
@@ -1006,6 +1133,228 @@ export function UsageTab({
               </table>
             </div>
           )}
+        </>
+      )}
+    </>
+  );
+}
+
+// A thin bar for the "what it's being used for" lists, same look as the Usage tab's.
+function ShareBar({ share }: { share: number }) {
+  return (
+    <div style={{ background: "var(--border-soft)", borderRadius: 4, height: 6, marginTop: 4 }}>
+      <div style={{ width: `${share}%`, background: "var(--accent)", borderRadius: 4, height: "100%" }} />
+    </div>
+  );
+}
+
+// What people use Marlowe for, and what they don't. Built from which tools each message used —
+// never the message text — so it covers every user, not just admins.
+function FeatureUseTab() {
+  const [data, setData] = useState<FeatureUsage | null>(null);
+  const [loaded, setLoaded] = useState(false);
+  const [days, setDays] = useState(30);
+  const [testersOnly, setTestersOnly] = useState(false);
+
+  function load(d: number, onlyTesters: boolean) {
+    setLoaded(false);
+    fetchFeatureUsage(d, onlyTesters)
+      .then(setData)
+      .finally(() => setLoaded(true));
+  }
+
+  useEffect(() => load(days, testersOnly), [days, testersOnly]);
+
+  const totals = data?.totals ?? { messages: 0, people: 0, messagesWithTools: 0 };
+  const usedAreas = data?.areas.filter((a) => a.messages > 0) ?? [];
+  const unusedAreas = data?.areas.filter((a) => a.messages === 0) ?? [];
+  const usedTools = data?.tools.filter((t) => t.uses > 0) ?? [];
+  // Grouped by area, so "nobody's touched Calendar's delete" reads next to the rest of Calendar.
+  const unusedByArea = new Map<string, { tool: string; switchedOn: boolean }[]>();
+  for (const t of data?.tools ?? []) {
+    if (t.uses > 0 || t.area === "helper") continue;
+    const list = unusedByArea.get(t.areaLabel) ?? [];
+    list.push({ tool: t.label, switchedOn: t.switchedOn });
+    unusedByArea.set(t.areaLabel, list);
+  }
+
+  return (
+    <>
+      <h2>Feature use</h2>
+      <p className="settings-section-intro">
+        What people use Marlowe for, and what they don't, worked out from which tools each message used. Only tool
+        names are recorded, never what anyone said. Counting started with this update.
+      </p>
+
+      <div className="row" style={{ marginBottom: 14, justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
+        <div className="row" style={{ gap: 12, flexWrap: "wrap" }}>
+          <select value={days} onChange={(e) => setDays(Number(e.target.value))}>
+            <option value={7}>Last 7 days</option>
+            <option value={30}>Last 30 days</option>
+            <option value={90}>Last 90 days</option>
+          </select>
+          {/* The settings panel's labels are small caps headings; this one is a normal checkbox label. */}
+          <label
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 6,
+              fontSize: 13,
+              fontWeight: 400,
+              textTransform: "none",
+              letterSpacing: "normal",
+              color: "var(--text)",
+              margin: 0,
+              whiteSpace: "nowrap",
+            }}
+          >
+            <input
+              type="checkbox"
+              style={{ width: "auto" }}
+              checked={testersOnly}
+              onChange={(e) => setTestersOnly(e.target.checked)}
+            />
+            Leave out admins
+          </label>
+        </div>
+        <button className="btn-secondary" onClick={() => load(days, testersOnly)}>
+          <IconRefresh /> Refresh
+        </button>
+      </div>
+
+      <div className="stat-row" style={{ marginBottom: 20 }}>
+        <div className="stat-card">
+          <span className="stat-label">Messages answered</span>
+          <span className="stat-value">{totals.messages}</span>
+        </div>
+        <div className="stat-card">
+          <span className="stat-label">People</span>
+          <span className="stat-value">{totals.people}</span>
+        </div>
+        <div className="stat-card">
+          <span className="stat-label">Used a feature</span>
+          <span className="stat-value">
+            {totals.messages > 0 ? `${Math.round((totals.messagesWithTools / totals.messages) * 100)}%` : "—"}
+          </span>
+          <span className="stat-note">The rest were just conversation</span>
+        </div>
+      </div>
+
+      {!loaded || !data ? (
+        <p className="muted">Loading…</p>
+      ) : totals.messages === 0 ? (
+        <p className="muted">No messages in this range yet. Counting started with this update.</p>
+      ) : (
+        <>
+          <h2 style={{ fontSize: 15, marginBottom: 10 }}>What people use Marlowe for</h2>
+          <p className="muted" style={{ marginTop: -6, marginBottom: 10, fontSize: 12 }}>
+            Share of messages that touched each area. One message can touch more than one, so these add up to more
+            than 100%.
+          </p>
+          <div className="card card-padded" style={{ marginBottom: 24 }}>
+            {usedAreas.map((a) => {
+              const share = Math.round((a.messages / totals.messages) * 100);
+              return (
+                <div key={a.area} style={{ marginBottom: 10 }}>
+                  <div className="row" style={{ justifyContent: "space-between", fontSize: 13 }}>
+                    <span>{a.label}</span>
+                    <span className="muted">
+                      {a.messages} message{a.messages === 1 ? "" : "s"} · {a.people} {a.people === 1 ? "person" : "people"}{" "}
+                      · {share}%
+                    </span>
+                  </div>
+                  <ShareBar share={share} />
+                </div>
+              );
+            })}
+          </div>
+
+          <h2 style={{ fontSize: 15, marginBottom: 10 }}>Not used in this range</h2>
+          {unusedAreas.length === 0 && unusedByArea.size === 0 ? (
+            <p className="muted" style={{ marginBottom: 24 }}>Every tool got used at least once.</p>
+          ) : (
+            <div className="card card-padded" style={{ marginBottom: 24, fontSize: 13 }}>
+              {unusedAreas.length > 0 && (
+                <p style={{ margin: "0 0 12px" }}>
+                  <strong>Whole areas nobody used:</strong> {unusedAreas.map((a) => a.label).join(", ")}
+                </p>
+              )}
+              {[...unusedByArea.entries()].map(([area, tools]) => (
+                <div key={area} style={{ marginBottom: 8 }}>
+                  <strong>{area}:</strong>{" "}
+                  {tools.map((t, i) => (
+                    <Fragment key={t.tool}>
+                      {i > 0 && ", "}
+                      <code style={{ fontSize: 12 }}>{t.tool}</code>
+                      {!t.switchedOn && <span className="muted"> (not set up on this server)</span>}
+                    </Fragment>
+                  ))}
+                </div>
+              ))}
+            </div>
+          )}
+
+          <h2 style={{ fontSize: 15, marginBottom: 10 }}>By tool</h2>
+          <div className="card" style={{ ...usageScrollBox, marginBottom: 24 }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+              <thead>
+                <tr>
+                  <th style={thText}>Tool</th>
+                  <th style={thText}>Area</th>
+                  <th style={thNum}>Uses</th>
+                  <th style={thNum}>Messages</th>
+                  <th style={thNum}>People</th>
+                  <th style={thText}>Last used</th>
+                </tr>
+              </thead>
+              <tbody>
+                {usedTools.map((t) => (
+                  <tr key={t.tool} className="data-row">
+                    <td style={tdText}>
+                      {/* Real tools show their code name; "Sent a photo or document" and the like read as words. */}
+                      {t.label === t.tool ? <code style={{ fontSize: 12 }}>{t.label}</code> : t.label}
+                    </td>
+                    <td style={tdText}>{t.areaLabel}</td>
+                    <td style={tdNum}>{t.uses}</td>
+                    <td style={tdNum}>{t.messages}</td>
+                    <td style={tdNum}>{t.people}</td>
+                    <td style={{ ...tdText, whiteSpace: "nowrap" }}>{t.lastUsedAt ? timeAgo(t.lastUsedAt) : "—"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          <h2 style={{ fontSize: 15, marginBottom: 10 }}>By person</h2>
+          <div className="card" style={usageScrollBox}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+              <thead>
+                <tr>
+                  <th style={thText}>Person</th>
+                  <th style={thNum}>Messages</th>
+                  <th style={thText}>Mostly uses</th>
+                  <th style={thText}>Last active</th>
+                </tr>
+              </thead>
+              <tbody>
+                {data.people.map((p) => (
+                  <tr key={p.ownerId ?? "no-owner"} className="data-row">
+                    <td style={tdText}>
+                      {p.label}
+                      {p.isAdmin && (
+                        <span className="badge-pill" style={{ marginLeft: 6 }}>
+                          Admin
+                        </span>
+                      )}
+                    </td>
+                    <td style={tdNum}>{p.messages}</td>
+                    <td style={tdText}>{p.topAreas.map((a) => `${a.label} (${a.messages})`).join(", ")}</td>
+                    <td style={{ ...tdText, whiteSpace: "nowrap" }}>{timeAgo(p.lastActiveAt)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </>
       )}
     </>

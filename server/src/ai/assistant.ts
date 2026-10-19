@@ -43,6 +43,7 @@ import {
   getPendingSetup,
   addUnmetRequest,
   recordApiUsage,
+  recordFeatureMessage,
   isAdmin,
   listPhoneNumbersForUser,
   type ToolKey,
@@ -50,7 +51,8 @@ import {
   type RegistrationProvider,
 } from "../db/store.js";
 import { retrieveRelevantMemory } from "./memoryRetrieval.js";
-import { applyEditionTools, getEdition, isToolExcluded, runEditionTool } from "../editions/index.js";
+import { allEditionToolNames, applyEditionTools, getEdition, isToolExcluded, runEditionTool } from "../editions/index.js";
+import { DOCUMENT_SENT_MARKER, DOCUMENT_SENT_TOOL, type CatalogTool } from "../services/featureUsage.js";
 import { sendConnectLink } from "../services/connectMailboxLink.js";
 import { mailboxLabel } from "../services/mailboxLabel.js";
 import { dropFromEmailDigest } from "../services/emailDigest.js";
@@ -85,6 +87,8 @@ import { STEP_TYPES } from "../services/phoneSteps.js";
 import { resolveReminderTime, ReminderTimeError, type ReminderTimeInput } from "../services/reminderTime.js";
 import { resolveUserTimezone, userLocalClock } from "../services/userTimezone.js";
 import { makeAppLink, APP_NAMES } from "../services/appLinks.js";
+import { shortenResultLinks } from "../services/shortLinks.js";
+import { CHAT_VOICE } from "./chatVoice.js";
 
 // Added to a tool result when the user's timezone is only inferred from their phone number, so the
 // reply names the zone it used instead of silently acting on a guess.
@@ -1374,6 +1378,24 @@ export function buildToolsForOwner(
   return result;
 }
 
+// Every tool Marlowe can offer, for the Portal's Feature use tab: switchedOn is false for one this
+// server isn't set up for (no Maps key, no Shortcut…), so it reads as "not available" rather than
+// "nobody wanted it". The escalate tool is how routing works, not a feature, so it's left out.
+export function assistantToolCatalog(): CatalogTool[] {
+  const names = (tools: Anthropic.ToolUnion[]) => tools.map((t) => t.name);
+  const on = (list: string[], switchedOn = true) => list.map((name) => ({ name, switchedOn }));
+  return [
+    ...on(names(ALWAYS_ON_TOOLS)),
+    ...on(TOOL_KEYS.flatMap((key) => names(CONDITIONAL_TOOLS[key]))),
+    ...on(names(MAPS_TOOLS), isMapsConfigured()),
+    ...on(names(FLIGHT_TOOLS), isFlightSearchAvailable()),
+    ...on(names(HOTEL_TOOLS), isHotelSearchAvailable()),
+    ...on(names(PHONE_ACTION_TOOLS), isPhoneActionsConfigured()),
+    ...on(names(FAMILY_LINK_TOOLS)),
+    ...on(allEditionToolNames()),
+  ];
+}
+
 function forModel(doc: DocumentRow) {
   const { storedPath: _storedPath, ...rest } = doc;
   return rest;
@@ -1854,7 +1876,7 @@ export async function runTool(
       };
       if (isFlightsConfigured()) {
         try {
-          return await searchFlights(query);
+          return shortenResultLinks(ownerId, await searchFlights(query));
         } catch (err) {
           console.warn("search_flights: SerpApi lookup failed", err);
           if (!isKiwiFlightsEnabled()) return { error: `Couldn't reach Google Flights: ${(err as Error).message}` };
@@ -1863,7 +1885,7 @@ export async function runTool(
       // Kiwi has no returnFor step (its round trips already include the return), so a SerpApi
       // token is simply ignored there.
       try {
-        return await searchKiwiFlights(query);
+        return shortenResultLinks(ownerId, await searchKiwiFlights(query));
       } catch (err) {
         console.warn("search_flights: Kiwi.com lookup failed", err);
         return { error: `Couldn't reach a flight search: ${(err as Error).message}` };
@@ -1892,14 +1914,14 @@ export async function runTool(
       if (nights > 30) return { error: "Hotel search covers stays of up to 30 nights." };
       if (isHotelsConfigured()) {
         try {
-          return await searchHotels(query);
+          return shortenResultLinks(ownerId, await searchHotels(query));
         } catch (err) {
           console.warn("search_hotels: SerpApi lookup failed", err);
           if (!isLastminuteHotelsEnabled()) return { error: `Couldn't reach Google Hotels: ${(err as Error).message}` };
         }
       }
       try {
-        return await searchLastminuteHotels(query);
+        return shortenResultLinks(ownerId, await searchLastminuteHotels(query));
       } catch (err) {
         console.warn("search_hotels: lastminute.com lookup failed", err);
         return { error: `Couldn't reach a hotel search: ${(err as Error).message}` };
@@ -2284,7 +2306,7 @@ const FLIGHTS_RULE =
   "- Use search_flights for flight prices, availability and comparing dates or routes — never quote a fare from memory or from web_search when it can be searched. Say prices are what Google Flights shows right now and can change, give the price for what was searched (round trip or one way, number of travellers), and end with the googleFlightsUrl. If the result's source is Kiwi.com, say the prices are from Kiwi.com instead, give each option you recommend with its own bookingUrl, and say booking is through Kiwi.com rather than the airline. Point out anything that would surprise them: an overnight leg, a long layover, a return to a different airport, out and back on separate tickets, which bags the price includes, a flight often delayed. Never say you've booked or held a seat — they book from the link. For baggage allowances or entry/visa rules, use only what the result's notes say or what web_search finds on the airline's or government's own site, and name that source.";
 
 const HOTELS_RULE =
-  "- Use search_hotels for hotel prices and availability on given dates — never quote a room rate from memory or from web_search when it can be searched. Say prices are what Google Hotels shows right now and can change, and be clear whether a price is per night or for the whole stay, and for how many people. Mention free cancellation, a deal, or a hotel far from the centre when the result says so. For Google Hotels results, give each hotel's website if there is one and end with the googleHotelsUrl. If the result's source is lastminute.com, say the prices are from lastminute.com, give each hotel you recommend with its own bookingUrl, and say it opens a Booking.com search for that hotel where the price may be different. Never say you've booked or held a room — they book from the link.";
+  "- Use search_hotels for hotel prices and availability on given dates — never quote a room rate from memory or from web_search when it can be searched. Say prices are what Google Hotels shows right now and can change, and be clear whether a price is per night or for the whole stay, and for how many people. Mention free cancellation, a deal, or a hotel far from the centre when the result says so. For Google Hotels results, give the website of a hotel you recommend if it has one (one or two at most, not one per hotel listed) and end with the googleHotelsUrl. If the result's source is lastminute.com, say the prices are from lastminute.com, give each hotel you recommend with its own bookingUrl, and say it opens a Booking.com search for that hotel where the price may be different. Never say you've booked or held a room — they book from the link.";
 
 function buildRules(enabled: Set<ToolKey>): string {
   const base = [
@@ -2333,9 +2355,9 @@ function buildRules(enabled: Set<ToolKey>): string {
   const tail = [
     '- When a message reports a document that was just saved (e.g. a WhatsApp photo/PDF), don\'t dump every extracted field back at the user — give a short confirmation of only the key fact(s) (e.g. what it is, and the one or two details most likely to matter, like dates or a confirmation code), then carry out whatever else was asked. Save the full itemized breakdown for if the user explicitly asks to see all the details (e.g. "show me everything on it").',
     '- When one message asks for multiple things (e.g. "save this and also add it to my calendar"), do all of them in that same turn using your tools — don\'t complete only the first one and wait to be asked again for the rest.',
+    "- Messages headed \"What's new in Marlowe\" in the history are product-update announcements the Marlowe team sent to everyone. If the user wants to stop getting them, tell them to reply \"stop updates\" on its own (\"start updates\" turns them back on); that doesn't affect their briefings or alerts.",
     "- When several accounts are connected and the user's request is ambiguous about which one, search across all of them or ask.",
     "- Every message/event/file result carries an accountEmail field. Whenever more than one Gmail/Outlook account is connected and you're discussing, summarizing, or listing specific messages or events, say which inbox (by its email address) each one came from — don't leave the user to guess or assume it's their only/main account.",
-    "- Keep answers concise and lead with the direct answer.",
   ];
   return ["Rules:", ...base, ...(enabled.has("travel") ? travel : []), ...tail].join("\n");
 }
@@ -2459,6 +2481,7 @@ export function buildSystemPrompt(ownerId: number, conversationSummary?: string)
       : "",
     onboardingNote,
     buildRules(getEnabledTools(ownerId)),
+    CHAT_VOICE,
     phonePromptSection(ownerId),
     getEdition(ownerId).promptSection(ownerId),
   ]
@@ -2609,6 +2632,14 @@ export async function runAssistantChat(
   let flightSearches = 0;
   let hotelSearches = 0;
   const channel = phone ? "whatsapp" : "web";
+  // Tools this reply used, for the Portal's Feature use tab. Names only, kept for every user.
+  const toolsUsed = new Map<string, number>();
+  const countTool = (name: string) => toolsUsed.set(name, (toolsUsed.get(name) ?? 0) + 1);
+  // The messages this reply answers: everything since Marlowe last spoke (several, when batched).
+  const lastAssistantIndex = trimmedHistory.map((m) => m.role).lastIndexOf("assistant");
+  if (trimmedHistory.slice(lastAssistantIndex + 1).some((m) => m.content.includes(DOCUMENT_SENT_MARKER))) {
+    countTool(DOCUMENT_SENT_TOOL);
+  }
   function finish(reply: AssistantReply): AssistantReply {
     // Admins (Jake and Sam) see what each of their own messages cost in the Portal, so the text
     // is kept alongside the cost for them only. Never for anyone else's account.
@@ -2633,6 +2664,14 @@ export async function runAssistantChat(
       );
     }
     recordReplyModel(ownerId, model);
+    const webSearches = [...usageByModel.values()].reduce((sum, u) => sum + u.webSearches, 0);
+    if (webSearches > 0) toolsUsed.set("web_search", webSearches);
+    // Bookkeeping only: never let it cost the user their reply.
+    try {
+      recordFeatureMessage(ownerId, channel, toolsUsed);
+    } catch (err) {
+      console.error("runAssistantChat: recording feature use failed", err);
+    }
     // A phone-action link the model typed itself (or re-pasted after it was used) is dead on tap.
     if (isPhoneActionsConfigured() && reply.text) return { ...reply, text: scrubUnknownActionLinks(reply.text) };
     return reply;
@@ -2717,6 +2756,11 @@ export async function runAssistantChat(
     // response are ignored rather than run.
     const choiceUse = toolUses.find((t) => t.name === "ask_user_choice");
     if (choiceUse) {
+      countTool("ask_user_choice");
+      // A confirm offers the real tool (send_email, delete_calendar_event…), which only runs once
+      // they tap Yes. Counted here, as what they came for.
+      const confirmTool = (choiceUse.input as Record<string, unknown>).confirm_tool;
+      if (typeof confirmTool === "string" && confirmTool) countTool(confirmTool);
       return finish(buildChoiceReply(ownerId, choiceUse.input as Record<string, unknown>));
     }
 
@@ -2727,6 +2771,7 @@ export async function runAssistantChat(
     // say (same reasoning as the flag_unmet_request + text case below).
     const reactionUse = toolUses.find((t) => t.name === "react_to_message");
     if (reactionUse) {
+      countTool("react_to_message");
       const reactionText = joinTextBlocks(response.content);
       if (reactionText) {
         return finish({ text: reactionText });
@@ -2741,6 +2786,7 @@ export async function runAssistantChat(
     // so there it becomes a plain question instead of "tap below" with nothing to tap.
     const locationUse = toolUses.find((t) => t.name === "request_location");
     if (locationUse) {
+      countTool("request_location");
       if (!phone) {
         return finish({ text: "Where are you? Tell me the area or an address and I'll look it up." });
       }
@@ -2759,6 +2805,7 @@ export async function runAssistantChat(
     const flagUse = toolUses.find((t) => t.name === "flag_unmet_request");
     const flagText = joinTextBlocks(response.content);
     if (flagUse && flagText && toolUses.length === 1) {
+      countTool("flag_unmet_request");
       await runTool(ownerId, "flag_unmet_request", flagUse.input as Record<string, unknown>, phone);
       return finish({ text: flagText });
     }
@@ -2767,6 +2814,8 @@ export async function runAssistantChat(
 
     const toolResults: Anthropic.ToolResultBlockParam[] = await Promise.all(
       toolUses.map(async (toolUse) => {
+        // Counted before the limits below: a search refused for being over the limit was still asked for.
+        if (!CONFIRM_REQUIRED_TOOLS.has(toolUse.name)) countTool(toolUse.name);
         if (CONFIRM_REQUIRED_TOOLS.has(toolUse.name)) {
           return {
             type: "tool_result" as const,
