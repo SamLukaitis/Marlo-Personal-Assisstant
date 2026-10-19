@@ -467,6 +467,12 @@ authRoutes.get("/auth/google/callback", async (req, res) => {
         );
         return;
       }
+      // This exact mailbox is already connected: the link was a reconnect (connect_email for a
+      // broken connection — connectMailboxLink.ts's "reconnect"), not a signup. Same handling as
+      // the Microsoft callback's isReconnect below.
+      const isReconnect = listAccounts(user.id, "google").some(
+        (a) => a.email.toLowerCase() === auth.email.toLowerCase()
+      );
       upsertAccount(user.id, {
         provider: "google",
         email: auth.email,
@@ -479,6 +485,13 @@ authRoutes.get("/auth/google/callback", async (req, res) => {
       // isSimulatedPhone): switching that session would demote them mid-test.
       if (!isSimulatedPhone(reg.phone)) setSessionCookie(res, createSession(user.id));
       res.redirect(`${CLIENT_URL}/connected`);
+      if (isReconnect) {
+        completePendingRegistration(reg.phone);
+        sendScriptedText(reg.phone, `✓ Reconnected ${auth.email} — I can see your mail and calendar again.`).catch(
+          (err) => console.error("whatsapp-register: reconnect message failed", err)
+        );
+        return;
+      }
       // Fire-and-forget — this is the proactive WhatsApp push confirming the connection, which
       // has to happen from here since this moment (finishing OAuth in a browser) is outside any
       // inbound webhook the conversation state machine could otherwise react to.
@@ -628,9 +641,10 @@ authRoutes.get("/auth/microsoft/callback", async (req, res) => {
       // This exact mailbox is already connected: the link was a reconnect (sendConnectLink's
       // "enable_send", to pick up Mail.Send), not a signup — refresh the tokens and say so, rather
       // than rerunning the new-user setup chain (inbox preview, briefing questions) at them.
-      const isReconnect = listAccounts(userId, "microsoft").some(
+      const reconnected = listAccounts(userId, "microsoft").find(
         (a) => a.email.toLowerCase() === auth.email.toLowerCase()
       );
+      const isReconnect = reconnected !== undefined;
       linkIdentity(userId, "microsoft", microsoftIdentitySubject(auth));
       saveMicrosoftAccount(userId, auth);
       // Same simulator carve-out as the Google callback above.
@@ -638,9 +652,12 @@ authRoutes.get("/auth/microsoft/callback", async (req, res) => {
       res.redirect(`${CLIENT_URL}/connected`);
       if (isReconnect) {
         completePendingRegistration(reg.phone);
+        // A broken connection (connect_email's "reconnect") vs the Mail.Send upgrade ("enable_send").
         sendScriptedText(
           reg.phone,
-          `✓ Reconnected ${auth.email} — I can send email from Outlook now. Just ask me to send it again.`
+          reconnected.authBroken
+            ? `✓ Reconnected ${auth.email} — I can see your mail and calendar again.`
+            : `✓ Reconnected ${auth.email} — I can send email from Outlook now. Just ask me to send it again.`
         ).catch((err) => console.error("whatsapp-register: reconnect message failed", err));
         return;
       }

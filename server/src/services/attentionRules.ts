@@ -8,7 +8,10 @@ import { validateSteps, type PhoneStep } from "./phoneSteps.js";
 export const DAILY_CAP = 4;
 // Never held by the cap: a flight change or security alert can't wait, and a user who asked for
 // every person's email instantly asked for exactly that.
-export const CAP_EXEMPT_CATEGORIES = ["flight_change", "security_alert", "person_email"];
+// A dead mailbox connection (connectionAlert.ts) is rare — once per breakage — and until it's
+// fixed every other alert and the briefing are quietly missing that mailbox.
+export const CONNECTION_BROKEN_CATEGORY = "connection_broken";
+export const CAP_EXEMPT_CATEGORIES = ["flight_change", "security_alert", "person_email", CONNECTION_BROKEN_CATEGORY];
 // The one category allowed to message during quiet hours.
 export const QUIET_HOURS_EXEMPT_CATEGORIES = ["flight_change"];
 
@@ -27,6 +30,7 @@ const EMOJI: Record<string, string> = {
   refund_dispute: "💰",
   document_match: "📎",
   person_email: "📬",
+  [CONNECTION_BROKEN_CATEGORY]: "🔌",
 };
 
 function local(ms: number, zone: string | null): DateTime {
@@ -79,6 +83,7 @@ export function tierFor(category: string, details: AttentionDetails, now: number
     case "flight_change":
     case "security_alert":
     case "person_email":
+    case CONNECTION_BROKEN_CATEGORY:
       return "interrupt";
     case "government_mail":
       return details.needsAction ? "interrupt" : "brief";

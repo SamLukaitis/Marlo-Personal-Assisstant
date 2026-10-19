@@ -11,6 +11,7 @@ Marlowe can be used from the web app and, optionally, through WhatsApp. It is de
 - **Google integration:** Gmail, Google Calendar, Google Drive, and Google Contacts through OAuth.
 - **Microsoft integration:** Outlook mail (including sending, at parity with Gmail), Microsoft Calendar, OneDrive, Teams chats, and Microsoft contacts through OAuth.
 - **Multiple accounts:** Connect multiple Google and Microsoft accounts and search across them from one hub.
+- **Broken connections:** When a Google or Microsoft token stops working (revoked, expired, or Google's 7-day limit while the OAuth app is in Testing mode), Marlowe sends one WhatsApp message saying which mailbox it lost, says so instead of "nothing found" when a search comes back empty, and the morning briefing says it couldn't read that mailbox. Replying "reconnect" gets a one-tap link that restores the connection without rerunning setup (`server/src/services/connectionAlert.ts`).
 - **Unified search:** Search email, cloud files, local files, chats, and saved documents in one place.
 - **Local files:** Configure folders such as Documents or Desktop for local filename search; no OAuth connection is required.
 - **WhatsApp channel:** Message Marlowe through Meta's official WhatsApp Cloud API. Incoming messages are routed to the correct user by their registered phone number. New users can sign up with just a phone number and connect a mailbox later (or never). Marlowe sends a holding message when a reply is slow, and can unsubscribe you from promotional senders.

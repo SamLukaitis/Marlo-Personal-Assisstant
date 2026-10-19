@@ -29,11 +29,15 @@ import type {
 // so this checks every shape rather than assuming one. False positives just show an
 // unnecessary "reconnect" prompt; false negatives just fall back to the old silent-empty
 // behavior — neither is dangerous, so a lenient heuristic is the right tradeoff here.
+//
+// A false positive now also costs the user a WhatsApp "reconnect" message (connectionAlert.ts), so
+// Gmail's rate-limit and quota 403s — a busy moment, not a dead token — are ruled out first.
 function isAuthError(err: unknown): boolean {
   const e = err as { response?: { status?: number; data?: unknown }; code?: unknown; status?: unknown; message?: unknown };
   const status = e?.response?.status ?? e?.code ?? e?.status;
-  if (status === 401 || status === 403) return true;
   const text = `${JSON.stringify(e?.response?.data ?? "")} ${String(e?.message ?? "")}`;
+  if (/ratelimitexceeded|quotaexceeded|rate limit|too many requests/i.test(text)) return false;
+  if (status === 401 || status === 403) return true;
   return /invalid_grant|invalid_token|unauthorized|invalidauthenticationtoken|token has (been )?expired|revoked|\b40[13]\b/i.test(
     text
   );
@@ -51,6 +55,14 @@ function settle<T>(results: PromiseSettledResult<T[]>[]): T[] {
   });
 }
 
+// Fire-and-forget: the caller still gets its (empty) result now. Imported lazily because
+// connectionAlert -> attention -> briefing -> hub would otherwise be an import cycle.
+function alertConnectionBroken(account: AccountRow): void {
+  import("./connectionAlert.js")
+    .then((m) => m.alertConnectionBroken(account))
+    .catch((err) => console.error("hub: broken-connection alert failed", err));
+}
+
 // Account-aware version — pairs each settled result with the account (or null for
 // account-less sources like local files) that produced it, so an auth failure can be
 // attributed to the specific connection that needs reconnecting instead of failing silently.
@@ -64,7 +76,9 @@ function settleForAccounts<T>(
     const owner = owners[i];
     if (r.status === "rejected") {
       console.error("hub: provider call failed:", r.reason);
-      if (owner && isAuthError(r.reason)) markAccountAuthBroken(owner.ownerId, owner.id);
+      if (owner && isAuthError(r.reason) && markAccountAuthBroken(owner.ownerId, owner.id)) {
+        alertConnectionBroken(owner);
+      }
       return [];
     }
     if (owner) markAccountAuthHealthy(owner.ownerId, owner.id);

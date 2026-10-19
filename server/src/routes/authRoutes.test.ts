@@ -53,6 +53,8 @@ const {
   setPendingRegistrationToken,
   listPhoneNumbersForUser,
   resolveOwnerByPhone,
+  addPhoneNumberForUser,
+  markAccountAuthBroken,
 } = await import("../db/store.js");
 
 function buildApp() {
@@ -791,5 +793,56 @@ describe("WhatsApp registration from a simulated number", () => {
     const callback = await registerViaGoogle(app, phone, email);
 
     expect(parseSetCookie(callback, "session")).toBeDefined();
+  });
+});
+
+// A reconnect link (connect_email for a broken connection) goes through the same register
+// callback as a signup. It must refresh the tokens and say so, not rerun the new-user setup chain.
+describe("WhatsApp reconnect of a broken mailbox", () => {
+  function sentTexts(): string[] {
+    return vi.mocked(sendWhatsAppMessage).mock.calls.map(([, text]) => text as string);
+  }
+
+  it("Google: refreshes the tokens, clears the broken flag, and skips the setup chain", async () => {
+    const app = buildApp();
+    const phone = freshPhone();
+    const email = uniqueEmail("google-reconnect");
+    const user = findOrCreateUserByEmail(email);
+    addPhoneNumberForUser(user.id, phone);
+    const account = upsertAccount(user.id, { provider: "google", email, accessToken: "old", refreshToken: "dead", expiryDate: null });
+    markAccountAuthBroken(user.id, account.id);
+    vi.mocked(sendFirstValueAndBriefingPrompt).mockClear();
+    vi.mocked(sendWhatsAppMessage).mockClear();
+    vi.mocked(exchangeGoogleCode).mockResolvedValue({ email, accessToken: "new-at", refreshToken: "new-rt", expiryDate: Date.now() + 3600_000 });
+
+    const callback = await registerViaGoogle(app, phone, email);
+
+    expect(callback.headers.location).toBe("http://localhost:5173/connected");
+    expect(sendFirstValueAndBriefingPrompt).not.toHaveBeenCalled();
+    const after = listAccounts(user.id, "google");
+    expect(after).toHaveLength(1);
+    expect(after[0].authBroken).toBe(false);
+    expect(after[0].refreshToken).toBe("new-rt");
+    await vi.waitFor(() => expect(sentTexts().some((t) => t.includes(`Reconnected ${email}`))).toBe(true));
+  });
+
+  it("Microsoft: a broken mailbox's reconnect says mail and calendar are back, not that sending now works", async () => {
+    const app = buildApp();
+    const phone = freshPhone();
+    const email = uniqueEmail("ms-reconnect");
+    const user = findOrCreateUserByEmail(email);
+    addPhoneNumberForUser(user.id, phone);
+    linkIdentity(user.id, "microsoft", "tenant-rc:obj-rc");
+    const account = upsertAccount(user.id, { provider: "microsoft", email, accessToken: "old", refreshToken: "dead", expiryDate: null });
+    markAccountAuthBroken(user.id, account.id);
+    vi.mocked(sendWhatsAppMessage).mockClear();
+    vi.mocked(exchangeMicrosoftCode).mockResolvedValue(msAuth(email, "tenant-rc", "obj-rc", "graph-rc"));
+
+    await registerViaMicrosoft(app, phone, email);
+
+    await vi.waitFor(() => expect(sentTexts().some((t) => t.includes(`Reconnected ${email}`))).toBe(true));
+    const text = sentTexts().find((t) => t.includes(`Reconnected ${email}`))!;
+    expect(text).toMatch(/mail and calendar/);
+    expect(text).not.toMatch(/send email/);
   });
 });
