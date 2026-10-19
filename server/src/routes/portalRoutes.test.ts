@@ -377,6 +377,19 @@ describe("usage", () => {
     expect(row.estimatedCost).toBeCloseTo(2.2, 5);
   });
 
+  it("prices claude-sonnet-5-5 (the strong model) at the same rates as claude-sonnet-5", async () => {
+    const admin = makeAdmin("usage-sonnet-5-5-pricing");
+    const someUser = findOrCreateUserByEmail(uniqueEmail("usage-sonnet-5-5-owner"));
+    // $2/MTok input + $10/MTok output + $0.20/MTok cache reads -> 1M + 100K + 1M = $3.20.
+    recordApiUsage(someUser.id, "web", "claude-sonnet-5-5", "sonnet_5_5_pricing_test_marker", 1_000_000, 100_000, 1_000_000, 0);
+    const app = buildTestApp(admin.id);
+
+    const res = await request(app).get("/api/portal/usage?days=1");
+    expect(res.status).toBe(200);
+    const row = res.body.rows.find((r: { purpose: string }) => r.purpose === "sonnet_5_5_pricing_test_marker");
+    expect(row.estimatedCost).toBeCloseTo(3.2, 5);
+  });
+
   it("prices 5-minute cache writes at 1.25x and adds $0.01 per web search", async () => {
     const admin = makeAdmin("usage-5m-search-pricing");
     const someUser = findOrCreateUserByEmail(uniqueEmail("usage-5m-owner"));

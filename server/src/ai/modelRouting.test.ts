@@ -100,6 +100,7 @@ describe("looksLikePushback", () => {
 describe("supportsDynamicWebSearch", () => {
   it("is Sonnet/Opus only", () => {
     expect(supportsDynamicWebSearch("claude-sonnet-5")).toBe(true);
+    expect(supportsDynamicWebSearch("claude-sonnet-5-5")).toBe(true);
     expect(supportsDynamicWebSearch("claude-haiku-5-5")).toBe(false);
   });
 });
