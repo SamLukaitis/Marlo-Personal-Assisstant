@@ -14,6 +14,11 @@ import {
   deletePosterNote,
   fetchPortalVersion,
   fetchFeatureUsage,
+  fetchAnnouncements,
+  sendTestAnnouncement,
+  sendAnnouncement,
+  retryAnnouncement,
+  type AnnouncementsOverview,
   type FeatureUsage,
   type AdminCandidate,
   type UnmetRequest,
@@ -34,6 +39,7 @@ import { IconTrash, IconPlus, IconRefresh, IconChat } from "../components/icons"
 const SECTIONS = [
   { key: "todos", label: "To-Do" },
   { key: "notes", label: "Poster Board" },
+  { key: "updates", label: "Send Update" },
   { key: "requests", label: "Unmet Requests" },
   { key: "phone", label: "Phone Actions" },
   { key: "logs", label: "Logs" },
@@ -184,6 +190,7 @@ export function PortalPage() {
           <div className="settings-panel">
             {section === "todos" && <TodosTab api={marlowePortalApi} />}
             {section === "notes" && <NotesTab />}
+            {section === "updates" && <UpdatesTab />}
             {section === "requests" && (
               <RequestsTab
                 api={marlowePortalApi}
@@ -459,6 +466,122 @@ function NotesTab() {
             <p className="muted" style={{ margin: "8px 0 0", fontSize: 12 }}>
               {n.authorEmail ?? "No email connected"} — {timeAgo(n.createdAt)}
             </p>
+          </div>
+        ))
+      )}
+    </>
+  );
+}
+
+function UpdatesTab() {
+  const [overview, setOverview] = useState<AnnouncementsOverview | null>(null);
+  const [text, setText] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [status, setStatus] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  function load() {
+    fetchAnnouncements()
+      .then(setOverview)
+      .catch((err: Error) => setError(err.message));
+  }
+
+  useEffect(load, []);
+
+  async function run(action: () => Promise<string>) {
+    setBusy(true);
+    setError(null);
+    setStatus(null);
+    try {
+      setStatus(await action());
+      load();
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function counts(c: { sent: number; failed: number }): string {
+    return `Sent to ${c.sent} number${c.sent === 1 ? "" : "s"}${c.failed ? `, ${c.failed} failed (see Logs)` : ""}.`;
+  }
+
+  const trimmed = text.trim();
+  const max = overview?.maxChars ?? 900;
+  const tooLong = trimmed.length > max;
+
+  return (
+    <>
+      <h2>Send an update</h2>
+      <p className="settings-section-intro">
+        Tell every Marlowe user on WhatsApp what's new. It goes out under the heading "What's new in Marlowe", ending with how to
+        stop these ("stop updates"). People who haven't messaged Marlowe in the last 24 hours get it through the approved
+        marlowe_whats_new template. Joyce families aren't included.
+      </p>
+      <div className="card card-padded" style={{ marginBottom: 20 }}>
+        <textarea
+          rows={6}
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          placeholder="e.g. Marlowe can now search live hotel prices. Try: find me a hotel in Lisbon 12–15 Nov."
+          style={{ width: "100%" }}
+        />
+        <div className="row" style={{ justifyContent: "space-between", marginTop: 10, gap: 8, flexWrap: "wrap" }}>
+          <span className="muted" style={{ fontSize: 12, color: tooLong ? "var(--danger, #b42318)" : undefined }}>
+            {trimmed.length}/{max} characters
+            {overview && ` · goes to ${overview.recipients} number${overview.recipients === 1 ? "" : "s"}`}
+          </span>
+          <div className="row" style={{ gap: 8 }}>
+            <button
+              className="btn-secondary"
+              disabled={busy || !trimmed || tooLong}
+              onClick={() => run(async () => `Test: ${counts(await sendTestAnnouncement(trimmed))}`)}
+            >
+              Send me a test
+            </button>
+            <button
+              className="btn-primary"
+              disabled={busy || !trimmed || tooLong}
+              onClick={() => {
+                if (!window.confirm(`Send this update to ${overview?.recipients ?? "every"} number(s)? This can't be undone.`)) return;
+                void run(async () => {
+                  const result = counts(await sendAnnouncement(trimmed));
+                  setText("");
+                  return result;
+                });
+              }}
+            >
+              {busy ? "Sending…" : "Send to everyone"}
+            </button>
+          </div>
+        </div>
+        {status && <p style={{ margin: "10px 0 0" }}>{status}</p>}
+        {error && <p style={{ margin: "10px 0 0", color: "var(--danger, #b42318)" }}>{error}</p>}
+      </div>
+
+      <h3>Sent</h3>
+      {!overview ? (
+        <p className="muted">Loading…</p>
+      ) : overview.history.length === 0 ? (
+        <p className="muted">No updates sent yet.</p>
+      ) : (
+        overview.history.map((a) => (
+          <div key={a.id} className="card card-padded" style={{ marginBottom: 10 }}>
+            <p style={{ margin: 0, fontSize: 13.5, whiteSpace: "pre-wrap" }}>{a.text}</p>
+            <div className="row" style={{ justifyContent: "space-between", marginTop: 8, gap: 8 }}>
+              <span className="muted" style={{ fontSize: 12 }}>
+                {timeAgo(a.createdAt)} · {counts(a)}
+              </span>
+              {a.failed > 0 && (
+                <button
+                  className="btn-secondary"
+                  disabled={busy}
+                  onClick={() => run(async () => `Retry: ${counts(await retryAnnouncement(a.id))}`)}
+                >
+                  <IconRefresh /> Retry failed
+                </button>
+              )}
+            </div>
           </div>
         ))
       )}

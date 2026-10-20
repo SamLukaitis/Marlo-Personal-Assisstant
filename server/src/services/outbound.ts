@@ -18,11 +18,14 @@ const WINDOW_CLOSED_ERROR_CODE = 131047;
 // Every proactive push site is one of these two shapes: a short single-event line (an alert), or
 // the one multi-paragraph LLM-synthesized briefing (the digest) — see the design doc for why two
 // templates rather than one-per-feature or one-for-everything.
-export type ProactiveMessageKind = "alert" | "digest";
+// "announcement" (a product update from the Portal) is the one marketing message, with its own
+// template so it never borrows a utility one.
+export type ProactiveMessageKind = "alert" | "digest" | "announcement";
 
 const TEMPLATE_BY_KIND: Record<ProactiveMessageKind, WhatsAppTemplateName> = {
   alert: "marlowe_alert",
   digest: "marlowe_digest",
+  announcement: "marlowe_whats_new",
 };
 
 // Meta caps a template's body component at 1024 chars *including* the substituted variable
@@ -69,9 +72,12 @@ export async function sendProactiveMessage(
   kind: ProactiveMessageKind,
   // Stored with the message in chat history but never sent — e.g. the ids of the email an alert
   // is about, so a later "reply yes" can act on it.
-  historyNote?: string
+  historyNote?: string,
+  // What goes into the template's variable instead of `text`, for a message whose template already
+  // carries part of the wording (an announcement's "What's new in Marlowe:" lead-in).
+  templateText?: string
 ): Promise<void> {
-  const wamid = await sendProactive(phone, text, kind);
+  const wamid = await sendProactive(phone, text, kind, templateText);
   recordProactiveInHistory(phone, historyNote ? `${text}\n\n${historyNote}` : text, wamid);
 }
 
@@ -120,13 +126,14 @@ function recordProactiveInHistory(phone: string, text: string, sent: string | Se
 async function sendProactive(
   phone: string,
   text: string,
-  kind: ProactiveMessageKind
+  kind: ProactiveMessageKind,
+  templateText: string = text
 ): Promise<string | undefined> {
   const templateName = TEMPLATE_BY_KIND[kind];
   // Only the digest is routinely long enough to actually get truncated — the alert template's
   // {{1}} is already a short line in practice, so it never needs the "open the app" pointer.
   const continuation = kind === "digest" ? " …open the app for the rest." : undefined;
-  const templateParam = truncateForTemplate(text, continuation);
+  const templateParam = truncateForTemplate(templateText, continuation);
 
   if (isWithinCustomerServiceWindow(phone)) {
     try {

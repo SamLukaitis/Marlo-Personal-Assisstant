@@ -466,15 +466,20 @@ export async function sendWhatsAppMediaFromBuffer(
 // memory/reconciliation/Xero notifications).
 // `marlowe_digest` body: "Your Marlowe briefing: {{briefing_text}} Tap below to see the full
 // details." plus a static URL button — the one multi-paragraph push (the daily briefing).
+// `marlowe_whats_new` body: "What's new in Marlowe: {{update_text}} Reply here with any
+// questions." (the "stop updates" line is part of update_text) — a MARKETING template for the Portal's product-update announcements
+// (services/announcements.ts), kept apart from the two utility templates so Meta never sees
+// announcements going out under a utility category. Created by `npm run whatsapp:templates`.
 // Both must exist and be approved in the Meta Business dashboard with this exact body text
 // (Meta now requires named variables, not positional {{1}}) before this will work in production.
-export type WhatsAppTemplateName = "marlowe_alert" | "marlowe_digest";
+export type WhatsAppTemplateName = "marlowe_alert" | "marlowe_digest" | "marlowe_whats_new";
 
 // Each template's body variable is named, not positional — the send call has to reference it by
 // this exact name (`parameter_name`) or Meta rejects the send even though the template is approved.
 const TEMPLATE_PARAM_NAME: Record<WhatsAppTemplateName, string> = {
   marlowe_alert: "update_text",
   marlowe_digest: "briefing_text",
+  marlowe_whats_new: "update_text",
 };
 
 // Every approved template here uses this language code — change it here (and when re-creating

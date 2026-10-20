@@ -31,12 +31,21 @@ import {
   listPhoneActionsForPortal,
   listFeatureMessages,
   featureUserLabels,
+  listAnnouncements,
 } from "../db/store.js";
 import { getClient, MODEL_SIMPLE, assistantToolCatalog } from "../ai/assistant.js";
 import { summariseFeatureUsage } from "../services/featureUsage.js";
 import { buildVersionText } from "../services/version.js";
 import { describeStep, type PhoneStep } from "../services/phoneSteps.js";
 import type { AuthedRequest } from "../middleware/auth.js";
+import {
+  listAnnouncementRecipients,
+  sendTestAnnouncement,
+  sendAnnouncement,
+  retryAnnouncement,
+  validateAnnouncement,
+  MAX_ANNOUNCEMENT_CHARS,
+} from "../services/announcements.js";
 
 // Every route here runs behind requireAdmin (mounted in index.ts), so req.userId is already
 // known to belong to an admin — no per-route isAppOwner/isAdmin re-check needed the way
@@ -533,4 +542,47 @@ portalRoutes.delete("/notes/:id", (req, res) => {
 
 portalRoutes.get("/version", (_req, res) => {
   res.json({ text: buildVersionText() });
+});
+
+// --- Update announcements --------------------------------------------------------------------
+// services/announcements.ts. Sending waits for every message to go out, which takes a few seconds
+// for a small invite-only user base.
+
+portalRoutes.get("/announcements", (_req, res) => {
+  res.json({
+    recipients: listAnnouncementRecipients().length,
+    maxChars: MAX_ANNOUNCEMENT_CHARS,
+    history: listAnnouncements(),
+  });
+});
+
+portalRoutes.post("/announcements/test", async (req, res) => {
+  try {
+    res.json(await sendTestAnnouncement(ownerId(req), req.body?.text));
+  } catch (err) {
+    res.status(400).json({ error: (err as Error).message });
+  }
+});
+
+portalRoutes.post("/announcements", async (req, res) => {
+  try {
+    validateAnnouncement(req.body?.text);
+  } catch (err) {
+    res.status(400).json({ error: (err as Error).message });
+    return;
+  }
+  res.json(await sendAnnouncement(ownerId(req), req.body?.text));
+});
+
+portalRoutes.post("/announcements/:id/retry", async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id)) {
+    res.status(400).json({ error: "invalid id" });
+    return;
+  }
+  try {
+    res.json(await retryAnnouncement(id));
+  } catch (err) {
+    res.status(404).json({ error: (err as Error).message });
+  }
 });

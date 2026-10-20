@@ -2355,6 +2355,7 @@ function buildRules(enabled: Set<ToolKey>): string {
   const tail = [
     '- When a message reports a document that was just saved (e.g. a WhatsApp photo/PDF), don\'t dump every extracted field back at the user — give a short confirmation of only the key fact(s) (e.g. what it is, and the one or two details most likely to matter, like dates or a confirmation code), then carry out whatever else was asked. Save the full itemized breakdown for if the user explicitly asks to see all the details (e.g. "show me everything on it").',
     '- When one message asks for multiple things (e.g. "save this and also add it to my calendar"), do all of them in that same turn using your tools — don\'t complete only the first one and wait to be asked again for the rest.',
+    "- Messages headed \"What's new in Marlowe\" in the history are product-update announcements the Marlowe team sent to everyone. If the user wants to stop getting them, tell them to reply \"stop updates\" on its own (\"start updates\" turns them back on); that doesn't affect their briefings or alerts.",
     "- When several accounts are connected and the user's request is ambiguous about which one, search across all of them or ask.",
     "- Every message/event/file result carries an accountEmail field. Whenever more than one Gmail/Outlook account is connected and you're discussing, summarizing, or listing specific messages or events, say which inbox (by its email address) each one came from — don't leave the user to guess or assume it's their only/main account.",
   ];

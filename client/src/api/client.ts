@@ -1056,6 +1056,35 @@ export const deletePosterNote = (id: number) => mutateJson<{ ok: true }>(`/api/p
 
 export const fetchPortalVersion = () => getJson<{ text: string }>("/api/portal/version");
 
+// Product-update announcements sent to every Marlowe user's WhatsApp (server/src/services/announcements.ts).
+export interface Announcement {
+  id: number;
+  text: string;
+  sentBy: number | null;
+  createdAt: number;
+  sent: number;
+  failed: number;
+}
+
+export interface AnnouncementsOverview {
+  recipients: number;
+  maxChars: number;
+  history: Announcement[];
+}
+
+export interface AnnouncementCounts {
+  sent: number;
+  failed: number;
+}
+
+export const fetchAnnouncements = () => getJson<AnnouncementsOverview>("/api/portal/announcements");
+export const sendTestAnnouncement = (text: string) =>
+  mutateJson<AnnouncementCounts>("/api/portal/announcements/test", "POST", { text });
+export const sendAnnouncement = (text: string) =>
+  mutateJson<AnnouncementCounts & { id: number }>("/api/portal/announcements", "POST", { text });
+export const retryAnnouncement = (id: number) =>
+  mutateJson<AnnouncementCounts>(`/api/portal/announcements/${id}/retry`, "POST");
+
 export async function sendChatMessage(messages: ChatMessage[]): Promise<string> {
   const res = await fetch(
     `${API_BASE}/api/assistant/chat`,
