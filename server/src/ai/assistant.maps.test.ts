@@ -198,7 +198,9 @@ describe("system prompt — Maps rules", () => {
   it("with Maps configured, steers places to find_places and requires Maps sources", () => {
     const prompt = buildSystemPrompt(newUser("rules-on").id);
     expect(prompt).toContain("find_places");
-    expect(prompt).toContain("Google Maps links");
+    expect(prompt).toContain("Source: Google Maps");
+    // Each place's link goes under that place, not in an unlabelled block at the end.
+    expect(prompt).toContain("directly under that place");
     expect(prompt).not.toContain("https://www.google.com/maps/search/?api=1&query=");
   });
 

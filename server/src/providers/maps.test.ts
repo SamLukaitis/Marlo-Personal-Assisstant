@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import type { McpClient } from "../services/mcpClient.js";
-import { isMapsConfigured, searchPlaces, computeRoute, setMapsClientForTest } from "./maps.js";
+import { isMapsConfigured, searchPlaces, computeRoute, setMapsClientForTest, compactMapsUrl } from "./maps.js";
 
 const originalEnv = { ...process.env };
 
@@ -265,5 +265,33 @@ describe("startup tool check", () => {
     expect(warn.mock.calls[0].join(" ")).toContain("compute_routes");
     expect(client.listToolNames).toHaveBeenCalledTimes(1);
     warn.mockRestore();
+  });
+});
+
+describe("compactMapsUrl", () => {
+  it("turns Grounding Lite's long place link into the short Google Maps cid link for the same place", () => {
+    expect(
+      compactMapsUrl("https://www.google.com/maps/place//data=!4m2!3m1!1s0x91424b8cc677f007:0x521534ebbeb54f4e")
+    ).toBe("https://maps.google.com/?cid=5914691872742526798");
+  });
+
+  it("leaves links in any other shape alone", () => {
+    expect(compactMapsUrl("https://maps.google.com/?cid=1")).toBe("https://maps.google.com/?cid=1");
+    expect(compactMapsUrl("https://www.google.com/maps/place/peptides")).toBe("https://www.google.com/maps/place/peptides");
+  });
+
+  it("is applied to find_places results", async () => {
+    setMapsClientForTest(
+      stubClient({
+        places: [
+          {
+            displayName: "Zig Zag",
+            googleMapsLinks: { placeUrl: "https://www.google.com/maps/place//data=!4m2!3m1!1s0x91424b9f37ca42a5:0xe7806762d33f09ac" },
+          },
+        ],
+      })
+    );
+    const result = await searchPlaces({ query: "restaurants in Arequipa" });
+    expect(result.places[0].mapsUrl).toBe(`https://maps.google.com/?cid=${BigInt("0xe7806762d33f09ac").toString()}`);
   });
 });

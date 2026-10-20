@@ -134,6 +134,18 @@ function parseSummaryEntries(summary: string | undefined): Map<number, SummaryEn
   return entries;
 }
 
+// Grounding Lite's place links look like https://www.google.com/maps/place//data=!4m2!3m1!1s0x91424b8cc677f007:0x521534ebbeb54f4e
+// (90+ characters, and five in a row is a wall of noise on WhatsApp). The second half of that
+// feature id is the place's CID, and https://maps.google.com/?cid=<decimal CID> opens the same
+// place in about half the length — still a Google Maps link, so the attribution stays visible and
+// nothing is stored (see Terms above). Anything not in that shape passes through unchanged.
+const FEATURE_ID = /!1s0x[0-9a-f]+:0x([0-9a-f]{1,16})(?![0-9a-f])/i;
+
+export function compactMapsUrl(url: string): string {
+  const cid = FEATURE_ID.exec(url)?.[1];
+  return cid ? `https://maps.google.com/?cid=${BigInt(`0x${cid}`).toString()}` : url;
+}
+
 function trimPlace(p: Record<string, unknown>, fromSummary?: SummaryEntry): PlaceSummary | null {
   const attribution = asRecord(p.attribution);
   const titleName = str(attribution?.title)?.replace(/\s*-\s*Google Maps$/, "");
@@ -157,7 +169,7 @@ function trimPlace(p: Record<string, unknown>, fromSummary?: SummaryEntry): Plac
     str(p.mapsUri) ??
     str(p.url) ??
     str(attribution?.url);
-  if (mapsUrl) place.mapsUrl = mapsUrl;
+  if (mapsUrl) place.mapsUrl = compactMapsUrl(mapsUrl);
   const placeId = str(p.id) ?? str(p.place_id) ?? str(p.placeId);
   if (placeId) place.placeId = placeId;
   const summary = str(p.summary) ?? str(p.editorialSummary) ?? str(p.generativeSummary) ?? fromSummary?.blurb;
