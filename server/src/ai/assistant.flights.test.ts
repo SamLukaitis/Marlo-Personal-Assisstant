@@ -180,6 +180,43 @@ describe("runAssistantChat — flight search cap", () => {
   });
 });
 
+describe("runAssistantChat — View Google Flights button", () => {
+  const LONG = "https://www.google.com/travel/flights?hl=en&curr=GBP&tfs=CBwQAhoeEgoyMDI2LTExLTIwagcIARIDTEhScgcIARIDQkNOQAFIAXABggELCP___________wGYAQI";
+
+  function searchReturning(url: string) {
+    mockSearchFlights.mockResolvedValue({ ...RESULT, googleFlightsUrl: url });
+  }
+
+  it("attaches the search's short link as a button when the reply ends with it", async () => {
+    searchReturning(LONG);
+    mockCreate
+      .mockResolvedValueOnce({ content: [toolUse("t1", "search_flights", { from: "LHR", to: "BCN", depart_date: "2026-11-20" })] })
+      .mockImplementationOnce(async (req: { messages: Array<{ content: unknown }> }) => {
+        // Echo back the short link the model was given.
+        const results = req.messages.at(-1)!.content as Array<{ content: string }>;
+        const shortUrl = JSON.parse(results[0].content).googleFlightsUrl as string;
+        return { content: [{ type: "text", text: `Vueling direct, £84.\nAll options:\n${shortUrl}` }] };
+      });
+
+    const reply = await runAssistantChat(newUser("flights-button").id, [{ role: "user", content: "flights to BCN" }], "447000000002");
+
+    expect(reply.linkButton?.label).toBe("View Google Flights");
+    expect(reply.linkButton?.url).toMatch(/\/go\//);
+    expect(reply.text).toContain(reply.linkButton!.url);
+  });
+
+  it("adds no button when the reply doesn't include the search link", async () => {
+    searchReturning(LONG);
+    mockCreate
+      .mockResolvedValueOnce({ content: [toolUse("t1", "search_flights", { from: "LHR", to: "BCN", depart_date: "2026-11-20" })] })
+      .mockResolvedValueOnce({ content: [{ type: "text", text: "Nothing direct that day." }] });
+
+    const reply = await runAssistantChat(newUser("flights-no-button").id, [{ role: "user", content: "flights to BCN" }], "447000000003");
+
+    expect(reply.linkButton).toBeUndefined();
+  });
+});
+
 describe("system prompt — flights rule", () => {
   it("is present only when flight search is configured", () => {
     expect(buildSystemPrompt(newUser("flights-rule-on").id)).toContain("Use search_flights");
