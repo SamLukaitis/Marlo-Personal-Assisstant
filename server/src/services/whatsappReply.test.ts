@@ -51,6 +51,30 @@ describe("sendAssistantReply", () => {
     expect(sendWhatsAppMessage).toHaveBeenCalledWith("44700", `Tap:\n${link}`);
   });
 
+  it("sends a flight search link as a View Google Flights button, keeping the full text in history", async () => {
+    const link = "https://marlowe.up.railway.app/go/Ab3dE9xY";
+    const text = `Vueling, direct, £84.\nBook: https://www.kiwi.com/x\nAll options:\n${link}`;
+    vi.mocked(sendWhatsAppCtaUrl).mockClear();
+    await sendAssistantReply(1, "44700", { text, linkButton: { label: "View Google Flights", url: link } }, "wamid.in");
+    expect(sendWhatsAppCtaUrl).toHaveBeenCalledWith(
+      "44700",
+      "Vueling, direct, £84.\nBook: https://www.kiwi.com/x\nAll options:",
+      "View Google Flights",
+      link
+    );
+    expect(sendWhatsAppMessage).not.toHaveBeenCalled();
+    expect(appendWhatsAppMessage).toHaveBeenCalledWith(1, "44700", "assistant", text, [
+      { wamid: "wamid.link", text: "Vueling, direct, £84.\nBook: https://www.kiwi.com/x\nAll options:" },
+    ]);
+  });
+
+  it("falls back to the plain reply when the search button send fails", async () => {
+    const link = "https://marlowe.up.railway.app/go/Ab3dE9xY";
+    vi.mocked(sendWhatsAppCtaUrl).mockRejectedValueOnce(new Error("graph down"));
+    await sendAssistantReply(1, "44700", { text: `£84.\n${link}`, linkButton: { label: "View Google Flights", url: link } }, "wamid.in");
+    expect(sendWhatsAppMessage).toHaveBeenCalledWith("44700", `£84.\n${link}`);
+  });
+
   it("sends plain text and persists it when there's no choice", async () => {
     await sendAssistantReply(1, "44700", { text: "Sure, done." }, "wamid.in");
 

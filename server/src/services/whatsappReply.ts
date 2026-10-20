@@ -17,6 +17,7 @@ import {
 import { splitIntoChunks, delayForChunk } from "./messageSplitting.js";
 import { sleep } from "./sleep.js";
 import { actionButtonFor, RUN_BUTTON_LABEL } from "./phoneActionButton.js";
+import { planLinkButton } from "./linkButton.js";
 import type { AssistantReply } from "../ai/assistant.js";
 
 // earlierParts: messages already sent for this same turn that aren't in history on their own — the
@@ -60,6 +61,36 @@ export async function sendAssistantReply(
         console.error("whatsappReply: Run button send failed; sending the link as text", err);
       }
     }
+    // A flight/hotel search link: the reply with a "View Google Flights"/"View Google Hotels"
+    // button under it instead of the link. Same history and fallback rules as the Run button.
+    const plan = reply.linkButton ? planLinkButton(reply.text, reply.linkButton) : null;
+    if (reply.linkButton && plan) {
+      const parts: SentPart[] = [...earlierParts];
+      try {
+        if (plan.leadingText) {
+          for (const [i, chunk] of splitIntoChunks(plan.leadingText).entries()) {
+            if (i > 0) await sleep(delayForChunk(chunk));
+            const wamid = await sendWhatsAppMessage(phone, chunk);
+            if (wamid) parts.push({ wamid, text: chunk });
+          }
+        }
+        const wamid = await sendWhatsAppCtaUrl(phone, plan.body, reply.linkButton.label, reply.linkButton.url);
+        if (wamid) parts.push({ wamid, text: plan.body });
+        recordAssistantMessage(ownerId, phone, reply.text, parts);
+        return;
+      } catch (err) {
+        // Part of the reply already went out without the link: send just the link to finish it.
+        if (parts.length > earlierParts.length) {
+          console.error("whatsappReply: search button send failed; sending the link as text", err);
+          const wamid = await sendWhatsAppMessage(phone, reply.linkButton.url);
+          if (wamid) parts.push({ wamid, text: reply.linkButton.url });
+          recordAssistantMessage(ownerId, phone, reply.text, parts);
+          return;
+        }
+        console.error("whatsappReply: search button send failed; sending the reply as text", err);
+      }
+    }
+
     // Splitting/pausing is transport-only — the history row below always holds the one full
     // reply.text, not one row per chunk, so conversation-history/summary logic elsewhere is
     // unaffected. A single-paragraph reply (the common case) yields exactly one chunk and sends

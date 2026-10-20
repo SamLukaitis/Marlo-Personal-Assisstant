@@ -89,6 +89,7 @@ import { resolveUserTimezone, userLocalClock } from "../services/userTimezone.js
 import { makeAppLink, APP_NAMES } from "../services/appLinks.js";
 import { shortenResultLinks } from "../services/shortLinks.js";
 import { CHAT_VOICE } from "./chatVoice.js";
+import { SEARCH_BUTTON_LABELS, type LinkButton } from "../services/linkButton.js";
 
 // Added to a tool result when the user's timezone is only inferred from their phone number, so the
 // reply names the zone it used instead of silently acting on a guess.
@@ -2221,6 +2222,10 @@ export interface AssistantReply {
   // request_location was called: on WhatsApp, `text` is sent with a "Send location" button
   // (whatsappReply.ts). The web ignores this flag and just shows `text`.
   locationRequest?: true;
+  // A flight or hotel search's main link, which `text` also contains: on WhatsApp it becomes a
+  // "View Google Flights"/"View Google Hotels" button and leaves the text (services/linkButton.ts).
+  // The web ignores it and shows the link in `text`.
+  linkButton?: LinkButton;
 }
 
 // Builds the AssistantReply for an ask_user_choice tool call and persists the pending_actions
@@ -2303,10 +2308,10 @@ const WEB_SEARCH_RULE_WITH_MAPS =
   "- Use find_places to find or recommend places and get_route for driving/walking times — they return real Google Maps data. Use web_search only for what Maps doesn't cover (reviews in depth, events, menus, prices, news). For anything near the user with no shared location from the last ~2 hours (pin lines carry the UTC time they were shared), call request_location rather than guessing where they are. Put each place's mapsUrl on its own line directly under that place (one link per place you mention, never gathered into a block of links at the end), and credit Google Maps once at the end, e.g. \"Source: Google Maps\", plus any other attribution the result gives. Never invent coordinates or place details, and never claim you've sent a location pin (you haven't).";
 
 const FLIGHTS_RULE =
-  "- Use search_flights for flight prices, availability and comparing dates or routes — never quote a fare from memory or from web_search when it can be searched. Say prices are what Google Flights shows right now and can change, give the price for what was searched (round trip or one way, number of travellers), and end with the googleFlightsUrl. If the result's source is Kiwi.com, say the prices are from Kiwi.com instead, give each option you recommend with its own bookingUrl, and say booking is through Kiwi.com rather than the airline. Point out anything that would surprise them: an overnight leg, a long layover, a return to a different airport, out and back on separate tickets, which bags the price includes, a flight often delayed. Never say you've booked or held a seat — they book from the link. For baggage allowances or entry/visa rules, use only what the result's notes say or what web_search finds on the airline's or government's own site, and name that source.";
+  "- Use search_flights for flight prices, availability and comparing dates or routes — never quote a fare from memory or from web_search when it can be searched. Say prices are what Google Flights shows right now and can change, give the price for what was searched (round trip or one way, number of travellers), and end with the googleFlightsUrl on its own last line after a short label such as \"All options:\" (on WhatsApp it becomes a button). If the result's source is Kiwi.com, say the prices are from Kiwi.com instead, give each option you recommend with its own bookingUrl, and say booking is through Kiwi.com rather than the airline. Point out anything that would surprise them: an overnight leg, a long layover, a return to a different airport, out and back on separate tickets, which bags the price includes, a flight often delayed. Never say you've booked or held a seat — they book from the link. For baggage allowances or entry/visa rules, use only what the result's notes say or what web_search finds on the airline's or government's own site, and name that source.";
 
 const HOTELS_RULE =
-  "- Use search_hotels for hotel prices and availability on given dates — never quote a room rate from memory or from web_search when it can be searched. Say prices are what Google Hotels shows right now and can change, and be clear whether a price is per night or for the whole stay, and for how many people. Mention free cancellation, a deal, or a hotel far from the centre when the result says so. For Google Hotels results, give the website of a hotel you recommend if it has one (one or two at most, not one per hotel listed) and end with the googleHotelsUrl. If the result's source is lastminute.com, say the prices are from lastminute.com, give each hotel you recommend with its own bookingUrl, and say it opens a Booking.com search for that hotel where the price may be different. Never say you've booked or held a room — they book from the link.";
+  "- Use search_hotels for hotel prices and availability on given dates — never quote a room rate from memory or from web_search when it can be searched. Say prices are what Google Hotels shows right now and can change, and be clear whether a price is per night or for the whole stay, and for how many people. Mention free cancellation, a deal, or a hotel far from the centre when the result says so. For Google Hotels results, give the website of a hotel you recommend if it has one (one or two at most, not one per hotel listed) and end with the googleHotelsUrl on its own last line after a short label such as \"All options:\" (on WhatsApp it becomes a button). If the result's source is lastminute.com, say the prices are from lastminute.com, give each hotel you recommend with its own bookingUrl, and say it opens a Booking.com search for that hotel where the price may be different. Never say you've booked or held a room — they book from the link.";
 
 function buildRules(enabled: Set<ToolKey>): string {
   const base = [
@@ -2631,6 +2636,9 @@ export async function runAssistantChat(
   let mapsCalls = 0;
   let flightSearches = 0;
   let hotelSearches = 0;
+  // The main link of each flight/hotel search this reply ran (url -> button label), so finish()
+  // can turn the one the reply ends with into a button.
+  const searchLinks = new Map<string, string>();
   const channel = phone ? "whatsapp" : "web";
   // Tools this reply used, for the Portal's Feature use tab. Names only, kept for every user.
   const toolsUsed = new Map<string, number>();
@@ -2673,8 +2681,12 @@ export async function runAssistantChat(
       console.error("runAssistantChat: recording feature use failed", err);
     }
     // A phone-action link the model typed itself (or re-pasted after it was used) is dead on tap.
-    if (isPhoneActionsConfigured() && reply.text) return { ...reply, text: scrubUnknownActionLinks(reply.text) };
-    return reply;
+    const text = isPhoneActionsConfigured() && reply.text ? scrubUnknownActionLinks(reply.text) : reply.text;
+    // Only when exactly one search link made it into the text: two (comparing dates) can't share
+    // one button, so they stay as labelled links.
+    const shown = [...searchLinks].filter(([url]) => text.includes(url));
+    const linkButton = !reply.choice && shown.length === 1 ? { url: shown[0][0], label: shown[0][1] } : undefined;
+    return { ...reply, text, ...(linkButton ? { linkButton } : {}) };
   }
 
   for (let turn = 0; turn < 8; turn++) {
@@ -2853,6 +2865,13 @@ export async function runAssistantChat(
         }
         try {
           const result = await runTool(ownerId, toolUse.name, toolUse.input as Record<string, unknown>, phone);
+          if (toolUse.name === "search_flights" || toolUse.name === "search_hotels") {
+            const rec = (result ?? {}) as Record<string, unknown>;
+            for (const key of ["googleFlightsUrl", "googleHotelsUrl"] as const) {
+              const url = rec[key];
+              if (typeof url === "string") searchLinks.set(url, SEARCH_BUTTON_LABELS[key]);
+            }
+          }
           return {
             type: "tool_result" as const,
             tool_use_id: toolUse.id,
