@@ -595,6 +595,7 @@ export interface WaitlistRequest {
   firstRequestedAt: number;
   lastRequestedAt: number;
   requestCount: number;
+  name: string | null;
 }
 
 export const fetchWaitlist = () => getJson<WaitlistRequest[]>("/api/admin/waitlist");

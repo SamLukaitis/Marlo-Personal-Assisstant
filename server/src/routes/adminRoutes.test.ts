@@ -17,6 +17,8 @@ import {
   clearPendingSetup,
   setUserAdmin,
   recordWaitlistRequest,
+  setWaitlistName,
+  getInvitedPhoneName,
   listWaitlistRequests,
   isPhoneInvited,
   getUser,
@@ -222,6 +224,17 @@ describe("/api/admin/waitlist", () => {
     expect(res.status).toBe(200);
     expect(res.body.map((r: { phone: string }) => r.phone)).not.toContain(phone);
     expect(isPhoneInvited(phone)).toBe(false);
+  });
+
+  it("carries the waitlist name onto the invite", async () => {
+    const app = buildTestApp(getAppOwnerUserId());
+    const phone = uniquePhone();
+    recordWaitlistRequest(phone);
+    setWaitlistName(phone, "Margaret");
+
+    await request(app).post("/api/admin/invites").send({ phone });
+
+    expect(getInvitedPhoneName(phone)).toBe("Margaret");
   });
 
   // The promise in MARLOWE_WAITLIST_TEXT is that we message them when they're in — so approving
