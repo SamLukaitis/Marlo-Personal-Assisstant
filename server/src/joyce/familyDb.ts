@@ -136,6 +136,17 @@ const SCHEMA = `
   );
   CREATE INDEX IF NOT EXISTS idx_relays_undelivered ON relays(to_member_id) WHERE delivered_at IS NULL;
 
+  -- Trips a member's Marlowe has shared with the family (src/bridge/): dates, and the country only
+  -- if they allowed it. Encrypted like everything else; nothing about the booking itself is kept.
+  CREATE TABLE IF NOT EXISTS member_trips (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    member_id INTEGER NOT NULL REFERENCES members(id),
+    start_enc TEXT NOT NULL,
+    end_enc TEXT NOT NULL,
+    country_enc TEXT,
+    created_at INTEGER NOT NULL
+  );
+
   -- Who has received each reminder, pushed by the reminder sender or handed over when they next
   -- messaged. A whole-family reminder is done once every member has a row.
   CREATE TABLE IF NOT EXISTS reminder_deliveries (

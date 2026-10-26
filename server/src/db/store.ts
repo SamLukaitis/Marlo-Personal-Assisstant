@@ -171,6 +171,23 @@ db.exec(`
     removed_at INTEGER
   );
   CREATE INDEX IF NOT EXISTS idx_family_link_shares_owner ON family_link_shares(owner_id, phone);
+  -- Trips worked out from this person's bookings (services/familyTrips.ts), and what they decided
+  -- about each: state is 'asked' (waiting for their answer), 'shared' or 'declined'. Dates only, plus
+  -- the country when Marlowe worked one out; the country reaches the family only if they allowed it
+  -- (share_country). joyce_trip_id is the row Marlowe wrote into the family's file, while shared.
+  CREATE TABLE IF NOT EXISTS family_trips (
+    owner_id INTEGER NOT NULL REFERENCES users(id),
+    phone TEXT NOT NULL,
+    trip_key TEXT NOT NULL,
+    start_date TEXT NOT NULL,
+    end_date TEXT NOT NULL,
+    country TEXT,
+    state TEXT NOT NULL,
+    share_country INTEGER,
+    joyce_trip_id INTEGER,
+    updated_at INTEGER NOT NULL,
+    PRIMARY KEY(owner_id, phone, trip_key)
+  );
   CREATE TABLE IF NOT EXISTS user_enabled_tools (
     owner_id INTEGER NOT NULL REFERENCES users(id),
     tool_key TEXT NOT NULL,
@@ -377,6 +394,15 @@ const userColumns = (db.prepare(`PRAGMA table_info(users)`).all() as { name: str
 );
 if (!userColumns.includes("is_admin")) {
   db.exec(`ALTER TABLE users ADD COLUMN is_admin INTEGER NOT NULL DEFAULT 0`);
+}
+
+// family_links predates the country switch. Existing links get it off, so nothing about where
+// someone is starts reaching their family without them choosing it.
+const familyLinkColumns = (db.prepare(`PRAGMA table_info(family_links)`).all() as { name: string }[]).map(
+  (c) => c.name
+);
+if (!familyLinkColumns.includes("trips_country")) {
+  db.exec(`ALTER TABLE family_links ADD COLUMN trips_country INTEGER NOT NULL DEFAULT 0`);
 }
 
 // Must run AFTER the is_admin ALTER above: the rebuild copies that column, so it has to exist
@@ -2233,6 +2259,8 @@ export interface FamilyLinkRow {
   ownerId: number;
   phone: string;
   tripsMode: "ask" | "auto" | "off";
+  /** In auto mode, whether the country goes with the dates. Always off unless they chose it. */
+  tripsCountry: boolean;
   availabilityOn: boolean;
   linkedAt: number;
 }
@@ -2250,6 +2278,7 @@ function toFamilyLink(r: {
   owner_id: number;
   phone: string;
   trips_mode: string;
+  trips_country: number;
   availability_on: number;
   linked_at: number;
 }): FamilyLinkRow {
@@ -2257,6 +2286,7 @@ function toFamilyLink(r: {
     ownerId: r.owner_id,
     phone: r.phone,
     tripsMode: r.trips_mode as FamilyLinkRow["tripsMode"],
+    tripsCountry: r.trips_country === 1,
     availabilityOn: r.availability_on === 1,
     linkedAt: r.linked_at,
   };
@@ -2273,16 +2303,18 @@ export function getFamilyLink(ownerId: number, phone: string): FamilyLinkRow | n
 export function upsertFamilyLink(
   ownerId: number,
   phone: string,
-  patch: { tripsMode?: FamilyLinkRow["tripsMode"]; availabilityOn?: boolean } = {}
+  patch: { tripsMode?: FamilyLinkRow["tripsMode"]; tripsCountry?: boolean; availabilityOn?: boolean } = {}
 ): FamilyLinkRow {
   const normalized = normalizePhone(phone);
   const existing = getFamilyLink(ownerId, normalized);
   const tripsMode = patch.tripsMode ?? existing?.tripsMode ?? "ask";
+  const tripsCountry = patch.tripsCountry ?? existing?.tripsCountry ?? false;
   const availabilityOn = patch.availabilityOn ?? existing?.availabilityOn ?? true;
   db.prepare(
-    `INSERT INTO family_links (owner_id, phone, trips_mode, availability_on, linked_at) VALUES (?, ?, ?, ?, ?)
-     ON CONFLICT(owner_id, phone) DO UPDATE SET trips_mode = excluded.trips_mode, availability_on = excluded.availability_on`
-  ).run(ownerId, normalized, tripsMode, availabilityOn ? 1 : 0, Date.now());
+    `INSERT INTO family_links (owner_id, phone, trips_mode, trips_country, availability_on, linked_at) VALUES (?, ?, ?, ?, ?, ?)
+     ON CONFLICT(owner_id, phone) DO UPDATE SET trips_mode = excluded.trips_mode,
+       trips_country = excluded.trips_country, availability_on = excluded.availability_on`
+  ).run(ownerId, normalized, tripsMode, tripsCountry ? 1 : 0, availabilityOn ? 1 : 0, Date.now());
   return getFamilyLink(ownerId, normalized) as FamilyLinkRow;
 }
 
@@ -2316,6 +2348,98 @@ export function listFamilyShares(
     )
     .all(ownerId, normalizePhone(phone)) as FamilyShareRow[];
   return rows;
+}
+
+export type FamilyTripState = "asked" | "shared" | "declined";
+
+export interface FamilyTripRow {
+  tripKey: string;
+  startDate: string;
+  endDate: string;
+  country: string | null;
+  state: FamilyTripState;
+  /** The per-trip answer in ask mode: null until they answer. */
+  shareCountry: boolean | null;
+  joyceTripId: number | null;
+}
+
+type FamilyTripDbRow = {
+  trip_key: string;
+  start_date: string;
+  end_date: string;
+  country: string | null;
+  state: string;
+  share_country: number | null;
+  joyce_trip_id: number | null;
+};
+
+function toFamilyTrip(r: FamilyTripDbRow): FamilyTripRow {
+  return {
+    tripKey: r.trip_key,
+    startDate: r.start_date,
+    endDate: r.end_date,
+    country: r.country,
+    state: r.state as FamilyTripState,
+    shareCountry: r.share_country === null ? null : r.share_country === 1,
+    joyceTripId: r.joyce_trip_id,
+  };
+}
+
+export function listFamilyTrips(ownerId: number, phone: string): FamilyTripRow[] {
+  return (
+    db
+      .prepare(`SELECT * FROM family_trips WHERE owner_id = ? AND phone = ? ORDER BY start_date`)
+      .all(ownerId, normalizePhone(phone)) as FamilyTripDbRow[]
+  ).map(toFamilyTrip);
+}
+
+export function getFamilyTrip(ownerId: number, phone: string, tripKey: string): FamilyTripRow | null {
+  const row = db
+    .prepare(`SELECT * FROM family_trips WHERE owner_id = ? AND phone = ? AND trip_key = ?`)
+    .get(ownerId, normalizePhone(phone), tripKey) as FamilyTripDbRow | undefined;
+  return row ? toFamilyTrip(row) : null;
+}
+
+export function saveFamilyTrip(ownerId: number, phone: string, trip: FamilyTripRow): void {
+  db.prepare(
+    `INSERT INTO family_trips (owner_id, phone, trip_key, start_date, end_date, country, state, share_country, joyce_trip_id, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(owner_id, phone, trip_key) DO UPDATE SET
+       start_date = excluded.start_date, end_date = excluded.end_date, country = excluded.country,
+       state = excluded.state, share_country = excluded.share_country,
+       joyce_trip_id = excluded.joyce_trip_id, updated_at = excluded.updated_at`
+  ).run(
+    ownerId,
+    normalizePhone(phone),
+    trip.tripKey,
+    trip.startDate,
+    trip.endDate,
+    trip.country,
+    trip.state,
+    trip.shareCountry === null ? null : trip.shareCountry ? 1 : 0,
+    trip.joyceTripId,
+    Date.now()
+  );
+}
+
+export function deleteFamilyTrip(ownerId: number, phone: string, tripKey: string): void {
+  db.prepare(`DELETE FROM family_trips WHERE owner_id = ? AND phone = ? AND trip_key = ?`).run(
+    ownerId,
+    normalizePhone(phone),
+    tripKey
+  );
+}
+
+export function deleteFamilyTrips(ownerId: number, phone: string): void {
+  db.prepare(`DELETE FROM family_trips WHERE owner_id = ? AND phone = ?`).run(ownerId, normalizePhone(phone));
+}
+
+/** Marks one logged share (a trip, say) as taken back, leaving the rest of the log alone. */
+export function markFamilyShareRemoved(ownerId: number, phone: string, category: string, joyceItemId: number): void {
+  db.prepare(
+    `UPDATE family_link_shares SET removed_at = ?
+      WHERE owner_id = ? AND phone = ? AND category = ? AND joyce_item_id = ? AND removed_at IS NULL`
+  ).run(Date.now(), ownerId, normalizePhone(phone), category, joyceItemId);
 }
 
 export function markFamilySharesRemoved(ownerId: number, phone: string): void {
@@ -4570,6 +4694,7 @@ export function deleteUserCompletely(ownerId: number): { deletedDocumentPaths: s
     db.prepare(`DELETE FROM user_enabled_tools WHERE owner_id = ?`).run(ownerId);
     db.prepare(`DELETE FROM family_links WHERE owner_id = ?`).run(ownerId);
     db.prepare(`DELETE FROM family_link_shares WHERE owner_id = ?`).run(ownerId);
+    db.prepare(`DELETE FROM family_trips WHERE owner_id = ?`).run(ownerId);
     db.prepare(`DELETE FROM pending_setup WHERE owner_id = ?`).run(ownerId);
     db.prepare(`DELETE FROM onboarding_step_events WHERE owner_id = ?`).run(ownerId);
     db.prepare(`DELETE FROM pending_actions WHERE owner_id = ?`).run(ownerId);
@@ -4947,7 +5072,7 @@ export function getOnboardingStepEvents(ownerId: number): OnboardingStepEvent[] 
 
 // "email_digest" is the first-digest check-in's keep / instant / different-time buttons
 // (services/emailDigest.ts), handled directly by actionHandlers.ts with no model call.
-export type PendingActionMode = "confirm" | "resume" | "email_digest";
+export type PendingActionMode = "confirm" | "resume" | "email_digest" | "trip_share";
 
 export interface PendingActionRow {
   id: string;

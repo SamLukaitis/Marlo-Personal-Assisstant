@@ -377,6 +377,27 @@ export async function hubListEvents(ownerId: number, days = 7): Promise<Calendar
   return settleForAccounts(accounts, results).sort((a, b) => eventTimeMs(a.start) - eventTimeMs(b.start));
 }
 
+/**
+ * Events between two instants across every connected account, for answering "am I free then?".
+ * `complete` is false when there is no account at all or any account failed to answer, because a
+ * calendar that couldn't be read says nothing about whether the person is free.
+ */
+export async function hubListEventsBetween(
+  ownerId: number,
+  from: Date,
+  to: Date
+): Promise<{ events: CalendarEvent[]; complete: boolean }> {
+  const accounts = listAccounts(ownerId);
+  if (accounts.length === 0) return { events: [], complete: false };
+  const results = await Promise.allSettled(
+    accounts.map((a) =>
+      a.provider === "google" ? g.googleListEventsBetween(a, from, to) : ms.microsoftListEventsBetween(a, from, to)
+    )
+  );
+  const complete = results.every((r) => r.status === "fulfilled");
+  return { events: settleForAccounts(accounts, results), complete };
+}
+
 export async function hubSearchFiles(ownerId: number, query: string): Promise<FileHit[]> {
   const googleAccounts = listAccounts(ownerId, "google");
   const msAccounts = listAccounts(ownerId, "microsoft");

@@ -25,7 +25,7 @@ than deleted, since they still explain the reasoning behind what was built.
 - [business-edition-phase-c.md](business-edition-phase-c.md)
 - [timezone-handling.md](timezone-handling.md)
 - [joyce-calendar-followups.md](joyce-calendar-followups.md)
-- [marlowe-joyce-next-steps.md](marlowe-joyce-next-steps.md) (link built; trips, availability, expenses, forwarded messages still open)
+- [marlowe-joyce-next-steps.md](marlowe-joyce-next-steps.md) (link, trips and availability built; expenses, forwarded messages, reminder for the offer still open)
 - [choice-buttons-not-typed-lists.md](choice-buttons-not-typed-lists.md)
 - [travel-flight-search.md](travel-flight-search.md) (flight and hotel search built; baggage, entry rules and price alerts still open)
 - [email-alert-mutes-settings-ui.md](email-alert-mutes-settings-ui.md)

@@ -29,6 +29,7 @@ import {
   runCalendarTool,
 } from "./calendarTools.js";
 import { nowIn } from "./googleCalendar.js";
+import { TRIP_TOOLS, TRIP_TOOL_NAMES, runTripTool } from "./tripTools.js";
 import {
   appendMessage,
   claimDueReminders,
@@ -407,9 +408,9 @@ const BUILT_IN_CALENDAR_TOOL_NAMES = new Set(BUILT_IN_CALENDAR_TOOLS.map((t) => 
 // and runTool refuses the others, so an old tool call in the conversation can't reach a calendar
 // that isn't in use.
 function toolsFor(mode: CalendarMode): Anthropic.Tool[] {
-  if (mode === "google") return [...BASE_TOOLS, ...CALENDAR_TOOLS];
-  if (mode === "built_in") return [...BASE_TOOLS, ...BUILT_IN_CALENDAR_TOOLS, ...CONNECT_TOOLS];
-  return [...BASE_TOOLS, ...CONNECT_TOOLS];
+  if (mode === "google") return [...BASE_TOOLS, ...TRIP_TOOLS, ...CALENDAR_TOOLS];
+  if (mode === "built_in") return [...BASE_TOOLS, ...TRIP_TOOLS, ...BUILT_IN_CALENDAR_TOOLS, ...CONNECT_TOOLS];
+  return [...BASE_TOOLS, ...TRIP_TOOLS, ...CONNECT_TOOLS];
 }
 
 /** The system prompt's calendar section, for the family's current mode. */
@@ -492,6 +493,12 @@ function systemPrompt(
       "did is recorded in [Done: …] notes after your earlier replies, so never add, set or save " +
       "something again because it appears earlier in the conversation. Those notes are written " +
       "for you automatically; never write one yourself.",
+    "",
+    "Members can let their own Marlowe (a private assistant of theirs) tell you when they're away " +
+      "and whether they're free. For who is away or whether dates work, call who_is_away or " +
+      "check_availability and say only what they return: never where someone is beyond the country " +
+      "given, never why someone is busy, and never guess about anyone they say nothing about. If " +
+      "someone asks how it works, you can say each person chooses what to share.",
     "",
     "If someone wants something they sent deleted, removed or forgotten — often by swipe-replying " +
       "'delete this' to their own message or file — call request_delete. Only the sender or the " +
@@ -645,6 +652,7 @@ async function runTool(
     if (outcome.forcedReply) state.forcedReply = outcome.forcedReply;
     return outcome.result;
   }
+  if (TRIP_TOOL_NAMES.has(name)) return runTripTool(session, name, input);
   switch (name) {
     case "save_note": {
       const id = saveNote(session, String(input.title), String(input.body));

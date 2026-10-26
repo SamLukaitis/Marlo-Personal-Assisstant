@@ -648,11 +648,19 @@ export async function microsoftListEvents(
   days: number
 ): Promise<CalendarEvent[]> {
   const now = new Date();
-  const until = new Date(now.getTime() + days * 24 * 60 * 60 * 1000);
+  return microsoftListEventsBetween(account, now, new Date(now.getTime() + days * 24 * 60 * 60 * 1000), 50);
+}
+
+export async function microsoftListEventsBetween(
+  account: AccountRow,
+  from: Date,
+  to: Date,
+  top = 250
+): Promise<CalendarEvent[]> {
   const data = await graphGet<{ value: GraphEvent[] }>(
     account,
-    `/me/calendarview?startDateTime=${now.toISOString()}&endDateTime=${until.toISOString()}` +
-      `&$orderby=start/dateTime&$top=50&$select=id,subject,start,end,isAllDay,location,webLink`,
+    `/me/calendarview?startDateTime=${from.toISOString()}&endDateTime=${to.toISOString()}` +
+      `&$orderby=start/dateTime&$top=${top}&$select=id,subject,start,end,isAllDay,location,webLink`,
     // UTC is Graph's default too, but pin it so graphDateTimeToIso can rely on it.
     { Prefer: 'outlook.timezone="UTC"' }
   );

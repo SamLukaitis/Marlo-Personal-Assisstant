@@ -126,6 +126,7 @@ const TOOL_AREAS: Record<string, FeatureArea | "helper"> = {
   update_family_link: "joyce",
   unlink_family: "joyce",
   send_to_family: "joyce",
+  answer_trip_question: "joyce",
 
   flag_unmet_request: "unmet",
 

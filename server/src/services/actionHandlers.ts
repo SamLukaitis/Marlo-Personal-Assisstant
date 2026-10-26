@@ -15,6 +15,8 @@ import { hubHasSentTo } from "./hub.js";
 import { sendAssistantReply, sendTextAndRecord, sendChoiceAndRecord } from "./whatsappReply.js";
 import { sendConnectLink } from "./connectMailboxLink.js";
 import type { IncomingWhatsAppMessage } from "../providers/whatsapp.js";
+import { answerTripQuestion, type TripChoice } from "../bridge/index.js";
+import { DateTime } from "luxon";
 
 const EXPIRED_REPLY = "That option has expired — just ask me again.";
 
@@ -188,6 +190,45 @@ async function handleEmailDigestTap(
   return true;
 }
 
+function tripSpan(start: string, end: string): string {
+  const s = DateTime.fromISO(start).toFormat("d LLL");
+  const e = DateTime.fromISO(end).toFormat("d LLL");
+  return s === e ? s : `${s} – ${e}`;
+}
+
+// The three buttons under "share this trip with your family?" (bridge/trips.ts). Answered directly
+// with no model call. A tap on a question whose dates have since moved is refused, because they
+// agreed to something else; a fresh question was sent when the dates moved.
+async function handleTripShareTap(ownerId: number, phone: string, key: string, contextJson: string): Promise<boolean> {
+  const choice = key as TripChoice;
+  if (choice !== "dates" && choice !== "country" && choice !== "no") {
+    await sendTextAndRecord(ownerId, phone, EXPIRED_REPLY);
+    return true;
+  }
+  const ctx = JSON.parse(contextJson) as { phone: string; tripKey: string; startDate: string; endDate: string };
+  const result = answerTripQuestion(ownerId, ctx.phone, ctx.tripKey, choice, {
+    startDate: ctx.startDate,
+    endDate: ctx.endDate,
+  });
+  let reply: string;
+  if (!result.ok) {
+    reply =
+      result.reason === "stale"
+        ? "That trip has changed since I asked, so I haven't shared anything. I've sent you a new question."
+        : result.reason === "answered"
+          ? "You've already answered that one."
+          : EXPIRED_REPLY;
+  } else if (!result.shared) {
+    reply = `OK, I won't share ${tripSpan(result.startDate, result.endDate)} with your family.`;
+  } else {
+    reply =
+      `✓ Your family can now see you're away ${tripSpan(result.startDate, result.endDate)}` +
+      `${result.country ? ` (${result.country})` : ""}. Say "stop sharing trips" any time to take it back.`;
+  }
+  await sendTextAndRecord(ownerId, phone, reply);
+  return true;
+}
+
 export async function handlePendingActionReply(
   ownerId: number,
   message: IncomingWhatsAppMessage
@@ -209,6 +250,8 @@ export async function handlePendingActionReply(
     consumePendingActionsByMode(ownerId, "email_digest");
     return handleEmailDigestTap(ownerId, phone, parsed.key, message.messageId);
   }
+
+  if (action.mode === "trip_share") return handleTripShareTap(ownerId, phone, parsed.key, action.contextJson);
 
   if (action.mode === "confirm") {
     const context = JSON.parse(action.contextJson) as ConfirmContext;
