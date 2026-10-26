@@ -129,6 +129,9 @@ a:focus-visible {
   font-size: 0.6875rem;
 }
 
+/* Set by the scroll script only; removed as each message arrives */
+.msg.is-pending { opacity: 0; }
+
 /* Closing line */
 #close {
   max-width: 62rem;
