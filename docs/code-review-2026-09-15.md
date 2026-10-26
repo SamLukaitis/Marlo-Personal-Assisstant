@@ -52,7 +52,7 @@ the attacker's mailbox.
 
 Users are matched by the Graph `mail` field (`profile.mail ?? profile.userPrincipalName`) via the
 `/common` endpoint. The admin of any Microsoft tenant can set `mail` on their own users. If it's set
-to an existing Marlowe user's address (including the app owner's), they may be able to sign in as
+to an existing Marlo user's address (including the app owner's), they may be able to sign in as
 that user. This is the known "nOAuth" pattern; not tested here.
 
 **Fix:** identify Microsoft users by tenant id + object id (`tid`/`oid`), not by email.
@@ -82,17 +82,17 @@ the checkpoint has moved. Same for undelivered alerts and failed classification.
 **Fix:** advance the checkpoint only after messages are fetched, and ideally only after consumers
 have processed them.
 
-### 5. A WhatsApp message sent while Marlowe is still replying gets mishandled ✅
+### 5. A WhatsApp message sent while Marlo is still replying gets mishandled ✅
 **Where:** `server/src/services/messageBatching.ts:96-106`
 
 Overrides are matched to history rows by position (the last `entries.length` rows), but the reply to
 the earlier message is appended to history after the new message arrived. Reproduced:
 
 - **Plain text:** the request to Claude is `[user:A, user:B, assistant:reply#1]` — it ends on
-  Marlowe's own reply, not the user's message, so it may error (prefill isn't supported with
+  Marlo's own reply, not the user's message, so it may error (prefill isn't supported with
   thinking) or produce a garbled answer.
 - **Photo / link / swipe-reply:** the request is `[user:A, user:B, user:B+context]` — the override
-  overwrites Marlowe's previous reply.
+  overwrites Marlo's previous reply.
 
 **Fix:** record the history row ids of buffered messages when queueing, and splice overrides by id.
 
@@ -153,7 +153,7 @@ If an account has several numbers and one send fails, the item isn't marked sent
 5 minutes and the numbers that succeeded receive it again. Affects the daily briefing, reminders,
 trip nudges, and important-email alerts for Outlook accounts.
 
-### 13. Marlowe says an invoice went to Xero when it didn't 🔍
+### 13. Marlo says an invoice went to Xero when it didn't 🔍
 **Where:** `server/src/ai/assistant.ts:1253, 1267`
 
 `respond_to_invoice_forward_prompt` always returns `forwarded: true`. Forwarding only actually happens
@@ -193,7 +193,7 @@ questions — this may be intended.)
 
 - **#14:** should the account Read/Delete toggles also cover calendar, contacts, and files, or only
   email?
-- **#10:** should "Folders on this computer" be available at all when Marlowe runs on the server?
+- **#10:** should "Folders on this computer" be available at all when Marlo runs on the server?
 
 ## Suggested order
 

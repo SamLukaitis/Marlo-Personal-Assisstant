@@ -178,7 +178,7 @@ export function describeEventTime(e: CalendarEvent, zone?: string | null): strin
 }
 
 // What the attention gate (attention.ts) is holding for this briefing: reminders due in the next
-// couple of hours, non-urgent things worth knowing, and what Marlowe quietly filed since yesterday
+// couple of hours, non-urgent things worth knowing, and what Marlo quietly filed since yesterday
 // with when it will bring each up. Labelled so the model keeps the three apart.
 export type BriefingAttention = Pick<AttentionBundle, "upcoming" | "needsAttention" | "noted">;
 
@@ -370,7 +370,7 @@ ${extraSystem}` : briefingSystemPrompt(voice),
 
 // Gathers the real day for a real user, then hands it to the shared renderer above.
 async function buildBriefingText(ownerId: number, attention?: BriefingAttention): Promise<string> {
-  const assistantName = getSetting(ownerId, "assistant_name") ?? "Marlowe";
+  const assistantName = getSetting(ownerId, "assistant_name") ?? "Marlo";
   const persona = getSetting(ownerId, "persona") ?? "";
   const userName = (getSetting(ownerId, "user_name") ?? "").trim().split(/\s+/)[0] ?? "";
 

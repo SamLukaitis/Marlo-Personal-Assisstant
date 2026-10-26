@@ -34,7 +34,7 @@ export async function sendAssistantReply(
   if (reply.reaction && inboundMessageId) {
     // A reaction replaces the text reply entirely (see assistant.ts's react_to_message) —
     // persist a readable history line rather than an empty row, and target the message that
-    // triggered this turn (the wamid the caller passed in), not one of Marlowe's own messages.
+    // triggered this turn (the wamid the caller passed in), not one of Marlo's own messages.
     recordAssistantMessage(ownerId, phone, `[reacted ${reply.reaction.emoji}]`, earlierParts);
     await sendWhatsAppReaction(phone, inboundMessageId, reply.reaction.emoji);
     return;
@@ -122,7 +122,7 @@ export async function sendAssistantReply(
   await sendChoiceAndRecord(ownerId, phone, reply.text, choice.question, choices, earlierParts);
 }
 
-// Every message Marlowe sends should go through one of the three senders here (or outbound.ts for
+// Every message Marlo sends should go through one of the three senders here (or outbound.ts for
 // proactive pushes) so it's recorded with its wamid(s) and can be swipe-replied to — a message sent
 // without them can't be resolved later, and the model is left guessing what the user meant.
 //

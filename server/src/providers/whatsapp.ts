@@ -93,7 +93,7 @@ async function buildSendError(prefix: string, res: Response): Promise<WhatsAppSe
 
 // Pulls the sent message's wamid out of a successful send response — Meta's Cloud API returns
 // `{ messages: [{ id: "wamid...." }] }` on every successful send. Used so a later swipe-to-reply
-// to something Marlowe sent can be resolved (see db/store.ts's whatsapp_message_wamids). Reads via
+// to something Marlo sent can be resolved (see db/store.ts's whatsapp_message_wamids). Reads via
 // res.text() + JSON.parse rather than res.json(), same as buildSendError above, and never throws —
 // an unparseable/unexpected body just means the reply can't be resolved later, not a failed send.
 async function extractSentWamid(res: Response): Promise<string | undefined> {
@@ -416,7 +416,7 @@ async function uploadWhatsAppMedia(buffer: Buffer, mimeType: string, filename: s
 }
 
 // Sends the original bytes of a saved document/photo back to the user — e.g. "send me that
-// photo" after Marlowe has already described what's in it. Real photos (jpeg/png — the two types
+// photo" after Marlo has already described what's in it. Real photos (jpeg/png — the two types
 // WhatsApp's Cloud API will render as an inline image) go out as `type: "image"`; everything else
 // (pdf, gif/webp, plain text) goes out as `type: "document"` with a filename, which WhatsApp
 // renders as a downloadable file instead.
@@ -461,12 +461,12 @@ export async function sendWhatsAppMediaFromBuffer(
 // The two pre-approved utility templates outbound.ts falls back to once the 24h customer-service
 // window has closed (see recordInboundMessage/getLastInboundAt in db/store.ts) — Meta rejects a
 // free-form send past that window with error 131047, but a template always goes through.
-// `marlowe_alert` body: "Update from Marlowe: {{update_text}} Reply to this chat with any
+// `marlowe_alert` body: "Update from Marlo: {{update_text}} Reply to this chat with any
 // questions." — covers every short, single-event push (Schengen warnings, important-email/
 // memory/reconciliation/Xero notifications).
-// `marlowe_digest` body: "Your Marlowe briefing: {{briefing_text}} Tap below to see the full
+// `marlowe_digest` body: "Your Marlo briefing: {{briefing_text}} Tap below to see the full
 // details." plus a static URL button — the one multi-paragraph push (the daily briefing).
-// `marlowe_whats_new` body: "What's new in Marlowe: {{update_text}} Reply here with any
+// `marlowe_whats_new` body: "What's new in Marlo: {{update_text}} Reply here with any
 // questions." (the "stop updates" line is part of update_text) — a MARKETING template for the Portal's product-update announcements
 // (services/announcements.ts), kept apart from the two utility templates so Meta never sees
 // announcements going out under a utility category. Created by `npm run whatsapp:templates`.
@@ -597,7 +597,7 @@ export async function sendWhatsAppTypingIndicator(messageId: string): Promise<vo
 
 // quotedMessageId/forwarded both come from Meta's `context` field on the inbound message.
 // quotedMessageId is the wamid of the message a swipe-to-reply targeted — set only when the user
-// replied to a specific earlier message (theirs, or one Marlowe sent), and resolvable via
+// replied to a specific earlier message (theirs, or one Marlo sent), and resolvable via
 // db/store.ts's getWhatsAppMessageByWamid/getDocumentByWamid no matter how long ago it was sent.
 // forwarded means the message arrived via WhatsApp's "Forward" action; Meta does not expose the
 // original chat/message it came from (only this boolean), so there's nothing to look up for a
@@ -710,7 +710,7 @@ const HANDLED_TYPES = new Set(["text", "image", "document", "interactive", "reac
 
 /**
  * `onlyForPhoneNumberId`, when given, drops anything addressed to a different one of our numbers
- * — the guard that stops Marlowe answering messages meant for Joyce once both numbers sit on one
+ * — the guard that stops Marlo answering messages meant for Joyce once both numbers sit on one
  * Meta app. A payload with no metadata at all is kept: older captured fixtures and the in-app
  * simulator don't carry the field, and silently dropping real traffic would be far worse than
  * the case this guards against.

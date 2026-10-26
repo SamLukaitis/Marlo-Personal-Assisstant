@@ -102,7 +102,7 @@ db.exec(`
     phone TEXT PRIMARY KEY,
     invited_at INTEGER NOT NULL
   );
-  -- Numbers that messaged Marlowe without an invite. Not a gate of any kind (invited_phones is
+  -- Numbers that messaged Marlo without an invite. Not a gate of any kind (invited_phones is
   -- the only thing that grants access) — purely the "who's asking?" list behind Settings'
   -- Waitlist section. request_count/last_requested_at exist so a number that keeps trying reads
   -- differently from one that tried once and gave up.
@@ -148,7 +148,7 @@ db.exec(`
     parked_at INTEGER NOT NULL
   );
   CREATE INDEX IF NOT EXISTS idx_replay_parked_phones_owner ON replay_parked_phones(owner_id);
-  -- A person's Marlowe linked to their family on Joyce (src/bridge/). One row per owner and the
+  -- A person's Marlo linked to their family on Joyce (src/bridge/). One row per owner and the
   -- phone that consented. The settings are what they chose at linking; trips and availability
   -- have no effect until those features are built.
   CREATE TABLE IF NOT EXISTS family_links (
@@ -159,7 +159,7 @@ db.exec(`
     linked_at INTEGER NOT NULL,
     PRIMARY KEY(owner_id, phone)
   );
-  -- Everything this person's Marlowe has put into Joyce: a short label and the id of the Joyce
+  -- Everything this person's Marlo has put into Joyce: a short label and the id of the Joyce
   -- item, never the content. Lets them see what was shared and lets an unlink take it back.
   CREATE TABLE IF NOT EXISTS family_link_shares (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -174,8 +174,8 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_family_link_shares_owner ON family_link_shares(owner_id, phone);
   -- Trips worked out from this person's bookings (services/familyTrips.ts), and what they decided
   -- about each: state is 'asked' (waiting for their answer), 'shared' or 'declined'. Dates only, plus
-  -- the country when Marlowe worked one out; the country reaches the family only if they allowed it
-  -- (share_country). joyce_trip_id is the row Marlowe wrote into the family's file, while shared.
+  -- the country when Marlo worked one out; the country reaches the family only if they allowed it
+  -- (share_country). joyce_trip_id is the row Marlo wrote into the family's file, while shared.
   CREATE TABLE IF NOT EXISTS family_trips (
     owner_id INTEGER NOT NULL REFERENCES users(id),
     phone TEXT NOT NULL,
@@ -316,7 +316,7 @@ db.exec(`
     created_at            INTEGER NOT NULL
   );
   CREATE INDEX IF NOT EXISTS idx_api_usage_created ON api_usage(created_at);
-  -- Feature use (Portal → Feature use): one row per message Marlowe answered, plus one row per
+  -- Feature use (Portal → Feature use): one row per message Marlo answered, plus one row per
   -- tool that message used. Tool names only, never the message text, so this is safe to keep for
   -- every user, not just admins (services/featureUsage.ts).
   CREATE TABLE IF NOT EXISTS feature_messages (
@@ -364,7 +364,7 @@ db.exec(`
     created_at INTEGER NOT NULL
   );
 
-  -- Durable cache of every email Marlowe has ever seen metadata for or opened, keyed so a
+  -- Durable cache of every email Marlo has ever seen metadata for or opened, keyed so a
   -- re-list/re-open upserts the same row rather than piling up duplicates. subject/sender/
   -- snippet/received_at are populated the moment hub.ts lists a message (cheap — Gmail/Outlook
   -- already return this in the same call); body stays NULL until get_message actually opens it
@@ -430,8 +430,8 @@ const userColumnsAfterRebuild = (db.prepare(`PRAGMA table_info(users)`).all() as
 if (!userColumnsAfterRebuild.includes("edition")) {
   db.exec(`ALTER TABLE users ADD COLUMN edition TEXT NOT NULL DEFAULT 'general'`);
 }
-// The admin to-do list is per product: Marlowe's Portal and Joyce's each have their own list.
-// Everything written before Joyce had a portal was Marlowe's, which is what the default says.
+// The admin to-do list is per product: Marlo's Portal and Joyce's each have their own list.
+// Everything written before Joyce had a portal was Marlo's, which is what the default says.
 const adminTodoColumns = (db.prepare(`PRAGMA table_info(admin_todos)`).all() as { name: string }[]).map(
   (c) => c.name
 );
@@ -1207,7 +1207,7 @@ if (!wamidColumns.includes("part_text")) {
   db.exec(`ALTER TABLE whatsapp_message_wamids ADD COLUMN part_text TEXT`);
 }
 
-// A saved photo/file Marlowe sent back to the user (documents.ts's sendSavedDocumentFile), by the
+// A saved photo/file Marlo sent back to the user (documents.ts's sendSavedDocumentFile), by the
 // wamid of that send — so a swipe on it ("what's this?") resolves to the document's content. Kept
 // apart from documents.wamid, which is the user's own inbound message that first carried the file.
 // No foreign key, and owner_id carried, so deleteDocument/deleteUserCompletely clear it directly.
@@ -1249,7 +1249,7 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_proactive_deliveries_delivered_at ON proactive_deliveries(delivered_at);
 `);
 
-// One row per real-world event Marlowe might bring up unprompted (a booking, a bill, a flight
+// One row per real-world event Marlo might bring up unprompted (a booking, a bill, a flight
 // change...), keyed by event_key so the booking email, the venue's own confirmation and a saved
 // document about the same thing collapse into one row. services/attention.ts is the only writer.
 // See docs/superpowers/specs/2026-09-28-attention-gate-design.md.
@@ -1273,7 +1273,7 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_attention_owner_status_surface ON attention_items(owner_id, status, surface_at);
 `);
 
-// One row per one-tap phone action Marlowe offered: the steps it will hand the "Marlowe" Apple
+// One row per one-tap phone action Marlo offered: the steps it will hand the "Marlo" Apple
 // Shortcut, stored under the SHA-256 of a one-time code (the code itself only ever lives in the
 // link). services/phoneActions.ts is the only writer.
 // See docs/superpowers/specs/2026-10-12-marlowe-shortcut-design.md.
@@ -1319,9 +1319,9 @@ db.exec(`
   );
 `);
 
-// Short links Marlowe sends in place of long booking/search URLs (Google Flights, Google Hotels,
+// Short links Marlo sends in place of long booking/search URLs (Google Flights, Google Hotels,
 // Kiwi.com, Booking.com), so a WhatsApp reply isn't half URL. /go/<code> redirects to `url`.
-// services/shortLinks.ts is the only writer; only URLs Marlowe itself stored can be reached.
+// services/shortLinks.ts is the only writer; only URLs Marlo itself stored can be reached.
 db.exec(`
   CREATE TABLE IF NOT EXISTS short_links (
     code       TEXT PRIMARY KEY,
@@ -2464,7 +2464,7 @@ export function markFamilySharesRemoved(ownerId: number, phone: string): void {
   ).run(Date.now(), ownerId, normalizePhone(phone));
 }
 
-// True once this number has sent Marlowe at least one WhatsApp message — the proof that whoever
+// True once this number has sent Marlo at least one WhatsApp message — the proof that whoever
 // holds the number really uses it. A number added to an account from the web Settings page has no
 // such proof, so the Joyce link is never offered to it.
 export function hasInboundWhatsAppMessage(ownerId: number, phone: string): boolean {
@@ -2777,7 +2777,7 @@ export function recordSentDocumentWamid(ownerId: number, documentId: number, wam
   );
 }
 
-// The saved document Marlowe sent back under this wamid — see document_sent_wamids.
+// The saved document Marlo sent back under this wamid — see document_sent_wamids.
 export function getSentDocumentByWamid(ownerId: number, wamid: string): DocumentRow | undefined {
   const row = db
     .prepare(`SELECT document_id AS documentId FROM document_sent_wamids WHERE wamid = ? AND owner_id = ?`)
@@ -3169,7 +3169,7 @@ export function countCappedAttentionSentSince(ownerId: number, sinceMs: number, 
   return row.c;
 }
 
-// --- Phone actions (Marlowe Shortcut) -----------------------------------------------------------
+// --- Phone actions (Marlo Shortcut) -----------------------------------------------------------
 
 export type PhoneActionSource = "chat" | "briefing" | "digest" | "reminder";
 export type PhoneActionStatus = "offered" | "fetched" | "done" | "failed";
@@ -3773,7 +3773,7 @@ export function upsertReadEmail(
 }
 
 // Plain LIKE, not FTS — same precedent as searchDocuments (store.ts above): per-user volume here
-// is bounded by how much mail Marlowe actually lists/opens, not a full message-transcript firehose
+// is bounded by how much mail Marlo actually lists/opens, not a full message-transcript firehose
 // like whatsapp_messages/memory_notes, so FTS5's extra machinery (virtual table + triggers) isn't
 // worth it. Searches every previously-seen email regardless of whether it was ever fully opened —
 // a metadata-only row (body still NULL) still matches on subject/sender/snippet.
@@ -3846,7 +3846,7 @@ export function findOrCreateUserByPhone(phone: string): UserRow {
   // A number unbound by replay-onboarding still remembers its owner, so hand that account back
   // rather than minting a second one. Creating a new row here was the bug: the replayed account
   // kept the email while the new phone-only account took the number, and every later attempt to
-  // connect that mailbox was refused as "already belongs to a Marlowe account" with no way out.
+  // connect that mailbox was refused as "already belongs to a Marlo account" with no way out.
   const parkedOwner = getReplayParkedOwner(normalized);
   if (parkedOwner !== null) {
     addPhoneNumberForUser(parkedOwner, normalized); // re-binds, and clears the park marker
@@ -4029,7 +4029,7 @@ export interface UnmetRequestRow {
 }
 
 // Written by the assistant's flag_unmet_request tool (assistant.ts) whenever a user asks for
-// something Marlowe genuinely can't do — gives admins a running signal of what to build next
+// something Marlo genuinely can't do — gives admins a running signal of what to build next
 // without having to comb through conversation history themselves.
 export function addUnmetRequest(ownerId: number, summary: string, channel: string): void {
   db.prepare(
@@ -4185,7 +4185,7 @@ export function recordApiUsage(
 const API_USAGE_TEXT_MAX = 500;
 
 // One answered message and the tools it used (name → how many times). An empty map is still
-// recorded: "answered without any tool" is part of what people use Marlowe for.
+// recorded: "answered without any tool" is part of what people use Marlo for.
 export function recordFeatureMessage(ownerId: number | null, channel: string, tools: Map<string, number>): void {
   db.transaction(() => {
     const { lastInsertRowid } = db
@@ -4220,7 +4220,7 @@ export function listFeatureMessages(sinceMs: number): FeatureMessageRow[] {
     .all(sinceMs) as FeatureMessageRow[];
 }
 
-// What the Feature use tab calls each person: the name they gave Marlowe, else their email, else
+// What the Feature use tab calls each person: the name they gave Marlo, else their email, else
 // their phone number.
 export function featureUserLabels(ownerIds: number[]): Map<number, string> {
   const labels = new Map<number, string>();
@@ -4604,7 +4604,7 @@ export function removeInvitedPhone(phone: string): void {
   db.prepare(`DELETE FROM invited_phones WHERE phone = ?`).run(normalizePhone(phone));
 }
 
-// The waitlist: an uninvited number that messages Marlowe gets logged here so admins can see who
+// The waitlist: an uninvited number that messages Marlo gets logged here so admins can see who
 // asked, instead of the request evaporating into the server log. Recording is deliberately
 // separate from the invite gate — being on this list grants nothing.
 export interface WaitlistRequestRow {

@@ -1,6 +1,6 @@
-# Stop Marlowe typing numbered lists instead of sending buttons
+# Stop Marlo typing numbered lists instead of sending buttons
 
-Seen 2026-10-16 while reviewing business-edition receipts: after "Personal", Marlowe replied
+Seen 2026-10-16 while reviewing business-edition receipts: after "Personal", Marlo replied
 "Got it, logged as personal. Two more:" then **typed** "TfL £10.50 on 28 Aug — business or
 personal? 1. Business 2. Personal" as plain text, with no buttons. When asked why, the next one
 came back as real buttons.

@@ -14,7 +14,7 @@ import {
 
 // One SQLite file per family, and the object that gates access to it.
 //
-// This is the first and strongest of Joyce's isolation barriers. Marlowe keeps every tenant in
+// This is the first and strongest of Joyce's isolation barriers. Marlo keeps every tenant in
 // one app.db and separates them with `WHERE owner_id = ?` on every query — which works, but only
 // for as long as every query author remembers (see feature-to-do/tenant-isolation-audit.md).
 // Joyce doesn't have that failure mode available: there is no table containing two families'
@@ -136,7 +136,7 @@ const SCHEMA = `
   );
   CREATE INDEX IF NOT EXISTS idx_relays_undelivered ON relays(to_member_id) WHERE delivered_at IS NULL;
 
-  -- Trips a member's Marlowe has shared with the family (src/bridge/): dates, and the country only
+  -- Trips a member's Marlo has shared with the family (src/bridge/): dates, and the country only
   -- if they allowed it. Encrypted like everything else; nothing about the booking itself is kept.
   CREATE TABLE IF NOT EXISTS member_trips (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -246,12 +246,12 @@ function migrate(db: Database.Database): void {
   if (!columns("events").includes("about_label_enc")) {
     db.exec(`ALTER TABLE events ADD COLUMN about_label_enc TEXT`);
   }
-  // Whether this member has linked their Marlowe to the family (src/bridge/). Only a flag: the
-  // consent and settings live on Marlowe's side, and nothing of Marlowe's is stored here.
+  // Whether this member has linked their Marlo to the family (src/bridge/). Only a flag: the
+  // consent and settings live on Marlo's side, and nothing of Marlo's is stored here.
   if (!columns("members").includes("marlowe_linked")) {
     db.exec(`ALTER TABLE members ADD COLUMN marlowe_linked INTEGER NOT NULL DEFAULT 0`);
   }
-  // 'marlowe' for a note a member's Marlowe handed over, so it can be told apart and removed if
+  // 'marlowe' for a note a member's Marlo handed over, so it can be told apart and removed if
   // that member later unlinks.
   if (!columns("notes").includes("source")) {
     db.exec(`ALTER TABLE notes ADD COLUMN source TEXT`);

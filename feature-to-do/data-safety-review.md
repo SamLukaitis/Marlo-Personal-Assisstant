@@ -11,7 +11,7 @@ are mostly operational habits, paperwork and a few missing features, not fundame
 ## 1. What protects user data today
 
 **Who can get in**
-- Invite-only: nobody can use Marlowe unless an admin has invited their email or phone number.
+- Invite-only: nobody can use Marlo unless an admin has invited their email or phone number.
 - Login is Google/Microsoft OAuth, so there is no password database to steal.
 - Session tokens are stored only as hashes, so a stolen database contains no working logins.
   The cookie is `httpOnly`, `Secure` in production, `SameSite=Lax`, and has a 30-day sliding expiry.
@@ -19,7 +19,7 @@ are mostly operational habits, paperwork and a few missing features, not fundame
   in the 2026-09-15 review; this blocks the "nOAuth" takeover trick).
 
 **Keeping users apart**
-- Marlowe: one shared SQLite database, with every query scoped by `owner_id`. This is a rule each
+- Marlo: one shared SQLite database, with every query scoped by `owner_id`. This is a rule each
   feature has to follow, not something the database enforces (see `tenant-isolation-audit.md`).
 - Joyce is stronger: one database file per family, plus a per-family encryption key. Even with a
   bug, one family can't read another's data.
@@ -101,7 +101,7 @@ Posidonia is a UK company, so UK GDPR applies; EU GDPR applies too if we serve E
 
 **Legally required**
 - [ ] Register with the ICO and pay the data protection fee (about £40–£60 a year).
-- [ ] Rewrite the privacy policy (`/privacy` in `server/src/index.ts`). It currently says Marlowe
+- [ ] Rewrite the privacy policy (`/privacy` in `server/src/index.ts`). It currently says Marlo
       is invite-only and not public. It needs to cover what data we hold and why (legal basis),
       how long we keep it, who we share it with, users' rights, and how to complain to the ICO.
 - [ ] Data processing agreements with each supplier: Anthropic, Meta, Google, Microsoft, Railway.
@@ -132,8 +132,8 @@ others are guidance that the auditor uses alongside.
 | Standard | What it covers | Certifiable? | Relevance to us |
 |---|---|---|---|
 | **ISO/IEC 27001** | An information security management system: risk assessment, policies, access control, incident response, continuous improvement | Yes | 🚩 **The main one.** The usual first certification for selling to businesses. Typically £10k–£30k+ and 6–12 months the first time, plus yearly audits |
-| **ISO/IEC 27701** | A privacy extension to 27001, mapped to GDPR: handling personal data, user rights, processors | Yes, on top of 27001 | 🚩 **High.** Marlowe's whole job is processing personal data, and this is the ISO way to show GDPR compliance |
-| **ISO/IEC 42001** | An AI management system: AI risks, oversight, transparency, data used by AI | Yes | 🚩 **High, and growing.** Marlowe is an AI product; this answers "how do you control the AI?" (prompt injection, what it can do) and lines up with the EU AI Act |
+| **ISO/IEC 27701** | A privacy extension to 27001, mapped to GDPR: handling personal data, user rights, processors | Yes, on top of 27001 | 🚩 **High.** Marlo's whole job is processing personal data, and this is the ISO way to show GDPR compliance |
+| **ISO/IEC 42001** | An AI management system: AI risks, oversight, transparency, data used by AI | Yes | 🚩 **High, and growing.** Marlo is an AI product; this answers "how do you control the AI?" (prompt injection, what it can do) and lines up with the EU AI Act |
 | ISO/IEC 27002 | The detailed catalogue of security controls behind 27001 (encryption, key management, logging, supplier security) | No (guidance) | Medium: the practical how-to when building 27001 controls, including KMS and key handling |
 | ISO/IEC 27017 | Security controls specific to cloud services | No (assessed with 27001) | Medium: we're a cloud service running on Railway, Anthropic and other suppliers |
 | ISO/IEC 27018 | Protecting personal data in public cloud services | No (assessed with 27001) | Medium: the cloud-and-personal-data version, often asked for alongside 27001 |
@@ -159,8 +159,8 @@ the first two without removing the product, so we control the third.
 - [x] The send-email confirmation now ends with a server-written "📧 Sending to: <address>" line,
       taken from the exact input the Send tap will run, so the AI's own wording can't hide the
       real recipient (`buildChoiceReply` in `server/src/ai/assistant.ts`).
-- [x] After the Send tap, Marlowe checks the sending mailbox's Sent folder. If it holds no earlier
-      email to that address, Marlowe asks "⚠️ Warning — you haven't emailed this person before.
+- [x] After the Send tap, Marlo checks the sending mailbox's Sent folder. If it holds no earlier
+      email to that address, Marlo asks "⚠️ Warning — you haven't emailed this person before.
       Are you sure x@y.com is the correct email?" and sends only on "Yes, send". If the Sent folder
       can't be checked, it warns anyway (`server/src/services/actionHandlers.ts`).
 
@@ -169,7 +169,7 @@ the first two without removing the product, so we control the third.
 - [ ] Memory poisoning: `remember` runs without confirmation, so an email could plant a fake fact
       ("my accountant is x@evil.com"). Record where each fact came from, and don't let facts that
       came from emails or documents decide recipients without showing them to the user.
-- [ ] Links in replies: Marlowe could be tricked into writing a link that carries private data out
+- [ ] Links in replies: Marlo could be tricked into writing a link that carries private data out
       when the user taps it. Remove links, or allow only known ones.
 - [ ] Label email, document and web content as untrusted data in the main prompt (a weak but cheap
       defence).
@@ -261,5 +261,5 @@ use is permission-checked and logged; and access can be revoked instantly.
   Act and the US CLOUD Act).
 - So for most services, users rely on trust that is backed by audits, contracts, laws and
   reputation, not on mathematics. The only mathematical guarantee is end-to-end or client-side
-  encryption, where only the user holds the key. That isn't possible for Marlowe, because the
+  encryption, where only the user holds the key. That isn't possible for Marlo, because the
   assistant has to read email on the server to work.

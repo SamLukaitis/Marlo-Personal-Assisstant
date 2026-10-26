@@ -24,8 +24,8 @@ describe("GET /a/:code", () => {
     const res = await request(app).get(`/a/${newCode()}`);
     expect(res.status).toBe(200);
     expect(res.headers["cache-control"]).toContain("no-store");
-    expect(res.text).toContain("send Marlowe your battery level");
-    expect(res.text).toContain("shortcuts://run-shortcut?name=Marlowe");
+    expect(res.text).toContain("send Marlo your battery level");
+    expect(res.text).toContain("shortcuts://run-shortcut?name=Marlo");
     expect(res.text).toContain("https://www.icloud.com/shortcuts/test");
   });
 
@@ -46,16 +46,16 @@ describe("GET /a/:code", () => {
 describe("GET /api/phone-actions/:code", () => {
   it("returns steps once, then 410", async () => {
     const code = newCode();
-    const first = await request(app).get(`/api/phone-actions/${code}`).set("X-Marlowe-Shortcut", "2");
+    const first = await request(app).get(`/api/phone-actions/${code}`).set("X-Marlo-Shortcut", "2");
     expect(first.status).toBe(200);
     expect(first.body).toEqual({ steps: [{ type: "get_battery" }], reportUrl: expect.stringMatching(new RegExp(`/api/phone-actions/${code}/report$`)) });
-    const second = await request(app).get(`/api/phone-actions/${code}`).set("X-Marlowe-Shortcut", "2");
+    const second = await request(app).get(`/api/phone-actions/${code}`).set("X-Marlo-Shortcut", "2");
     expect(second.status).toBe(410);
     expect(second.body.message).toMatch(/already used/);
   });
 
   it("returns an update for an old version", async () => {
-    const res = await request(app).get(`/api/phone-actions/${newCode()}`).set("X-Marlowe-Shortcut", "0");
+    const res = await request(app).get(`/api/phone-actions/${newCode()}`).set("X-Marlo-Shortcut", "0");
     expect(res.status).toBe(200);
     expect(res.body.update).toMatchObject({ installUrl: "https://www.icloud.com/shortcuts/test" });
   });
@@ -64,7 +64,7 @@ describe("GET /api/phone-actions/:code", () => {
 describe("POST /api/phone-actions/:code/report", () => {
   it("accepts a step report after fetch, 400 on a bad body, 410 when unknown", async () => {
     const code = newCode([{ type: "get_battery" }, { type: "get_location" }]);
-    await request(app).get(`/api/phone-actions/${code}`).set("X-Marlowe-Shortcut", "2");
+    await request(app).get(`/api/phone-actions/${code}`).set("X-Marlo-Shortcut", "2");
     expect((await request(app).post(`/api/phone-actions/${code}/report`).send({ index: 0, ok: true, value: 80 })).status).toBe(200);
     expect((await request(app).post(`/api/phone-actions/${code}/report`).send({ index: "x" })).status).toBe(400);
     expect((await request(app).post(`/api/phone-actions/nope/report`).send({ index: 0, ok: true })).status).toBe(410);

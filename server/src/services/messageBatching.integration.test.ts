@@ -1,7 +1,7 @@
 // End-to-end regression for the mid-reply race, against the real SQLite history (messageBatching.test.ts
-// covers the same logic with a mocked history). A message that arrives while Marlowe is still
+// covers the same logic with a mocked history). A message that arrives while Marlo is still
 // generating a reply is saved BEFORE that reply, so matching batched messages to history by position
-// sent Claude a request ending on Marlowe's own reply — or overwrote that reply with the new message's
+// sent Claude a request ending on Marlo's own reply — or overwrote that reply with the new message's
 // quoted/document context.
 import { it, expect, vi } from "vitest";
 

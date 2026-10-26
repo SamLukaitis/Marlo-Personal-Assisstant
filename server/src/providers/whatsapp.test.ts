@@ -323,8 +323,8 @@ describe("extractIncomingMessages — unsupported message types", () => {
 });
 
 describe("extractIncomingMessages — which of our numbers it was sent to", () => {
-  // Joyce's number sits on the same Meta app as Marlowe's, so Marlowe's webhook can receive
-  // messages meant for her. Marlowe must ignore those rather than answer them.
+  // Joyce's number sits on the same Meta app as Marlo's, so Marlo's webhook can receive
+  // messages meant for her. Marlo must ignore those rather than answer them.
   const MARLOWE = "1237424532795312";
   const JOYCE = "1429960503526492";
   const payloadTo = (phoneNumberId?: string) => ({

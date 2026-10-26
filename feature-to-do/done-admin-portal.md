@@ -14,7 +14,7 @@ the database by hand.
    and can use the Portal at the same time as everyone else, from their own computer. (The
    original owner-only invites/reset-test-phone section in Settings still works exactly as before
    — untouched, still gated to just the one owner account.)
-2. **Unmet requests.** Marlowe now quietly notes it down whenever it has to tell a user it can't
+2. **Unmet requests.** Marlo now quietly notes it down whenever it has to tell a user it can't
    do something (on web or WhatsApp) — a running list of real asks to work from, instead of
    relying on someone remembering to mention it.
 3. **Logs, explained in plain English.** Every server error/warning is now captured automatically.
@@ -41,7 +41,7 @@ tool), and `client/src/pages/PortalPage.tsx`.
 **Known limitations, accepted rather than engineered around:**
 - Unmet-request detection relies on the model noticing and reporting it itself — not a guaranteed
   audit, just a useful signal (same "the model's own judgment, not a hard guarantee" shape as
-  Marlowe's other proactive behaviors, e.g. the `remember` tool).
+  Marlo's other proactive behaviors, e.g. the `remember` tool).
 - The usage cost estimate uses a hardcoded approximate price table — worth updating by hand if
   Anthropic's pricing changes; it was never meant to match a real invoice exactly.
 - No live-sync — everyone sees the same shared data, just not instantly; a manual refresh is

@@ -108,7 +108,7 @@ describe("queueForAssistant", () => {
 
   // Regression: overrides used to be matched to "the last N rows" by position. A reply to an
   // earlier message is saved after a message that arrived while that reply was being generated,
-  // so the request ended on Marlowe's own reply (read as a prefill) instead of the user's message.
+  // so the request ended on Marlo's own reply (read as a prefill) instead of the user's message.
   it("puts a batched message after an assistant reply that was saved while it waited", async () => {
     const from = nextPhone();
     vi.mocked(getWhatsAppHistory).mockReturnValue([

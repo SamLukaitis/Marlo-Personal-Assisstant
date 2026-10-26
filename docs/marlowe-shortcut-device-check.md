@@ -1,8 +1,8 @@
-# Marlowe Shortcut: device check
+# Marlo Shortcut: device check
 
 Build the Shortcut from `docs/marlowe-shortcut-build-guide.md`, set `MARLOWE_SHORTCUT_ICLOUD_URL` and
 `MARLOWE_SHORTCUT_VERSION=1` on staging, then do this on a real **iPhone** (iPhone only). For each
-step type, ask Marlowe on WhatsApp for an action containing that step and tap the link there; then
+step type, ask Marlo on WhatsApp for an action containing that step and tap the link there; then
 repeat from the web app. Fill in the table. If a step misbehaves, fix the Shortcut, or the field
 names in `server/src/services/phoneSteps.ts` plus its tests. Check the Portal "Phone actions" tab
 shows each result.
@@ -44,7 +44,7 @@ Cell values: Y / N / n/a.
 | Link preview didn't use up the code | | |
 | Second tap says already used | | |
 | Old version header gets update prompt | | |
-| Airplane mode: Couldn't reach Marlowe, link still works after | | |
+| Airplane mode: Couldn't reach Marlo, link still works after | | |
 | Run killed mid-way → failure message within 10 min | | |
 
 Things to watch in particular: whether WhatsApp adds a Safari "Open in Shortcuts?" prompt, whether
@@ -56,4 +56,4 @@ How to run the trickier checks:
 - **Old version header:** in your copy of the Shortcut, temporarily set the header value to `0`, tap
   a fresh link, and confirm the "needs an update" alert and the install page open.
 - **Killed mid-way:** start a multi-step action, force-quit Shortcuts after the first step, and wait.
-  The run fails after 5 minutes of silence; Marlowe should message you within 10 minutes.
+  The run fails after 5 minutes of silence; Marlo should message you within 10 minutes.

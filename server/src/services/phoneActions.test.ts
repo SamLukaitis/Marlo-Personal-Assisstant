@@ -23,7 +23,7 @@ describe("createPhoneAction", () => {
     const { code, url, summary } = make(u.id);
     expect(code).toMatch(/^[A-Za-z0-9_-]{22}$/);
     expect(url).toMatch(new RegExp(`/a/${code}$`));
-    expect(summary).toEqual(["set an alarm for 05:15", "send Marlowe your battery level"]);
+    expect(summary).toEqual(["set an alarm for 05:15", "send Marlo your battery level"]);
     const row = getPhoneActionByCodeHash(pa.hashCode(code))!;
     expect(row.codeHash).not.toContain(code);
     expect(row.expiresAt).toBe(T0 + pa.CHAT_TTL_MS);
@@ -39,7 +39,7 @@ describe("createPhoneAction", () => {
 
   it("run url carries the fetch url as Shortcut input", () => {
     expect(pa.shortcutRunUrl("abc")).toBe(
-      `shortcuts://run-shortcut?name=Marlowe&input=text&text=${encodeURIComponent(pa.actionFetchUrl("abc"))}`
+      `shortcuts://run-shortcut?name=Marlo&input=text&text=${encodeURIComponent(pa.actionFetchUrl("abc"))}`
     );
   });
 });

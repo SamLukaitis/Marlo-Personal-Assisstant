@@ -1,5 +1,5 @@
-// The trips a member's Marlowe has shared with the family: dates, and the country only if the
-// person allowed it. Nothing else is stored here, no booking data and no Marlowe ids; the bridge
+// The trips a member's Marlo has shared with the family: dates, and the country only if the
+// person allowed it. Nothing else is stored here, no booking data and no Marlo ids; the bridge
 // (src/bridge/) is what writes and removes these rows.
 import { decryptFor, encryptFor } from "./familyKey.js";
 import type { FamilySession } from "./familyDb.js";
@@ -30,7 +30,7 @@ export function saveMemberTrip(
   return Number(res.lastInsertRowid);
 }
 
-/** Changes a trip this member's Marlowe shared. Refuses anyone else's row. */
+/** Changes a trip this member's Marlo shared. Refuses anyone else's row. */
 export function updateMemberTrip(
   session: FamilySession,
   tripId: number,
@@ -48,7 +48,7 @@ export function updateMemberTrip(
   return res.changes > 0;
 }
 
-/** Removes a trip this member's Marlowe shared. Refuses anyone else's row. */
+/** Removes a trip this member's Marlo shared. Refuses anyone else's row. */
 export function deleteMemberTrip(session: FamilySession, tripId: number): boolean {
   return (
     session.db.prepare(`DELETE FROM member_trips WHERE id = ? AND member_id = ?`).run(tripId, session.actor.id)

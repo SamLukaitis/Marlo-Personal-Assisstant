@@ -1,6 +1,6 @@
-// Works out a person's trips from their saved bookings, and which country a trip is in. Marlowe
+// Works out a person's trips from their saved bookings, and which country a trip is in. Marlo
 // has no trip object of its own: a trip is a hotel stay or a run of flights close in time, derived
-// each time it's needed. This never leaves Marlowe; what may be shared with a family, and when, is
+// each time it's needed. This never leaves Marlo; what may be shared with a family, and when, is
 // decided by src/bridge/.
 import Anthropic from "@anthropic-ai/sdk";
 import { listEntities, recordApiUsage } from "../db/store.js";

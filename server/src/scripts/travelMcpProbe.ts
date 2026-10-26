@@ -1,4 +1,4 @@
-// Manual live check: can Marlowe's server call these public travel MCP servers with no per-user
+// Manual live check: can Marlo's server call these public travel MCP servers with no per-user
 // sign-in? Connects anonymously, prints each server's tools with their input schemas, then (if
 // given) calls one tool and prints the raw result. Not part of the test suite (hits real servers).
 //   npm run travel:probe                                   — list tools on every server

@@ -494,7 +494,7 @@ function systemPrompt(
       "something again because it appears earlier in the conversation. Those notes are written " +
       "for you automatically; never write one yourself.",
     "",
-    "Members can let their own Marlowe (a private assistant of theirs) tell you when they're away " +
+    "Members can let their own Marlo (a private assistant of theirs) tell you when they're away " +
       "and whether they're free. For who is away or whether dates work, call who_is_away or " +
       "check_availability and say only what they return: never where someone is beyond the country " +
       "given, never why someone is busy, and never guess about anyone they say nothing about. If " +

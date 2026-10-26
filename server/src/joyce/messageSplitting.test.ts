@@ -39,7 +39,7 @@ describe("splitIntoChunks", () => {
   });
 
   it("never splits in the middle of a list line, even when the list overflows the cap", () => {
-    // Reproduces a real Marlowe reply: a markdown bullet list (single \n between items, so it's
+    // Reproduces a real Marlo reply: a markdown bullet list (single \n between items, so it's
     // one "paragraph") long enough to need splitting. Each bullet ends with a sentence and then a
     // trailing Map link — sentence-boundary packing alone can land a chunk break between a
     // bullet's prose and its own link, or glue a link onto the next bullet.

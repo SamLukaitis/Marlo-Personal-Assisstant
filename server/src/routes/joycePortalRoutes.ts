@@ -22,14 +22,14 @@ import {
 import { estimateCost } from "./portalRoutes.js";
 import type { AuthedRequest } from "../middleware/auth.js";
 
-// Joyce's admin portal: the same sections as Marlowe's Portal (portalRoutes.ts) for the parts
+// Joyce's admin portal: the same sections as Marlo's Portal (portalRoutes.ts) for the parts
 // that apply to her — flagged requests, a to-do list, server logs and API usage — plus her own
 // Settings. Every route
-// returns the same shape as its Marlowe counterpart, so the client renders both with the same
+// returns the same shape as its Marlo counterpart, so the client renders both with the same
 // components (client/src/pages/PortalPage.tsx).
 //
-// This file lives outside src/joyce/ on purpose: it needs Marlowe's admin auth and users table,
-// and Joyce's own code isn't allowed to import Marlowe's. Nothing here can reach a family's data
+// This file lives outside src/joyce/ on purpose: it needs Marlo's admin auth and users table,
+// and Joyce's own code isn't allowed to import Marlo's. Nothing here can reach a family's data
 // — adminRecords.ts holds only flagged-request summaries (with an anonymous family label) and
 // token counts.
 //
@@ -46,8 +46,8 @@ function parseId(raw: string): number | null {
 }
 
 // --- Flagged requests ---------------------------------------------------------------------------
-// Shaped like Marlowe's unmet requests. `channel` carries the anonymous family label, which the
-// client shows in the same badge Marlowe uses for "whatsapp"/"web".
+// Shaped like Marlo's unmet requests. `channel` carries the anonymous family label, which the
+// client shows in the same badge Marlo uses for "whatsapp"/"web".
 
 function flaggedRequestsForPortal(includeResolved: boolean) {
   const emailById = new Map<number, string | null>();
@@ -183,7 +183,7 @@ joycePortalRoutes.put("/settings", (req, res) => {
 });
 
 // --- To-do list ---------------------------------------------------------------------------------
-// Marlowe's admin to-do table, scoped to product "joyce" so the two lists stay separate.
+// Marlo's admin to-do table, scoped to product "joyce" so the two lists stay separate.
 
 joycePortalRoutes.get("/todos", (req, res) => {
   res.json(listAdminTodos(adminId(req), "joyce"));

@@ -1,5 +1,5 @@
 // Product-update announcements: an admin writes one in the Portal's Updates tab
-// (routes/portalRoutes.ts) and it goes to every Marlowe user's WhatsApp. Joyce families aren't
+// (routes/portalRoutes.ts) and it goes to every Marlo user's WhatsApp. Joyce families aren't
 // included; she has her own number and her own users.
 //
 // WhatsApp only allows free-form text within 24h of the person's last message. Past that, the
@@ -27,14 +27,14 @@ export const MAX_ANNOUNCEMENT_CHARS = 900;
 
 const OPT_OUT_SETTING = "product_updates";
 const OPT_OUT_LINE = 'Reply "stop updates" if you\'d rather not get these.';
-const FREE_FORM_HEADING = "*What's new in Marlowe*";
+const FREE_FORM_HEADING = "*What's new in Marlo*";
 
 const STOP_TRIGGERS = new Set(["stop updates", "stop update", "unsubscribe updates", "no more updates"]);
 const START_TRIGGERS = new Set(["start updates", "resume updates"]);
 
 export const STOPPED_REPLY =
-  "Done. You won't get Marlowe's update announcements any more. Your briefings and alerts are unchanged. Reply \"start updates\" to turn them back on.";
-export const STARTED_REPLY = "Done. You'll get Marlowe's update announcements again.";
+  "Done. You won't get Marlo's update announcements any more. Your briefings and alerts are unchanged. Reply \"start updates\" to turn them back on.";
+export const STARTED_REPLY = "Done. You'll get Marlo's update announcements again.";
 
 function normalise(text: string): string {
   return text.trim().toLowerCase().replace(/[.!]+$/, "");
@@ -84,7 +84,7 @@ export function validateAnnouncement(raw: unknown): string {
 
 async function sendOne(phone: string, text: string): Promise<void> {
   const freeForm = `${FREE_FORM_HEADING}\n\n${text}\n\n${OPT_OUT_LINE}`;
-  // The template supplies its own "What's new in Marlowe:" lead-in.
+  // The template supplies its own "What's new in Marlo:" lead-in.
   await sendProactiveMessage(phone, freeForm, "announcement", undefined, `${text} ${OPT_OUT_LINE}`);
 }
 

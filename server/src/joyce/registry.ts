@@ -16,9 +16,9 @@ import { newFamilySalt, phoneLookupHash, SALT_LENGTH } from "./familyKey.js";
 //   - the encryption salt, which is useless on its own — deriving the key also needs
 //     JOYCE_MASTER_KEY, which is env-only and never written to disk by this server.
 //
-// It is also separate from Marlowe's app.db on purpose. Joyce has no import of ../db/store.js
+// It is also separate from Marlo's app.db on purpose. Joyce has no import of ../db/store.js
 // anywhere in this directory, so there is no code path by which a Joyce request can read
-// Marlowe's tables, and none by which Marlowe can read a family's.
+// Marlo's tables, and none by which Marlo can read a family's.
 
 export const JOYCE_DIR = path.join(process.env.DATA_DIR ?? path.join(process.cwd(), "data"), "joyce");
 const joyceDir = JOYCE_DIR;
@@ -71,7 +71,7 @@ registry.exec(`
   );
 
   -- Inbound WhatsApp message ids already handled, so Meta's webhook retries don't replay a
-  -- message. Joyce's own copy — sharing Marlowe's would be a cross-product dependency.
+  -- message. Joyce's own copy — sharing Marlo's would be a cross-product dependency.
   CREATE TABLE IF NOT EXISTS seen_wamids (
     wamid TEXT PRIMARY KEY,
     seen_at INTEGER NOT NULL
@@ -351,7 +351,7 @@ export function leaveFamily(normalizedPhone: string): boolean {
 }
 
 // Long enough to tap the link and get through Google's screens, short enough that a link found
-// later in a forwarded chat or a phone's history is dead. Same window as Marlowe's connect links.
+// later in a forwarded chat or a phone's history is dead. Same window as Marlo's connect links.
 export const GOOGLE_CONNECT_TOKEN_TTL_MS = 10 * 60 * 1000;
 
 function googleConnectTokenHash(token: string): string {

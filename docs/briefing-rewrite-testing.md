@@ -140,7 +140,7 @@ it as many times as you like — each press is a fresh build.
 
 > **If you skip step 3** you'll get something that looks broken: one long unbroken line starting
 > `[template marlowe_digest]`. That's not a bug. WhatsApp only allows free-form messages within 24
-> hours of you last messaging Marlowe; outside that window it has to use a pre-approved template,
+> hours of you last messaging Marlo; outside that window it has to use a pre-approved template,
 > which strips all the line breaks. It's what a real user who hasn't messaged in a day actually
 > receives — worth seeing once, but not what you want to judge the writing on.
 
@@ -194,7 +194,7 @@ This is not finished. Known gaps, in the order I'd tackle them:
    messages every morning with no visible way to stop them. This is very likely why users called it
    annoying and couldn't change it.
 3. **The digest's real controls aren't in the UI.** Daily-summary-vs-instant, and what time it
-   arrives, are only reachable by asking Marlowe in chat. The Settings page just tells people to go
+   arrives, are only reachable by asking Marlo in chat. The Settings page just tells people to go
    ask. Anyone who wants *less* rather than *none* has to know that's possible.
 4. **Why you got no briefing on your own number.** Three of the six conditions that decide whether
    it sends skip silently, so the logs can't tell you which one stopped you. Most likely the

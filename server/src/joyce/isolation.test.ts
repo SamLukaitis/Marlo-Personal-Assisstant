@@ -181,7 +181,7 @@ describe("passing messages between family members", () => {
   });
 });
 
-describe("Marlowe and Joyce webhook separation", () => {
+describe("Marlo and Joyce webhook separation", () => {
   const payload = (phoneNumberId: string | undefined) => ({
     entry: [
       {

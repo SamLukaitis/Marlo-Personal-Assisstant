@@ -36,7 +36,7 @@ describe("sendJoyceReply", () => {
     expect(sent).toEqual(["text: One.", "text: Two.", "buttons: Pick one? [A | B]"]);
   });
 
-  it("splits a long reply into separate messages at its paragraphs, like Marlowe", async () => {
+  it("splits a long reply into separate messages at its paragraphs, like Marlo", async () => {
     await send("447000000001", [{ text: "First paragraph.\n\nSecond paragraph." }]);
     expect(sent).toEqual(["text: First paragraph.", "text: Second paragraph."]);
   });

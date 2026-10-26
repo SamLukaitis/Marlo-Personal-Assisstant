@@ -226,7 +226,7 @@ describe("checkForImportantEmails", () => {
     expect(candidates.map((c: { subject: string }) => c.subject)).toEqual(["Out for delivery"]);
   });
 
-  // Google/Microsoft's "an app was granted access" notification fires for Marlowe's own OAuth
+  // Google/Microsoft's "an app was granted access" notification fires for Marlo's own OAuth
   // connect/reconnect too — expected and self-caused, not a security event — but the classifier
   // can't tell that apart from a real new-sign-in alert from subject/snippet alone.
   it("filters out a notification about our own app being granted access, before it reaches the classifier", async () => {
@@ -261,7 +261,7 @@ describe("checkForImportantEmails", () => {
   });
 
   // A one-time code is meaningless by the time a WhatsApp notification relays it (usually
-  // already expired), and forwarding one reads as Marlowe leaking a security-sensitive code out
+  // already expired), and forwarding one reads as Marlo leaking a security-sensitive code out
   // of the user's inbox — hardcoded exclusion, not left to the classifier's judgement.
   it("never classifies or alerts on a verification/login code email", async () => {
     const user = findOrCreateUserByEmail(uniqueEmail("verification-code"));

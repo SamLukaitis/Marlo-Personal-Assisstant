@@ -1,4 +1,4 @@
-// The register every proactive message Marlowe sends is written in — the morning briefing
+// The register every proactive message Marlo sends is written in — the morning briefing
 // (briefing.ts) and the evening round-up of who emailed (emailDigest.ts).
 //
 // It lives here, shared, because the two were drifting by design otherwise: the briefing was
@@ -17,7 +17,7 @@ export interface ProactiveVoice {
   persona: string;
 }
 
-// "You are Marlowe, Jake's assistant, <job>." plus whatever the user said about how they want to
+// "You are Marlo, Jake's assistant, <job>." plus whatever the user said about how they want to
 // be worked with. `job` completes the sentence and should read as a continuation, e.g.
 // "sending them a short message to start the day".
 export function voiceOpening({ assistantName, userName, persona }: ProactiveVoice, job: string): string {

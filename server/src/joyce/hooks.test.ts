@@ -61,7 +61,7 @@ describe("family hooks", () => {
   });
 });
 
-describe("notes handed over by Marlowe", () => {
+describe("notes handed over by Marlo", () => {
   it("can be taken back by the member who handed them over, and nothing else can", () => {
     const { session: ana, joinCode } = memberOf("15553000010", "Cy");
     expect(joinFamilyByCode("15553000011", joinCode).ok).toBe(true);

@@ -304,7 +304,7 @@ describe("availability", () => {
     expect(await resolveAvailability("447000000000", "2099-08-14", "2099-08-21", "UTC")).toEqual({ status: "not_sure" });
   });
 
-  it("reads the same to Joyce whether someone has no Marlowe, has it off, or the read failed", async () => {
+  it("reads the same to Joyce whether someone has no Marlo, has it off, or the read failed", async () => {
     const { ana, asBen } = await linked();
     events.mockResolvedValue({ events: [], complete: false });
     const failed = await checkAvailability(asBen(), "2099-08-14", "2099-08-21");

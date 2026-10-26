@@ -17,8 +17,8 @@ import { recordJoyceUsage } from "./adminRecords.js";
 // is always rebuilt from the session — so a document row can't point at another family's folder,
 // and if one somehow did, decrypting it with this family's key would throw rather than leak.
 //
-// This is Joyce's own lean take on Marlowe's services/documents.ts, not an import of it (see the
-// boundary test in onboarding.test.ts). Marlowe's version also pulls travel dates, receipts and
+// This is Joyce's own lean take on Marlo's services/documents.ts, not an import of it (see the
+// boundary test in onboarding.test.ts). Marlo's version also pulls travel dates, receipts and
 // bookings out of each file; Joyce just needs the family to be able to find things again.
 
 const MODEL = process.env.JOYCE_MODEL ?? "claude-sonnet-5";

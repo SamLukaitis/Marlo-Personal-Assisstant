@@ -229,7 +229,7 @@ export function resolveRegistrationUser(phone: string, email: string): Registrat
 }
 
 const ACCOUNT_EXISTS_WHATSAPP_TEXT =
-  "That email already belongs to a Marlowe account I can't confirm is yours. Sign in on the website the way you did before, then add this number from Settings.";
+  "That email already belongs to a Marlo account I can't confirm is yours. Sign in on the website the way you did before, then add this number from Settings.";
 
 // The other refusal: nobody holds the address they just connected — their own account simply
 // already has one. Naming it is the whole point, since the generic message above had them hunting
@@ -462,7 +462,7 @@ authRoutes.get("/auth/google/callback", async (req, res) => {
         addPhoneNumberForUser(user.id, reg.phone);
       } catch {
         res.redirect(`${CLIENT_URL}/connected?error=phone_taken`);
-        sendScriptedText(reg.phone, "This WhatsApp number is already connected to a different Marlowe account.").catch(
+        sendScriptedText(reg.phone, "This WhatsApp number is already connected to a different Marlo account.").catch(
           () => {}
         );
         return;
@@ -611,7 +611,7 @@ authRoutes.get("/auth/microsoft/callback", async (req, res) => {
       // either branch below — NOT only on the resolveRegistrationUser (resolved === "none") path.
       // resolveMicrosoftUser resolves from user_identities (authRoutes.ts above), which survives
       // deleteAccount (accountRoutes.ts): a user who connects Outlook, later disconnects the
-      // mailbox, then asks Marlowe to connect email again reaches the `else` branch below with
+      // mailbox, then asks Marlo to connect email again reaches the `else` branch below with
       // listAccounts(userId) empty but resolved !== "none". Reading it only inside the "none"
       // branch left that case permanently false, which made startPostConnectSetup run the full
       // fresh-signup chain (including the topics overwrite Task 8 exists to prevent) on an
@@ -633,7 +633,7 @@ authRoutes.get("/auth/microsoft/callback", async (req, res) => {
         addPhoneNumberForUser(userId, reg.phone);
       } catch {
         res.redirect(`${CLIENT_URL}/connected?error=phone_taken`);
-        sendScriptedText(reg.phone, "This WhatsApp number is already connected to a different Marlowe account.").catch(
+        sendScriptedText(reg.phone, "This WhatsApp number is already connected to a different Marlo account.").catch(
           () => {}
         );
         return;

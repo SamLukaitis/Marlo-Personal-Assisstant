@@ -1,6 +1,6 @@
 # WhatsApp: going from Meta's test number to a live business number
 
-Written 2026-09-14, the day Marlowe moved from Meta's free test number to the verified
+Written 2026-09-14, the day Marlo moved from Meta's free test number to the verified
 business number `+44 7552 639982`. Part 1 is the incident write-up; Part 2 is the reusable
 step-by-step for doing this again on any project; Part 3 is what it would take to move the whole
 thing to a different company.
@@ -22,13 +22,13 @@ your dashboard, and does **not** do it for a WABA created through business verif
 
 ## Two things Meta never explains properly
 
-### What a "message template" is, and why Marlowe needs two
+### What a "message template" is, and why Marlo needs two
 
 WhatsApp has two kinds of business message:
 
 - **Replies inside the 24-hour window.** Once a person messages your number, you can send them
   anything you like (free text, buttons, files) for 24 hours after their *last* message. Every
-  ordinary Marlowe reply is this kind. No template involved.
+  ordinary Marlo reply is this kind. No template involved.
 - **Business-initiated messages.** Anything you send when that window is closed, e.g. the
   7 a.m. briefing to someone who last messaged you yesterday afternoon, or an important-email
   alert at lunchtime. Meta only allows these if the message is a **template**: a fixed piece of
@@ -36,12 +36,12 @@ WhatsApp has two kinds of business message:
   at send time; the surrounding wording cannot change. This is Meta's anti-spam rule, and it
   is why WhatsApp marketing spam is rarer than SMS spam.
 
-Marlowe has exactly two, both category *Utility* (transactional, not marketing):
+Marlo has exactly two, both category *Utility* (transactional, not marketing):
 
 | Template | Fixed text | Variable | Used for |
 |---|---|---|---|
-| `marlowe_alert` | "Update from Marlowe: … Reply to this chat with any questions." | `update_text` | Important-email pings, Schengen warnings, reminders, any short one-off push |
-| `marlowe_digest` | "Your Marlowe briefing: … Tap below to see the full details." + an **Open Marlowe** button | `briefing_text` | The scheduled daily briefing |
+| `marlowe_alert` | "Update from Marlo: … Reply to this chat with any questions." | `update_text` | Important-email pings, Schengen warnings, reminders, any short one-off push |
+| `marlowe_digest` | "Your Marlo briefing: … Tap below to see the full details." + an **Open Marlo** button | `briefing_text` | The scheduled daily briefing |
 
 `server/src/services/outbound.ts` decides per message: if the person wrote in the last 24
 hours, send free text; otherwise send the template with the same content squeezed into the
@@ -54,8 +54,8 @@ wording is promotional (then it reclassifies to Marketing, which costs more per 
 The "5 recipients" cap was a property of Meta's **test number** only. It is gone. With the
 live number:
 
-- **Inbound is unlimited.** Anyone in the world can message the number, and Marlowe can reply
-  to all of them freely inside each person's 24-hour window. Adding users to Marlowe is
+- **Inbound is unlimited.** Anyone in the world can message the number, and Marlo can reply
+  to all of them freely inside each person's 24-hour window. Adding users to Marlo is
   now purely an invite in the app, no Meta step.
 - **Outbound business-initiated messages are capped by a "messaging limit tier".** This is
   the number of *distinct people* you can start a template conversation with in a rolling
@@ -150,7 +150,7 @@ Do these in order. Steps 1–3 involve waiting on Meta; start them first.
    `WHATSAPP_VERIFY_TOKEN` stay the same because they belong to the app, not the number. Set
    them in **both** Railway (Variables tab, then redeploy) and `server/.env`.
 9. **Recreate message templates on the live WABA.** Every template the code sends must exist
-   and be APPROVED on the WABA the live number belongs to. For Marlowe that is
+   and be APPROVED on the WABA the live number belongs to. For Marlo that is
    `marlowe_alert` and `marlowe_digest`, both `en_US`, category Utility, with **named**
    parameters (`update_text`, `briefing_text`). The exact bodies are in the comment above
    `sendWhatsAppTemplate` in `server/src/providers/whatsapp.ts`. Approval usually takes minutes
@@ -164,7 +164,7 @@ Do these in order. Steps 1–3 involve waiting on Meta; start them first.
 12. **Verify end to end.** Run `npm run whatsapp:check -- <WABA_ID>` (all ticks), send a message
     to the live number, and confirm a `POST /webhooks/whatsapp` in Railway's HTTP logs plus no
     `whatsapp:` errors in the deploy logs.
-13. **Tell your users.** They must save and message the new number. Their Marlowe registration
+13. **Tell your users.** They must save and message the new number. Their Marlo registration
     does not change (it is keyed on *their* phone number), but the 24-hour service window
     restarts from their first message to the new number.
 

@@ -29,7 +29,7 @@ const TEMPLATE_BY_KIND: Record<ProactiveMessageKind, WhatsAppTemplateName> = {
 };
 
 // Meta caps a template's body component at 1024 chars *including* the substituted variable
-// values. The static lead-in text ("Update from Marlowe:\n" / "Your Marlowe briefing:\n") is
+// values. The static lead-in text ("Update from Marlo:\n" / "Your Marlo briefing:\n") is
 // short, so a flat 1000-char budget for the variable leaves a safe margin without having to
 // track each template's exact prefix length here.
 const MAX_TEMPLATE_PARAM_LENGTH = 1000;
@@ -74,7 +74,7 @@ export async function sendProactiveMessage(
   // is about, so a later "reply yes" can act on it.
   historyNote?: string,
   // What goes into the template's variable instead of `text`, for a message whose template already
-  // carries part of the wording (an announcement's "What's new in Marlowe:" lead-in).
+  // carries part of the wording (an announcement's "What's new in Marlo:" lead-in).
   templateText?: string
 ): Promise<void> {
   const wamid = await sendProactive(phone, text, kind, templateText);

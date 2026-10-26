@@ -101,7 +101,7 @@ describe("resolveQuotedMessageContext", () => {
     expect(context).toMatch(/about that part/i);
   });
 
-  it("resolves a swipe on a file Marlowe sent back to that document's content", () => {
+  it("resolves a swipe on a file Marlo sent back to that document's content", () => {
     vi.mocked(getDocumentByWamid).mockReturnValue(undefined);
     vi.mocked(getSentDocumentByWamid).mockReturnValue({
       id: 7,
@@ -126,7 +126,7 @@ describe("resolveQuotedMessageContext", () => {
     expect(resolveQuotedMessageContext(1, "wamid.mine", undefined, "44700")).toMatch(/of their own: "book the 6pm bus"/);
   });
 
-  it("offers Marlowe's recent messages to match against when the quote can't be resolved, and forbids guessing", () => {
+  it("offers Marlo's recent messages to match against when the quote can't be resolved, and forbids guessing", () => {
     vi.mocked(getDocumentByWamid).mockReturnValue(undefined);
     vi.mocked(getWhatsAppMessageByWamid).mockReturnValue(undefined);
     vi.mocked(getRecentWhatsAppMessagesForOwner).mockReturnValue([

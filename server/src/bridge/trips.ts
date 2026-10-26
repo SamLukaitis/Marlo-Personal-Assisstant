@@ -282,8 +282,8 @@ export function addCountriesToSharedTrips(ownerId: number, phone: string, sessio
 
 /**
  * What Joyce is told about someone's dates. Anything short of a clear answer is not_sure: no
- * Marlowe, availability off, no calendar, a calendar that failed, or a phone that isn't the one
- * that consented. The days Marlowe knows about a trip count as clashes whether or not it was shared.
+ * Marlo, availability off, no calendar, a calendar that failed, or a phone that isn't the one
+ * that consented. The days Marlo knows about a trip count as clashes whether or not it was shared.
  */
 export async function resolveAvailability(
   phone: string,

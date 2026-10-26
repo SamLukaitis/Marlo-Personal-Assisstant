@@ -8,7 +8,7 @@ export const settingsRoutes = Router();
 settingsRoutes.get("/api/settings", (req, res) => {
   const ownerId = (req as unknown as AuthedRequest).userId;
   res.json({
-    assistantName: getSetting(ownerId, "assistant_name") ?? "Marlowe",
+    assistantName: getSetting(ownerId, "assistant_name") ?? "Marlo",
     persona: getSetting(ownerId, "persona") ?? "",
     // Normally captured once via the ask_name WhatsApp onboarding step (postConnectSetup.ts) —
     // exposed here too so a user who finished onboarding before that step existed (or skipped it)

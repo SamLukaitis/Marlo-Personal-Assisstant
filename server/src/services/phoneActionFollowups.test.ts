@@ -163,7 +163,7 @@ describe("phonePromptSection", () => {
 
   it("tells the model about the install link when the Shortcut never ran", () => {
     const u = store.findOrCreateUserByEmail(`phone-follow-new-${Date.now()}@example.com`);
-    expect(phonePromptSection(u.id)).toMatch(/hasn't run the Marlowe Shortcut yet/);
+    expect(phonePromptSection(u.id)).toMatch(/hasn't run the Marlo Shortcut yet/);
   });
 
   it("lists only the steps the user's Shortcut version can run", () => {

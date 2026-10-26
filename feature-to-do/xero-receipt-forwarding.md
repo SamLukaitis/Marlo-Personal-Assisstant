@@ -1,14 +1,14 @@
 # Forward receipts to Xero
 
-Right now Marlowe will digest a receipt, store it, and create the relevant events and entities
+Right now Marlo will digest a receipt, store it, and create the relevant events and entities
 from it — it tracks your spending. It doesn't do anything with Xero yet.
 
-The idea: give Marlowe your Xero forwarding email address and have it forward receipts there
+The idea: give Marlo your Xero forwarding email address and have it forward receipts there
 automatically, so they land in Xero without you doing anything extra. That's the right end state
 — it's how Xero's own email-in feature is meant to be used — but it's a bit more than flipping a
 switch. Here's what's actually involved, in plain terms:
 
-1. **Give Marlowe the ability to actually send an email. ✅ Done (2026-08-25).** Built as internal
+1. **Give Marlo the ability to actually send an email. ✅ Done (2026-08-25).** Built as internal
    plumbing only (`googleSendMessage` in `server/src/providers/google.ts`, dispatched via
    `hubSendMessage` in `server/src/services/hub.ts`) — Gmail accounts can send now, using the
    permission you already granted (no reconnect needed).
@@ -18,15 +18,15 @@ switch. Here's what's actually involved, in plain terms:
    thing allowed to trigger a send is the specific, hardcoded "forward this receipt to your stored
    Xero address" action from step 3. The recipient address always comes from what's saved on your
    account, never from something typed into a conversation, so there's no scenario (including
-   someone trying to trick Marlowe in chat) where it sends anywhere other than your one Xero
+   someone trying to trick Marlo in chat) where it sends anywhere other than your one Xero
    address. This directly answers the "only Xero, not runaway email access" concern.
 
-2. **Give Marlowe the ability to send from Outlook/Microsoft too. ✅ Done (2026-09-26).** Outlook
+2. **Give Marlo the ability to send from Outlook/Microsoft too. ✅ Done (2026-09-26).** Outlook
    now asks for send permission (`microsoftSendMessage` in `server/src/providers/microsoft.ts`).
    Forwarding uses Gmail if connected, otherwise Outlook. Outlook accounts connected before this
    are only asked to reconnect the first time a receipt actually needs forwarding — never up front.
 
-3. **Somewhere to store your Xero forwarding address. ✅ Done (2026-08-25).** Ask Marlowe to
+3. **Somewhere to store your Xero forwarding address. ✅ Done (2026-08-25).** Ask Marlo to
    "connect Xero" / "set up Xero" in chat — it explains where to find the forwarding address in
    Xero, asks you to paste it, and saves it once you do (`connect_xero` tool in
    `server/src/ai/assistant.ts`, stored via `server/src/services/xero.ts`). It only ever saves an
@@ -34,7 +34,7 @@ switch. Here's what's actually involved, in plain terms:
    forward anything yet; that's step 4.
 
 4. **Decide what gets forwarded, and build the actual forward. ✅ Done (2026-08-25).** Went with
-   the default: forward automatically, no per-item confirmation, but only things Marlowe actually
+   the default: forward automatically, no per-item confirmation, but only things Marlo actually
    filed under the `receipts` category *and* where it successfully pulled a real amount out of it
    (not e.g. a hotel confirmation filed under `travel`, even though those can carry a payment too)
    — and tell you it did it. Built in `server/src/services/xeroForwarding.ts`, triggered right

@@ -1,4 +1,4 @@
-# Generalising to Entities & Links — a build guide for Marlowe
+# Generalising to Entities & Links — a build guide for Marlo
 
 A reference for turning the one hardcoded "entity + link" we already have (`travel_checkins` and
 its `document_id`) into a generic pattern where adding a new kind of thing is *data you add*, not

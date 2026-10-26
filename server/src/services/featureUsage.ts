@@ -1,4 +1,4 @@
-// Feature use: which of Marlowe's tools people actually use, grouped into areas (Email,
+// Feature use: which of Marlo's tools people actually use, grouped into areas (Email,
 // Calendar, Travel…), so we can see where to focus and what nobody touches. Recorded per answered
 // message in ai/assistant.ts (recordFeatureMessage) and shown in the Portal's Feature use tab.
 // Only tool names are kept, never what was said.
@@ -27,15 +27,15 @@ export const FEATURE_AREAS = {
   phone: "Phone actions & app links",
   settings: "Briefings, alerts & setup",
   joyce: "Joyce link",
-  unmet: "Asked for something Marlowe can't do",
-  unsupported: "Sent something Marlowe can't read",
+  unmet: "Asked for something Marlo can't do",
+  unsupported: "Sent something Marlo can't read",
   chat: "Just conversation (no tools)",
 } as const;
 
 export type FeatureArea = keyof typeof FEATURE_AREAS;
 
 // Every assistant tool needs an entry here (featureUsage.test.ts checks). "helper" tools are how
-// Marlowe talks (buttons, reactions, the time) rather than something a person came for, so they
+// Marlo talks (buttons, reactions, the time) rather than something a person came for, so they
 // don't count toward an area: a message that only used helpers counts as "just conversation".
 const TOOL_AREAS: Record<string, FeatureArea | "helper"> = {
   list_recent_messages: "email",
@@ -214,7 +214,7 @@ export interface FeatureUsageSummary {
 }
 
 function areaLabel(area: FeatureArea | "helper" | null): string {
-  if (area === "helper") return "How Marlowe replies";
+  if (area === "helper") return "How Marlo replies";
   if (area === null) return "Other";
   return FEATURE_AREAS[area];
 }

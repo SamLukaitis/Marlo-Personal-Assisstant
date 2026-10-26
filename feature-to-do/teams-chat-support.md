@@ -5,7 +5,7 @@ deliberately left alone, so this is what's known about where it stands.
 
 ## What exists today
 
-Marlowe can list and search Microsoft Teams chats (`list_recent_chats` / `search_chats` in
+Marlo can list and search Microsoft Teams chats (`list_recent_chats` / `search_chats` in
 `server/src/ai/assistant.ts`, backed by `microsoftListChats` / `microsoftSearchChats` in
 `server/src/providers/microsoft.ts`). It's switched on per user as the `teams` tool. It has never
 been tested with real users.

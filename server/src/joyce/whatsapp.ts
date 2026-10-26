@@ -1,15 +1,15 @@
 import crypto from "node:crypto";
 
 // Joyce's own WhatsApp plumbing. This deliberately duplicates a little of
-// providers/whatsapp.ts rather than adding a "which number?" parameter to Marlowe's senders:
+// providers/whatsapp.ts rather than adding a "which number?" parameter to Marlo's senders:
 // a shared sender is a shared code path, and a shared code path is somewhere a future change can
-// accidentally route a family's message out through Marlowe's number or vice versa. Joyce's
+// accidentally route a family's message out through Marlo's number or vice versa. Joyce's
 // number, token and secrets are separate env vars, read only here.
 //
-// The token and app secret fall back to Marlowe's because both are *app*-level credentials on
+// The token and app secret fall back to Marlo's because both are *app*-level credentials on
 // Meta's side — if Joyce's number sits in the same WhatsApp Business Account, they genuinely are
 // the same values. The phone number id never falls back: it is what distinguishes the two
-// numbers, and guessing it wrong would send Joyce's replies from Marlowe's number.
+// numbers, and guessing it wrong would send Joyce's replies from Marlo's number.
 
 const GRAPH_VERSION = "v21.0";
 
@@ -93,7 +93,7 @@ export const JOYCE_WINDOW_CLOSED_ERROR = 131047;
 export const CUSTOMER_SERVICE_WINDOW_MS = 24 * 60 * 60 * 1000;
 
 // Joyce's approved message templates — the only thing WhatsApp lets a business send someone who
-// hasn't messaged in the last 24 hours. Named body variables, like Marlowe's. Created on the
+// hasn't messaged in the last 24 hours. Named body variables, like Marlo's. Created on the
 // WhatsApp Business Account by scripts/createJoyceTemplates.ts; they must be approved by Meta
 // before sending works, and the language here must match what was submitted.
 export const JOYCE_REMINDER_TEMPLATE = {
@@ -245,10 +245,10 @@ interface WebhookPayload {
  * field that says which of our numbers Meta delivered this to.
  *
  * This matters more than it looks. Meta configures a webhook URL per *app*, not per number, so
- * if Joyce's number is added to the same WhatsApp Business Account as Marlowe's, both numbers'
- * messages arrive at both endpoints. Without checking this field, Marlowe would treat a family's
+ * if Joyce's number is added to the same WhatsApp Business Account as Marlo's, both numbers'
+ * messages arrive at both endpoints. Without checking this field, Marlo would treat a family's
  * message to Joyce as an unrecognised number and start its own signup flow at them, and Joyce
- * would answer people trying to reach Marlowe. Both handlers therefore drop anything not
+ * would answer people trying to reach Marlo. Both handlers therefore drop anything not
  * addressed to their own number. See the same guard in routes/whatsappRoutes.ts.
  *
  * Text, button/list replies, photos and documents are extracted. Anything else (voice notes,

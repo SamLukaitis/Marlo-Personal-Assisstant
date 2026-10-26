@@ -1,4 +1,4 @@
-// Hand-off links for apps that don't let us act for a user (Uber, OpenTable, Spotify, …): Marlowe
+// Hand-off links for apps that don't let us act for a user (Uber, OpenTable, Spotify, …): Marlo
 // builds a link that opens the app already filled in and the user confirms there. Pure — no I/O —
 // so every URL format lives here and is pinned by appLinks.test.ts. Each builder starts from its
 // own fixed host; model input only ever goes in through URLSearchParams/encodeURIComponent, so it

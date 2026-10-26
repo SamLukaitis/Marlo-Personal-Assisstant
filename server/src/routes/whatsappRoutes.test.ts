@@ -145,7 +145,7 @@ describe("handleIncoming — help trigger for already-registered users", () => {
 
     const text = vi.mocked(sendWhatsAppMessage).mock.calls[0][1];
     expect(text).not.toContain("What should I call you?");
-    expect(text).not.toContain("Welcome to the Marlowe testing beta");
+    expect(text).not.toContain("Welcome to the Marlo testing beta");
     expect(text).toContain("tell me what you need");
     // The capabilities live on the features page now, not in a hand-kept list.
     expect(text).toMatch(/https?:\/\/\S+\/features/);

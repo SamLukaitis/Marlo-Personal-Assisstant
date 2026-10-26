@@ -1,4 +1,4 @@
-// Moves one Marlowe account from one WhatsApp number to another with nothing else changed — for
+// Moves one Marlo account from one WhatsApp number to another with nothing else changed — for
 // someone whose SIM or WhatsApp number changed. Run by scripts/changePhone.ts (npm run
 // change-phone); the logic lives here so it can be tested.
 //
@@ -8,12 +8,12 @@
 // a future feature can't silently be left behind on the old number.
 //
 // Joyce keeps its own phone-keyed registry (an HMAC of the number, in per-family encrypted
-// databases) which this does NOT touch. If the old number is in a Joyce family, the three Marlowe
+// databases) which this does NOT touch. If the old number is in a Joyce family, the three Marlo
 // tables that mirror that link (family_links, family_link_shares, family_trips) are left on the old
 // number too, so the two sides stay consistent, and the result says so.
 import type Database from "better-sqlite3";
 import { getDb, normalizePhone } from "../db/store.js";
-import { findFamilyForPhone } from "../joyce/registry.js";
+import { isInJoyceFamily } from "../bridge/index.js";
 import { internationalPhoneError } from "./phoneFormat.js";
 
 // Data that follows the person. If the new number already has rows here, nothing is moved: merging
@@ -31,7 +31,7 @@ const MOVE_TABLES = [
 const JOYCE_LINKED_TABLES = ["family_links", "family_link_shares", "family_trips"] as const;
 
 // Bookkeeping about a number rather than a person's data. The new number's rows are stale by
-// definition (e.g. a half-finished registration from messaging Marlowe before this move), so they
+// definition (e.g. a half-finished registration from messaging Marlo before this move), so they
 // are cleared and the old number's rows take their place.
 const TRANSIENT_TABLES = [
   "invited_phones",
@@ -113,13 +113,13 @@ export function changePhone(
     );
   }
 
-  const inJoyce = findFamilyForPhone(oldPhone) !== null;
+  const inJoyce = isInJoyceFamily(oldPhone);
   if (inJoyce) {
     plan.warnings.push(
       `${oldPhone} is in a Joyce family. Joyce isn't moved by this script, so the family link and shared trips stay on ${oldPhone}; the Joyce side needs its own move.`
     );
   }
-  if (findFamilyForPhone(newPhone) !== null) {
+  if (isInJoyceFamily(newPhone)) {
     plan.warnings.push(`${newPhone} is already in a Joyce family.`);
   }
 
@@ -145,7 +145,7 @@ export function changePhone(
     for (const table of [...moving, ...TRANSIENT_TABLES]) {
       db.prepare(`UPDATE "${table}" SET phone = ? WHERE phone = ?`).run(newPhone, oldPhone);
     }
-    // last_inbound_at reset on purpose: the new number has never messaged Marlowe, so there is no
+    // last_inbound_at reset on purpose: the new number has never messaged Marlo, so there is no
     // open 24h window. Carrying the old timestamp would make outbound.ts send free-form text that
     // WhatsApp then rejects, instead of a template.
     db.prepare(`UPDATE ${BINDING_TABLE} SET phone = ?, last_inbound_at = NULL WHERE phone = ?`).run(

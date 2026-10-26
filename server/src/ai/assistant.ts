@@ -957,7 +957,7 @@ const ALWAYS_ON_TOOLS: Anthropic.ToolUnion[] = [
   {
     name: "set_email_alerts",
     description:
-      "Turn the user's email pings on or off, or batch them into a daily digest. There are two independent kinds: `people` — a ping whenever a real person (not a newsletter or notification) emails them; `important` — Marlowe watching automated mail (flights, bookings, bills, renewals, deliveries, security alerts): urgent changes like a flight change come straight away, bookings/bills/renewals become reminders at the right moment, and the rest goes into the briefing or evening summary. Both are on by default, and real people's emails are by default held for one summary message a day (people_mode \"digest\", sent at digest_time, default 21:00); the morning briefing is separate and unaffected. Pass only what the user asked to change: \"stop telling me when people email me\" is people:false alone; \"stop all pings about emails\" / \"no more email alerts\" is both false. \"Ping me the moment someone emails me\" / \"I want every email straight away\" is people_mode:\"instant\"; \"go back to the daily summary\" is people_mode:\"digest\"; \"send the summary at 6pm\" is digest_time:\"18:00\". To stop pings about one sender or one kind of email (\"stop telling me about Railway crash emails\"), use mute_email_alerts instead — never turn a whole kind off for that. If it's unclear which they mean, ask rather than guessing.",
+      "Turn the user's email pings on or off, or batch them into a daily digest. There are two independent kinds: `people` — a ping whenever a real person (not a newsletter or notification) emails them; `important` — Marlo watching automated mail (flights, bookings, bills, renewals, deliveries, security alerts): urgent changes like a flight change come straight away, bookings/bills/renewals become reminders at the right moment, and the rest goes into the briefing or evening summary. Both are on by default, and real people's emails are by default held for one summary message a day (people_mode \"digest\", sent at digest_time, default 21:00); the morning briefing is separate and unaffected. Pass only what the user asked to change: \"stop telling me when people email me\" is people:false alone; \"stop all pings about emails\" / \"no more email alerts\" is both false. \"Ping me the moment someone emails me\" / \"I want every email straight away\" is people_mode:\"instant\"; \"go back to the daily summary\" is people_mode:\"digest\"; \"send the summary at 6pm\" is digest_time:\"18:00\". To stop pings about one sender or one kind of email (\"stop telling me about Railway crash emails\"), use mute_email_alerts instead — never turn a whole kind off for that. If it's unclear which they mean, ask rather than guessing.",
     input_schema: {
       type: "object",
       properties: {
@@ -1296,7 +1296,7 @@ const PHONE_ACTION_TOOLS: Anthropic.Tool[] = [
   {
     name: "make_phone_action",
     description:
-      "Make a one-tap link that runs steps on the user's iPhone through the Marlowe Shortcut. Nothing happens until they tap it — never say it's done. " +
+      "Make a one-tap link that runs steps on the user's iPhone through the Marlo Shortcut. Nothing happens until they tap it — never say it's done. " +
       "Step fields: alarm {time HH:MM, label?} · timer {minutes} · reminder {title, due? YYYY-MM-DDTHH:MM, list?} · calendar_event {title, start, end (YYYY-MM-DDTHH:MM local), location?} · " +
       "focus {name e.g. Work/Sleep/Do Not Disturb, on, until? HH:MM} · low_power/wifi/bluetooth {on} · volume/brightness {percent} · " +
       "text {to (contact name or number), body} · call/facetime {to} · open_url {url https} · directions {destination, mode? drive|walk|transit} · note {title, body} · clipboard {text} · " +
@@ -1379,7 +1379,7 @@ export function buildToolsForOwner(
   return result;
 }
 
-// Every tool Marlowe can offer, for the Portal's Feature use tab: switchedOn is false for one this
+// Every tool Marlo can offer, for the Portal's Feature use tab: switchedOn is false for one this
 // server isn't set up for (no Maps key, no Shortcut…), so it reads as "not available" rather than
 // "nobody wanted it". The escalate tool is how routing works, not a feature, so it's left out.
 export function assistantToolCatalog(): CatalogTool[] {
@@ -1498,7 +1498,7 @@ export async function runTool(
       // Said outright, not a bare null: the model has invented plausible-looking ids and then
       // explained the email anyway. A miss has to read as "you don't have this email".
       if (!message) return { error: MESSAGE_NOT_FOUND_ERROR };
-      // They've now been through this email with Marlowe, so tonight's digest mustn't raise it again.
+      // They've now been through this email with Marlo, so tonight's digest mustn't raise it again.
       dropFromEmailDigest(ownerId, message);
       return messageForModel(message);
     }
@@ -2360,7 +2360,7 @@ function buildRules(enabled: Set<ToolKey>): string {
   const tail = [
     '- When a message reports a document that was just saved (e.g. a WhatsApp photo/PDF), don\'t dump every extracted field back at the user — give a short confirmation of only the key fact(s) (e.g. what it is, and the one or two details most likely to matter, like dates or a confirmation code), then carry out whatever else was asked. Save the full itemized breakdown for if the user explicitly asks to see all the details (e.g. "show me everything on it").',
     '- When one message asks for multiple things (e.g. "save this and also add it to my calendar"), do all of them in that same turn using your tools — don\'t complete only the first one and wait to be asked again for the rest.',
-    "- Messages headed \"What's new in Marlowe\" in the history are product-update announcements the Marlowe team sent to everyone. If the user wants to stop getting them, tell them to reply \"stop updates\" on its own (\"start updates\" turns them back on); that doesn't affect their briefings or alerts.",
+    "- Messages headed \"What's new in Marlo\" in the history are product-update announcements the Marlo team sent to everyone. If the user wants to stop getting them, tell them to reply \"stop updates\" on its own (\"start updates\" turns them back on); that doesn't affect their briefings or alerts.",
     "- When several accounts are connected and the user's request is ambiguous about which one, search across all of them or ask.",
     "- Every message/event/file result carries an accountEmail field. Whenever more than one Gmail/Outlook account is connected and you're discussing, summarizing, or listing specific messages or events, say which inbox (by its email address) each one came from — don't leave the user to guess or assume it's their only/main account.",
   ];
@@ -2370,7 +2370,7 @@ function buildRules(enabled: Set<ToolKey>): string {
 export function buildSystemPrompt(ownerId: number, conversationSummary?: string): string {
   const accounts = listAccounts(ownerId);
   const persona = getSetting(ownerId, "persona");
-  const name = getSetting(ownerId, "assistant_name") ?? "Marlowe";
+  const name = getSetting(ownerId, "assistant_name") ?? "Marlo";
 
   const accountList = accounts.length
     ? accounts
@@ -2643,7 +2643,7 @@ export async function runAssistantChat(
   // Tools this reply used, for the Portal's Feature use tab. Names only, kept for every user.
   const toolsUsed = new Map<string, number>();
   const countTool = (name: string) => toolsUsed.set(name, (toolsUsed.get(name) ?? 0) + 1);
-  // The messages this reply answers: everything since Marlowe last spoke (several, when batched).
+  // The messages this reply answers: everything since Marlo last spoke (several, when batched).
   const lastAssistantIndex = trimmedHistory.map((m) => m.role).lastIndexOf("assistant");
   if (trimmedHistory.slice(lastAssistantIndex + 1).some((m) => m.content.includes(DOCUMENT_SENT_MARKER))) {
     countTool(DOCUMENT_SENT_TOOL);
@@ -2906,7 +2906,7 @@ export async function runAssistantChat(
 // decides" split the rest of the app uses.
 const REGISTRATION_ASSIST_SYSTEM_PROMPTS: Record<"email" | "link" | "provider", string> = {
   email:
-    "You are Marlowe, helping someone finish signing up for a personal WhatsApp assistant. " +
+    "You are Marlo, helping someone finish signing up for a personal WhatsApp assistant. " +
     "They're supposed to reply with the email address they use for Gmail or Outlook so it can " +
     "be connected. Respond briefly — one or two short sentences, plain language, suited to " +
     "someone who isn't very tech-savvy — to what they said, then end by asking again for their " +
@@ -2914,12 +2914,12 @@ const REGISTRATION_ASSIST_SYSTEM_PROMPTS: Record<"email" | "link" | "provider", 
     "never claim it is or isn't, that's decided elsewhere. If they say they have more than one " +
     "email, tell them any address works and they can connect others later.",
   link:
-    "You are Marlowe, helping someone finish signing up for a personal WhatsApp assistant. A " +
+    "You are Marlo, helping someone finish signing up for a personal WhatsApp assistant. A " +
     "one-time link to connect their Gmail/Outlook was already sent to them and they're supposed " +
     "to tap it. Respond briefly — one or two short sentences, plain language — to what they " +
     "said, then remind them to tap the link above, or reply \"resend\" if it expired.",
   provider:
-    "You are Marlowe, helping someone finish signing up for a personal WhatsApp assistant. " +
+    "You are Marlo, helping someone finish signing up for a personal WhatsApp assistant. " +
     "They were just shown two tappable buttons asking whether they use Gmail or Outlook/Hotmail, " +
     "but typed a reply instead of tapping one. Respond briefly — one or two short sentences, " +
     "plain language — to what they said, then ask them to tap Gmail or Outlook above (or say " +
@@ -2944,8 +2944,8 @@ export interface HelpChatTurn {
 }
 
 const HELP_CHAT_SYSTEM_PROMPT =
-  "You are Marlowe, answering questions on Marlowe's public marketing website for a visitor " +
-  "who has not signed in. Marlowe is a personal AI assistant that connects to someone's Gmail " +
+  "You are Marlo, answering questions on Marlo's public marketing website for a visitor " +
+  "who has not signed in. Marlo is a personal AI assistant that connects to someone's Gmail " +
   "or Outlook, calendar, Google Drive or OneDrive, and Microsoft Teams, plus a dedicated " +
   "WhatsApp number — one conversation instead of switching between apps. It gives a daily " +
   "briefing, answers questions about mail/calendar/files, drafts email replies (it only sends " +
@@ -2953,7 +2953,7 @@ const HELP_CHAT_SYSTEM_PROMPT =
   "Drafts), helps move " +
   "meetings, and files forwarded documents like boarding passes or receipts, including tracking " +
   "Schengen 90/180-day limits automatically from tickets already forwarded. Sign-in is with a " +
-  "Google or Microsoft account, no separate password. Marlowe is currently in a closed preview — " +
+  "Google or Microsoft account, no separate password. Marlo is currently in a closed preview — " +
   "only invited email addresses can sign in. " +
   "Answer briefly and helpfully, in plain language, and nudge toward signing in with Google or " +
   "Microsoft when it's a natural next step. You have no access to any real user's account, " +

@@ -7,7 +7,7 @@ import "./joyce-portal.css";
 
 // Joyce's admin portal: the Portal's sections that apply to the family assistant, rendered by the
 // same components against /api/joyce-portal (server/src/routes/joycePortalRoutes.ts), in Joyce's
-// terracotta instead of Marlowe's green. Admin-gated on the server; this check only stops a
+// terracotta instead of Marlo's green. Admin-gated on the server; this check only stops a
 // typed-in URL from showing an empty page.
 
 const SECTIONS = [

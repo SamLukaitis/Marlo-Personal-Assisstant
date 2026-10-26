@@ -146,7 +146,7 @@ portalRoutes.post("/unmet-requests/:id/notes", (req, res) => {
 });
 
 // --- Phone actions ------------------------------------------------------------------------------
-// What testers were offered through the Marlowe Shortcut, and what ran or broke.
+// What testers were offered through the Marlo Shortcut, and what ran or broke.
 
 portalRoutes.get("/phone-actions", (_req, res) => {
   res.json(
@@ -418,7 +418,7 @@ portalRoutes.get("/usage", (req, res) => {
 
 // --- Feature use ----------------------------------------------------------------------------
 
-// What people use Marlowe for, by area and by tool, including what nobody has used. Tool names
+// What people use Marlo for, by area and by tool, including what nobody has used. Tool names
 // only: no message text is recorded for this (services/featureUsage.ts). testersOnly leaves out
 // admins, whose own testing would otherwise drown out everyone else's use.
 portalRoutes.get("/feature-usage", (req, res) => {

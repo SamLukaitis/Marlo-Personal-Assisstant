@@ -1,6 +1,6 @@
 // The WhatsApp side of a dead mailbox connection (a revoked or expired token, or Google's 7-day
 // refresh-token limit while the OAuth app is in Testing mode). Without it the only sign was a badge
-// on the web Settings page, and on WhatsApp Marlowe just looked like it had stopped seeing mail.
+// on the web Settings page, and on WhatsApp Marlo just looked like it had stopped seeing mail.
 //
 // Unlike a new OAuth scope (asked for only when the user hits the feature that needs it), a dead
 // token breaks everything that mailbox feeds — alerts, the briefing, every search — so it's worth

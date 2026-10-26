@@ -6,7 +6,7 @@ the new code yet, or how long to wait before testing — only guessing based on 
 or checking the Railway dashboard separately. It also directly answered "is Xero not connecting
 because we got the code wrong, or because the deploy hasn't landed" — this is exactly that check.
 
-**✅ Done (2026-08-26).** Texting `version` (or "what version"/"which version") to Marlowe on
+**✅ Done (2026-08-26).** Texting `version` (or "what version"/"which version") to Marlo on
 WhatsApp now replies with the exact git commit SHA and commit message Railway actually built,
 read from Railway's own `RAILWAY_GIT_COMMIT_SHA`/`RAILWAY_GIT_COMMIT_MESSAGE` env vars — set
 automatically for a GitHub-connected deploy, nothing to configure. Built in
@@ -16,7 +16,7 @@ AI assistant is even called. That's deliberate: it means the version check still
 even if the assistant/tool layer itself is what's broken, which is exactly the kind of situation
 this exists to diagnose.
 
-Not admin-gated — any user who messages Marlowe can currently check this (a commit SHA/message
+Not admin-gated — any user who messages Marlo can currently check this (a commit SHA/message
 isn't sensitive, so this was left simple rather than adding per-user role-gating for a one-off
 diagnostic). Revisit if that stops being true.
 

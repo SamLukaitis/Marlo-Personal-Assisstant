@@ -44,7 +44,7 @@ export async function forwardReceiptToXero(
   }
 
   try {
-    await hubSendMessage(ownerId, sender.id, xeroEmail, label, "Forwarded automatically by Marlowe.", {
+    await hubSendMessage(ownerId, sender.id, xeroEmail, label, "Forwarded automatically by Marlo.", {
       filename: document.filename ?? label,
       mimeType: document.mimeType,
       data: fileBuffer,

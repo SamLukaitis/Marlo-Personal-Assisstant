@@ -59,7 +59,7 @@ describe("sendAnnouncement", () => {
     expect(phones).not.toContain(optedOut.phone);
     const toKeen = sent.find((s) => s.phone === keen.phone)!;
     expect(toKeen.kind).toBe("announcement");
-    expect(toKeen.text).toContain("What's new in Marlowe");
+    expect(toKeen.text).toContain("What's new in Marlo");
     expect(toKeen.text).toContain("Hotel search is live.");
     expect(toKeen.text).toContain("stop updates");
     // The template has its own lead-in, so its variable doesn't repeat the heading.

@@ -83,7 +83,7 @@ describe("handlePendingRegistration — phone invite gate (first contact)", () =
     await handlePendingRegistration({ kind: "text", from: phone, text: "hi", messageId: "m1" });
 
     expect(sendWhatsAppMessage).toHaveBeenCalledWith(phone, expect.stringContaining("on the waitlist"));
-    expect(sendWhatsAppMessage).not.toHaveBeenCalledWith(phone, expect.stringContaining("I'm *Marlowe*"));
+    expect(sendWhatsAppMessage).not.toHaveBeenCalledWith(phone, expect.stringContaining("I'm *Marlo*"));
     expect(getPendingRegistration(phone)).toBeNull();
   });
 
@@ -93,7 +93,7 @@ describe("handlePendingRegistration — phone invite gate (first contact)", () =
 
     await handlePendingRegistration({ kind: "text", from: phone, text: "hi", messageId: "m1" });
 
-    expect(sendWhatsAppMessage).toHaveBeenCalledWith(phone, expect.stringContaining("I'm *Marlowe*"));
+    expect(sendWhatsAppMessage).toHaveBeenCalledWith(phone, expect.stringContaining("I'm *Marlo*"));
     expect(getPendingRegistration(phone)?.step).toBe("awaiting_name");
   });
 
@@ -183,7 +183,7 @@ describe("handlePendingRegistration — waitlist", () => {
 
     await handlePendingRegistration({ kind: "text", from: phone, text: "hi", messageId: "m1" });
 
-    expect(sendWhatsAppMessage).toHaveBeenCalledWith(phone, expect.stringContaining("Hi Margaret, I'm *Marlowe*"));
+    expect(sendWhatsAppMessage).toHaveBeenCalledWith(phone, expect.stringContaining("Hi Margaret, I'm *Marlo*"));
     expect(sendWhatsAppMessage).not.toHaveBeenCalledWith(phone, expect.stringContaining("What would you like me to call you"));
     expect(sendWhatsAppReplyButtons).toHaveBeenCalled();
     const row = getPendingRegistration(phone);
@@ -291,7 +291,7 @@ describe("handlePendingRegistration — awaiting_email reconnecting an existing 
 
     expect(sendWhatsAppMessage).toHaveBeenCalledWith(
       phone,
-      expect.stringContaining("already connected to a Marlowe account")
+      expect.stringContaining("already connected to a Marlo account")
     );
     expect(sendWhatsAppCtaUrl).not.toHaveBeenCalled();
   });
@@ -375,7 +375,7 @@ describe("handlePendingRegistration — accepting email goes straight to the pro
 });
 
 // Declining email is a real choice, not a dead end: it creates a working account so the very next
-// message goes to the assistant instead of back into registration. Before this existed, Marlowe
+// message goes to the assistant instead of back into registration. Before this existed, Marlo
 // said "let me know how I can help!" and then deflected every request back to the email question.
 describe("handlePendingRegistration — declining email creates a phone-only account", () => {
   it("creates an account with no email, bound to the number", async () => {
@@ -456,7 +456,7 @@ describe("handlePendingRegistration — declining email creates a phone-only acc
     expect(sendWhatsAppMessage).not.toHaveBeenCalledWith(phone, expect.stringContaining("email"));
   });
 
-  // Phone-only testers were promised "to-dos", which Marlowe doesn't have, and given no idea of
+  // Phone-only testers were promised "to-dos", which Marlo doesn't have, and given no idea of
   // what does work without a mailbox. The reply now names things that need no email at all.
   it("tells them what works without email, and promises nothing that doesn't exist", async () => {
     const phone = freshPhone();
