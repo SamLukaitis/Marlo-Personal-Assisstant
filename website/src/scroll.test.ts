@@ -24,7 +24,7 @@ function mockReducedMotion(reduce: boolean) {
 let root: HTMLElement;
 
 beforeEach(() => {
-  document.body.innerHTML = '<main id="thread"></main>';
+  document.body.innerHTML = '<section id="phone"><div class="phone"><div class="wa__chat"><main id="thread"></main></div></div></section>';
   root = document.getElementById("thread")!;
   renderThread(root, scenes);
 });
@@ -49,6 +49,14 @@ describe("initScroll", () => {
     const stop = initScroll(root);
     expect(root.querySelectorAll(".is-pending")).toHaveLength(0);
     stop();
+  });
+
+  it("pins the phone while running and releases it when stopped", () => {
+    mockReducedMotion(false);
+    const stop = initScroll(root);
+    expect(document.getElementById("phone")!.classList.contains("is-scrub")).toBe(true);
+    stop();
+    expect(document.getElementById("phone")!.classList.contains("is-scrub")).toBe(false);
   });
 
   it("hides messages only while it is running, and shows them all when stopped", () => {

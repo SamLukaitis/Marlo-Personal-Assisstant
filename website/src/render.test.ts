@@ -40,6 +40,11 @@ describe("renderThread", () => {
     }
   });
 
+  it("opens each conversation with a titled chip", () => {
+    const chips = [...root.querySelectorAll(".chip")].map((c) => c.textContent);
+    expect(chips).toEqual(scenes.map((s) => s.title));
+  });
+
   it("has no buttons, forms or inputs", () => {
     expect(root.querySelector("button, form, input, textarea")).toBeNull();
   });

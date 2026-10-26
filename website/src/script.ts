@@ -1,10 +1,19 @@
 // The conversation the page plays out as you scroll. Marlo's lines stay short and professional.
 export type Message = { from: "you" | "marlo"; text: string; time: string };
-export type Scene = { id: "email" | "travel" | "itinerary"; messages: Message[] };
+export type Scene = {
+  id: "email" | "travel" | "itinerary";
+  title: string;
+  heading: string;
+  caption: string;
+  messages: Message[];
+};
 
 export const scenes: Scene[] = [
   {
     id: "email",
+    title: "Inbox",
+    heading: "Your inbox, sorted",
+    caption: "Marlo reads, files and answers your email, and only brings you what needs a decision.",
     messages: [
       { from: "you", time: "7:42", text: "Can you go through my inbox?" },
       {
@@ -28,6 +37,9 @@ export const scenes: Scene[] = [
   },
   {
     id: "travel",
+    title: "Trip planning",
+    heading: "Travel, compared",
+    caption: "Ask which city, which flight, which hotel. Marlo compares the real options and tells you which it would pick.",
     messages: [
       { from: "you", time: "12:10", text: "Lisbon or Porto for 4 days in November?" },
       {
@@ -51,6 +63,9 @@ export const scenes: Scene[] = [
   },
   {
     id: "itinerary",
+    title: "Itinerary",
+    heading: "Plans that get sent",
+    caption: "Marlo builds the itinerary, shares it with whoever needs it and puts it in your calendar.",
     messages: [
       { from: "you", time: "18:30", text: "Put together the Porto itinerary." },
       {

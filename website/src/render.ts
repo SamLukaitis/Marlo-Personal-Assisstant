@@ -18,6 +18,7 @@ export function renderThread(root: HTMLElement, scenes: Scene[]): void {
   for (const scene of scenes) {
     const section = el("section", "scene");
     section.id = scene.id;
+    section.append(el("p", "chip", scene.title));
     const list = el("ol", "thread");
     list.setAttribute("aria-label", SCENE_LABELS[scene.id]);
     for (const m of scene.messages) {

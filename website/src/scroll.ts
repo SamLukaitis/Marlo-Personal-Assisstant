@@ -8,38 +8,95 @@ export function shouldAnimate(): boolean {
   return !window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 }
 
-// Messages appear one at a time as they near the middle of the screen. The hidden state is only
-// ever applied from here, so a visitor without JavaScript, or with reduced motion, sees everything.
+// Timeline units: the phone rises for ENTER, each chat item takes STEP, then the phone rests for HOLD.
+const ENTER = 1;
+const STEP = 1;
+const HOLD = 1.5;
+
+// Pins the phone while the scroll plays the conversation, and fades the page's other blocks in.
+// Hidden states are only ever applied from here, so a visitor without JavaScript, or with reduced
+// motion, sees everything (the chat is then a scrollable phone).
 export function initScroll(root: HTMLElement): () => void {
   if (!shouldAnimate()) return () => {};
 
-  const messages = [...root.querySelectorAll<HTMLElement>("li.msg")];
-  messages.forEach((m) => m.classList.add("is-pending"));
+  const phone = document.getElementById("phone");
+  const items = [...root.querySelectorAll<HTMLElement>(".chip, li.msg")];
+  const reveals = [...document.querySelectorAll<HTMLElement>(".reveal")];
+  items.forEach((m) => m.classList.add("is-pending"));
+  reveals.forEach((m) => m.classList.add("is-pending"));
 
-  const lenis = new Lenis();
+  const lenis = new Lenis({ lerp: 0.085, wheelMultiplier: 0.9 });
   lenis.on("scroll", ScrollTrigger.update);
   const tick = (time: number) => lenis.raf(time * 1000);
   gsap.ticker.add(tick);
   gsap.ticker.lagSmoothing(0);
 
-  const reveal = (batch: Element[]) => {
-    batch.forEach((el) => el.classList.remove("is-pending"));
-    gsap.fromTo(
-      batch,
-      { opacity: 0, y: 10 },
-      { opacity: 1, y: 0, duration: 0.35, ease: "power2.out", stagger: 0.12, clearProps: "opacity,transform" }
-    );
-  };
-
-  const triggers = ScrollTrigger.batch(messages, {
-    start: "top 88%",
+  const revealTriggers = ScrollTrigger.batch(reveals, {
+    start: "top 90%",
     once: true,
-    onEnter: reveal,
+    onEnter: (batch) => {
+      batch.forEach((el) => el.classList.remove("is-pending"));
+      gsap.fromTo(
+        batch,
+        { opacity: 0, y: 24 },
+        { opacity: 1, y: 0, duration: 0.7, ease: "power3.out", stagger: 0.12, clearProps: "opacity,transform" }
+      );
+    },
   });
+
+  let timeline: gsap.core.Timeline | undefined;
+  const captions = [...document.querySelectorAll<HTMLElement>(".caption")];
+  if (phone && items.length) {
+    const screen = root.parentElement as HTMLElement;
+    const phoneEl = phone.querySelector<HTMLElement>(".phone")!;
+    phone.classList.add("is-scrub");
+    phone.style.setProperty("--beats", String(ENTER + items.length * STEP + HOLD));
+
+    // Where the chat must sit so item i is the last thing visible, just above the input bar.
+    const restAt = (i: number) => {
+      const el = items[i];
+      return Math.min(0, screen.clientHeight - (el.offsetTop + el.offsetHeight) - 14);
+    };
+    const sceneOf = items.map((el) => el.closest(".scene")?.id ?? "");
+    const setActive = (progress: number, total: number) => {
+      const i = Math.max(0, Math.min(items.length - 1, Math.floor((progress * total - ENTER) / STEP + 0.4)));
+      captions.forEach((c) => c.classList.toggle("is-active", c.dataset.scene === sceneOf[i]));
+    };
+    const total = ENTER + items.length * STEP + HOLD;
+    setActive(0, total);
+
+    timeline = gsap.timeline({
+      scrollTrigger: {
+        trigger: phone,
+        start: "top top",
+        end: "bottom bottom",
+        scrub: 0.6,
+        invalidateOnRefresh: true,
+        onUpdate: (self) => setActive(self.progress, total),
+      },
+    });
+    timeline.fromTo(phoneEl, { y: 120, scale: 0.86 }, { y: 0, scale: 1, duration: ENTER, ease: "power2.out" }, 0);
+    items.forEach((el, i) => {
+      const at = ENTER + i * STEP;
+      timeline!.fromTo(
+        el,
+        { opacity: 0, y: 14, scale: 0.97 },
+        { opacity: 1, y: 0, scale: 1, duration: 0.45, ease: "power2.out" },
+        at
+      );
+      timeline!.fromTo(
+        root,
+        { y: () => (i ? restAt(i - 1) : 0) },
+        { y: () => restAt(i), duration: 0.6, ease: "power2.out", immediateRender: i === 0 },
+        at
+      );
+    });
+    timeline.to({}, { duration: HOLD }, ENTER + items.length * STEP);
+  }
 
   // Anything already above the screen on load, refresh or a jump is shown at once, never left hidden.
   const showPassed = () => {
-    messages
+    reveals
       .filter((m) => m.classList.contains("is-pending") && m.getBoundingClientRect().bottom < 0)
       .forEach((m) => m.classList.remove("is-pending"));
   };
@@ -48,9 +105,14 @@ export function initScroll(root: HTMLElement): () => void {
 
   return () => {
     ScrollTrigger.removeEventListener("refresh", showPassed);
-    triggers.forEach((t) => t.kill());
+    revealTriggers.forEach((t) => t.kill());
+    timeline?.scrollTrigger?.kill();
+    timeline?.kill();
     gsap.ticker.remove(tick);
     lenis.destroy();
-    messages.forEach((m) => m.classList.remove("is-pending"));
+    gsap.set([...items, root, ...(phone ? phone.querySelectorAll(".phone") : [])], { clearProps: "all" });
+    phone?.classList.remove("is-scrub");
+    captions.forEach((c) => c.classList.remove("is-active"));
+    [...items, ...reveals].forEach((m) => m.classList.remove("is-pending"));
   };
 }
