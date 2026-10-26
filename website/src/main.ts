@@ -1,3 +1,4 @@
+import "./styles.css";
 import { scenes } from "./script";
 import { renderThread } from "./render";
 import { renderNumberBlocks } from "./numberBlocks";
