@@ -21,6 +21,7 @@ import { checkForImportantEmails } from "./importantEmailAlerts.js";
 import { flushEmailDigestIfDue } from "./emailDigest.js";
 import { sweepStalledPhoneActions } from "./phoneActions.js";
 import { syncBookingReminders } from "./tripPrep.js";
+import { syncTripsForOwner } from "../bridge/index.js";
 import { userLocalClock } from "./userTimezone.js";
 import {
   collectAttentionForBriefing,
@@ -145,6 +146,16 @@ async function runTripPrepCheckForUser(ownerId: number): Promise<void> {
   }
 }
 
+// Sharing trips with a family is the person's own choice (the Joyce link), so it isn't gated on
+// the travel toggle: it only does anything for someone who has linked and left trips switched on.
+async function runFamilyTripsCheckForUser(ownerId: number): Promise<void> {
+  try {
+    await syncTripsForOwner(ownerId);
+  } catch (err) {
+    console.error(`scheduler: family trips sync failed for user ${ownerId}`, err);
+  }
+}
+
 async function runImportantEmailAlertsCheckForUser(ownerId: number): Promise<void> {
   if (!importantEmailAlertsEnabled(ownerId)) return;
   try {
@@ -174,6 +185,7 @@ async function tick(): Promise<void> {
     await runTripPrepCheckForUser(ownerId).catch((err) =>
       console.error(`scheduler: trip-prep check failed for user ${ownerId}`, err)
     );
+    await runFamilyTripsCheckForUser(ownerId);
     // alerts/reconciliation/important-email each independently call hubListMessages for this
     // same user — sharing one withMessageCache scope collapses the ones that fetch an identical
     // (query, limit) window (alerts + important-email both use {limit:50}) into a single Gmail

@@ -414,16 +414,24 @@ export async function googleListEvents(
   account: AccountRow,
   days: number
 ): Promise<CalendarEvent[]> {
-  const calendar = google.calendar({ version: "v3", auth: authFor(account) });
   const now = new Date();
-  const until = new Date(now.getTime() + days * 24 * 60 * 60 * 1000);
+  return googleListEventsBetween(account, now, new Date(now.getTime() + days * 24 * 60 * 60 * 1000), 50);
+}
+
+export async function googleListEventsBetween(
+  account: AccountRow,
+  from: Date,
+  to: Date,
+  maxResults = 250
+): Promise<CalendarEvent[]> {
+  const calendar = google.calendar({ version: "v3", auth: authFor(account) });
   const res = await calendar.events.list({
     calendarId: "primary",
-    timeMin: now.toISOString(),
-    timeMax: until.toISOString(),
+    timeMin: from.toISOString(),
+    timeMax: to.toISOString(),
     singleEvents: true,
     orderBy: "startTime",
-    maxResults: 50,
+    maxResults,
   });
   return (res.data.items ?? []).map((e) => ({
     id: e.id ?? "",

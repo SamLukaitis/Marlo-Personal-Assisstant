@@ -3,7 +3,7 @@ import { openFamilySessionForPhone } from "./familyDb.js";
 import { deleteMyGoogleAccount } from "./store.js";
 import { revokeJoyceGoogleToken } from "./googleCalendar.js";
 import { onMemberLeaving } from "./familyCalendar.js";
-import { fireFamilyLeft } from "./hooks.js";
+import { fireFamilyLeaving, fireFamilyLeft } from "./hooks.js";
 
 // Leaving a family, in two steps.
 //
@@ -80,6 +80,8 @@ export function handlePendingLeave(
       console.error("joyce: couldn't revoke Google token on leaving", err)
     );
   }
+
+  fireFamilyLeaving(normalizedPhone);
 
   if (!leaveFamily(normalizedPhone)) {
     // Only reachable if they were removed by something else between asking and confirming.

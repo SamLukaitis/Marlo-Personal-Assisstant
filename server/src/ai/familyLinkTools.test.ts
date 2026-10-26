@@ -5,7 +5,7 @@ import { createFamily, joinFamilyByCode } from "../joyce/registry.js";
 import { openFamilySessionForNewMember, openFamilySessionForPhone } from "../joyce/familyDb.js";
 import { listNotes, setMemberName } from "../joyce/store.js";
 
-const FAMILY_TOOLS = ["family_link_status", "link_family", "update_family_link", "unlink_family", "send_to_family"];
+const FAMILY_TOOLS = ["family_link_status", "link_family", "update_family_link", "unlink_family", "send_to_family", "answer_trip_question"];
 const names = (tools: ReturnType<typeof buildToolsForOwner>) =>
   tools.flatMap((t) => ("name" in t ? [t.name] : []));
 
