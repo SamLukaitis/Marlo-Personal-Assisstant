@@ -925,6 +925,7 @@ export function SettingsPage() {
                         style={{ justifyContent: "space-between" }}
                       >
                         <div>
+                          {req.name && <strong style={{ fontSize: 13.5 }}>{req.name} · </strong>}
                           <span style={{ fontSize: 13.5 }}>{req.phone}</span>{" "}
                           <span className="muted" style={{ fontSize: 12 }}>
                             asked{" "}

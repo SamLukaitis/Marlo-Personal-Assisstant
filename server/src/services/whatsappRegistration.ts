@@ -24,6 +24,8 @@ import {
   deletePendingRegistration,
   isPhoneInvited,
   recordWaitlistRequest,
+  setWaitlistName,
+  getInvitedPhoneName,
   getUserByEmail,
   listPhoneNumbersForUser,
   setSetting,
@@ -60,7 +62,17 @@ export const MARLOWE_WAITLIST_TEXT =
   "👋 Thank you for your interest in *Marlowe*!\n\n" +
   "We're still in beta testing, so access is invite-only for now. Your request has been sent " +
   "to the developers and you're on the waitlist — we'll message you here as soon as you can " +
-  "get started.";
+  "get started.\n\n" +
+  "So we know who's who, what's your name?";
+
+// Sent when a waitlisted number answers the name question with something that isn't a name.
+// Asked once more, then given up on (see handleUninvited).
+export const MARLOWE_WAITLIST_NAME_RETRY_TEXT =
+  "Sorry, I didn't catch that — what name should I put you down under?";
+
+export function waitlistNameThanksText(name: string): string {
+  return `Thanks ${name}, you're on the waitlist. We'll message you here as soon as you're in.`;
+}
 
 // Every message after the first from the same uninvited number. Short on purpose: they've
 // already had the full explanation, and re-sending it reads as a broken bot.
@@ -238,6 +250,33 @@ async function askEmailConfirm(row: PendingRegistrationRow): Promise<void> {
   upsertPendingRegistration(row.phone, { step: "awaiting_email_confirm" });
 }
 
+// What an uninvited number's message gets. First contact asks for a name; the next message is
+// taken as the answer (one retry if it isn't name-shaped, then we stop asking and log the number
+// without one). Anything after that is the short reminder. The name lands on the Settings →
+// Waitlist row and, once approved, is carried onto the invite (adminRoutes.ts) so onboarding
+// doesn't ask again.
+async function handleUninvited(phone: string, text: string): Promise<void> {
+  const { isNewRequest, name, requestCount } = recordWaitlistRequest(phone);
+  if (isNewRequest) {
+    await reply(phone, MARLOWE_WAITLIST_TEXT).catch(() => {});
+    return;
+  }
+  if (name === null) {
+    const typed = text.trim().slice(0, 60);
+    if (isPlausibleName(typed)) {
+      setWaitlistName(phone, typed);
+      await reply(phone, waitlistNameThanksText(typed)).catch(() => {});
+      return;
+    }
+    if (requestCount <= 2) {
+      await reply(phone, MARLOWE_WAITLIST_NAME_RETRY_TEXT).catch(() => {});
+      return;
+    }
+    setWaitlistName(phone, "");
+  }
+  await reply(phone, MARLOWE_WAITLIST_REMINDER_TEXT).catch(() => {});
+}
+
 async function handleAwaitingName(row: PendingRegistrationRow, text: string): Promise<void> {
   const typed = text.trim().slice(0, 60);
   // A sentence-shaped reply isn't a real name (see plausibleName.ts) — greet generically and
@@ -245,6 +284,11 @@ async function handleAwaitingName(row: PendingRegistrationRow, text: string): Pr
   // name via sendFirstValueAndBriefingPrompt above.
   const name = isPlausibleName(typed) ? typed : null;
   const updated = upsertPendingRegistration(row.phone, { step: "awaiting_email_confirm", name: name ?? "" });
+  await greetAndAskEmail(updated, name);
+}
+
+async function greetAndAskEmail(updated: PendingRegistrationRow, name: string | null): Promise<void> {
+  const row = updated;
   const greeting = name ? `Hi ${name}.` : "Hi there.";
   // Sent as separate WhatsApp messages (not joined with \n\n) to match a real conversational
   // back-and-forth rather than one long wall of text.
@@ -295,8 +339,10 @@ async function declineEmailConnection(row: PendingRegistrationRow): Promise<void
   // site, so without this check a revoked number could still get a fully working account: once
   // one exists, resolveOwnerByPhone resolves it and the invite gate is never consulted again.
   if (!isPhoneInvited(row.phone)) {
-    const { isNewRequest } = recordWaitlistRequest(row.phone);
-    await reply(row.phone, isNewRequest ? MARLOWE_WAITLIST_TEXT : MARLOWE_WAITLIST_REMINDER_TEXT).catch(() => {});
+    // Always the reminder, never the name-asking first-contact text: this number already has a
+    // pending registration row, so a name reply would never reach handleUninvited.
+    recordWaitlistRequest(row.phone);
+    await reply(row.phone, MARLOWE_WAITLIST_REMINDER_TEXT).catch(() => {});
     return;
   }
   // A real choice now, not a holding pattern: create the account from the phone number alone so
@@ -517,11 +563,15 @@ export async function handlePendingRegistration(message: IncomingWhatsAppMessage
       // First contact gets the full explanation; anything after that gets the short nudge, so
       // someone who keeps messaging isn't re-sent the same paragraph every time but also never
       // hits silence and assumes Marlowe is broken.
-      const { isNewRequest } = recordWaitlistRequest(phone);
-      await reply(
-        phone,
-        isNewRequest ? MARLOWE_WAITLIST_TEXT : MARLOWE_WAITLIST_REMINDER_TEXT
-      ).catch(() => {});
+      await handleUninvited(phone, message.text);
+      return;
+    }
+    // Name already given on the waitlist: skip the name question and go straight to the email one.
+    const knownName = getInvitedPhoneName(phone);
+    if (knownName && isPlausibleName(knownName)) {
+      const created = upsertPendingRegistration(phone, { step: "awaiting_email_confirm", name: knownName });
+      await reply(phone, `Hi ${knownName}, I'm *Marlowe*, your personal assistant.`);
+      await greetAndAskEmail(created, knownName);
       return;
     }
     row = upsertPendingRegistration(phone, { step: "awaiting_name" });

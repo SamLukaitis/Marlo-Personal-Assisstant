@@ -126,12 +126,46 @@ describe("handlePendingRegistration — waitlist", () => {
     expect(entry?.requestCount).toBe(1);
   });
 
-  it("sends the short nudge instead of the full message on later attempts", async () => {
+  it("asks for a name on first contact", async () => {
+    const phone = freshPhone();
+    await handlePendingRegistration({ kind: "text", from: phone, text: "hi", messageId: "m1" });
+
+    expect(sendWhatsAppMessage).toHaveBeenCalledWith(phone, expect.stringContaining("what's your name"));
+    expect(listWaitlistRequests().find((r) => r.phone === phone)?.name).toBeNull();
+  });
+
+  it("stores the reply as the name and confirms", async () => {
     const phone = freshPhone();
     await handlePendingRegistration({ kind: "text", from: phone, text: "hi", messageId: "m1" });
     vi.mocked(sendWhatsAppMessage).mockClear();
 
-    await handlePendingRegistration({ kind: "text", from: phone, text: "hello?", messageId: "m2" });
+    await handlePendingRegistration({ kind: "text", from: phone, text: "Sam Jones", messageId: "m2" });
+
+    expect(listWaitlistRequests().find((r) => r.phone === phone)?.name).toBe("Sam Jones");
+    expect(sendWhatsAppMessage).toHaveBeenCalledWith(phone, expect.stringContaining("Thanks Sam Jones"));
+  });
+
+  it("asks once more for a non-name reply, then gives up and sends the nudge", async () => {
+    const phone = freshPhone();
+    await handlePendingRegistration({ kind: "text", from: phone, text: "hi", messageId: "m1" });
+    vi.mocked(sendWhatsAppMessage).mockClear();
+
+    await handlePendingRegistration({ kind: "text", from: phone, text: "what is this, who are you?", messageId: "m2" });
+    expect(sendWhatsAppMessage).toHaveBeenCalledWith(phone, expect.stringContaining("didn't catch that"));
+    vi.mocked(sendWhatsAppMessage).mockClear();
+
+    await handlePendingRegistration({ kind: "text", from: phone, text: "still not a name!!", messageId: "m3" });
+    expect(sendWhatsAppMessage).toHaveBeenCalledWith(phone, expect.stringContaining("still on the waitlist"));
+    expect(listWaitlistRequests().find((r) => r.phone === phone)?.name).toBe("");
+  });
+
+  it("sends the short nudge instead of the full message once named", async () => {
+    const phone = freshPhone();
+    await handlePendingRegistration({ kind: "text", from: phone, text: "hi", messageId: "m1" });
+    await handlePendingRegistration({ kind: "text", from: phone, text: "Sam", messageId: "m2" });
+    vi.mocked(sendWhatsAppMessage).mockClear();
+
+    await handlePendingRegistration({ kind: "text", from: phone, text: "hello?", messageId: "m3" });
 
     expect(sendWhatsAppMessage).toHaveBeenCalledWith(
       phone,
@@ -143,11 +177,25 @@ describe("handlePendingRegistration — waitlist", () => {
     );
   });
 
+  it("skips the name question for an invited number whose waitlist name was carried over", async () => {
+    const phone = freshPhone();
+    addInvitedPhone(phone, undefined, "Margaret");
+
+    await handlePendingRegistration({ kind: "text", from: phone, text: "hi", messageId: "m1" });
+
+    expect(sendWhatsAppMessage).toHaveBeenCalledWith(phone, expect.stringContaining("Hi Margaret, I'm *Marlowe*"));
+    expect(sendWhatsAppMessage).not.toHaveBeenCalledWith(phone, expect.stringContaining("What would you like me to call you"));
+    expect(sendWhatsAppReplyButtons).toHaveBeenCalled();
+    const row = getPendingRegistration(phone);
+    expect(row?.step).toBe("awaiting_email_confirm");
+    expect(row?.name).toBe("Margaret");
+  });
+
   it("counts repeat attempts on one entry rather than adding duplicates", async () => {
     const phone = freshPhone();
 
     for (const id of ["m1", "m2", "m3"]) {
-      await handlePendingRegistration({ kind: "text", from: phone, text: "hi", messageId: id });
+      await handlePendingRegistration({ kind: "text", from: phone, text: "Sam", messageId: id });
     }
 
     const entries = listWaitlistRequests().filter((r) => r.phone === phone);

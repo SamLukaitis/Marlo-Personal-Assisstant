@@ -110,7 +110,8 @@ db.exec(`
     phone TEXT PRIMARY KEY,
     first_requested_at INTEGER NOT NULL,
     last_requested_at INTEGER NOT NULL,
-    request_count INTEGER NOT NULL DEFAULT 1
+    request_count INTEGER NOT NULL DEFAULT 1,
+    name TEXT
   );
   CREATE TABLE IF NOT EXISTS sessions (
     id TEXT PRIMARY KEY,
@@ -443,6 +444,21 @@ const invitedPhoneColumns = (db.prepare(`PRAGMA table_info(invited_phones)`).all
 );
 if (!invitedPhoneColumns.includes("edition")) {
   db.exec(`ALTER TABLE invited_phones ADD COLUMN edition TEXT`);
+}
+// The name a waitlisted person gave before being approved, carried here so onboarding doesn't
+// ask for it a second time (whatsappRegistration.ts's first-contact branch).
+if (!invitedPhoneColumns.includes("name")) {
+  db.exec(`ALTER TABLE invited_phones ADD COLUMN name TEXT`);
+}
+
+const waitlistColumns = (db.prepare(`PRAGMA table_info(waitlist_requests)`).all() as { name: string }[]).map(
+  (c) => c.name
+);
+if (!waitlistColumns.includes("name")) {
+  db.exec(`ALTER TABLE waitlist_requests ADD COLUMN name TEXT`);
+  // Everyone already waitlisted when this shipped is marked "not asked" ('' rather than NULL), so
+  // only numbers that first message afterwards are asked their name — see handleUninvited.
+  db.exec(`UPDATE waitlist_requests SET name = ''`);
 }
 
 // api_usage originally only tracked the main assistant chat (owner_id required, no purpose
@@ -4550,12 +4566,23 @@ export function isPhoneInvited(phone: string): boolean {
 
 // Used by server/src/scripts/invite.ts — the app owner's manual "grant this person a hub" tool.
 // An edition on the invite is applied when the number is first bound to an account.
-export function addInvitedPhone(phone: string, edition?: EditionId): void {
+export function addInvitedPhone(phone: string, edition?: EditionId, name?: string | null): void {
   if (edition !== undefined && !isEditionId(edition)) throw new Error(`Unknown edition: ${String(edition)}`);
   db.prepare(
-    `INSERT INTO invited_phones (phone, invited_at, edition) VALUES (?, ?, ?)
-     ON CONFLICT(phone) DO UPDATE SET edition = COALESCE(excluded.edition, invited_phones.edition)`
-  ).run(normalizePhone(phone), Date.now(), edition ?? null);
+    `INSERT INTO invited_phones (phone, invited_at, edition, name) VALUES (?, ?, ?, ?)
+     ON CONFLICT(phone) DO UPDATE SET
+       edition = COALESCE(excluded.edition, invited_phones.edition),
+       name = COALESCE(excluded.name, invited_phones.name)`
+  ).run(normalizePhone(phone), Date.now(), edition ?? null, name || null);
+}
+
+// The name carried over from the waitlist, if the invitee gave one. Null for numbers an admin
+// invited directly, which still get asked in the registration flow.
+export function getInvitedPhoneName(phone: string): string | null {
+  const row = db.prepare(`SELECT name FROM invited_phones WHERE phone = ?`).get(normalizePhone(phone)) as
+    | { name: string | null }
+    | undefined;
+  return row?.name || null;
 }
 
 export interface InvitedPhoneRow {
@@ -4585,13 +4612,15 @@ export interface WaitlistRequestRow {
   firstRequestedAt: number;
   lastRequestedAt: number;
   requestCount: number;
+  // null = not asked yet / still waiting for a usable answer; "" = gave up after two tries.
+  name: string | null;
 }
 
 // Returns whether this was the number's first ever request, which is what decides between the
 // full waitlist explanation and the shorter "still on the list" nudge (whatsappRegistration.ts).
 // One statement rather than a SELECT-then-branch so concurrent inbound messages from the same
 // number can't both read "new" and both send the long message.
-export function recordWaitlistRequest(phone: string): { isNewRequest: boolean } {
+export function recordWaitlistRequest(phone: string): { isNewRequest: boolean; name: string | null; requestCount: number } {
   const normalized = normalizePhone(phone);
   const now = Date.now();
   db.prepare(
@@ -4602,9 +4631,21 @@ export function recordWaitlistRequest(phone: string): { isNewRequest: boolean } 
        request_count = request_count + 1`
   ).run(normalized, now, now);
   const row = db
-    .prepare(`SELECT request_count AS requestCount FROM waitlist_requests WHERE phone = ?`)
-    .get(normalized) as { requestCount: number } | undefined;
-  return { isNewRequest: row?.requestCount === 1 };
+    .prepare(`SELECT request_count AS requestCount, name FROM waitlist_requests WHERE phone = ?`)
+    .get(normalized) as { requestCount: number; name: string | null } | undefined;
+  return { isNewRequest: row?.requestCount === 1, name: row?.name ?? null, requestCount: row?.requestCount ?? 1 };
+}
+
+// "" records that we asked and got nothing usable, so the number stops being asked.
+export function setWaitlistName(phone: string, name: string): void {
+  db.prepare(`UPDATE waitlist_requests SET name = ? WHERE phone = ?`).run(name, normalizePhone(phone));
+}
+
+export function getWaitlistName(phone: string): string | null {
+  const row = db.prepare(`SELECT name FROM waitlist_requests WHERE phone = ?`).get(normalizePhone(phone)) as
+    | { name: string | null }
+    | undefined;
+  return row?.name || null;
 }
 
 export function listWaitlistRequests(): WaitlistRequestRow[] {
@@ -4613,7 +4654,8 @@ export function listWaitlistRequests(): WaitlistRequestRow[] {
       `SELECT phone,
               first_requested_at AS firstRequestedAt,
               last_requested_at AS lastRequestedAt,
-              request_count AS requestCount
+              request_count AS requestCount,
+              name
          FROM waitlist_requests
         ORDER BY first_requested_at DESC`
     )

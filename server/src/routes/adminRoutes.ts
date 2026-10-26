@@ -15,6 +15,7 @@ import {
   getOnboardingStepEvents,
   listWaitlistRequests,
   isOnWaitlist,
+  getWaitlistName,
   removeWaitlistRequest,
 } from "../db/store.js";
 import { sendProactiveMessage } from "../services/outbound.js";
@@ -91,7 +92,8 @@ adminRoutes.post("/api/admin/invites", (req, res) => {
     res.status(400).json({ error: "edition must be general or business" });
     return;
   }
-  addInvitedPhone(phone, edition);
+  // Carry the name they gave on the waitlist onto the invite, so onboarding doesn't ask again.
+  addInvitedPhone(phone, edition, getWaitlistName(phone));
 
   // Makes good on the promise in MARLOWE_WAITLIST_TEXT ("we'll message you here as soon as you
   // can get started"). Only for numbers that actually asked — inviting someone who never messaged
