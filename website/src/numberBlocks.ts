@@ -18,15 +18,15 @@ function numberLink(className: string, text: string): HTMLAnchorElement {
   return a;
 }
 
-// The number and its note, with the QR code beside them on screens wide enough to scan from a phone.
-function contact(numberClass: string, noteClass: string, note: string): HTMLElement {
-  const row = el("div", "contact");
-  const text = el("div", "contact__text");
-  text.append(numberLink(numberClass, PHONE_DISPLAY), el("p", noteClass, note));
+// The number in a card with the QR code beside it on screens wide enough to scan from a phone.
+function contact(numberClass: string, note: string): HTMLElement {
+  const card = el("div", "contact");
   const scan = el("div", "contact__scan");
-  scan.append(qrLink("qr"), el("p", "qr__note", "Scan to chat"));
-  row.append(text, scan);
-  return row;
+  scan.append(qrLink("qr"));
+  const text = el("div", "contact__text");
+  text.append(el("p", "contact__label", "Scan, or message"), numberLink(numberClass, PHONE_DISPLAY), el("p", "contact__note", note));
+  card.append(scan, text);
+  return card;
 }
 
 // The page's own furniture around the phone: top bar, landing hero, captions, what Marlo does, closing.
@@ -44,7 +44,7 @@ export function renderNumberBlocks(): void {
     el("p", "hero__kicker", "Your assistant on WhatsApp"),
     el("h1", "hero__name", "Marlo"),
     el("p", "hero__lede", "Marlo sorts your email, keeps your documents and reminds you what is coming up. Just send it a message."),
-    contact("number number--hero", "hero__note", "Message it on WhatsApp. No signup."),
+    contact("number number--hero", "On WhatsApp. No signup."),
     el("p", "hero__scroll", "Scroll to see it work")
   );
   hero.replaceChildren(inner);
@@ -71,6 +71,6 @@ export function renderNumberBlocks(): void {
   const close = document.getElementById("close")!;
   close.replaceChildren(
     el("p", "close__lede", "Ready when you are."),
-    contact("number number--close", "close__note", "Message it on WhatsApp.")
+    contact("number number--close", "On WhatsApp. No signup.")
   );
 }

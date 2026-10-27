@@ -74,23 +74,31 @@ a:focus-visible { outline: 3px solid var(--accent); outline-offset: 3px; }
   text-decoration: none;
   white-space: nowrap;
 }
-.number--hero {
-  margin: 1.75rem 0 0.5rem;
-  padding: 0.12em 0.4em 0.16em;
-  border-radius: 0.3em;
+.number--hero, .number--close { font-size: clamp(1.7rem, 6.4vw, 2.9rem); }
+
+/* The number in a blue card with the QR code beside it. The QR is hidden on narrow screens: a phone can't scan itself, the number is tappable. */
+.contact {
+  display: flex;
+  align-items: center;
+  gap: 1.5rem;
+  width: fit-content;
+  max-width: 100%;
+  margin-top: 1.75rem;
+  padding: 1.1rem 1.4rem;
+  border-radius: 1.25rem;
   background: var(--accent);
   color: var(--on-accent);
-  font-size: clamp(1.9rem, 7.2vw, 4.25rem);
+  box-shadow: 0 18px 40px rgba(31, 75, 216, 0.25);
 }
-.number--close { font-size: clamp(2.2rem, 9vw, 5rem); }
-
-/* Number with the QR code beside it. Hidden on narrow screens: a phone can't scan itself, the number is tappable. */
-.contact { display: flex; align-items: center; gap: 2rem; flex-wrap: wrap; }
-.contact__scan { display: none; text-align: center; }
-.qr { display: block; width: 7.5rem; padding: 0.5rem; background: #fff; border-radius: 0.75rem; box-shadow: 0 0 0 1px #dce5f8; }
+.contact__scan { display: none; }
+.qr { display: block; width: 8.5rem; padding: 0.55rem; background: #fff; border-radius: 0.9rem; }
 .qr svg { display: block; width: 100%; height: auto; }
-.qr__note { margin: 0.5rem 0 0; color: var(--ink-soft); font-size: 0.8rem; letter-spacing: 0.04em; text-transform: uppercase; }
-@media (min-width: 900px) { .contact__scan { display: block; } }
+.contact__label { margin: 0 0 0.6rem; font-size: 0.8rem; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; opacity: 0.8; }
+.contact__note { margin: 0.6rem 0 0; opacity: 0.8; }
+@media (min-width: 900px) {
+  .contact { gap: 2rem; padding: 1.4rem 2.2rem 1.4rem 1.4rem; }
+  .contact__scan { display: block; }
+}
 
 /* Landing hero */
 #hero {
@@ -110,7 +118,6 @@ a:focus-visible { outline: 3px solid var(--accent); outline-offset: 3px; }
   letter-spacing: -0.02em;
 }
 .hero__lede { margin: 0; max-width: 30rem; font-size: clamp(1.1rem, 2.4vw, 1.4rem); }
-.hero__note { margin: 0; color: var(--ink-soft); }
 .hero__scroll { margin: 3rem 0 0; color: var(--ink-soft); font-size: 0.875rem; letter-spacing: 0.04em; text-transform: uppercase; }
 .hero__scroll::after { content: " \2193"; }
 
@@ -136,8 +143,8 @@ a:focus-visible { outline: 3px solid var(--accent); outline-offset: 3px; }
 #phone.is-scrub .caption.is-active { opacity: 1; transform: none; }
 
 @media (min-width: 900px) {
-  .phone__stage { grid-template-columns: 1fr 3fr; justify-items: center; gap: 3rem; padding-inline: 4vw; }
-  .phone__captions { justify-self: start; align-self: center; text-align: left; }
+  .phone__stage { grid-template-columns: minmax(0, 21rem) auto; justify-content: center; align-items: center; gap: 4.5rem; padding-inline: 4vw; }
+  .phone__captions { justify-self: end; align-self: center; text-align: left; }
   #phone.is-scrub .phone__captions { min-height: 10rem; }
 }
 
@@ -213,7 +220,6 @@ a:focus-visible { outline: 3px solid var(--accent); outline-offset: 3px; }
 /* Closing */
 #close { padding: 5rem var(--page) 6rem; background: var(--bg); }
 .close__lede { margin: 0 0 1rem; color: var(--accent); font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; font-size: 0.875rem; }
-.close__note { margin: 0.75rem 0 0; color: var(--ink-soft); }
 
 @media (min-width: 900px) {
   #phone.is-scrub .phone { height: clamp(460px, calc(100svh - 6rem), 1000px); }

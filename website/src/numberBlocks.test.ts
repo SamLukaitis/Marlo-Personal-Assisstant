@@ -14,7 +14,7 @@ describe("renderNumberBlocks", () => {
 
   it("links every number to the WhatsApp chat", () => {
     for (const id of ["hero", "bar", "close"]) {
-      const link = document.getElementById(id)!.querySelector("a")!;
+      const link = document.getElementById(id)!.querySelector('a[aria-label="Message Marlo on WhatsApp"]')!;
       expect(link.getAttribute("href")).toBe(waLink());
       expect(link.getAttribute("aria-label")).toBe("Message Marlo on WhatsApp");
     }
@@ -30,6 +30,14 @@ describe("renderNumberBlocks", () => {
   it("names Marlo in the hero and gives each scene a caption", () => {
     expect(document.querySelector("#hero h1")!.textContent).toBe("Marlo");
     expect(document.querySelectorAll("#captions .caption")).toHaveLength(3);
+  });
+
+  it("puts a QR code to the chat beside the number in the hero and closing", () => {
+    for (const id of ["hero", "close"]) {
+      const qr = document.getElementById(id)!.querySelector('a[aria-label^="Scan"]')!;
+      expect(qr.getAttribute("href")).toBe(waLink());
+      expect(qr.querySelector("svg")).not.toBeNull();
+    }
   });
 
   it("gives the bar a plain Message link beside the number", () => {
