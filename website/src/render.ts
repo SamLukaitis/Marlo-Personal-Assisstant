@@ -2,8 +2,8 @@ import type { Scene } from "./script";
 
 const SCENE_LABELS: Record<Scene["id"], string> = {
   email: "Conversation about sorting email",
-  travel: "Conversation about comparing travel options",
-  itinerary: "Conversation about planning an itinerary",
+  documents: "Conversation about saving and finding documents",
+  trips: "Conversation about upcoming trips and reminders",
 };
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, className?: string, text?: string) {

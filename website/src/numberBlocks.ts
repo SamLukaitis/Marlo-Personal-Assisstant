@@ -1,4 +1,5 @@
 import { PHONE_DISPLAY, waLink } from "./config";
+import { qrLink } from "./qr";
 import { scenes } from "./script";
 
 const LABEL = "Message Marlo on WhatsApp";
@@ -31,9 +32,11 @@ export function renderNumberBlocks(): void {
   inner.append(
     el("p", "hero__kicker", "Your assistant on WhatsApp"),
     el("h1", "hero__name", "Marlo"),
-    el("p", "hero__lede", "Marlo sorts your email, compares your travel options and plans your trips. Just send it a message."),
+    el("p", "hero__lede", "Marlo sorts your email, keeps your documents and reminds you what is coming up. Just send it a message."),
     numberLink("number number--hero", PHONE_DISPLAY),
     el("p", "hero__note", "Message it on WhatsApp. No signup."),
+    qrLink("qr qr--hero"),
+    el("p", "qr__note", "Or scan with your phone camera."),
     el("p", "hero__scroll", "Scroll to see it work")
   );
   hero.replaceChildren(inner);
@@ -61,6 +64,7 @@ export function renderNumberBlocks(): void {
   close.replaceChildren(
     el("p", "close__lede", "Ready when you are."),
     numberLink("number number--close", PHONE_DISPLAY),
-    el("p", "close__note", "Message it on WhatsApp.")
+    el("p", "close__note", "Message it on WhatsApp."),
+    qrLink("qr qr--close")
   );
 }

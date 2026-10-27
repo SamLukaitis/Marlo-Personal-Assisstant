@@ -2,8 +2,8 @@ import { describe, expect, it } from "vitest";
 import { scenes } from "./script";
 
 describe("the conversation script", () => {
-  it("tells email first, then travel, then itineraries", () => {
-    expect(scenes.map((s) => s.id)).toEqual(["email", "travel", "itinerary"]);
+  it("tells email first, then documents, then trips", () => {
+    expect(scenes.map((s) => s.id)).toEqual(["email", "documents", "trips"]);
   });
 
   it("alternates between you and Marlo, starting with you, in every scene", () => {
