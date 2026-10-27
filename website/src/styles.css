@@ -84,11 +84,13 @@ a:focus-visible { outline: 3px solid var(--accent); outline-offset: 3px; }
 }
 .number--close { font-size: clamp(2.2rem, 9vw, 5rem); }
 
-/* QR code to the WhatsApp chat */
-.qr { display: block; width: 9rem; padding: 0.5rem; margin-top: 1.5rem; background: #fff; border-radius: 0.75rem; box-shadow: 0 0 0 1px var(--tint-line, #dce5f8); }
+/* Number with the QR code beside it. Hidden on narrow screens: a phone can't scan itself, the number is tappable. */
+.contact { display: flex; align-items: center; gap: 2rem; flex-wrap: wrap; }
+.contact__scan { display: none; text-align: center; }
+.qr { display: block; width: 7.5rem; padding: 0.5rem; background: #fff; border-radius: 0.75rem; box-shadow: 0 0 0 1px #dce5f8; }
 .qr svg { display: block; width: 100%; height: auto; }
-.qr--close { margin-inline: auto; }
-.qr__note { margin: 0.5rem 0 0; color: var(--ink-soft); font-size: 0.875rem; }
+.qr__note { margin: 0.5rem 0 0; color: var(--ink-soft); font-size: 0.8rem; letter-spacing: 0.04em; text-transform: uppercase; }
+@media (min-width: 900px) { .contact__scan { display: block; } }
 
 /* Landing hero */
 #hero {

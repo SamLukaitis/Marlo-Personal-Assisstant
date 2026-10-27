@@ -18,6 +18,17 @@ function numberLink(className: string, text: string): HTMLAnchorElement {
   return a;
 }
 
+// The number and its note, with the QR code beside them on screens wide enough to scan from a phone.
+function contact(numberClass: string, noteClass: string, note: string): HTMLElement {
+  const row = el("div", "contact");
+  const text = el("div", "contact__text");
+  text.append(numberLink(numberClass, PHONE_DISPLAY), el("p", noteClass, note));
+  const scan = el("div", "contact__scan");
+  scan.append(qrLink("qr"), el("p", "qr__note", "Scan to chat"));
+  row.append(text, scan);
+  return row;
+}
+
 // The page's own furniture around the phone: top bar, landing hero, captions, what Marlo does, closing.
 export function renderNumberBlocks(): void {
   const bar = document.getElementById("bar")!;
@@ -33,10 +44,7 @@ export function renderNumberBlocks(): void {
     el("p", "hero__kicker", "Your assistant on WhatsApp"),
     el("h1", "hero__name", "Marlo"),
     el("p", "hero__lede", "Marlo sorts your email, keeps your documents and reminds you what is coming up. Just send it a message."),
-    numberLink("number number--hero", PHONE_DISPLAY),
-    el("p", "hero__note", "Message it on WhatsApp. No signup."),
-    qrLink("qr qr--hero"),
-    el("p", "qr__note", "Or scan with your phone camera."),
+    contact("number number--hero", "hero__note", "Message it on WhatsApp. No signup."),
     el("p", "hero__scroll", "Scroll to see it work")
   );
   hero.replaceChildren(inner);
@@ -63,8 +71,6 @@ export function renderNumberBlocks(): void {
   const close = document.getElementById("close")!;
   close.replaceChildren(
     el("p", "close__lede", "Ready when you are."),
-    numberLink("number number--close", PHONE_DISPLAY),
-    el("p", "close__note", "Message it on WhatsApp."),
-    qrLink("qr qr--close")
+    contact("number number--close", "close__note", "Message it on WhatsApp.")
   );
 }

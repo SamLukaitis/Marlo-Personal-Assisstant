@@ -12,7 +12,7 @@ What changed (all in `website/`):
   own calendar, so it no longer says the invite was moved.
 - **Itinerary scene removed.** Marlo can't send an itinerary to a person (only to Joyce's family) and
   doesn't check you in for flights.
-- **QR code** in the hero and the closing section, drawn as inline SVG by `qrcode-generator` from
+- **QR code** beside the number in the hero and the closing section (hidden on narrow screens, where a phone can't scan itself and the number is tappable), drawn as inline SVG by `qrcode-generator` from
   the number in `src/config.ts`, linking to `https://wa.me/<number>`.
 - Hero and page description copy no longer promise "plans your trips".
 
