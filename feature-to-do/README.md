@@ -31,6 +31,7 @@ than deleted, since they still explain the reasoning behind what was built.
 - [email-alert-mutes-settings-ui.md](email-alert-mutes-settings-ui.md)
 - [sonnet-5-5-and-fast-first-for-all.md](sonnet-5-5-and-fast-first-for-all.md) (part 2, Sonnet 5.5, done; part 1 still open)
 - [feature-use-followups.md](feature-use-followups.md)
+- [email-watches-followups.md](email-watches-followups.md)
 - [done-admin-version-check.md](done-admin-version-check.md)
 - [done-admin-portal.md](done-admin-portal.md)
 - [done-real-person-alert-content-filter.md](done-real-person-alert-content-filter.md)

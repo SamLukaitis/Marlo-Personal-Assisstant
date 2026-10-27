@@ -58,6 +58,12 @@ import { mailboxLabel } from "../services/mailboxLabel.js";
 import { rejectFactReason } from "../services/memoryGuard.js";
 import { dropFromEmailDigest } from "../services/emailDigest.js";
 import {
+  addEmailWatch,
+  keepEmailWatch,
+  listEmailWatches,
+  removeEmailWatch,
+} from "../services/emailWatches.js";
+import {
   addEmailAlertMute,
   emailDigestTime,
   importantEmailAlertsEnabled,
@@ -983,6 +989,21 @@ const ALWAYS_ON_TOOLS: Anthropic.ToolUnion[] = [
         action: { type: "string", enum: ["add", "remove", "list"] },
         from: { type: "string", description: "Part of the sender's name or address, e.g. \"railway.app\"." },
         subject: { type: "string", description: "A word or phrase in the subject, e.g. \"crashed\"." },
+      },
+      required: ["action"],
+    },
+  },
+  {
+    name: "watch_emails",
+    description:
+      "Keep an eye out for new emails on a topic the user names and ping them the moment one arrives — \"tell me when Jazz Fest tickets go on sale\", \"watch for anything from the visa office\", \"flag any emails about the house sale\". Matching is by meaning, not keywords, and covers both automated mail and people, even if the user has email alerts switched off. Only new mail is watched, so when adding, also run search_messages once for anything that's already arrived and mention it. action \"add\": give a short label for the alert (\"Jazz Fest tickets\") and a topic describing what should count, broad enough to catch it however it's worded (\"New Orleans Jazz Fest ticket sales, presales or lineup announcements\"); confirm in one line. \"remove\": by id — when the user says to stop, OR when they imply the watch's purpose is done (\"got my tickets!\", \"we're not going anymore\") — then tell them in one line that you've stopped watching for it; never stop one silently. \"keep\": by id, when they answer an alert's \"still want me flagging…?\" with yes (resets the check-in). \"list\": the active watches.",
+    input_schema: {
+      type: "object",
+      properties: {
+        action: { type: "string", enum: ["add", "remove", "keep", "list"] },
+        id: { type: "string", description: "The watch's id (for remove and keep)." },
+        label: { type: "string", description: "Short name shown in the alert, e.g. \"Jazz Fest tickets\"." },
+        topic: { type: "string", description: "Plain-English description of what emails should count." },
       },
       required: ["action"],
     },
@@ -2005,6 +2026,23 @@ export async function runTool(
       }
       return { error: 'action must be "add", "remove" or "list"' };
     }
+    case "watch_emails": {
+      if (input.action === "list") return { watches: listEmailWatches(ownerId) };
+      if (input.action === "add") {
+        const watch = addEmailWatch(ownerId, { label: input.label, topic: input.topic });
+        if (!watch) return { error: "pass a label and topic" };
+        return { ok: true, added: watch };
+      }
+      if (input.action === "remove") {
+        const removed = removeEmailWatch(ownerId, input.id);
+        return removed ? { ok: true, removed } : { error: "no watch with that id", watches: listEmailWatches(ownerId) };
+      }
+      if (input.action === "keep") {
+        const kept = keepEmailWatch(ownerId, input.id);
+        return kept ? { ok: true, kept } : { error: "no watch with that id", watches: listEmailWatches(ownerId) };
+      }
+      return { error: 'action must be "add", "remove", "keep" or "list"' };
+    }
     case "set_tool_enabled": {
       const tool = input.tool as string;
       if (!TOOL_KEYS.includes(tool as ToolKey)) {
@@ -2428,6 +2466,16 @@ export function buildSystemPrompt(ownerId: number, conversationSummary?: string)
     ? `Pending Xero invoice confirmation: a WhatsApp alert about "${pendingInvoice.subject}" asked the user to reply "yes" to save it (to their books and/or Xero). If their latest message is answering that (yes/no/go ahead/skip), call respond_to_invoice_forward_prompt with confirm accordingly. If it's about something else, ignore this.`
     : "";
 
+  // Listed every turn so the assistant can notice when the user implies one is done ("got the
+  // tickets!") and end it (watch_emails remove). Changes rarely, so it costs little cache churn.
+  const watches = listEmailWatches(ownerId);
+  const watchStatus = watches.length
+    ? "Emails you're watching for (watch_emails): " +
+      watches.map((w) => `${w.label} (id ${w.id})`).join("; ") +
+      ". If the user says or implies one is no longer needed — they got what they were waiting for, " +
+      "or the plan fell through — remove it and say in one line that you've stopped watching for it."
+    : "";
+
   // Mid-onboarding context, keyed off the WhatsApp post-connect chain's own pending step
   // (postConnectSetup.ts / db/store.ts's pending_setup). The ask_first_task free-text step
   // forwards the user's reply straight into this same runAssistantChat call (see
@@ -2484,6 +2532,7 @@ export function buildSystemPrompt(ownerId: number, conversationSummary?: string)
       `shown alongside the user's latest message. The profile:\n${coreList}`,
     xeroStatus,
     pendingInvoiceStatus,
+    watchStatus,
     conversationSummary
       ? `Earlier in this conversation, before what's shown in the message history below:\n${conversationSummary}`
       : "",

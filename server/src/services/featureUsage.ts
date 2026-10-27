@@ -117,6 +117,7 @@ const TOOL_AREAS: Record<string, FeatureArea | "helper"> = {
   set_briefing_preferences: "settings",
   set_email_alerts: "settings",
   mute_email_alerts: "settings",
+  watch_emails: "settings",
   set_tool_enabled: "settings",
   connect_email: "settings",
   list_needs_attention: "settings",

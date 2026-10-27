@@ -5,6 +5,7 @@
 
 import Anthropic from "@anthropic-ai/sdk";
 import { recordApiUsage } from "../db/store.js";
+import { WATCH_CATEGORY, watchPromptLines, type EmailWatch } from "./emailWatches.js";
 
 export const IMPORTANT_EMAIL_CATEGORIES = [
   "flight_change",
@@ -79,13 +80,23 @@ export interface ClassifyCandidate {
 
 // Pure — builds the prompt text from candidates and the fixed category list. Split out from
 // classifyImportantEmails so it's unit-testable without an API call.
-export function buildClassifyPrompt(candidates: ClassifyCandidate[]): string {
+export function buildClassifyPrompt(candidates: ClassifyCandidate[], watches: EmailWatch[] = []): string {
   const categoryList = IMPORTANT_EMAIL_CATEGORIES.map(
     (c) => `- ${c}: ${CATEGORY_INFO[c].description}`
   ).join("\n");
   const emailList = candidates
     .map((c) => `[${c.index}] Subject: ${c.subject}\nSnippet: ${c.snippet}`)
     .join("\n\n");
+  // The user's own watches (emailWatches.ts) — a ticket presale announcement is exactly the kind of
+  // promotional mail the rules above skip, so they're told not to apply here.
+  const watchSection = watches.length
+    ? "\n\nThe user also asked to be told about any email on these topics (id: topic):\n" +
+      `${watchPromptLines(watches)}\n` +
+      "For each email that is clearly about one of these topics, add it to watch_matches with that " +
+      "topic's id and a summary written the same way as above. The skip rules above (promotional, " +
+      "marketing, newsletters) do NOT apply to these topics — the user asked for exactly this mail. " +
+      "An email can be in both matches and watch_matches."
+    : "";
   return (
     `Categories:\n${categoryList}\n\n` +
     "For each numbered email below, decide whether it clearly falls into exactly one of these " +
@@ -103,12 +114,16 @@ export function buildClassifyPrompt(candidates: ClassifyCandidate[]): string {
     "truncated mid-sentence or contain raw HTML entities. Also set needs_action: true only when " +
     "the user must do something themselves (pay, reply, reschedule, collect a parcel, respond by a " +
     "deadline); false for confirmations, receipts and routine status updates." +
+    watchSection +
     `\n\n${emailList}`
   );
 }
 
 export interface ClassifyMatch {
-  category: ImportantEmailCategory;
+  // WATCH_CATEGORY when the email matched one of the user's watches — that wins over any fixed
+  // category, so one email is never sent twice.
+  category: ImportantEmailCategory | typeof WATCH_CATEGORY;
+  watchId?: string;
   // One-sentence plain-English summary the model wrote from the subject/snippet, replacing the
   // raw Gmail/Outlook snippet (HTML-entity-encoded, truncated mid-sentence) in the WhatsApp alert.
   summary: string;
@@ -140,6 +155,27 @@ export function parseClassifyMatches(matches: unknown): Map<number, ClassifyMatc
         needsAction: (entry as { needs_action?: unknown }).needs_action === true,
       });
     }
+  }
+  return result;
+}
+
+// Pure — lays watch matches over the fixed-category ones, dropping any naming a watch that doesn't
+// exist. A watch match carries no needs_action: the user asked to hear about it, which is enough.
+export function applyWatchMatches(
+  result: Map<number, ClassifyMatch>,
+  watchMatches: unknown,
+  watchIds: string[]
+): Map<number, ClassifyMatch> {
+  if (!Array.isArray(watchMatches)) return result;
+  for (const entry of watchMatches) {
+    const e = entry as { index?: unknown; watch_id?: unknown; summary?: unknown } | null;
+    if (!e || typeof e.index !== "number" || typeof e.watch_id !== "string" || !watchIds.includes(e.watch_id)) continue;
+    result.set(e.index, {
+      category: WATCH_CATEGORY,
+      watchId: e.watch_id,
+      summary: typeof e.summary === "string" ? e.summary.trim() : "",
+      needsAction: false,
+    });
   }
   return result;
 }
@@ -178,6 +214,22 @@ const CLASSIFY_TOOL: Anthropic.Tool = {
           required: ["index", "category", "summary", "needs_action"],
         },
       },
+      watch_matches: {
+        type: "array",
+        description: "Emails about one of the user's watched topics, if any were listed.",
+        items: {
+          type: "object",
+          properties: {
+            index: { type: "number", description: "The email's number from the list above" },
+            watch_id: { type: "string", description: "The id of the watched topic it's about" },
+            summary: {
+              type: "string",
+              description: "One plain-English sentence summarizing what the email actually says.",
+            },
+          },
+          required: ["index", "watch_id", "summary"],
+        },
+      },
     },
     required: ["matches"],
   },
@@ -187,7 +239,8 @@ const CLASSIFY_TOOL: Anthropic.Tool = {
 // documents.ts's extraction call. Verified manually (see plan Task 7).
 export async function classifyImportantEmails(
   candidates: ClassifyCandidate[],
-  ownerId: number
+  ownerId: number,
+  watches: EmailWatch[] = []
 ): Promise<Map<number, ClassifyMatch>> {
   if (candidates.length === 0) return new Map();
 
@@ -196,7 +249,7 @@ export async function classifyImportantEmails(
     max_tokens: 4096,
     tools: [CLASSIFY_TOOL],
     tool_choice: { type: "tool", name: "classify_messages" },
-    messages: [{ role: "user", content: buildClassifyPrompt(candidates) }],
+    messages: [{ role: "user", content: buildClassifyPrompt(candidates, watches) }],
   });
   recordApiUsage(
     ownerId,
@@ -216,5 +269,10 @@ export async function classifyImportantEmails(
   const toolUse = response.content.find(
     (b): b is Anthropic.ToolUseBlock => b.type === "tool_use" && b.name === "classify_messages"
   );
-  return parseClassifyMatches((toolUse?.input as { matches?: unknown } | undefined)?.matches);
+  const input = toolUse?.input as { matches?: unknown; watch_matches?: unknown } | undefined;
+  return applyWatchMatches(
+    parseClassifyMatches(input?.matches),
+    input?.watch_matches,
+    watches.map((w) => w.id)
+  );
 }

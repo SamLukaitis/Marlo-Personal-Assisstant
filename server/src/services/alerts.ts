@@ -1,7 +1,12 @@
 import { hubListNewMessages, isAutomatedMail } from "./hub.js";
 import { hasAlerted, markAlerted, getSetting, setSetting, listPhoneNumbersForUser, listEntities } from "../db/store.js";
-import { triageRealPersonEmails, type TriageGist } from "./realPersonTriage.js";
-import { IMPORTANT_EMAIL_ENTITY_TYPE, type ImportantEmailEntityData } from "./importantEmailAlerts.js";
+import { triageRealPersonEmails, type TriageGist, type TriageWatchMatch } from "./realPersonTriage.js";
+import {
+  IMPORTANT_EMAIL_ENTITY_TYPE,
+  submitWatchAlert,
+  type ImportantEmailEntityData,
+} from "./importantEmailAlerts.js";
+import { listEmailWatches, type EmailWatch } from "./emailWatches.js";
 import { isWhatsAppConfigured } from "../providers/whatsapp.js";
 import { isMutedEmail, listEmailAlertMutes, realPersonAlertMode, realPersonAlertsEnabledSince } from "./emailAlertSettings.js";
 import { queueForEmailDigest } from "./emailDigest.js";
@@ -23,7 +28,12 @@ function messageKey(m: UnifiedMessage): string {
 // get one concrete line per email through the attention gate. Dedupes via a persisted ledger so
 // the same message never triggers twice across restarts. Runs per-tenant — scheduler.ts loops over
 // every user and calls this once per owner.
-export async function checkForNewImportantMessages(ownerId: number): Promise<void> {
+//
+// watchOnly: the user switched these alerts off but has email watches (emailWatches.ts), which work
+// regardless — only watch matches are sent; everything else is settled without a ping or a digest
+// entry.
+export async function checkForNewImportantMessages(ownerId: number, opts: { watchOnly?: boolean } = {}): Promise<void> {
+  const watchOnly = opts.watchOnly === true;
   const messages = await hubListNewMessages(ownerId);
   // One line per scan that saw any mail, naming the gate that decided its fate — "I emailed it and
   // got no alert" was undiagnosable while every gate below dropped mail without a trace. Counts
@@ -88,9 +98,23 @@ export async function checkForNewImportantMessages(ownerId: number): Promise<voi
     return;
   }
 
-  const { skipped, gists } = await triageUnseen(ownerId, unseen);
-  for (const m of unseen) if (skipped.has(m)) markAlerted(ownerId, messageKey(m));
-  const toAlert = unseen.filter((m) => !skipped.has(m));
+  const watches = listEmailWatches(ownerId);
+  if (watchOnly && watches.length === 0) return;
+
+  const { skipped, gists, watched } = await triageUnseen(ownerId, unseen, watches);
+  // A watch match goes out at once, ahead of any skip, digest or alert switch — the user asked for it.
+  for (const [m, match] of watched) {
+    const watch = watches.find((w) => w.id === match.watchId);
+    if (watch) await submitWatchAlert(ownerId, m, watch, match.summary || personLine(m.from, m.subject, gists.get(m)));
+    markAlerted(ownerId, messageKey(m));
+  }
+  if (watchOnly) {
+    for (const m of unseen) markAlerted(ownerId, messageKey(m));
+    logScan(`watch-only: sent ${watched.size} watch match(es)`, unseen.length);
+    return;
+  }
+  for (const m of unseen) if (skipped.has(m) && !watched.has(m)) markAlerted(ownerId, messageKey(m));
+  const toAlert = unseen.filter((m) => !skipped.has(m) && !watched.has(m));
   if (toAlert.length === 0) {
     logScan(`skipped ${skipped.size} (marketing or repeats an earlier alert)`, unseen.length);
     return;
@@ -150,10 +174,16 @@ const MAX_RECENT_ALERTS = 15;
 // alert or digest entry is actually about to happen.
 async function triageUnseen(
   ownerId: number,
-  unseen: UnifiedMessage[]
-): Promise<{ skipped: Set<UnifiedMessage>; gists: Map<UnifiedMessage, TriageGist> }> {
+  unseen: UnifiedMessage[],
+  watches: EmailWatch[]
+): Promise<{
+  skipped: Set<UnifiedMessage>;
+  gists: Map<UnifiedMessage, TriageGist>;
+  watched: Map<UnifiedMessage, TriageWatchMatch>;
+}> {
   const skipped = new Set<UnifiedMessage>();
   const gists = new Map<UnifiedMessage, TriageGist>();
+  const watched = new Map<UnifiedMessage, TriageWatchMatch>();
   const since = Date.now() - RECENT_ALERT_WINDOW_MS;
   const recentAlerts = listEntities<ImportantEmailEntityData>(ownerId, { type: IMPORTANT_EMAIL_ENTITY_TYPE })
     .filter((e) => e.createdAt >= since)
@@ -163,12 +193,14 @@ async function triageUnseen(
     const verdicts = await triageRealPersonEmails(
       unseen.map((m, index) => ({ index, from: m.from, subject: m.subject, snippet: m.snippet })),
       recentAlerts,
-      ownerId
+      ownerId,
+      watches
     );
     for (const index of verdicts.skips.keys()) if (unseen[index]) skipped.add(unseen[index]);
     for (const [index, gist] of verdicts.gists) if (unseen[index]) gists.set(unseen[index], gist);
+    for (const [index, match] of verdicts.watchMatches ?? []) if (unseen[index]) watched.set(unseen[index], match);
   } catch (err) {
     console.error(`alerts: triage failed for owner ${ownerId}, alerting on everything`, err);
   }
-  return { skipped, gists };
+  return { skipped, gists, watched };
 }
