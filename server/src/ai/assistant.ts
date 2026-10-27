@@ -55,6 +55,7 @@ import { allEditionToolNames, applyEditionTools, getEdition, isToolExcluded, run
 import { DOCUMENT_SENT_MARKER, DOCUMENT_SENT_TOOL, type CatalogTool } from "../services/featureUsage.js";
 import { sendConnectLink } from "../services/connectMailboxLink.js";
 import { mailboxLabel } from "../services/mailboxLabel.js";
+import { rejectFactReason } from "../services/memoryGuard.js";
 import { dropFromEmailDigest } from "../services/emailDigest.js";
 import {
   addEmailAlertMute,
@@ -631,7 +632,7 @@ const ALWAYS_ON_TOOLS: Anthropic.ToolUnion[] = [
   {
     name: "remember",
     description:
-      "Save a fact or preference about the user for future conversations — e.g. which account belongs to which business, a standing instruction, or context they've shared. Call this whenever the user tells you something worth recalling later, without waiting to be asked. Keep it to one clear sentence. For anything with a time component (a deadline, a future plan they want to be nudged about), use set_reminder instead — this tool has no way to schedule a WhatsApp push.",
+      "Save a durable fact or preference about the user for future conversations — e.g. which account belongs to which business, a standing instruction, the people in their life. Call this whenever the user tells you something still worth knowing weeks from now, without waiting to be asked. Keep it to one clear sentence. Do NOT save: one-off events or what's happening this week (a trip itinerary, tonight's plans, prices you compared), where they are right now, emails they received (rejections, alerts, requests — those stay in the inbox), bookings (those are already tracked separately), reminders, or codes/passwords. For anything with a time component (a deadline, a future plan they want to be nudged about), use set_reminder instead — this tool has no way to schedule a WhatsApp push.",
     input_schema: {
       type: "object",
       properties: {
@@ -1581,6 +1582,8 @@ export async function runTool(
       return { ok: true };
     case "remember": {
       const note = input.note as string;
+      const rejected = rejectFactReason(note);
+      if (rejected) return { error: `not saved: ${rejected}` };
       const entityName = (input.entity_name as string | undefined)?.trim();
       const entityType = (input.entity_type as string | undefined)?.trim();
       // A reserved type (booking, expense, travel_checkin, trip, important_email) is never turned
@@ -2332,7 +2335,7 @@ function buildRules(enabled: Set<ToolKey>): string {
     '- To unsubscribe the user from promotional mail, find a recent message from that sender (search_messages), then ALWAYS confirm first with ask_user_choice(mode="confirm", confirm_tool="unsubscribe_from_sender", confirm_input={account_id, message_id}, question naming the sender) — unsubscribing can\'t be undone, and the tool refuses to run without that tap. Afterwards tell the user senders can take a few days to stop; if the result says it needs a link, give them the link; if it isn\'t possible, offer to archive that sender\'s mail instead.',
     "- Use search_contacts to resolve a name to an email address before drafting to someone when you don't already have their address.",
     "- If search_contacts (or any lookup) returns more than one plausible match and it's not obvious which one is meant, use ask_user_choice(mode=\"resume\") with one option per candidate instead of listing them in prose and waiting for a typed reply.",
-    "- Use the remember tool proactively whenever the user shares something worth recalling later (preferences, which account is which, standing instructions, people in their life) — don't wait to be asked. Use kind 'core' only for identity-level facts (their name, partner/children/close family, home city, job/employer).",
+    "- Use the remember tool proactively whenever the user shares something still worth knowing weeks from now (preferences, which account is which, standing instructions, people in their life) — don't wait to be asked. Don't remember the passing details of a task: trip logistics, where they are today, emails that arrived, bookings, prices, or things already done. When in doubt, don't save it. Use kind 'core' only for identity-level facts (their name, partner/children/close family, home city, job/employer).",
     "- When a remember note is about a specific, nameable, recurring subject (a person, place, organisation, project) the user might ask about again by name, pass entity_name + entity_type on that same remember call; when it relates two such subjects, pass relates_to plus a relation like 'works_at'. Use recall_entity (not search_memory) when the user asks about that subject by name.",
     "- When the user corrects or updates something you remember (they moved, changed jobs, you had it wrong), call remember with replaces_id set to the old fact's id rather than saving a second, conflicting fact. When they say something you remember is wrong or ask you to forget it, call forget_memory and tell them what you forgot.",
     "- For 'what do you know about me', call search_memory with no query. Otherwise don't recite remembered facts unprompted — just use them.",

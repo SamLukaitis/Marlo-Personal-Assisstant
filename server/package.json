@@ -10,6 +10,7 @@
     "invite": "tsx src/scripts/invite.ts",
     "change-phone": "tsx src/scripts/changePhone.ts",
     "set-edition": "tsx src/scripts/setEdition.ts",
+    "memory:audit": "tsx src/scripts/memoryAudit.ts",
     "test": "vitest run",
     "eval:grounding": "vitest run --config vitest.eval.config.ts",
     "whatsapp:check": "tsx src/scripts/whatsappCheck.ts",
