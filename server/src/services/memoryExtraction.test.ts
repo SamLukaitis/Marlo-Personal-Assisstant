@@ -144,6 +144,23 @@ describe("maybeExtractMemory", () => {
 });
 
 describe("applyMemoryOperations", () => {
+  it("refuses one-time codes and raw coordinates but keeps the valid facts beside them", () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("apply-guard"));
+    const result = applyMemoryOperations(
+      user.id,
+      [
+        { op: "add_fact", content: "TikTok sent the user a verification code 992981.", kind: "fact" },
+        { op: "add_fact", content: "The user's location was -16.400562, -71.540512.", kind: "fact" },
+        { op: "add_fact", content: "The user studies at the University of Edinburgh.", kind: "fact" },
+      ],
+      new Set()
+    );
+    expect(result).toEqual({ applied: 1, skipped: 2 });
+    expect(listMemoryNotes(user.id).map((n) => n.content)).toEqual([
+      "The user studies at the University of Edinburgh.",
+    ]);
+  });
+
   it("honours supersedes_id only for shown candidates, but still adds the fact", () => {
     const user = findOrCreateUserByEmail(uniqueEmail("apply-supersede"));
     const shown = addFact(user.id, { content: "Lives in Paris", kind: "core" });
@@ -234,6 +251,7 @@ describe("buildExtractionPrompt", () => {
     expect(prompt).toMatch(/password/i);
     expect(prompt).toMatch(/confirmed/i);
     expect(prompt).toMatch(/durable/i);
+    expect(prompt).toMatch(/never record: travel itineraries/i);
   });
 
   it("lists forgotten facts in their own section and states the retraction rule", () => {

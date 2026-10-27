@@ -161,6 +161,8 @@ npm test                 # Run the Vitest suite
 npm run eval:grounding   # Run assistant grounding evaluations
 npm run invite -- PHONE  # Invite a user by phone number
 npm run change-phone -- OLD NEW [--apply]  # Move an account to a new WhatsApp number (dry run without --apply)
+npm run memory:audit -- PHONE [--forget 12,15]  # List remembered facts that shouldn't be in memory; forget chosen ids
+# On production: railway ssh, then: cd /app/server && node dist/scripts/memoryAudit.js PHONE
 npm run whatsapp:check -- <WABA_ID> --subscribe
 npm run joyce:templates -- 1574262347469069           # Joyce's template approval status (--create to submit)
 npm run whatsapp:templates -- 1574262347469069        # marlowe_whats_new (update announcements) approval status (--create to submit)
