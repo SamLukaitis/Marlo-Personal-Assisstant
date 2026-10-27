@@ -33,6 +33,13 @@ import { submitAttentionItem } from "./attention.js";
 import { enrichImportantEmail } from "./importantEmailEnrichment.js";
 import { getUserTimezone } from "./userTimezone.js";
 import { isMutedEmail, listEmailAlertMutes } from "./emailAlertSettings.js";
+import {
+  listEmailWatches,
+  recordWatchAlert,
+  watchAlertSummary,
+  WATCH_CATEGORY,
+  type EmailWatch,
+} from "./emailWatches.js";
 import type { AttentionDetails } from "../db/store.js";
 import type { UnifiedMessage } from "../providers/types.js";
 import { onAutomatedMail } from "../editions/index.js";
@@ -42,7 +49,7 @@ const BASELINE_KEY = "important_email_baseline_set";
 // Priority order for scanAndCurateImportantEmailsForOnboarding's preview — most-urgent-feeling
 // first, so a security alert or government letter never gets buried behind a routine booking
 // confirmation just because it happened to sort later in the inbox.
-const ONBOARDING_PREVIEW_CATEGORY_PRIORITY: ImportantEmailCategory[] = [
+const ONBOARDING_PREVIEW_CATEGORY_PRIORITY: ClassifyMatch["category"][] = [
   "security_alert",
   "government_mail",
   "flight_change",
@@ -69,7 +76,7 @@ export interface ImportantEmailEntityData {
   accountId: number;
   accountEmail: string;
   messageId: string;
-  category: ImportantEmailCategory;
+  category: ImportantEmailCategory | typeof WATCH_CATEGORY;
   subject: string;
   from: string;
   summary: string;
@@ -140,7 +147,11 @@ function messageKey(m: UnifiedMessage): string {
 // of checkForNewImportantMessages's filter), since that's exactly the mail those two miss.
 //
 // Dedupe with reconciliation.ts and tripPrep.ts happens in the attention gate, by event_key.
-export async function checkForImportantEmails(ownerId: number): Promise<void> {
+//
+// watchOnly: the user switched important-email alerts off but has email watches (emailWatches.ts),
+// which work regardless — only watch matches are sent, everything else is settled silently.
+export async function checkForImportantEmails(ownerId: number, opts: { watchOnly?: boolean } = {}): Promise<void> {
+  const watchOnly = opts.watchOnly === true;
   const messages = await hubListNewMessages(ownerId);
   // Deliberately NOT gated on m.unread — a user who opens a flight-booking/invoice notification
   // the moment it arrives (completely normal) must not lose the alert. hasAlerted's per-message
@@ -170,11 +181,14 @@ export async function checkForImportantEmails(ownerId: number): Promise<void> {
 
   // Business edition: payment-received mail becomes income awaiting review. Before the WhatsApp
   // gates on purpose — it sends nothing, so it needn't wait for a deliverable number. Safe to see
-  // the same message again on a retry: the ledger dedupes on the message id.
-  onAutomatedMail(
-    ownerId,
-    notYetScanned.map((m) => ({ ...m, from: m.from ?? "" }))
-  );
+  // the same message again on a retry: the ledger dedupes on the message id. Not in watch-only mode,
+  // which runs only because of a watch and leaves everything else as it was with alerts off.
+  if (!watchOnly) {
+    onAutomatedMail(
+      ownerId,
+      notYetScanned.map((m) => ({ ...m, from: m.from ?? "" }))
+    );
+  }
 
   // Mail the user muted (emailAlertSettings.ts) is settled now — after the business-edition hook
   // above, which isn't an alert, and before paying to classify something that will never be sent.
@@ -196,11 +210,15 @@ export async function checkForImportantEmails(ownerId: number): Promise<void> {
   const numbers = listPhoneNumbersForUser(ownerId).map((r) => r.phone);
   if (numbers.length === 0) return;
 
+  const watches = listEmailWatches(ownerId);
+  if (watchOnly && watches.length === 0) return;
+
   let classified: Map<number, ClassifyMatch>;
   try {
     classified = await classifyImportantEmails(
       unscanned.map((m, index) => ({ index, subject: m.subject, snippet: m.snippet })),
-      ownerId
+      ownerId,
+      watches
     );
   } catch (err) {
     console.error(`importantEmailAlerts: classification failed for owner ${ownerId}`, err);
@@ -211,19 +229,31 @@ export async function checkForImportantEmails(ownerId: number): Promise<void> {
   }
 
   // A non-match has been fully examined and settled — mark it scanned now so it isn't
-  // reclassified every tick. A match stays unmarked until it's actually delivered, below.
+  // reclassified every tick. A match stays unmarked until it's actually delivered, below. In
+  // watch-only mode a fixed-category match counts as a non-match: those alerts are off.
+  const counts = (match: ClassifyMatch | undefined) => !!match && (!watchOnly || match.category === WATCH_CATEGORY);
   for (let i = 0; i < unscanned.length; i++) {
-    if (!classified.has(i)) markAlerted(ownerId, messageKey(unscanned[i]));
+    if (!counts(classified.get(i))) markAlerted(ownerId, messageKey(unscanned[i]));
   }
 
   const matches = unscanned
     .map((m, index) => ({ m, match: classified.get(index) }))
-    .filter((x): x is { m: UnifiedMessage; match: ClassifyMatch } => !!x.match);
+    .filter((x): x is { m: UnifiedMessage; match: ClassifyMatch } => counts(x.match));
 
   // Every match is handed to the attention gate (attention.ts), which decides whether it interrupts
   // now, becomes a timed reminder, waits for the briefing, or is dropped as routine — and retries
   // its own failed sends, so a match is fully handled once submitted.
   for (const { m, match } of matches) {
+    const watch = match.category === WATCH_CATEGORY ? watches.find((w) => w.id === match.watchId) : undefined;
+    if (watch) {
+      await submitWatchAlert(ownerId, m, watch, match.summary?.trim() || tidySnippet(m.snippet));
+      markAlerted(ownerId, messageKey(m));
+      continue;
+    }
+    if (match.category === WATCH_CATEGORY) {
+      markAlerted(ownerId, messageKey(m));
+      continue;
+    }
     const details = await detailsFor(ownerId, m, match);
     await submitAttentionItem(ownerId, {
       source: "email",
@@ -248,6 +278,7 @@ async function detailsFor(ownerId: number, m: UnifiedMessage, match: ClassifyMat
     emailFrom: m.from,
   };
   if (match.category === "delivery_notification" && !match.needsAction) return base;
+  if (match.category === WATCH_CATEGORY) return base;
 
   const full = await hubGetMessage(ownerId, m.accountId, m.id).catch(() => null);
   const enriched = full?.body?.trim()
@@ -272,6 +303,33 @@ async function detailsFor(ownerId: number, m: UnifiedMessage, match: ClassifyMat
     details.xeroOffer = { accountId: m.accountId, messageId: m.id, subject: m.subject };
   }
   return details;
+}
+
+// One email matched one of the user's watches (emailWatches.ts), from either scan — this one or
+// alerts.ts's real-person scan. Always an interrupt and exempt from the daily cap (attentionRules.ts);
+// every CHECK_IN_EVERY-th alert for a watch asks whether to keep it.
+export async function submitWatchAlert(
+  ownerId: number,
+  m: UnifiedMessage,
+  watch: EmailWatch,
+  summary: string
+): Promise<void> {
+  const checkIn = recordWatchAlert(ownerId, watch.id);
+  const text = watchAlertSummary(watch, summary, checkIn);
+  await submitAttentionItem(ownerId, {
+    source: "email",
+    category: WATCH_CATEGORY,
+    details: {
+      summary: text,
+      needsAction: false,
+      accountId: m.accountId,
+      messageId: m.id,
+      emailSubject: m.subject,
+      emailFrom: m.from,
+    },
+    fallbackKey: `watch:${m.accountId}:${m.id}`,
+  });
+  saveFlaggedEmail(ownerId, m, { category: WATCH_CATEGORY, watchId: watch.id, summary: `${watch.label}: ${summary}`, needsAction: false });
 }
 
 function saveFlaggedEmail(ownerId: number, m: UnifiedMessage, match: ClassifyMatch): void {
@@ -367,7 +425,7 @@ export async function scanAndCurateImportantEmailsForOnboarding(
   );
   const shown = sorted.slice(0, ONBOARDING_PREVIEW_LIMIT);
   const lines = shown.map(({ m, match }) => {
-    const { emoji } = CATEGORY_INFO[match.category];
+    const emoji = match.category === WATCH_CATEGORY ? "👀" : CATEGORY_INFO[match.category].emoji;
     return `${emoji} ${match.summary?.trim() || m.snippet}`;
   });
 

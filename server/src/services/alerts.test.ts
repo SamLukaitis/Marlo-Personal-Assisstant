@@ -42,6 +42,7 @@ const { setRealPersonAlertsEnabled, realPersonAlertsEnabledSince, setRealPersonA
 const { queuedEmailDigestCount } = await import("./emailDigest.js");
 const { markOnboardingConnected } = await import("./onboardingAlertSuppression.js");
 const { setUserTimezone } = await import("./userTimezone.js");
+const { addEmailWatch } = await import("./emailWatches.js");
 
 let counter = 0;
 function uniqueEmail(prefix: string): string {
@@ -109,6 +110,56 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.useRealTimers();
+});
+
+describe("checkForNewImportantMessages — email watches", () => {
+  it("pings a watch match at once even when triage calls it marketing and the user is in digest mode", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("watch-person"));
+    registerActivePhone(user.id);
+    setRealPersonAlertMode(user.id, "digest");
+    await baseline(user.id);
+    const watch = addEmailWatch(user.id, { label: "Jazz Fest tickets", topic: "Jazz Fest" })!;
+    mockHubListNewMessages.mockResolvedValueOnce([
+      fakeMessage({ id: "jazz", from: "Promo <promo@festival.com>", subject: "Jazz Fest presale" }),
+      fakeMessage({ id: "other", subject: "Lunch?" }),
+    ]);
+    mockTriage.mockResolvedValueOnce({
+      skips: new Map([[0, "not_personal"]]),
+      gists: new Map(),
+      watchMatches: new Map([[0, { watchId: watch.id, summary: "Presale opens *Friday*." }]]),
+    });
+
+    await checkForNewImportantMessages(user.id);
+
+    expect(mockTriage.mock.calls[0][3]).toEqual([expect.objectContaining({ id: watch.id })]);
+    const texts = vi.mocked(sendWhatsAppMessage).mock.calls.map((c) => c[1] as string);
+    expect(texts).toEqual(["👀 *Jazz Fest tickets*: Presale opens *Friday*."]);
+    expect(queuedEmailDigestCount(user.id)).toBe(1); // "Lunch?" still goes to the digest
+    expect(hasAlerted(user.id, "1:jazz")).toBe(true);
+  });
+
+  it("in watch-only mode sends only watch matches and queues nothing for the digest", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("watch-only-person"));
+    registerActivePhone(user.id);
+    await baseline(user.id);
+    const watch = addEmailWatch(user.id, { label: "Jazz Fest tickets", topic: "Jazz Fest" })!;
+    mockHubListNewMessages.mockResolvedValueOnce([
+      fakeMessage({ id: "jazz", subject: "Jazz Fest tickets" }),
+      fakeMessage({ id: "other", subject: "Lunch?" }),
+    ]);
+    mockTriage.mockResolvedValueOnce({
+      skips: new Map(),
+      gists: new Map(),
+      watchMatches: new Map([[0, { watchId: watch.id, summary: "Sam has *two spare tickets*." }]]),
+    });
+
+    await checkForNewImportantMessages(user.id, { watchOnly: true });
+
+    const texts = vi.mocked(sendWhatsAppMessage).mock.calls.map((c) => c[1] as string);
+    expect(texts).toEqual(["👀 *Jazz Fest tickets*: Sam has *two spare tickets*."]);
+    expect(queuedEmailDigestCount(user.id)).toBe(0);
+    expect(hasAlerted(user.id, "1:other")).toBe(true);
+  });
 });
 
 describe("checkForNewImportantMessages", () => {

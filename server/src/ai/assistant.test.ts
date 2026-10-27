@@ -1994,3 +1994,26 @@ describe("mute_email_alerts tool", () => {
     expect(buildToolsForOwner(user.id).map((t) => t.name)).toContain("mute_email_alerts");
   });
 });
+
+describe("watch_emails tool", () => {
+  it("adds, lists, keeps and removes a watch, and the system prompt lists it while active", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("watch-tool"));
+    expect(buildToolsForOwner(user.id).map((t) => t.name)).toContain("watch_emails");
+    expect(await runTool(user.id, "watch_emails", { action: "add" })).toEqual({ error: "pass a label and topic" });
+
+    const added = (await runTool(user.id, "watch_emails", {
+      action: "add",
+      label: "Jazz Fest tickets",
+      topic: "New Orleans Jazz Fest ticket sales or presales",
+    })) as { added: { id: string } };
+    const id = added.added.id;
+    expect(added).toMatchObject({ ok: true, added: { label: "Jazz Fest tickets", alertCount: 0 } });
+    expect(await runTool(user.id, "watch_emails", { action: "list" })).toMatchObject({ watches: [{ id }] });
+    expect(buildSystemPrompt(user.id)).toContain(`Jazz Fest tickets (id ${id})`);
+
+    expect(await runTool(user.id, "watch_emails", { action: "keep", id })).toMatchObject({ ok: true });
+    expect(await runTool(user.id, "watch_emails", { action: "remove", id })).toMatchObject({ ok: true });
+    expect(await runTool(user.id, "watch_emails", { action: "remove", id })).toMatchObject({ error: "no watch with that id" });
+    expect(buildSystemPrompt(user.id)).not.toContain("Jazz Fest tickets");
+  });
+});

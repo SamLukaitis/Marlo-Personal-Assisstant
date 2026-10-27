@@ -8,6 +8,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { recordApiUsage } from "../db/store.js";
 import { tidySnippet } from "./htmlToText.js";
+import { watchPromptLines, type EmailWatch } from "./emailWatches.js";
 
 export interface TriageCandidate {
   index: number;
@@ -25,12 +26,24 @@ export interface TriageGist {
   needsReply: boolean;
 }
 
+// An email about one of the user's watched topics (emailWatches.ts). Read before any skip: a watch
+// match always alerts, even when it's marketing.
+export interface TriageWatchMatch {
+  watchId: string;
+  summary: string;
+}
+
 export interface TriageResult {
   skips: Map<number, TriageSkipReason>;
   gists: Map<number, TriageGist>;
+  watchMatches?: Map<number, TriageWatchMatch>;
 }
 
-export function buildTriagePrompt(candidates: TriageCandidate[], recentAlerts: string[]): string {
+export function buildTriagePrompt(
+  candidates: TriageCandidate[],
+  recentAlerts: string[],
+  watches: EmailWatch[] = []
+): string {
   const recent = recentAlerts.length
     ? `Alerts the user was already sent in the last two days:\n${recentAlerts.map((a) => `- ${a}`).join("\n")}\n\n`
     : "";
@@ -51,6 +64,14 @@ export function buildTriagePrompt(candidates: TriageCandidate[], recentAlerts: s
     "wants or says, written to follow their name (e.g. \"wants to move Thursday's call to Friday\", " +
     "\"sent the signed contract\") — concrete, no greeting, no quotes — and needs_reply: true if they " +
     "are waiting on an answer from the user.\n\n" +
+    (watches.length
+      ? "The user also asked to be told about any email on these topics (id: topic):\n" +
+        `${watchPromptLines(watches)}\n` +
+        "For each email clearly about one of these topics, add it to watch_matches with that topic's id " +
+        "and one plain-English sentence on what it says, addressed to the user, with the concrete specifics " +
+        "(names, dates, amounts) in WhatsApp bold (*text*). This applies even to marketing or promotional " +
+        "mail — the user asked for exactly this.\n\n"
+      : "") +
     emailList
   );
 }
@@ -74,6 +95,18 @@ export function parseTriageGists(kept: unknown): Map<number, TriageGist> {
     const e = entry as { index?: unknown; gist?: unknown; needs_reply?: unknown } | null;
     if (e && typeof e.index === "number" && typeof e.gist === "string" && e.gist.trim()) {
       result.set(e.index, { gist: e.gist.trim(), needsReply: e.needs_reply === true });
+    }
+  }
+  return result;
+}
+
+export function parseTriageWatchMatches(entries: unknown, watchIds: string[]): Map<number, TriageWatchMatch> {
+  const result = new Map<number, TriageWatchMatch>();
+  if (!Array.isArray(entries)) return result;
+  for (const entry of entries) {
+    const e = entry as { index?: unknown; watch_id?: unknown; summary?: unknown } | null;
+    if (e && typeof e.index === "number" && typeof e.watch_id === "string" && watchIds.includes(e.watch_id)) {
+      result.set(e.index, { watchId: e.watch_id, summary: typeof e.summary === "string" ? e.summary.trim() : "" });
     }
   }
   return result;
@@ -116,6 +149,19 @@ const TRIAGE_TOOL: Anthropic.Tool = {
           required: ["index", "gist"],
         },
       },
+      watch_matches: {
+        type: "array",
+        description: "Emails about one of the user's watched topics, if any were listed.",
+        items: {
+          type: "object",
+          properties: {
+            index: { type: "number", description: "The email's number from the list above" },
+            watch_id: { type: "string" },
+            summary: { type: "string", description: "One sentence on what the email says" },
+          },
+          required: ["index", "watch_id", "summary"],
+        },
+      },
     },
     required: ["skips", "kept"],
   },
@@ -126,16 +172,17 @@ const TRIAGE_TOOL: Anthropic.Tool = {
 export async function triageRealPersonEmails(
   candidates: TriageCandidate[],
   recentAlerts: string[],
-  ownerId: number
+  ownerId: number,
+  watches: EmailWatch[] = []
 ): Promise<TriageResult> {
   if (candidates.length === 0) return { skips: new Map(), gists: new Map() };
 
   const response = await getClient().messages.create({
     model: TRIAGE_MODEL,
-    max_tokens: 1024,
+    max_tokens: 2048,
     tools: [TRIAGE_TOOL],
     tool_choice: { type: "tool", name: "triage_emails" },
-    messages: [{ role: "user", content: buildTriagePrompt(candidates, recentAlerts) }],
+    messages: [{ role: "user", content: buildTriagePrompt(candidates, recentAlerts, watches) }],
   });
   recordApiUsage(
     ownerId,
@@ -151,6 +198,10 @@ export async function triageRealPersonEmails(
   const toolUse = response.content.find(
     (b): b is Anthropic.ToolUseBlock => b.type === "tool_use" && b.name === "triage_emails"
   );
-  const input = toolUse?.input as { skips?: unknown; kept?: unknown } | undefined;
-  return { skips: parseTriageSkips(input?.skips), gists: parseTriageGists(input?.kept) };
+  const input = toolUse?.input as { skips?: unknown; kept?: unknown; watch_matches?: unknown } | undefined;
+  return {
+    skips: parseTriageSkips(input?.skips),
+    gists: parseTriageGists(input?.kept),
+    watchMatches: parseTriageWatchMatches(input?.watch_matches, watches.map((w) => w.id)),
+  };
 }

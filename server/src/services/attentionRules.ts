@@ -11,7 +11,15 @@ export const DAILY_CAP = 4;
 // A dead mailbox connection (connectionAlert.ts) is rare — once per breakage — and until it's
 // fixed every other alert and the briefing are quietly missing that mailbox.
 export const CONNECTION_BROKEN_CATEGORY = "connection_broken";
-export const CAP_EXEMPT_CATEGORIES = ["flight_change", "security_alert", "person_email", CONNECTION_BROKEN_CATEGORY];
+// A topic the user asked to be told about (emailWatches.ts) — they asked for every one.
+export const WATCH_MATCH_CATEGORY = "watch_match";
+export const CAP_EXEMPT_CATEGORIES = [
+  "flight_change",
+  "security_alert",
+  "person_email",
+  CONNECTION_BROKEN_CATEGORY,
+  WATCH_MATCH_CATEGORY,
+];
 // The one category allowed to message during quiet hours.
 export const QUIET_HOURS_EXEMPT_CATEGORIES = ["flight_change"];
 
@@ -31,6 +39,7 @@ const EMOJI: Record<string, string> = {
   document_match: "📎",
   person_email: "📬",
   [CONNECTION_BROKEN_CATEGORY]: "🔌",
+  [WATCH_MATCH_CATEGORY]: "👀",
 };
 
 function local(ms: number, zone: string | null): DateTime {
@@ -84,6 +93,7 @@ export function tierFor(category: string, details: AttentionDetails, now: number
     case "security_alert":
     case "person_email":
     case CONNECTION_BROKEN_CATEGORY:
+    case WATCH_MATCH_CATEGORY:
       return "interrupt";
     case "government_mail":
       return details.needsAction ? "interrupt" : "brief";

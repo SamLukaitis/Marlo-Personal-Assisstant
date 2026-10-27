@@ -4,7 +4,33 @@ import {
   CATEGORY_INFO,
   buildClassifyPrompt,
   parseClassifyMatches,
+  applyWatchMatches,
 } from "./importantEmailClassifier.js";
+
+describe("watches in the classifier", () => {
+  const watch = { id: "w1", label: "Jazz Fest tickets", topic: "Jazz Fest ticket sales", createdAt: 0, alertCount: 0 };
+
+  it("lists watched topics only when there are some, and lifts the promotional skip for them", () => {
+    expect(buildClassifyPrompt([])).not.toMatch(/watch_matches/);
+    const prompt = buildClassifyPrompt([], [watch]);
+    expect(prompt).toContain("- w1: Jazz Fest ticket sales");
+    expect(prompt).toMatch(/do NOT apply to these topics/);
+  });
+
+  it("lays a watch match over a fixed-category one and drops unknown watch ids", () => {
+    const fixed = parseClassifyMatches([{ index: 0, category: "reservation_confirmed", summary: "s", needs_action: false }]);
+    const result = applyWatchMatches(
+      fixed,
+      [
+        { index: 0, watch_id: "w1", summary: "Presale opens *Friday*." },
+        { index: 1, watch_id: "nope", summary: "x" },
+      ],
+      ["w1"]
+    );
+    expect(result.get(0)).toEqual({ category: "watch_match", watchId: "w1", summary: "Presale opens *Friday*.", needsAction: false });
+    expect(result.has(1)).toBe(false);
+  });
+});
 
 describe("IMPORTANT_EMAIL_CATEGORIES / CATEGORY_INFO", () => {
   it("has exactly the 8 categories from the spec, in order", () => {

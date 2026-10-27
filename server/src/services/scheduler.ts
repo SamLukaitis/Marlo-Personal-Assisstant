@@ -16,6 +16,7 @@ import { sendToAllNumbers } from "./proactiveDelivery.js";
 import { countTravelDays } from "./travelDays.js";
 import { checkForNewImportantMessages } from "./alerts.js";
 import { importantEmailAlertsEnabled, realPersonAlertsEnabled } from "./emailAlertSettings.js";
+import { hasEmailWatches } from "./emailWatches.js";
 import { checkNewEmailsAgainstRecentDocuments } from "./reconciliation.js";
 import { checkForImportantEmails } from "./importantEmailAlerts.js";
 import { flushEmailDigestIfDue } from "./emailDigest.js";
@@ -118,10 +119,13 @@ export async function runDailyCheckForUser(ownerId: number): Promise<void> {
   }
 }
 
+// Email watches (emailWatches.ts) work whatever the alert switches say: with a switch off and a
+// watch on, the scan still runs but only sends watch matches.
 async function runAlertsCheckForUser(ownerId: number): Promise<void> {
-  if (!realPersonAlertsEnabled(ownerId)) return;
+  const enabled = realPersonAlertsEnabled(ownerId);
+  if (!enabled && !hasEmailWatches(ownerId)) return;
   try {
-    await checkForNewImportantMessages(ownerId);
+    await checkForNewImportantMessages(ownerId, { watchOnly: !enabled });
   } catch (err) {
     console.error(`scheduler: alerts check failed for user ${ownerId}`, err);
   }
@@ -157,9 +161,10 @@ async function runFamilyTripsCheckForUser(ownerId: number): Promise<void> {
 }
 
 async function runImportantEmailAlertsCheckForUser(ownerId: number): Promise<void> {
-  if (!importantEmailAlertsEnabled(ownerId)) return;
+  const enabled = importantEmailAlertsEnabled(ownerId);
+  if (!enabled && !hasEmailWatches(ownerId)) return;
   try {
-    await checkForImportantEmails(ownerId);
+    await checkForImportantEmails(ownerId, { watchOnly: !enabled });
   } catch (err) {
     console.error(`scheduler: important-email check failed for user ${ownerId}`, err);
   }

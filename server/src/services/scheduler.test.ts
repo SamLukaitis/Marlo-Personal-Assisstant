@@ -145,6 +145,6 @@ describe("tickGuarded", () => {
     releaseReconciliationCheck();
     await first;
 
-    expect(checkForNewImportantMessages).toHaveBeenCalledWith(1);
+    expect(checkForNewImportantMessages).toHaveBeenCalledWith(1, { watchOnly: false });
   });
 });

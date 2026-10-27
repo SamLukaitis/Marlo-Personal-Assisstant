@@ -59,6 +59,7 @@ const {
   IMPORTANT_EMAIL_ENTITY_TYPE,
 } = await import("./importantEmailAlerts.js");
 const { setXeroForwardingEmail } = await import("./xero.js");
+const { addEmailWatch } = await import("./emailWatches.js");
 const { getPendingInvoiceForward } = await import("./xeroInvoiceConfirmation.js");
 const { listLedgerEntries } = await import("../business/ledgerStore.js");
 
@@ -170,6 +171,68 @@ describe("checkForImportantEmails — business income", () => {
     await checkForImportantEmails(user.id);
 
     expect(listLedgerEntries(user.id)).toHaveLength(0);
+  });
+});
+
+describe("checkForImportantEmails — email watches", () => {
+  it("pings a watch match once (not as its fixed category), and checks in on the third", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("watch-auto"));
+    registerActivePhone(user.id);
+    await baseline(user.id);
+    const watch = addEmailWatch(user.id, { label: "Jazz Fest tickets", topic: "Jazz Fest ticket sales" })!;
+
+    for (const id of ["jf-1", "jf-2", "jf-3"]) {
+      mockHubListNewMessages.mockResolvedValueOnce([
+        fakeMessage({ id, from: "Ticketmaster <no-reply@ticketmaster.com>", subject: "Jazz Fest presale" }),
+      ]);
+      mockClassify.mockResolvedValueOnce(
+        new Map([[0, { category: "watch_match", watchId: watch.id, summary: "Presale opens *Friday*.", needsAction: false }]])
+      );
+      await checkForImportantEmails(user.id);
+    }
+
+    expect(mockClassify.mock.calls[0][2]).toEqual([expect.objectContaining({ id: watch.id })]);
+    const texts = vi.mocked(sendWhatsAppMessage).mock.calls.map((c) => c[1] as string);
+    expect(texts).toHaveLength(3);
+    expect(texts[0]).toBe("👀 *Jazz Fest tickets*: Presale opens *Friday*.");
+    expect(texts[1]).not.toContain("Still want me");
+    expect(texts[2]).toContain("Still want me flagging Jazz Fest tickets emails?");
+    expect(hasAlerted(user.id, "important-email:1:jf-3")).toBe(true);
+  });
+
+  it("in watch-only mode sends watch matches and settles fixed-category matches silently", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("watch-only-auto"));
+    registerActivePhone(user.id);
+    await baseline(user.id);
+    const watch = addEmailWatch(user.id, { label: "Jazz Fest tickets", topic: "Jazz Fest" })!;
+
+    mockHubListNewMessages.mockResolvedValueOnce([
+      fakeMessage({ id: "flight", subject: "Flight changed" }),
+      fakeMessage({ id: "jazz", subject: "Jazz Fest presale" }),
+    ]);
+    mockClassify.mockResolvedValueOnce(
+      new Map([
+        [0, { category: "flight_change", summary: "Your flight *DL1* moved.", needsAction: false }],
+        [1, { category: "watch_match", watchId: watch.id, summary: "Presale opens *Friday*.", needsAction: false }],
+      ])
+    );
+
+    await checkForImportantEmails(user.id, { watchOnly: true });
+
+    const texts = vi.mocked(sendWhatsAppMessage).mock.calls.map((c) => c[1] as string);
+    expect(texts).toEqual(["👀 *Jazz Fest tickets*: Presale opens *Friday*."]);
+    expect(hasAlerted(user.id, "important-email:1:flight")).toBe(true);
+  });
+
+  it("in watch-only mode with no watches doesn't classify", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("watch-only-none"));
+    registerActivePhone(user.id);
+    await baseline(user.id);
+    mockHubListNewMessages.mockResolvedValueOnce([fakeMessage({ id: "x", subject: "Flight changed" })]);
+
+    await checkForImportantEmails(user.id, { watchOnly: true });
+
+    expect(mockClassify).not.toHaveBeenCalled();
   });
 });
 
