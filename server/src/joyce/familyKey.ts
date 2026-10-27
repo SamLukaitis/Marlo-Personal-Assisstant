@@ -15,7 +15,7 @@ import crypto from "node:crypto";
 //
 // The master secret alone is not enough to read anything — you also need the family's salt, which
 // lives in the registry, and the family's database file. Losing JOYCE_MASTER_KEY makes every
-// family's data permanently unreadable, exactly like ENCRYPTION_KEY does for Marlowe.
+// family's data permanently unreadable, exactly like ENCRYPTION_KEY does for Marlo.
 
 const ALGORITHM = "aes-256-gcm";
 const IV_LENGTH = 12; // 96 bits, the recommended size for GCM
@@ -34,7 +34,7 @@ function masterSecret(): Buffer {
       "JOYCE_MASTER_KEY is not set. Generate one with `openssl rand -hex 32` and set it as an " +
         "env var. It is the root of every family's encryption key — losing it makes all Joyce " +
         "family data permanently unreadable, so back it up somewhere outside the server. It must " +
-        "be different from Marlowe's ENCRYPTION_KEY."
+        "be different from Marlo's ENCRYPTION_KEY."
     );
   }
   const key = Buffer.from(raw, "hex");
@@ -65,8 +65,8 @@ export function deriveFamilyKey(familyId: string, salt: Buffer): Buffer {
 }
 
 /**
- * Digits only. Joyce defines her own rather than importing Marlowe's identical helper from
- * ../db/store.js — importing that module would open Marlowe's app.db as a side effect, and the
+ * Digits only. Joyce defines her own rather than importing Marlo's identical helper from
+ * ../db/store.js — importing that module would open Marlo's app.db as a side effect, and the
  * whole point of this directory is that no Joyce code path can reach it.
  */
 export function normalizeJoycePhone(phone: string): string {

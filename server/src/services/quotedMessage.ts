@@ -20,7 +20,7 @@ import {
   getRecentWhatsAppMessagesForOwner,
 } from "../db/store.js";
 
-// How many of Marlowe's recent messages to offer when a swipe can't be resolved, and how much of
+// How many of Marlo's recent messages to offer when a swipe can't be resolved, and how much of
 // each — enough to recognise which one the user meant without bloating the turn.
 const RECENT_CANDIDATES = 5;
 const MAX_CANDIDATE_CHARS = 400;

@@ -1,6 +1,6 @@
-// What Marlowe does once a phone action finishes. These are replies to a tap the user just made,
+// What Marlo does once a phone action finishes. These are replies to a tap the user just made,
 // so they skip the attention gate. Success is silent (the phone already showed the alarm, the
-// Focus change…); a failed step gets one message and is remembered so Marlowe doesn't repeat it;
+// Focus change…); a failed step gets one message and is remembered so Marlo doesn't repeat it;
 // report-back values (location, battery, health, a typed answer) go back into the conversation.
 import {
   getShortcutStatus,

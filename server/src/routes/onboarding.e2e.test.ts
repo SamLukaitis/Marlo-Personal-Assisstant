@@ -120,7 +120,7 @@ async function tap(phone: string, buttonId: string): Promise<void> {
   await handleIncoming({ kind: "interactive", from: phone, buttonId, messageId: nextId() });
 }
 
-// What Marlowe said, oldest first — the plain-text messages and the button prompts interleaved is
+// What Marlo said, oldest first — the plain-text messages and the button prompts interleaved is
 // more than these assertions need, so each is read separately.
 function messagesTo(phone: string): string[] {
   return vi
@@ -204,7 +204,7 @@ describe("onboarding end to end — the happy path", () => {
     expect(messagesTo(phone).at(-1)).toContain("What would you like me to call you?");
     expect(getPendingRegistration(phone)?.step).toBe("awaiting_name");
 
-    // 3. Their name — greeted, told what Marlowe does, then asked about email.
+    // 3. Their name — greeted, told what Marlo does, then asked about email.
     await sendText(phone, "Sam");
     expect(messagesTo(phone)).toContain("Hi Sam. I hope to be helpful with anything you could need.");
     expect(buttonPromptsTo(phone).at(-1)?.ids).toEqual(["email_confirm_yes", "email_confirm_no"]);
@@ -402,7 +402,7 @@ describe("onboarding end to end — a failed OAuth hop", () => {
 // The app owner replayed his own onboarding and tried to finish it with a freshly created test
 // Outlook address. It was refused — correctly, since replay deliberately leaves users.email alone
 // and that account already has one — but the message claimed the brand-new address "already
-// belongs to a Marlowe account", so he went looking for the account holding it and then for the
+// belongs to a Marlo account", so he went looking for the account holding it and then for the
 // account-merge script. Nothing held it. The refusal is right; only the explanation was wrong.
 describe("onboarding end to end — replaying onto an account that already has an address", () => {
   it("names the address the account actually has instead of blaming the new one", async () => {
@@ -448,7 +448,7 @@ describe("onboarding end to end — replaying onto an account that already has a
     const said = messagesTo(phone).at(-1)!;
     expect(said).toContain(existingEmail);
     expect(said).toContain("Settings");
-    expect(said).not.toContain("already belongs to a Marlowe account");
+    expect(said).not.toContain("already belongs to a Marlo account");
     // And nothing was damaged on the way past: the account keeps its address, the test address
     // is still unclaimed, and no orphan account was minted for it.
     expect(getUser(owner.id)?.email).toBe(existingEmail);

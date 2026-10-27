@@ -1,13 +1,13 @@
-// The bridge between a person's Marlowe and their family's Joyce. This is the only code that
+// The bridge between a person's Marlo and their family's Joyce. This is the only code that
 // imports both products: src/joyce/ imports nothing outside itself (onboarding.test.ts enforces
-// it), and Marlowe's assistant reaches Joyce only through the functions below.
+// it), and Marlo's assistant reaches Joyce only through the functions below.
 //
 // Every function resolves the family from the caller's own phone number, the same way Joyce does
 // for an inbound message. None takes a family id or a member id, so there is nothing a model could
 // point at someone else's family. What crosses is a short fixed list: handing a note over now,
 // the dates a person is away (and the country, only if they chose), and free/busy answers.
 //
-// Consent and settings live in Marlowe's app.db (family_links); the audit log of what has been
+// Consent and settings live in Marlo's app.db (family_links); the audit log of what has been
 // shared is family_link_shares. Joyce only keeps a "linked" flag on the member and a source marker
 // on the notes handed over, so an unlink can take them back.
 import {
@@ -58,6 +58,12 @@ export interface FamilyLinkState {
   tripsMode?: FamilyLinkRow["tripsMode"];
   tripsCountry?: boolean;
   availabilityOn?: boolean;
+}
+
+// Whether this phone belongs to a Joyce family. For code outside the bridge that only needs to know,
+// such as the change-phone script, so it never imports Joyce directly.
+export function isInJoyceFamily(phone: string): boolean {
+  return findFamilyForPhone(normalizePhone(phone)) !== null;
 }
 
 export function familyLinkState(ownerId: number, phone: string): FamilyLinkState {
@@ -117,7 +123,7 @@ export function updateLinkSettings(
 }
 
 /**
- * Ends the link. With `removeShared`, also deletes the notes this person's Marlowe handed over
+ * Ends the link. With `removeShared`, also deletes the notes this person's Marlo handed over
  * (found through the audit log, so only theirs, and only notes still carrying the marlowe marker).
  */
 export function unlinkFromFamily(ownerId: number, phone: string, removeShared: boolean): { removed: number } {
@@ -161,7 +167,7 @@ export function listShared(ownerId: number, phone: string): FamilyShareRow[] {
 }
 
 const OFFER_TEXT =
-  "I see you've joined a family group on Joyce, our family assistant. Want me to connect your Marlowe to it? " +
+  "I see you've joined a family group on Joyce, our family assistant. Want me to connect your Marlo to it? " +
   "Nothing is shared unless you say yes.\n\n" +
   "If you do, I can:\n" +
   "• let your family see the dates you're away, and the country only if you choose (I'd ask you about each trip)\n" +
@@ -171,7 +177,7 @@ const OFFER_TEXT =
 
 /**
  * Offers the link to someone who has just joined a family on Joyce. Only to a number with a
- * Marlowe account that has messaged Marlowe itself: a number added to an account from the web
+ * Marlo account that has messaged Marlo itself: a number added to an account from the web
  * Settings page proves nothing about who holds it.
  */
 export async function offerLink(phone: string): Promise<void> {

@@ -104,7 +104,7 @@ describe("Joyce portal routes", () => {
     expect(all.body.find((r: { id: number }) => r.id === id).resolvedAt).not.toBeNull();
   });
 
-  it("keeps Joyce's to-do list separate from Marlowe's", async () => {
+  it("keeps Joyce's to-do list separate from Marlo's", async () => {
     const admin = makeUser("joyce-admin-todos", true);
     const res = await request(buildTestApp(admin.id))
       .post("/api/joyce-portal/todos")

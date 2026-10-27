@@ -10,7 +10,7 @@ import { guessTimezoneFromPhone } from "./phoneTimezoneGuess.js";
 //
 // Where it comes from:
 //   1. A member telling Joyce (set_family_timezone). Only a city zone like "Europe/London" is
-//      accepted, never "UTC"/"GMT"/"Etc/…": Marlowe once let the model turn "the UK" into "UTC",
+//      accepted, never "UTC"/"GMT"/"Etc/…": Marlo once let the model turn "the UK" into "UTC",
 //      which is a valid zone, so nothing caught it and reminders fired an hour late in summer.
 //   2. Otherwise a guess from the phone number of whoever Joyce is talking to (phoneTimezoneGuess.ts),
 //      stored as a guess so Joyce says which zone she assumed.

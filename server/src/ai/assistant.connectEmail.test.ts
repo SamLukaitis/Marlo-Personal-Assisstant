@@ -133,7 +133,7 @@ describe("connect_email tool", () => {
   // row ever created).
   //
   // That used to be reported to the user as "this needs a developer", which is a dead end for a
-  // request Marlowe can simply honour: sendConnectLink now creates the row the token needs (as
+  // request Marlo can simply honour: sendConnectLink now creates the row the token needs (as
   // "completed", so a registered number is never dropped back into the registration state
   // machine) and sends a link that actually works.
   it("creates the missing pending-registration row and sends a redeemable link", async () => {

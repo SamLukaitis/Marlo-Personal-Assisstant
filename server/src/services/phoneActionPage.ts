@@ -1,4 +1,4 @@
-// The /a/:code landing page. WhatsApp only makes https links tappable, so Marlowe's links land
+// The /a/:code landing page. WhatsApp only makes https links tappable, so Marlo's links land
 // here: it lists the steps in plain words, then hands off to the Shortcut. Pure HTML, no session.
 import type { PhoneActionView } from "./phoneActions.js";
 
@@ -18,10 +18,10 @@ function page(title: string, body: string, script = ""): string {
 
 export function renderActionPage(view: PhoneActionView): string {
   const install = view.installUrl
-    ? `<p class="small">Don't have the Marlowe Shortcut yet? <a href="${esc(view.installUrl)}">Add it</a> (one time), then come back and tap Run.</p>`
+    ? `<p class="small">Don't have the Marlo Shortcut yet? <a href="${esc(view.installUrl)}">Add it</a> (one time), then come back and tap Run.</p>`
     : "";
   if (view.state === "gone") {
-    return page("Link expired", `<h1>This link has expired or was already used</h1><p>Ask Marlowe again for a fresh one.</p>${install}`);
+    return page("Link expired", `<h1>This link has expired or was already used</h1><p>Ask Marlo again for a fresh one.</p>${install}`);
   }
   const steps = view.summary.map((s) => `<li>${esc(s)}</li>`).join("");
   // Jumps to the Shortcut as soon as the page loads (no delay), so the only tap left is iOS's own
@@ -36,7 +36,7 @@ export function renderActionPage(view: PhoneActionView): string {
   const script = `<script>location.replace(${jsString})</script>`;
   return page(
     view.label,
-    `<h1>${esc(view.label)}</h1><p>Marlowe will:</p><ul>${steps}</ul><a class="run" href="${esc(view.runUrl)}">Run in Shortcuts</a>${install}`,
+    `<h1>${esc(view.label)}</h1><p>Marlo will:</p><ul>${steps}</ul><a class="run" href="${esc(view.runUrl)}">Run in Shortcuts</a>${install}`,
     script
   );
 }

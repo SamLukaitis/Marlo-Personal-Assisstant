@@ -644,7 +644,7 @@ describe("staticDigestMessage", () => {
 });
 
 // Reported: the evening recap re-raised Steven Coates's thread an hour after the user had gone
-// through it with Marlowe, because the queue only knew what had arrived, not what had been said.
+// through it with Marlo, because the queue only knew what had arrived, not what had been said.
 describe("things already handled in chat", () => {
   it("dropFromEmailDigest removes that email and the rest of its thread from the same sender", async () => {
     const { dropFromEmailDigest } = await import("./emailDigest.js");

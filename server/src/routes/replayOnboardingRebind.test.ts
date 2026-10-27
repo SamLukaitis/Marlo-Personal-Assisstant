@@ -23,7 +23,7 @@ function freshPhone(): string {
 // re-onboarding needed: this number belongs to THAT account. Tapping "No" at the email question
 // then minted a brand new phone-only account, so the original account still owned the address and
 // the new one owned the number — and every later attempt to connect the mailbox was refused with
-// "That email already belongs to a Marlowe account", forever, with no user-reachable way out.
+// "That email already belongs to a Marlo account", forever, with no user-reachable way out.
 describe("replay onboarding — the number stays owned by the account that was replayed", () => {
   it("the 'No' tap re-onboards onto the original account instead of creating a second one", () => {
     const phone = freshPhone();

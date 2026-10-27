@@ -100,7 +100,7 @@ describe("runAssistantChat — feature use", () => {
 });
 
 describe("assistantToolCatalog", () => {
-  it("puts every tool Marlowe can offer in a Feature use area", () => {
+  it("puts every tool Marlo can offer in a Feature use area", () => {
     const missing = assistantToolCatalog()
       .map((t) => t.name)
       .filter((name) => toolArea(name) === null);

@@ -367,12 +367,12 @@ describe("flag_unmet_request tool", () => {
   it("logs a web-channel unmet request when no phone is passed", async () => {
     const user = findOrCreateUserByEmail(uniqueEmail("unmet-web"));
     const result = await runTool(user.id, "flag_unmet_request", {
-      summary: "Wanted Marlowe to book a flight — no booking capability exists",
+      summary: "Wanted Marlo to book a flight — no booking capability exists",
     });
     expect(result).toEqual({ ok: true });
     const logged = listUnmetRequests(true).find((r) => r.ownerId === user.id);
     expect(logged?.channel).toBe("web");
-    expect(logged?.summary).toBe("Wanted Marlowe to book a flight — no booking capability exists");
+    expect(logged?.summary).toBe("Wanted Marlo to book a flight — no booking capability exists");
   });
 
   it("logs a whatsapp-channel unmet request when a phone is passed", async () => {

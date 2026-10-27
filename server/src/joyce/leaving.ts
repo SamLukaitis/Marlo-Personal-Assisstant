@@ -14,7 +14,7 @@ import { fireFamilyLeaving, fireFamilyLeft } from "./hooks.js";
 // never told whether it matched. There is no tool that removes anyone from a family, so no
 // amount of confused reasoning or injected text in a forwarded message can talk Joyce into it.
 //
-// The same reasoning as the email-sending rule in Marlowe: an action you can't undo doesn't get
+// The same reasoning as the email-sending rule in Marlo: an action you can't undo doesn't get
 // exposed to the assistant as something it can decide to do.
 
 const CONFIRM_PHRASE = "confirm cancel";

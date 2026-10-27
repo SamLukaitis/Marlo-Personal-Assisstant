@@ -4,7 +4,7 @@ import { isDateOnly, parseEventTime } from "../lib/eventTime";
 
 // 11 colors so the mapping lines up conceptually with Google Calendar's own 11 event colors
 // (server/src/providers/google.ts's colorForAccount uses the same `% 11` idea for the colorId
-// it sets on events Marlowe creates) — not the same hex values, just the same account → slot
+// it sets on events Marlo creates) — not the same hex values, just the same account → slot
 // idea, applied here to every account (Google and Microsoft) so the whole page is consistent.
 const ACCOUNT_COLORS = [
   "#e74c3c", "#e67e22", "#f1c40f", "#2ecc71", "#1abc9c",

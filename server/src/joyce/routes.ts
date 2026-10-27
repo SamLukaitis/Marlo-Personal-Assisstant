@@ -27,10 +27,10 @@ import {
 } from "./whatsapp.js";
 
 // Joyce's webhook, on its own path. Meta has one callback URL per app, so when Joyce shares
-// Marlowe's app her number needs a phone-number-level webhook override pointing here (see
+// Marlo's app her number needs a phone-number-level webhook override pointing here (see
 // "Going live" in feature-to-do/joyce-family-assistant.md); without it her messages only reach
-// Marlowe's endpoint, which drops them. The phone_number_id guard below is a second line of
-// defence in case Marlowe's traffic is ever delivered here too.
+// Marlo's endpoint, which drops them. The phone_number_id guard below is a second line of
+// defence in case Marlo's traffic is ever delivered here too.
 
 export const joyceRoutes = Router();
 
@@ -90,8 +90,8 @@ joyceRoutes.post("/webhooks/joyce", (req, res) => {
   }
 
   for (const message of extractJoyceMessages(req.body)) {
-    // Not addressed to Joyce's number — it's Marlowe's, arriving here because both numbers sit
-    // on one Meta app. Dropping it silently is correct: Marlowe's own endpoint has the same
+    // Not addressed to Joyce's number — it's Marlo's, arriving here because both numbers sit
+    // on one Meta app. Dropping it silently is correct: Marlo's own endpoint has the same
     // payload and will handle it.
     if (message.toPhoneNumberId !== joycePhoneNumberId()) continue;
     if (!markJoyceWamidSeenIfNew(message.messageId)) continue;
@@ -136,7 +136,7 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
  * Sends a reply's messages in order. A long one is split into several bubbles the same way
- * Marlowe's are (see messageSplitting.ts), and every message after the first waits a moment, so
+ * Marlo's are (see messageSplitting.ts), and every message after the first waits a moment, so
  * it reads as someone typing rather than a burst. A message with buttons goes out whole.
  */
 export async function sendJoyceReply(to: string, reply: JoyceMessage[]): Promise<void> {

@@ -30,7 +30,7 @@ describe("shortenUrl", () => {
   it("leaves short URLs and non-web URLs alone", () => {
     const owner = newUser().id;
     expect(shortenUrl(owner, "https://hotelbelem.pt")).toBe("https://hotelbelem.pt");
-    const shortcut = `shortcuts://run-shortcut?name=Marlowe&input=text&text=${"x".repeat(80)}`;
+    const shortcut = `shortcuts://run-shortcut?name=Marlo&input=text&text=${"x".repeat(80)}`;
     expect(shortenUrl(owner, shortcut)).toBe(shortcut);
   });
 });

@@ -1,4 +1,4 @@
-// Two notifications Joyce sends to whoever registers for them, so the bridge to Marlowe
+// Two notifications Joyce sends to whoever registers for them, so the bridge to Marlo
 // (src/bridge/) can react to someone joining or leaving a family without Joyce importing anything
 // outside this directory (see the boundary test in onboarding.test.ts). With nothing registered —
 // Joyce on her own, or any test — they do nothing.
@@ -7,9 +7,9 @@
 // in the middle of something, and the hook only ever adds an optional extra.
 
 /**
- * What a member's Marlowe will say about a run of dates, and nothing more. `free_except` carries
+ * What a member's Marlo will say about a run of dates, and nothing more. `free_except` carries
  * the days that clash (YYYY-MM-DD), never why. `not_sure` is also what Joyce gets when the person
- * has no Marlowe, has switched this off, or Marlowe couldn't tell, so those can't be told apart.
+ * has no Marlo, has switched this off, or Marlo couldn't tell, so those can't be told apart.
  */
 export type AvailabilityAnswer =
   | { status: "free" }
@@ -61,7 +61,7 @@ export function fireFamilyLeft(normalizedPhone: string): void {
   }
 }
 
-// How long Joyce waits for one person's Marlowe before saying she isn't sure about them.
+// How long Joyce waits for one person's Marlo before saying she isn't sure about them.
 const AVAILABILITY_TIMEOUT_MS = 10_000;
 
 /** Asks the registered resolver. Anything but a clear answer, including no resolver, is not_sure. */

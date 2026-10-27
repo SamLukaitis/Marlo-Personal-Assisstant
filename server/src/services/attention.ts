@@ -1,5 +1,5 @@
 // The attention gate: every unprompted message about the user's mail, bookings and bills goes
-// through here, so Marlowe behaves like a PA — interrupting only for what can't wait, reminding
+// through here, so Marlo behaves like a PA — interrupting only for what can't wait, reminding
 // at the moment something matters, and folding everything else into the briefing or digest.
 // Decisions live in attentionRules.ts; this file does the storage and sending.
 // See docs/superpowers/specs/2026-09-28-attention-gate-design.md.

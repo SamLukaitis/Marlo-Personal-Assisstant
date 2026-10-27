@@ -14,8 +14,8 @@ import type { FamilySession } from "./familyDb.js";
 // admins can tell that requests came from the same family without knowing which family it is.
 // Usage rows carry no family at all.
 //
-// Admin notes record the admin's user id from Marlowe's users table as a plain number. Joyce
-// can't import Marlowe's modules, so the portal route (routes/joycePortalRoutes.ts) looks up the
+// Admin notes record the admin's user id from Marlo's users table as a plain number. Joyce
+// can't import Marlo's modules, so the portal route (routes/joycePortalRoutes.ts) looks up the
 // email to show beside it.
 
 const db = new Database(path.join(JOYCE_DIR, "admin.db"));

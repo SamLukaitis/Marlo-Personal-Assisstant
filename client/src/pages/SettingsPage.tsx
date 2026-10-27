@@ -343,7 +343,7 @@ export function SettingsPage() {
       const result = await replayOnboarding();
       setReplayMessage(
         result.unboundPhones.length > 0
-          ? `Done — message Marlowe from ${result.unboundPhones.join(", ")} to walk through onboarding again. Your existing data is untouched.`
+          ? `Done — message Marlo from ${result.unboundPhones.join(", ")} to walk through onboarding again. Your existing data is untouched.`
           : "Done — no phone was bound yet, but the connection is cleared."
       );
     } catch (err) {
@@ -738,7 +738,7 @@ export function SettingsPage() {
                   <div className="settings-field" style={{ marginTop: 16 }}>
                     <span className="settings-field-label">Your WhatsApp number</span>
                     <span className="settings-field-hint">
-                      One number per account — it's both what can message Marlowe and what
+                      One number per account — it's both what can message Marlo and what
                       receives every proactive alert, so only add a number you want getting that.
                       Include the country code, no spaces or plus sign — for example
                       447911123456. Remove the current one before setting a new one.
@@ -798,7 +798,7 @@ export function SettingsPage() {
                     <span>
                       <span className="check-row-title">Tell me when a real person emails</span>
                       <span className="check-row-desc">
-                        You get one summary each evening (around 9pm); ask Marlowe in chat if you
+                        You get one summary each evening (around 9pm); ask Marlo in chat if you
                         would rather be pinged the moment one arrives. Newsletters and automated
                         notifications are ignored. Starts from the moment you switch it on, so your
                         existing unread mail won't set it off.
@@ -908,7 +908,7 @@ export function SettingsPage() {
               <>
                 <h2>Waitlist</h2>
                 <p className="settings-section-intro">
-                  Numbers that messaged Marlowe without an invite. They've been told they're on
+                  Numbers that messaged Marlo without an invite. They've been told they're on
                   the waitlist and that we'll message them when they're in — approving one here
                   does exactly that automatically.
                 </p>
@@ -960,7 +960,7 @@ export function SettingsPage() {
 
                 <h2>Invited testers</h2>
                 <p className="settings-section-intro">
-                  Only numbers on this list can message Marlowe and sign up. Add a number, then
+                  Only numbers on this list can message Marlo and sign up. Add a number, then
                   send that person the WhatsApp number to message — no need to know their email in
                   advance. Use the full international number with its country code and no leading
                   0 (e.g. 447911123456), since that's the form WhatsApp delivers. Tick "Business
@@ -1057,7 +1057,7 @@ export function SettingsPage() {
                   For re-testing the WhatsApp onboarding UX on your own real account without
                   losing anything — unlike the reset above, this keeps your usage, to-dos, poster
                   board, documents, and memory exactly as they are. It only disconnects your mail
-                  account and unbinds your phone number(s), so the next message you send Marlowe
+                  account and unbinds your phone number(s), so the next message you send Marlo
                   starts onboarding fresh and reconnects this same account once you finish OAuth.
                 </p>
                 <div className="card card-padded">
@@ -1074,7 +1074,7 @@ export function SettingsPage() {
 
                 <h2>Watch a test conversation</h2>
                 <p className="settings-section-intro">
-                  See exactly what a test user's WhatsApp conversation with Marlowe looked like —
+                  See exactly what a test user's WhatsApp conversation with Marlo looked like —
                   including where onboarding stalled, if it did.
                 </p>
                 <div className="card card-padded">

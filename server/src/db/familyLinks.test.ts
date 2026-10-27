@@ -57,7 +57,7 @@ describe("family links", () => {
     expect(listFamilyShares(other.ownerId, other.phone)).toHaveLength(1);
   });
 
-  it("only counts a number once it has sent Marlowe a message", () => {
+  it("only counts a number once it has sent Marlo a message", () => {
     const { phone, ownerId } = freshOwner();
     expect(hasInboundWhatsAppMessage(ownerId, phone)).toBe(false);
     appendWhatsAppMessage(ownerId, phone, "assistant", "hello");

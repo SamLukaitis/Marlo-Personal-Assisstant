@@ -91,7 +91,7 @@ export function Sidebar() {
       <nav className="sidebar">
         <NavLink to="/assistant" className="sidebar-brand">
           <span className="sidebar-brand-mark">M</span>
-          <span className="sidebar-label">Marlowe</span>
+          <span className="sidebar-label">Marlo</span>
         </NavLink>
 
         {items.map(({ to, label, Icon }) => (

@@ -1,6 +1,6 @@
 # Periodic check that no one can see another user's data
 
-Came up while explaining data safety to Jake (2026-08-27): Marlowe is multi-tenant — everyone's
+Came up while explaining data safety to Jake (2026-08-27): Marlo is multi-tenant — everyone's
 data sits in one shared database, kept apart only by every query being scoped to `owner_id`. That
 scoping is a discipline every new feature has to follow correctly, not something the system
 enforces automatically by itself. As more features get added (and more people use the app), the

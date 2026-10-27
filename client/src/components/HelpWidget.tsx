@@ -10,7 +10,7 @@ interface DisplayTurn extends HelpChatTurn {
 const GREETING: DisplayTurn = {
   id: 0,
   role: "assistant",
-  text: "Hi — I can answer questions about Marlowe. What would you like to know?",
+  text: "Hi — I can answer questions about Marlo. What would you like to know?",
 };
 
 /** Floating help chat for the logged-out marketing homepage. Public/unauthenticated: it never
@@ -55,7 +55,7 @@ export function HelpWidget() {
       {open && (
         <div className="help-panel" role="dialog" aria-label="Help chat">
           <div className="help-panel-head">
-            <span>Ask Marlowe</span>
+            <span>Ask Marlo</span>
             <button type="button" className="help-close" onClick={() => setOpen(false)} aria-label="Close help chat">
               ×
             </button>

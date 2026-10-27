@@ -55,7 +55,7 @@ describe("who_is_away", () => {
     expect(said).not.toMatch(/nobody|no one/i);
   });
 
-  it("only ever changes or removes a trip the acting member's own Marlowe shared", () => {
+  it("only ever changes or removes a trip the acting member's own Marlo shared", () => {
     const { asA, asB } = twoMembers();
     const id = saveMemberTrip(asA(), { startDate: "2099-03-10", endDate: "2099-03-17", country: "Portugal" });
     expect(updateMemberTrip(asB(), id, { startDate: "2099-04-01", endDate: "2099-04-02", country: null })).toBe(false);
@@ -72,7 +72,7 @@ describe("check_availability", () => {
     expect(said).toContain("I'm not sure about Ben.");
   });
 
-  it("reports what each Marlowe says, and not sure when one throws", async () => {
+  it("reports what each Marlo says, and not sure when one throws", async () => {
     const { a, b, asA } = twoMembers();
     setFamilyHooks({
       resolveAvailability: async (phone) => {

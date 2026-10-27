@@ -94,7 +94,7 @@ describe("getSentDocumentByWamid", () => {
     });
   }
 
-  it("finds a document Marlowe sent back by the wamid of that send, for its owner only", () => {
+  it("finds a document Marlo sent back by the wamid of that send, for its owner only", () => {
     const owner = findOrCreateUserByEmail(uniqueEmail("sent-doc"));
     const other = findOrCreateUserByEmail(uniqueEmail("sent-doc-other"));
     const doc = savePhoto(owner.id);

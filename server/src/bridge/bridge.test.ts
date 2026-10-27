@@ -31,7 +31,7 @@ function freshPhone(): string {
   return `44792000${String(counter).padStart(4, "0")}`;
 }
 
-// A person with a Marlowe account (who has messaged it) and a Joyce family.
+// A person with a Marlo account (who has messaged it) and a Joyce family.
 function person(name: string, opts: { joinCode?: string; messaged?: boolean } = {}) {
   const phone = freshPhone();
   const ownerId = findOrCreateUserByPhone(phone).id;
@@ -149,7 +149,7 @@ describe("unlinking", () => {
 });
 
 describe("the offer", () => {
-  it("is sent once to a Marlowe user who has messaged Marlowe", async () => {
+  it("is sent once to a Marlo user who has messaged Marlo", async () => {
     const a = person("Ana");
     await offerLink(a.phone);
     expect(send).toHaveBeenCalledTimes(1);
@@ -157,7 +157,7 @@ describe("the offer", () => {
     expect(send.mock.calls[0][1]).toMatch(/Nothing is shared unless you say yes/);
   });
 
-  it("is not sent without a Marlowe account, without an inbound message, or once linked", async () => {
+  it("is not sent without a Marlo account, without an inbound message, or once linked", async () => {
     await offerLink(freshPhone());
     const silent = person("Cy", { messaged: false });
     await offerLink(silent.phone);
@@ -177,7 +177,7 @@ describe("the offer", () => {
     await vi.waitFor(() => expect(send).toHaveBeenCalledTimes(1));
   });
 
-  it("does nothing, quietly, for a Joyce member with no Marlowe account", async () => {
+  it("does nothing, quietly, for a Joyce member with no Marlo account", async () => {
     registerBridge();
     const phone = freshPhone();
     handleOnboarding(phone, "hi");

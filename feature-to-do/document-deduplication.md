@@ -1,6 +1,6 @@
 # Document deduplication — exact vs. fuzzy
 
-Comes up any time a document/receipt could reach Marlowe more than once — not specific to Xero
+Comes up any time a document/receipt could reach Marlo more than once — not specific to Xero
 forwarding, will affect any feature built on `documents`/`entities`. Two different problems, worth
 keeping separate rather than solving with one mechanism:
 
@@ -22,10 +22,10 @@ Any such check has to guess, and both ways of guessing wrong are worse than doin
 - Too eager → silently drops or merges a real, separate expense — silent data loss on financial
   records, the worse failure.
 - Too cautious → keeps interrupting to ask "is this a duplicate?" — the hand-holding Jake
-  explicitly doesn't want from Marlowe.
+  explicitly doesn't want from Marlo.
 
 Occasionally forwarding/logging the same real receipt twice is a minor, recoverable annoyance
 (accounting software already expects to reconcile the odd duplicate bill) — a better trade than
 either failure mode above. Leave "was this already handled" as the user's judgment call, not
-something Marlowe tries to infer from extracted data. Applies to any future document-adjacent
+something Marlo tries to infer from extracted data. Applies to any future document-adjacent
 feature, not just Xero.

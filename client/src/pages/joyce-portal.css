@@ -1,4 +1,4 @@
-/* Joyce's portal: the Portal's layout and components in warm terracotta instead of Marlowe's
+/* Joyce's portal: the Portal's layout and components in warm terracotta instead of Marlo's
    dark green. Everything is scoped under .joyce-theme so nothing outside the page changes. */
 .joyce-theme {
   --accent: #b4532a;

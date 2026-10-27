@@ -3,7 +3,7 @@ import express from "express";
 import request from "supertest";
 
 vi.mock("../ai/assistant.js", () => ({
-  getHelpChatReply: vi.fn(async () => "Marlowe reads your mail and calendar, and answers on WhatsApp."),
+  getHelpChatReply: vi.fn(async () => "Marlo reads your mail and calendar, and answers on WhatsApp."),
 }));
 
 const { helpChatRoutes, MAX_HELP_CHAT_MESSAGE_CHARS, helpChatRateLimitTrackedVisitors } = await import(
@@ -35,9 +35,9 @@ beforeEach(() => {
 describe("POST /api/help-chat", () => {
   it("returns a reply for a plain message", async () => {
     const app = buildApp();
-    const res = await request(app).post("/api/help-chat").send({ message: "What does Marlowe do?" });
+    const res = await request(app).post("/api/help-chat").send({ message: "What does Marlo do?" });
     expect(res.status).toBe(200);
-    expect(res.body.reply).toContain("Marlowe");
+    expect(res.body.reply).toContain("Marlo");
     expect(getHelpChatReply).toHaveBeenCalledTimes(1);
   });
 

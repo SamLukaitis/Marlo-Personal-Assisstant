@@ -1,11 +1,11 @@
-// How Marlowe writes its chat replies (WhatsApp and the web chat). It's part of the system prompt
+// How Marlo writes its chat replies (WhatsApp and the web chat). It's part of the system prompt
 // buildSystemPrompt (assistant.ts) sends with every message, so a change here applies from the
-// next message on. To change Marlowe's tone, this is the file to edit.
+// next message on. To change Marlo's tone, this is the file to edit.
 //
 // It covers chat replies only. The morning briefing and evening round-up have their own, warmer
 // register in services/proactiveVoice.ts, and Joyce has her own prompt in joyce/assistant.ts.
 //
-// A user's own description of how they want Marlowe to behave (the "persona" setting, shown near
+// A user's own description of how they want Marlo to behave (the "persona" setting, shown near
 // the top of the prompt) wins over these defaults; the last line says so.
 export const CHAT_VOICE = [
   "How to write every reply:",

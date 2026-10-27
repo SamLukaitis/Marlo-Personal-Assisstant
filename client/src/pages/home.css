@@ -1,5 +1,5 @@
 /* ============================================================================
-   Marlowe — public marketing page.
+   Marlo — public marketing page.
 
    Scoped under .home so none of this leaks into the app shell, which keeps its
    own separate system (forest green, see index.css). The marketing site was
@@ -379,7 +379,7 @@
   30% { opacity: 1; transform: translateY(-3px); }
 }
 
-/* ---------- Result card (what Marlowe answers with) ---------- */
+/* ---------- Result card (what Marlo answers with) ---------- */
 .result-card {
   align-self: flex-start;
   width: 100%;

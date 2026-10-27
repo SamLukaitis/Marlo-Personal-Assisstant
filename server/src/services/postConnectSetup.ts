@@ -190,11 +190,11 @@ async function askTeamsOrFinish(ownerId: number, phone: string): Promise<void> {
 // chain with the first-task check.
 //
 // linkedExistingAccount (Task 8): true when the owner's account predates this connection — a
-// phone-only user who used Marlowe for a while before connecting a mailbox via the assistant's
+// phone-only user who used Marlo for a while before connecting a mailbox via the assistant's
 // own connect_email tool, rather than someone signing up fresh. askName/askFirstTask are always
 // skipped for this case: the user is mid-conversation, already named (guarded below the same way
 // as a fresh signup), and "anything you'd like me to look at right now, or shall we finish setting
-// up?" reads as reverting to onboarding mode for someone who's been chatting with Marlowe for
+// up?" reads as reverting to onboarding mode for someone who's been chatting with Marlo for
 // weeks. askBriefing is narrower: it's skipped only when hasBriefingSettings(ownerId) is already
 // true, because its Yes/No handler (handlePostConnectSetupReply) unconditionally overwrites
 // `topics` via saveBriefingSettings — a real data-loss risk if the person configured it through
@@ -219,7 +219,7 @@ export async function startPostConnectSetup(
       // Bounded to mail from the 24 hours before connecting (see importantEmailAlerts.ts's
       // isWithinOnboardingLookback) — a user's own feedback: surfacing a whole backlog of older
       // "important-looking" automated mail (subscription renewals, delivery notices, ...) the
-      // moment someone signs up read as Marlowe spamming them with old mail, not as a useful
+      // moment someone signs up read as Marlo spamming them with old mail, not as a useful
       // finding. Anything older is still baselined (never re-alerted on later) — it's just never
       // shown here.
       scanAndCurateImportantEmailsForOnboarding(ownerId).catch((err) => {

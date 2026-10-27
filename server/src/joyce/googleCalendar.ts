@@ -2,13 +2,13 @@ import { google, type calendar_v3 } from "googleapis";
 import type { FamilySession } from "./familyDb.js";
 import { updateGoogleTokens, type GoogleAccountRow } from "./store.js";
 
-// Joyce's Google Calendar access. Written separately from Marlowe's providers/google.ts for the
-// same reason as everything else in this directory: importing it would pull in Marlowe's store
+// Joyce's Google Calendar access. Written separately from Marlo's providers/google.ts for the
+// same reason as everything else in this directory: importing it would pull in Marlo's store
 // and app.db. It shares only the Google OAuth *client* (GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET,
-// env vars), the way Joyce's WhatsApp sender shares Marlowe's Meta app token. Tokens live in the
+// env vars), the way Joyce's WhatsApp sender shares Marlo's Meta app token. Tokens live in the
 // family's own database, encrypted with the family key.
 //
-// Calendar only. Marlowe also reads Gmail, Drive and contacts; a family assistant has no use for
+// Calendar only. Marlo also reads Gmail, Drive and contacts; a family assistant has no use for
 // those, and every extra scope is more of someone's account reachable by the whole family.
 //   - calendar.events: read and write events.
 //   - calendar.calendarlist: see which calendars someone has (and their time zones), and add the
@@ -35,9 +35,9 @@ export function isJoyceGoogleConfigured(): boolean {
   return !!(process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET);
 }
 
-// Its own callback, not Marlowe's /auth/google/callback, so the two products' OAuth round trips
+// Its own callback, not Marlo's /auth/google/callback, so the two products' OAuth round trips
 // never pass through one handler. Has to be added to the OAuth client's authorised redirect URIs
-// in Google Cloud Console, alongside Marlowe's.
+// in Google Cloud Console, alongside Marlo's.
 function redirectUri(): string {
   return process.env.JOYCE_GOOGLE_REDIRECT_URI ?? `${serverUrl()}/joyce/google/callback`;
 }

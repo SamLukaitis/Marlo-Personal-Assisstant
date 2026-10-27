@@ -96,7 +96,7 @@ function requireAccount(ownerId: number, accountId: number): AccountRow {
 }
 
 // Per-inbox Read/Send/Delete toggles (Settings page "Accounts" section). "delete" here means
-// archiving — Marlowe never truly deletes mail, see hubArchiveMessages — the permission just
+// archiving — Marlo never truly deletes mail, see hubArchiveMessages — the permission just
 // gates that existing, reversible action.
 const PERMISSION_LABEL: Record<"read" | "send" | "delete", string> = {
   read: "Reading",

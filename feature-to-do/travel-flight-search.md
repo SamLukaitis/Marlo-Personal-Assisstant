@@ -1,6 +1,6 @@
 # Flight and hotel search, travel requirements and baggage limits
 
-Let Marlowe search and compare flights and hotels, check entry requirements (visas, passport rules) and tell
+Let Marlo search and compare flights and hotels, check entry requirements (visas, passport rules) and tell
 you the baggage allowance for a flight.
 
 ## What we found (probe, 2026-10-16)
@@ -11,7 +11,7 @@ travel MCP servers with no sign-in.
 - **lastminute.com MCP** (`https://mcp.lastminute.com/mcp`): works with no account or key. A real
   London to Barcelona search returned airline, times, stops, price and a booking link. The airports
   must be 3-letter codes (`LON`, not `London`). Some results fly back from a different airport than
-  the one you landed at (into BCN, home from Girona), and Marlowe must say so. It also offers
+  the one you landed at (into BCN, home from Girona), and Marlo must say so. It also offers
   flight + hotel packages and hotel-only search.
 - **SlickTrip MCP** (`https://mcp.slicktrip.com/mcp`): connecting and listing tools works, but every
   tool call (even `find_places` and `recent_deals`) returns 401 "a SlickTrip login is required". It
@@ -21,7 +21,7 @@ travel MCP servers with no sign-in.
   Barcelona return for 20–23 Nov returned 15 results in about 2 seconds, from £79: Ryanair, Wizz
   Air, easyJet and Vueling, each with flight numbers, times, stops, included bags and a kiwi.com
   booking link. It takes city names as well as airport codes, has filters for flexible dates (±10
-  days), bags, stops, times and airlines, and can price in GBP. Things Marlowe would have to point
+  days), bags, stops, times and airlines, and can price in GBP. Things Marlo would have to point
   out: cheapest results mix airlines on separate tickets (self-transfer) and fly home to a
   different London airport, and booking goes through Kiwi, not the airline. Kiwi earns from those
   bookings, so the search is free. No published terms for server use were found. Built in as the
@@ -61,4 +61,4 @@ flights. See `changelog/2026-10-19-hotel-search.md`. Still to do:
 
 Now in use for the hotel backup. Read lastminute.com's terms for automated or commercial use of
 their MCP before relying on it widely; `LASTMINUTE_HOTELS=off` turns it off without a code change.
-Their booking links carry their affiliate tags (Marlowe doesn't use them yet).
+Their booking links carry their affiliate tags (Marlo doesn't use them yet).

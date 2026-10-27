@@ -52,14 +52,14 @@ const IDLE_RESET_MS = 24 * 60 * 60 * 1000;
 // separate post-registration version (chatDispatch.ts) — the two used to be one shared constant,
 // which meant an already-registered user asking "help" got asked their name again.
 export const MARLOWE_FIRST_CONTACT_TEXT =
-  "Hi, I'm *Marlowe*, your personal assistant. What would you like me to call you?";
+  "Hi, I'm *Marlo*, your personal assistant. What would you like me to call you?";
 
 // What an uninvited number gets on its first message. Deliberately warm and final-sounding: the
 // person on the other end did nothing wrong, and there's no action they can take to speed it up.
 // The "we'll let you know" promise is kept by adminRoutes.ts, which messages them when an admin
 // approves the number from the Waitlist section.
 export const MARLOWE_WAITLIST_TEXT =
-  "👋 Thank you for your interest in *Marlowe*!\n\n" +
+  "👋 Thank you for your interest in *Marlo*!\n\n" +
   "We're still in beta testing, so access is invite-only for now. Your request has been sent " +
   "to the developers and you're on the waitlist — we'll message you here as soon as you can " +
   "get started.\n\n" +
@@ -103,7 +103,7 @@ const EMAIL_CONFIRM_BUTTON_IDS = { yes: "email_confirm_yes", no: "email_confirm_
 // The one fixed reply to declining to connect an email — see handleEmailConfirmTap's "no" branch
 // and handleAwaitingEmailConfirmText's decline-pattern regex for why this must never be left to
 // the AI assist reply. Lists only things that work with no mailbox at all, as things to say, so
-// a phone-only tester has somewhere to start — it once promised "to-dos", which Marlowe doesn't
+// a phone-only tester has somewhere to start — it once promised "to-dos", which Marlo doesn't
 // have.
 const EMAIL_CONFIRM_NO_TEXT =
   "No problem. If you want to connect your email in the future just let me know. In the " +
@@ -216,7 +216,7 @@ async function sendProviderLink(row: PendingRegistrationRow): Promise<void> {
 // authRoutes.ts derives it from whether the phone already resolved to an owner BEFORE this OAuth
 // round trip (the same fact resolveRegistrationUser branches on). Threaded through to
 // startPostConnectSetup so it can skip the parts of the fresh-signup question chain that don't
-// apply to someone who has already been using Marlowe — see that function's own comment for which
+// apply to someone who has already been using Marlo — see that function's own comment for which
 // parts and why.
 export async function sendFirstValueAndBriefingPrompt(
   ownerId: number,
@@ -346,7 +346,7 @@ async function declineEmailConnection(row: PendingRegistrationRow): Promise<void
     return;
   }
   // A real choice now, not a holding pattern: create the account from the phone number alone so
-  // the promise in the reply below is one Marlowe can actually keep. Until this existed the step
+  // the promise in the reply below is one Marlo can actually keep. Until this existed the step
   // stayed parked here and the next message was deflected back to the email question.
   const user = findOrCreateUserByPhone(row.phone);
   // Same guard and key as sendFirstValueAndBriefingPrompt: a sentence-shaped reply was already
@@ -414,7 +414,7 @@ async function handleAwaitingEmail(row: PendingRegistrationRow, text: string): P
     // own replayed this identical message forever.
     await reply(
       row.phone,
-      "That email's already connected to a Marlowe account. Add this WhatsApp number from Settings " +
+      "That email's already connected to a Marlo account. Add this WhatsApp number from Settings " +
         "on the website instead of starting again here — or send me a different address, or say " +
         "*skip* and we'll carry on without email for now."
     );
@@ -497,7 +497,7 @@ async function handleAwaitingLinkTap(row: PendingRegistrationRow, text: string):
 // gets. Points at whatever step is actually outstanding rather than always asking for a name —
 // sending a photo while waiting on the OAuth link used to be answered with "what should I call
 // you?", and answering *that* with a name went to handleAwaitingLinkTap and came back as "tap the
-// link", which reads as Marlowe having lost the thread entirely.
+// link", which reads as Marlo having lost the thread entirely.
 const REDIRECT_TO_NAME_TEXT = "Let's finish setting you up first — what should I call you?";
 
 async function redirectToSetup(phone: string, row: PendingRegistrationRow | null): Promise<void> {
@@ -562,7 +562,7 @@ export async function handlePendingRegistration(message: IncomingWhatsAppMessage
       // attempt vanishing. Recording grants nothing — invited_phones is still the only gate.
       // First contact gets the full explanation; anything after that gets the short nudge, so
       // someone who keeps messaging isn't re-sent the same paragraph every time but also never
-      // hits silence and assumes Marlowe is broken.
+      // hits silence and assumes Marlo is broken.
       await handleUninvited(phone, message.text);
       return;
     }
@@ -570,7 +570,7 @@ export async function handlePendingRegistration(message: IncomingWhatsAppMessage
     const knownName = getInvitedPhoneName(phone);
     if (knownName && isPlausibleName(knownName)) {
       const created = upsertPendingRegistration(phone, { step: "awaiting_email_confirm", name: knownName });
-      await reply(phone, `Hi ${knownName}, I'm *Marlowe*, your personal assistant.`);
+      await reply(phone, `Hi ${knownName}, I'm *Marlo*, your personal assistant.`);
       await greetAndAskEmail(created, knownName);
       return;
     }

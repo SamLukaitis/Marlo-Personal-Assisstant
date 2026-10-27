@@ -588,7 +588,7 @@ export async function removeInvite(phone: string): Promise<InvitedPhone[]> {
   return res.json();
 }
 
-// Uninvited numbers that have messaged Marlowe. Approving one is just addInvite() above — the
+// Uninvited numbers that have messaged Marlo. Approving one is just addInvite() above — the
 // server clears the waitlist entry and messages them — so there's no separate approve call here.
 export interface WaitlistRequest {
   phone: string;
@@ -859,7 +859,7 @@ export interface FeatureAreaRow {
 export interface FeatureToolRow {
   tool: string;
   label: string;
-  // "helper" tools are how Marlowe replies (buttons, reactions), not something people come for.
+  // "helper" tools are how Marlo replies (buttons, reactions), not something people come for.
   area: string | null;
   areaLabel: string;
   uses: number;
@@ -1057,7 +1057,7 @@ export const deletePosterNote = (id: number) => mutateJson<{ ok: true }>(`/api/p
 
 export const fetchPortalVersion = () => getJson<{ text: string }>("/api/portal/version");
 
-// Product-update announcements sent to every Marlowe user's WhatsApp (server/src/services/announcements.ts).
+// Product-update announcements sent to every Marlo user's WhatsApp (server/src/services/announcements.ts).
 export interface Announcement {
   id: number;
   text: string;
@@ -1104,8 +1104,8 @@ export async function sendChatMessage(messages: ChatMessage[]): Promise<string> 
 }
 
 // The server calls behind the Portal sections that both portals share — To-Do, requests, Logs
-// and Usage. Marlowe's Portal and Joyce's portal render the same components (PortalPage.tsx)
-// against different endpoints; Joyce's return the same shapes as Marlowe's.
+// and Usage. Marlo's Portal and Joyce's portal render the same components (PortalPage.tsx)
+// against different endpoints; Joyce's return the same shapes as Marlo's.
 export interface PortalSectionsApi {
   fetchTodos: () => Promise<AdminTodo[]>;
   addTodo: (text: string) => Promise<AdminTodo[]>;

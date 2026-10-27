@@ -221,7 +221,7 @@ describe("message builders", () => {
     );
     expect(text).toBe("🔁 Reminder: Your *Netflix* renews at *£17.99*. It charges Sat 3 Oct — tell me if you want to cancel.");
   });
-  it("ack line says what was noted and when Marlowe will bring it up", () => {
+  it("ack line says what was noted and when Marlo will bring it up", () => {
     expect(
       ackLine({ summary: "Your *Netflix* renewal, *£17.99* on *3 Oct*." }, at("2026-09-30T09:00"), ZONE, at("2026-09-28T08:00"))
     ).toBe("Noted: your *Netflix* renewal, *£17.99* on *3 Oct* — I'll remind you Wed 30 Sep.");

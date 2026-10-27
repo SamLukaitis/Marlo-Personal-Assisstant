@@ -91,7 +91,7 @@ describe("resolveRegistrationUser", () => {
 });
 
 // Both refusals used to come back as the same bare "account_exists", and the WhatsApp message
-// behind it said "that email already belongs to a Marlowe account I can't confirm is yours" —
+// behind it said "that email already belongs to a Marlo account I can't confirm is yours" —
 // which is simply untrue when the address belongs to nobody and the real obstacle is the account
 // already having one of its own. It sent a real user (the app owner, replaying his own
 // onboarding with a fresh test Outlook address) hunting for the account holding that address,

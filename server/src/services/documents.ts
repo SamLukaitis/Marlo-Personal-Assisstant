@@ -1049,7 +1049,7 @@ export async function ingestWhatsAppLink(params: {
 }
 
 // Sends a previously-saved document's original file back to the user on WhatsApp — e.g. "send me
-// that photo again" after Marlowe has already described what's in it, or given them the code it
+// that photo again" after Marlo has already described what's in it, or given them the code it
 // read off a license. WhatsApp-only: there's no equivalent "hand back the file" affordance in web
 // chat, so the assistant tool this backs is only usable from a WhatsApp conversation.
 export async function sendSavedDocumentFile(

@@ -2,8 +2,8 @@
 // natural bubbles instead of one wall of text, with a short pause between them so it reads as
 // someone typing. Purely string processing on text the model already produced.
 //
-// A copy of Marlowe's services/messageSplitting.ts, kept in step by hand. Joyce can't import it:
-// nothing in src/joyce/ may import Marlowe's modules (isolation.test.ts enforces this). If you
+// A copy of Marlo's services/messageSplitting.ts, kept in step by hand. Joyce can't import it:
+// nothing in src/joyce/ may import Marlo's modules (isolation.test.ts enforces this). If you
 // change the splitting rules in one, change them in the other.
 const MAX_CHUNK_LENGTH = 600;
 

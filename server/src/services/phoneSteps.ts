@@ -1,4 +1,4 @@
-// The vocabulary the "Marlowe" Apple Shortcut understands. Marlowe (chat tool, briefing markers,
+// The vocabulary the "Marlo" Apple Shortcut understands. Marlo (chat tool, briefing markers,
 // reminders) hands over a list of steps; this validates them into a fixed shape before anything is
 // stored, so the Shortcut only ever sees fields it was built for. Pure — pinned by phoneSteps.test.ts.
 // See docs/superpowers/specs/2026-10-12-marlowe-shortcut-design.md.
@@ -172,7 +172,7 @@ function parseStep(raw: Raw): PhoneStep {
 
 export function supportedStepTypes(version: number): readonly StepType[] {
   // A Shortcut newer than this server gets the newest list the server knows; an unknown older one
-  // gets nothing, so Marlowe asks for an update rather than guessing.
+  // gets nothing, so Marlo asks for an update rather than guessing.
   const known = Object.keys(STEPS_BY_VERSION).map(Number).filter((v) => v <= version);
   return known.length ? STEPS_BY_VERSION[Math.max(...known)] : [];
 }
@@ -204,11 +204,11 @@ export function validateSteps(input: unknown, version: number): { steps: PhoneSt
     }
   }
   if (steps.slice(0, -1).some((s) => s.type === "run_shortcut")) {
-    return { error: "run_shortcut leaves the Marlowe Shortcut, so it must be the last step." };
+    return { error: "run_shortcut leaves the Marlo Shortcut, so it must be the last step." };
   }
   const missing = unsupportedSteps(steps, version);
   if (missing.length) {
-    return { error: `the installed Marlowe Shortcut (version ${version}) can't do ${missing.map((t) => `"${t}"`).join(", ")} yet.` };
+    return { error: `the installed Marlo Shortcut (version ${version}) can't do ${missing.map((t) => `"${t}"`).join(", ")} yet.` };
   }
   return { steps };
 }
@@ -239,9 +239,9 @@ export function describeStep(step: PhoneStep): string {
     case "note": return `make a note ${quoted(step.title)}`;
     case "clipboard": return "copy text to your clipboard";
     case "run_shortcut": return `run your ${quoted(step.name)} Shortcut`;
-    case "get_location": return "send Marlowe your location";
-    case "get_battery": return "send Marlowe your battery level";
-    case "get_health": return step.metric === "sleep_last_night" ? "send Marlowe last night's sleep" : "send Marlowe today's steps";
+    case "get_location": return "send Marlo your location";
+    case "get_battery": return "send Marlo your battery level";
+    case "get_health": return step.metric === "sleep_last_night" ? "send Marlo last night's sleep" : "send Marlo today's steps";
     case "ask": return `ask you: ${quoted(step.prompt)}`;
   }
 }

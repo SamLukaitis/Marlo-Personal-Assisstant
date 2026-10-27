@@ -77,7 +77,7 @@ export interface ImportantEmailEntityData {
 }
 
 // Google/Microsoft send an automated "an app was granted access to your account" notification
-// every time the user connects (or reconnects) their mailbox — including to Marlowe itself during
+// every time the user connects (or reconnects) their mailbox — including to Marlo itself during
 // onboarding. That's expected, self-caused, and not a security event, but the classifier only
 // sees a subject/snippet and has no way to know "marlowe.up.railway.app" in one of those refers to
 // us rather than some other third-party app, so it reads exactly like a real new-sign-in alert
@@ -101,7 +101,7 @@ function mentionsOwnApp(m: UnifiedMessage): boolean {
 
 // A one-time verification/login code must never be forwarded as an "important" alert — by the
 // time a WhatsApp notification is read the code is typically already expired, and mistakenly
-// relaying one reads as Marlowe leaking a security-sensitive code out of the user's inbox.
+// relaying one reads as Marlo leaking a security-sensitive code out of the user's inbox.
 // Hardcoded and checked before anything reaches the classifier, same precedent as mentionsOwnApp
 // above — this is not the model's call to make.
 const VERIFICATION_CODE_PATTERN =
@@ -119,7 +119,7 @@ function isImportantEmailCandidate(m: UnifiedMessage): boolean {
 // The onboarding scan (see scanAndCurateImportantEmailsForOnboarding below) only ever flags mail
 // that actually arrived in the 24 hours before connecting — a user's own feedback: surfacing a
 // whole backlog of older "important-looking" automated mail the moment someone signs up reads as
-// Marlowe spamming them with old mail, not as a useful finding. Older backlog is never classified
+// Marlo spamming them with old mail, not as a useful finding. Older backlog is never classified
 // or shown, and never alerted on later either (hub.ts's connected_at floor).
 const ONBOARDING_LOOKBACK_MS = 24 * 60 * 60 * 1000;
 

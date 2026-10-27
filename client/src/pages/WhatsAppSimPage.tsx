@@ -56,7 +56,7 @@ export function WhatsAppSimPage() {
       if (identityRef.current !== requested) return;
       setPhone(t.phone);
       setEntries(t.entries);
-      // Once the newest entry is from Marlowe, the debounced reply has landed.
+      // Once the newest entry is from Marlo, the debounced reply has landed.
       if (t.entries.length > 0 && t.entries[t.entries.length - 1].role === "assistant") setWaiting(false);
     } catch (err) {
       setError((err as Error).message);

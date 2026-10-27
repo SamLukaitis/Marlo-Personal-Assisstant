@@ -6,7 +6,7 @@ import { useTools } from "../context/ToolsContext";
 import { prefersReducedMotion } from "../lib/motionPrefs";
 import "./features.css";
 
-// One place to see everything Marlowe can do (feature-to-do/marlowe-capabilities-ui.md) — until
+// One place to see everything Marlo can do (feature-to-do/marlowe-capabilities-ui.md) — until
 // this existed, a capability was only discoverable by asking in chat or already knowing about it.
 // The copy is hand-written for users rather than generated from the assistant's tool list: tool
 // descriptions are written for the model, and several features (alerts, trip nudges, the digest)
@@ -16,7 +16,7 @@ interface Topic {
   id: string;
   title: string;
   body: string;
-  /** Things to say to Marlowe, word for word. */
+  /** Things to say to Marlo, word for word. */
   examples?: string[];
   /** Only works on WhatsApp (photos, reminders, location pins). */
   whatsappOnly?: boolean;
@@ -35,29 +35,29 @@ const CHAPTERS: Chapter[] = [
   {
     id: "getting-started",
     title: "Getting started",
-    intro: "How to reach Marlowe, and what it needs from you to be useful.",
+    intro: "How to reach Marlo, and what it needs from you to be useful.",
     topics: [
       {
         id: "talking-to-marlowe",
-        title: "Talking to Marlowe",
-        body: "Message Marlowe on WhatsApp or use the Assistant page here. It's the same assistant in both places, so ask in plain language, the way you'd ask a person.",
+        title: "Talking to Marlo",
+        body: "Message Marlo on WhatsApp or use the Assistant page here. It's the same assistant in both places, so ask in plain language, the way you'd ask a person.",
         examples: ["What's on today?", "Did anyone important email me this morning?"],
       },
       {
         id: "connecting-accounts",
         title: "Connecting your accounts",
-        body: "Marlowe works with Gmail and Outlook mail, calendars, contacts and files (Google Drive and OneDrive). You can connect several accounts, personal and work, and Marlowe looks across all of them at once.",
+        body: "Marlo works with Gmail and Outlook mail, calendars, contacts and files (Google Drive and OneDrive). You can connect several accounts, personal and work, and Marlo looks across all of them at once.",
         examples: ["Connect my Outlook"],
       },
       {
         id: "quick-replies",
         title: "Tap-to-answer questions",
-        body: "When Marlowe needs a yes or no, or a choice between a few options, it shows buttons you can tap instead of making you type. Anything it can't take back, like sending an email, always waits for you to tap to confirm.",
+        body: "When Marlo needs a yes or no, or a choice between a few options, it shows buttons you can tap instead of making you type. Anything it can't take back, like sending an email, always waits for you to tap to confirm.",
       },
       {
         id: "when-it-cant",
-        title: "When Marlowe can't help",
-        body: "If you ask for something Marlowe can't do yet, it tells you so and doesn't guess. It also passes the request on to the team, so the things people ask for most get built next.",
+        title: "When Marlo can't help",
+        body: "If you ask for something Marlo can't do yet, it tells you so and doesn't guess. It also passes the request on to the team, so the things people ask for most get built next.",
       },
     ],
   },
@@ -69,7 +69,7 @@ const CHAPTERS: Chapter[] = [
       {
         id: "reading-email",
         title: "Finding and reading email",
-        body: "Ask about recent mail or search for something specific: a sender, a subject, an attachment, a date range. Marlowe can open an email and summarise it, and it remembers emails you've already looked at, even after you've archived them.",
+        body: "Ask about recent mail or search for something specific: a sender, a subject, an attachment, a date range. Marlo can open an email and summarise it, and it remembers emails you've already looked at, even after you've archived them.",
         examples: [
           "What's new in my inbox?",
           "Find the email from the accountant about the tax return",
@@ -79,39 +79,39 @@ const CHAPTERS: Chapter[] = [
       {
         id: "writing-email",
         title: "Writing and sending email",
-        body: "Marlowe drafts emails and replies from your own Gmail or Outlook account. It shows you the email first and sends nothing until you tap Send. If you'd rather finish it yourself, it can save it to your Drafts instead.",
+        body: "Marlo drafts emails and replies from your own Gmail or Outlook account. It shows you the email first and sends nothing until you tap Send. If you'd rather finish it yourself, it can save it to your Drafts instead.",
         examples: ["Reply to Tom and say Thursday works", "Draft an email to the landlord about the boiler and leave it in drafts"],
       },
       {
         id: "needs-reply",
         title: "What needs a reply",
-        body: "Marlowe can pick out emails from real people that have been sitting unread for a while, leaving out newsletters, receipts and automatic confirmations.",
+        body: "Marlo can pick out emails from real people that have been sitting unread for a while, leaving out newsletters, receipts and automatic confirmations.",
         examples: ["Is there anything I haven't replied to?"],
       },
       {
         id: "tidying-inbox",
         title: "Tidying your inbox",
-        body: "Archive mail in bulk, add labels (Gmail) or categories (Outlook), and unsubscribe from marketing lists. Archiving never deletes anything, so you can always get it back. Unsubscribing can't be undone, so Marlowe asks before doing it.",
+        body: "Archive mail in bulk, add labels (Gmail) or categories (Outlook), and unsubscribe from marketing lists. Archiving never deletes anything, so you can always get it back. Unsubscribing can't be undone, so Marlo asks before doing it.",
         examples: ["Archive everything from Nike", "Label the invoice from Acme as Accounts", "Unsubscribe me from these promotions"],
       },
       {
         id: "email-alerts",
         title: "Email alerts and the daily digest",
-        body: "Marlowe watches your inbox in the background. Important automatic mail, like flight changes, reservations, deliveries, invoices due, security alerts and renewals, gets an instant WhatsApp message. Emails from real people are collected into one daily digest at a time you choose, or you can have a message for each one as it arrives.",
+        body: "Marlo watches your inbox in the background. Important automatic mail, like flight changes, reservations, deliveries, invoices due, security alerts and renewals, gets an instant WhatsApp message. Emails from real people are collected into one daily digest at a time you choose, or you can have a message for each one as it arrives.",
         examples: ["Message me straight away when someone emails me", "Turn off the important-email alerts"],
         whatsappOnly: true,
       },
       {
         id: "muting",
         title: "Muting one sender or kind of email",
-        body: "Stop hearing about one sender, or one kind of email from them, without turning alerts off. The emails still arrive in your inbox; Marlowe just stops messaging you about them and leaves them out of the digest. You can see your mutes and undo one any time.",
+        body: "Stop hearing about one sender, or one kind of email from them, without turning alerts off. The emails still arrive in your inbox; Marlo just stops messaging you about them and leaves them out of the digest. You can see your mutes and undo one any time.",
         examples: ["Stop telling me about Railway crash emails", "Never ping me about LinkedIn", "What have I muted?"],
         whatsappOnly: true,
       },
       {
         id: "contacts",
         title: "Contacts",
-        body: "Give a name and Marlowe looks up the email address in your connected accounts, so you don't need the address when you ask it to write to someone.",
+        body: "Give a name and Marlo looks up the email address in your connected accounts, so you don't need the address when you ask it to write to someone.",
         examples: ["What's Sarah Collins' email address?"],
       },
       {
@@ -124,7 +124,7 @@ const CHAPTERS: Chapter[] = [
       {
         id: "joyce",
         title: "Sending things to your family on Joyce",
-        body: "Joyce is a separate family assistant on WhatsApp. If your family uses her, Marlowe offers to link the two when you join, and nothing is shared until you say yes. Once linked, ask Marlowe to pass something on and it's saved as a note any family member can ask Joyce for. You can see what you've shared, or unlink and take it back, whenever you like.",
+        body: "Joyce is a separate family assistant on WhatsApp. If your family uses her, Marlo offers to link the two when you join, and nothing is shared until you say yes. Once linked, ask Marlo to pass something on and it's saved as a note any family member can ask Joyce for. You can see what you've shared, or unlink and take it back, whenever you like.",
         examples: ["Send the builder's number to Joyce", "What have I shared with the family?", "Unlink me from Joyce"],
       },
     ],
@@ -143,19 +143,19 @@ const CHAPTERS: Chapter[] = [
       {
         id: "managing-events",
         title: "Adding, moving and cancelling events",
-        body: "Marlowe can put events on your calendar, move them and cancel them. It only ever touches your own calendar and never sends invitations to other people. Events abroad are added in local time, so a 9am meeting in New York shows up at the right time wherever you are.",
+        body: "Marlo can put events on your calendar, move them and cancel them. It only ever touches your own calendar and never sends invitations to other people. Events abroad are added in local time, so a 9am meeting in New York shows up at the right time wherever you are.",
         examples: ["Put lunch with Ana on Friday at 1pm", "Move my 3pm call to tomorrow", "Cancel the gym on Saturday"],
       },
       {
         id: "free-time",
         title: "Finding free time",
-        body: "Marlowe looks for gaps in your calendar during working hours. It works these out from your actual calendar, so they're never guessed.",
+        body: "Marlo looks for gaps in your calendar during working hours. It works these out from your actual calendar, so they're never guessed.",
         examples: ["Find me an hour this week", "When am I free tomorrow afternoon?"],
       },
       {
         id: "reminders",
         title: "Reminders",
-        body: "Set a one-off reminder for a time or a set number of minutes from now, or a run of nudges inside a time window. Marlowe can show you what's scheduled, cancel a reminder, and tell you whether one went out.",
+        body: "Set a one-off reminder for a time or a set number of minutes from now, or a run of nudges inside a time window. Marlo can show you what's scheduled, cancel a reminder, and tell you whether one went out.",
         examples: ["Remind me at 3pm to call the bank", "Remind me in 20 minutes to take the bread out", "What reminders do I have?"],
         whatsappOnly: true,
       },
@@ -164,7 +164,7 @@ const CHAPTERS: Chapter[] = [
   {
     id: "briefings",
     title: "Briefings and the news",
-    intro: "What Marlowe tells you without being asked, and the outside world on demand.",
+    intro: "What Marlo tells you without being asked, and the outside world on demand.",
     topics: [
       {
         id: "morning-briefing",
@@ -194,7 +194,7 @@ const CHAPTERS: Chapter[] = [
       {
         id: "web-search",
         title: "Searching the web",
-        body: "For anything that isn't in your accounts, Marlowe can search the web and tell you where the answer came from.",
+        body: "For anything that isn't in your accounts, Marlo can search the web and tell you where the answer came from.",
         examples: ["What time does the Tate Modern close on Sundays?"],
       },
     ],
@@ -207,31 +207,31 @@ const CHAPTERS: Chapter[] = [
       {
         id: "flight-search",
         title: "Searching for flights",
-        body: "Give Marlowe where you're going and when, and it looks up live flights: prices, times and stops, across airlines, nearby dates and other routes, with return options for a round trip. Each result has a link to book on the airline's or the search site's own page. Marlowe only searches; it never books or pays for anything.",
+        body: "Give Marlo where you're going and when, and it looks up live flights: prices, times and stops, across airlines, nearby dates and other routes, with return options for a round trip. Each result has a link to book on the airline's or the search site's own page. Marlo only searches; it never books or pays for anything.",
         examples: ["Find me flights from London to Barcelona 20–23 Nov", "What's the cheapest way to get to Lisbon next weekend?"],
       },
       {
         id: "places-to-stay",
         title: "Places to stay",
-        body: "Marlowe can suggest hotels and areas from Google Maps, with ratings and a map link, and give you a Booking.com or Airbnb link with the city, your dates and the number of guests already filled in, ready for you to book there.",
+        body: "Marlo can suggest hotels and areas from Google Maps, with ratings and a map link, and give you a Booking.com or Airbnb link with the city, your dates and the number of guests already filled in, ready for you to book there.",
         examples: ["Find me a hotel in Porto for 12 to 15 March", "Show me Airbnbs in Edinburgh for two, first weekend of December"],
       },
       {
         id: "bookings",
         title: "Your flight and hotel bookings",
-        body: "Send Marlowe a confirmation (a screenshot, a PDF, or the email it came in) and it saves the booking: dates, reference number, flight or hotel name. Ask about it later without digging through your inbox.",
+        body: "Send Marlo a confirmation (a screenshot, a PDF, or the email it came in) and it saves the booking: dates, reference number, flight or hotel name. Ask about it later without digging through your inbox.",
         examples: ["When is my flight to Berlin?", "What's the reference for the hotel in Rome?"],
       },
       {
         id: "travel-prices",
         title: "Flight and hotel prices",
-        body: "Marlowe searches live flight and hotel prices for your dates. It compares airlines, times and stops, or hotels by price, stars, rating and free cancellation, and sends links so you can book. It never books anything itself.",
+        body: "Marlo searches live flight and hotel prices for your dates. It compares airlines, times and stops, or hotels by price, stars, rating and free cancellation, and sends links so you can book. It never books anything itself.",
         examples: ["Flights from London to Barcelona on 20 November", "Find me a hotel in Lisbon 12 to 15 November under £150 a night"],
       },
       {
         id: "trip-nudges",
         title: "Before you go",
-        body: "The day before a saved flight, Marlowe sends a message around when online check-in usually opens. On the morning of a hotel check-in, you get a reminder about the hotel too.",
+        body: "The day before a saved flight, Marlo sends a message around when online check-in usually opens. On the morning of a hotel check-in, you get a reminder about the hotel too.",
         whatsappOnly: true,
       },
       {
@@ -243,7 +243,7 @@ const CHAPTERS: Chapter[] = [
       {
         id: "places",
         title: "Places nearby",
-        body: "Find real restaurants, cafés, pharmacies, shops and sights from Google Maps, with ratings, opening hours and a map link. If you ask for something near you, Marlowe shows a button so you can send your location in one tap.",
+        body: "Find real restaurants, cafés, pharmacies, shops and sights from Google Maps, with ratings, opening hours and a map link. If you ask for something near you, Marlo shows a button so you can send your location in one tap.",
         examples: ["Find a good coffee place near me", "Is there a pharmacy open near the hotel?"],
       },
       {
@@ -255,13 +255,13 @@ const CHAPTERS: Chapter[] = [
       {
         id: "app-links",
         title: "Rides, tables and music in your apps",
-        body: "For things Marlowe can't do itself, it sends a link that opens the app with the details already filled in: Uber or Lyft for a ride, OpenTable or Resy for a restaurant table, Spotify for music, and Google Maps for directions. You check and confirm in the app; Marlowe never books, orders or pays for anything.",
+        body: "For things Marlo can't do itself, it sends a link that opens the app with the details already filled in: Uber or Lyft for a ride, OpenTable or Resy for a restaurant table, Spotify for music, and Google Maps for directions. You check and confirm in the app; Marlo never books, orders or pays for anything.",
         examples: ["Get me an Uber to Paddington", "Book a table for four at Dishoom on Saturday at 8", "Put on something relaxing on Spotify"],
       },
       {
         id: "schengen",
         title: "Where you've been and Schengen days",
-        body: "Marlowe can keep a log of the countries and cities you arrive in, then count the days you've spent in a country, in the EU, or in the Schengen area over the rolling 180 days. The Travel page shows how many of your 90 Schengen days you've used.",
+        body: "Marlo can keep a log of the countries and cities you arrive in, then count the days you've spent in a country, in the EU, or in the Schengen area over the rolling 180 days. The Travel page shows how many of your 90 Schengen days you've used.",
         examples: ["How many Schengen days have I used?", "When did I arrive in France?"],
         requiresTool: "travel",
       },
@@ -270,32 +270,32 @@ const CHAPTERS: Chapter[] = [
   {
     id: "documents",
     title: "Documents and files",
-    intro: "Photos and papers you send Marlowe, and the files already in your accounts.",
+    intro: "Photos and papers you send Marlo, and the files already in your accounts.",
     topics: [
       {
         id: "sending-documents",
         title: "Saving photos and documents",
-        body: "Send a photo, PDF or Word document on WhatsApp, such as a passport, licence, boarding pass, ticket or receipt. Marlowe reads it and saves the details so you can ask about them later.",
+        body: "Send a photo, PDF or Word document on WhatsApp, such as a passport, licence, boarding pass, ticket or receipt. Marlo reads it and saves the details so you can ask about them later.",
         examples: ["What's the number on my driving licence?", "What have I saved recently?"],
         whatsappOnly: true,
       },
       {
         id: "getting-originals",
         title: "Getting the original back",
-        body: "Need the actual photo or file again, not just the details? Marlowe sends you the original.",
+        body: "Need the actual photo or file again, not just the details? Marlo sends you the original.",
         examples: ["Send me that photo of my passport again"],
         whatsappOnly: true,
       },
       {
         id: "email-attachments",
         title: "Email attachments",
-        body: "Marlowe can open an attachment from an email, like a ticket, an invoice or a booking, and save it alongside the things you've sent it.",
+        body: "Marlo can open an attachment from an email, like a ticket, an invoice or a booking, and save it alongside the things you've sent it.",
         examples: ["Save the ticket attached to the Eurostar email"],
       },
       {
         id: "matching-email",
         title: "Linking new mail to what you've saved",
-        body: "When a new email comes in about something you've already saved, such as a change to a booking, Marlowe lets you know.",
+        body: "When a new email comes in about something you've already saved, such as a change to a booking, Marlo lets you know.",
         whatsappOnly: true,
       },
       {
@@ -314,19 +314,19 @@ const CHAPTERS: Chapter[] = [
       {
         id: "expenses",
         title: "Expenses from receipts",
-        body: "Every receipt or invoice you send gets logged as an expense: who it's from, how much and when. If Marlowe wasn't sure it read something correctly, it marks that expense to be checked. It can remove one that was logged by mistake.",
+        body: "Every receipt or invoice you send gets logged as an expense: who it's from, how much and when. If Marlo wasn't sure it read something correctly, it marks that expense to be checked. It can remove one that was logged by mistake.",
         examples: ["Find that taxi receipt from last week", "That receipt was logged twice, remove one"],
       },
       {
         id: "spending",
         title: "Spending summaries",
-        body: "Totals for any period, where you spend the most, and how that compares with the period before. Expenses Marlowe isn't sure about are left out of the totals and counted separately.",
+        body: "Totals for any period, where you spend the most, and how that compares with the period before. Expenses Marlo isn't sure about are left out of the totals and counted separately.",
         examples: ["How much have I spent this month?", "Am I spending more than last month?"],
       },
       {
         id: "xero",
         title: "Forwarding receipts to Xero",
-        body: "Give Marlowe your Xero forwarding address and every receipt you send is emailed to Xero for you automatically. If something looks like an invoice, Marlowe asks before forwarding it.",
+        body: "Give Marlo your Xero forwarding address and every receipt you send is emailed to Xero for you automatically. If something looks like an invoice, Marlo asks before forwarding it.",
         examples: ["My Xero forwarding address is receipts@example.xero.com"],
       },
     ],
@@ -334,30 +334,30 @@ const CHAPTERS: Chapter[] = [
   {
     id: "memory",
     title: "Memory",
-    intro: "What Marlowe remembers about you, and how to change it.",
+    intro: "What Marlo remembers about you, and how to change it.",
     topics: [
       {
         id: "remembering",
         title: "Remembering what you tell it",
-        body: "Tell Marlowe something worth knowing, like which account is for work, who your accountant is or how you like things done, and it remembers it for next time without being asked.",
+        body: "Tell Marlo something worth knowing, like which account is for work, who your accountant is or how you like things done, and it remembers it for next time without being asked.",
         examples: ["My work email is the Outlook one", "Remember that Sarah is my sister"],
       },
       {
         id: "people-and-places",
         title: "People, places and projects",
-        body: "Marlowe keeps track of the people, places and projects you mention and how they connect, so you can ask everything it knows about one of them at once.",
+        body: "Marlo keeps track of the people, places and projects you mention and how they connect, so you can ask everything it knows about one of them at once.",
         examples: ["What do you know about Sarah?"],
       },
       {
         id: "forgetting",
         title: "Correcting and forgetting",
-        body: "If something it remembers is wrong or out of date, tell Marlowe and it'll fix it or forget it completely.",
+        body: "If something it remembers is wrong or out of date, tell Marlo and it'll fix it or forget it completely.",
         examples: ["Forget everything about the old flat", "That's wrong, Tom works at Deloitte now"],
       },
       {
         id: "past-conversations",
         title: "Past conversations",
-        body: "Marlowe can look back through your full WhatsApp history with it, so you can refer to something you talked about weeks ago.",
+        body: "Marlo can look back through your full WhatsApp history with it, so you can refer to something you talked about weeks ago.",
         examples: ["What was that restaurant you recommended last month?"],
       },
     ],
@@ -365,22 +365,22 @@ const CHAPTERS: Chapter[] = [
   {
     id: "privacy",
     title: "Privacy and control",
-    intro: "What Marlowe will and won't do, and the switches you control.",
+    intro: "What Marlo will and won't do, and the switches you control.",
     topics: [
       {
         id: "safeguards",
         title: "Built-in safeguards",
-        body: "Marlowe never sends an email without your tap, never invites anyone to an event, and never deletes email (archiving can always be undone). Before anything it can't take back, like cancelling an event or unsubscribing, it asks you first.",
+        body: "Marlo never sends an email without your tap, never invites anyone to an event, and never deletes email (archiving can always be undone). Before anything it can't take back, like cancelling an event or unsubscribing, it asks you first.",
       },
       {
         id: "your-data",
         title: "Your data",
-        body: "Marlowe is invite-only, and each person's accounts, documents and memories are kept separate. Account connections and the documents you send are encrypted.",
+        body: "Marlo is invite-only, and each person's accounts, documents and memories are kept separate. Account connections and the documents you send are encrypted.",
       },
       {
         id: "settings",
         title: "Turning things on and off",
-        body: "Settings is where you connect accounts, choose what goes in your briefing, set up alerts, and switch optional tools like Teams and travel tracking on or off. You can also just ask Marlowe to change most of these.",
+        body: "Settings is where you connect accounts, choose what goes in your briefing, set up alerts, and switch optional tools like Teams and travel tracking on or off. You can also just ask Marlo to change most of these.",
         examples: ["Turn on the travel tracker", "Take markets out of my briefing"],
       },
     ],
@@ -414,10 +414,10 @@ export function FeaturesPage() {
     <div className="main scrollable">
       <div className="main-inner scrollable">
         <div className="page-header" id="contents">
-          <h1 className="heading-font">What Marlowe can do</h1>
+          <h1 className="heading-font">What Marlo can do</h1>
         </div>
         <p className="muted features-lede">
-          Everything Marlowe can help with, grouped by chapter. The examples are things you can
+          Everything Marlo can help with, grouped by chapter. The examples are things you can
           say to it, word for word.
         </p>
 

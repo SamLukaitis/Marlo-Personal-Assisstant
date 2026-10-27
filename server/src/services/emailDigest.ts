@@ -96,7 +96,7 @@ function senderAddress(from: string): string {
 }
 
 // Takes an email off today's digest once the user has dealt with it in chat — opened it with
-// Marlowe, or replied to it — along with the rest of that thread from the same sender. Without
+// Marlo, or replied to it — along with the rest of that thread from the same sender. Without
 // this the digest re-flagged a thread the user had already handled an hour earlier, since the
 // queue only knew what had arrived, not what had been talked about. `from` is the other person
 // (the sender of a mail they read, or the recipient of their reply).
@@ -118,7 +118,7 @@ export function dropFromEmailDigest(
   if (kept.length !== queue.length) writeQueue(ownerId, kept);
 }
 
-// What the user and Marlowe said to each other in the day before the digest, so the model can
+// What the user and Marlo said to each other in the day before the digest, so the model can
 // leave out anything already sorted in conversation ("I've called Steven about that") — the queue
 // itself can't know about something the user only said out loud. Bounded per message and overall:
 // this is context for skipping things, not something to summarise.
@@ -216,7 +216,7 @@ export interface DigestSender {
 }
 
 // What the attention gate (attention.ts) is holding for this message: non-urgent things worth
-// knowing, and what Marlowe quietly filed with when it will bring each up.
+// knowing, and what Marlo quietly filed with when it will bring each up.
 export type DigestAttention = Pick<AttentionBundle, "needsAttention" | "noted">;
 
 export interface DigestDay {
@@ -320,7 +320,7 @@ async function digestText(ownerId: number, queue: DigestEmail[], attention?: Dig
     chatToday: recentChatForDigest(ownerId),
   };
   const voice: ProactiveVoice = {
-    assistantName: getSetting(ownerId, "assistant_name") ?? "Marlowe",
+    assistantName: getSetting(ownerId, "assistant_name") ?? "Marlo",
     userName: (getSetting(ownerId, "user_name") ?? "").trim().split(/\s+/)[0] ?? "",
     persona: getSetting(ownerId, "persona") ?? "",
   };
@@ -397,7 +397,7 @@ const INTRO_ACTION_TTL_MS = 3 * 24 * 60 * 60 * 1000;
 
 // Stored in chat history only (never sent), so the user's reply to introQuestion gets acted on.
 const INTRO_HISTORY_NOTE =
-  "[Digest check-in — Marlowe just asked whether to keep the daily email summary. If the user answers, " +
+  "[Digest check-in — Marlo just asked whether to keep the daily email summary. If the user answers, " +
   'call set_email_alerts: keeping it -> people_mode "digest" (this records their choice); a different ' +
   'time -> digest_time "HH:MM" (and people_mode "digest"); every email as it arrives -> people_mode "instant".]';
 

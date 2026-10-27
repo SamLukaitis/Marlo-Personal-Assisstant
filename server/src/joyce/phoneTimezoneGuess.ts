@@ -1,5 +1,5 @@
-// A copy of Marlowe's services/phoneTimezoneGuess.ts, kept in step by hand — Joyce can't import
-// Marlowe's modules (isolation.test.ts). Joyce uses it to guess a new family's timezone from the
+// A copy of Marlo's services/phoneTimezoneGuess.ts, kept in step by hand — Joyce can't import
+// Marlo's modules (isolation.test.ts). Joyce uses it to guess a new family's timezone from the
 // number of whoever started it. If you change the guessing rules in one, change the other.
 //
 // A best guess at someone's timezone from their WhatsApp number, for users who have never shared a

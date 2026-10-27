@@ -213,7 +213,7 @@ export async function handleIncoming(message: IncomingWhatsAppMessage): Promise<
         message.address
       );
     } else if (message.kind === "reaction") {
-      // A reaction to something Marlowe sent (or its removal) — recorded to history so it's not
+      // A reaction to something Marlo sent (or its removal) — recorded to history so it's not
       // silently dropped, but deliberately does NOT trigger a full assistant turn/reply: a
       // reaction on its own essentially never needs a response, and every one skipped here is a
       // full API call not spent.
@@ -268,8 +268,8 @@ whatsappRoutes.post("/webhooks/whatsapp", (req, res) => {
     return;
   }
 
-  // Scoped to Marlowe's own number so a second number on the same Meta app (Joyce) can't be
-  // answered by Marlowe, which would otherwise treat every family member as an unrecognised
+  // Scoped to Marlo's own number so a second number on the same Meta app (Joyce) can't be
+  // answered by Marlo, which would otherwise treat every family member as an unrecognised
   // number and start its own signup flow at them.
   const messages = extractIncomingMessages(req.body, process.env.WHATSAPP_PHONE_NUMBER_ID);
   for (const m of messages) {

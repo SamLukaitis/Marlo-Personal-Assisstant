@@ -1,4 +1,4 @@
-// The only bridge between general Marlowe code and edition-specific code (see
+// The only bridge between general Marlo code and edition-specific code (see
 // docs/superpowers/specs/2026-10-16-business-edition-design.md §1). General code asks this module;
 // it never imports server/src/business/ directly.
 import type Anthropic from "@anthropic-ai/sdk";
@@ -21,7 +21,7 @@ export interface Edition {
 
 const GENERAL: Edition = {
   id: "general",
-  brandName: "Marlowe",
+  brandName: "Marlo",
   excludeTools: [],
   extraTools: [],
   promptSection: () => "",
@@ -50,7 +50,7 @@ const BUSINESS: Edition = {
 
 const EDITIONS: Record<EditionId, Edition> = { general: GENERAL, business: BUSINESS };
 
-// Every edition's own tools, for the Portal's list of everything Marlowe can do.
+// Every edition's own tools, for the Portal's list of everything Marlo can do.
 export function allEditionToolNames(): string[] {
   return Object.values(EDITIONS).flatMap((e) => e.extraTools.map((t) => t.name));
 }

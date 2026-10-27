@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import express from "express";
 import cors from "cors";
 import cookieParser from "cookie-parser";
+import { SESSION_COOKIE_NAME } from "./middleware/auth.js";
 import { authRoutes } from "./routes/authRoutes.js";
 import { meRoutes } from "./routes/meRoutes.js";
 import { accountRoutes } from "./routes/accountRoutes.js";
@@ -87,17 +88,17 @@ app.use(authRoutes);
 // browser — gated by its own verify-token/HMAC checks, not a session.
 app.use(whatsappRoutes);
 // Joyce — the family assistant on her own WhatsApp number. Entirely separate storage from
-// Marlowe's: see src/joyce/familyDb.ts for why nothing here can reach the other's data.
+// Marlo's: see src/joyce/familyDb.ts for why nothing here can reach the other's data.
 app.use(joyceRoutes);
-// The link between a person's Marlowe and their family on Joyce: Joyce tells it when someone joins
-// or leaves a family, and Marlowe's assistant hands things over through it (src/bridge/).
+// The link between a person's Marlo and their family on Joyce: Joyce tells it when someone joins
+// or leaves a family, and Marlo's assistant hands things over through it (src/bridge/).
 registerBridge();
 
 // Public: the one route a phone automation (iOS Shortcuts / Android Tasker) hits without any
 // interactive login — gated by its own shared-secret header, resolved to an owner internally.
 app.use(checkinRoutes);
 
-// Public: the "Marlowe" Shortcut calls these with a one-time code and no session.
+// Public: the "Marlo" Shortcut calls these with a one-time code and no session.
 app.use(phoneActionRoutes);
 
 // Public: short links to booking/search pages, tapped from WhatsApp with no session.
@@ -145,7 +146,7 @@ app.use("/api/joyce-portal", requireAdmin, joycePortalRoutes);
 app.get("/health", (_req, res) => res.json({ ok: true }));
 
 // Static privacy policy page, required by Meta's WhatsApp Business API setup (App Settings /
-// App Review). Marlowe is an invite-only personal assistant for a small, known set of users —
+// App Review). Marlo is an invite-only personal assistant for a small, known set of users —
 // this describes what it actually does rather than a boilerplate SaaS policy.
 app.get("/privacy", (_req, res) => {
   res.type("html").send(`<!doctype html>
@@ -153,7 +154,7 @@ app.get("/privacy", (_req, res) => {
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Privacy Policy — Marlowe</title>
+<title>Privacy Policy — Marlo</title>
 <style>
   body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; max-width: 700px; margin: 40px auto; padding: 0 20px; line-height: 1.6; color: #1a1a1a; }
   h1 { font-size: 1.5rem; }
@@ -162,12 +163,12 @@ app.get("/privacy", (_req, res) => {
 </style>
 </head>
 <body>
-<h1>Privacy Policy — Marlowe</h1>
-<p>Marlowe is a private, invite-only personal assistant. It is not available to the public —
+<h1>Privacy Policy — Marlo</h1>
+<p>Marlo is a private, invite-only personal assistant. It is not available to the public —
 access is limited to a small number of individually invited users.</p>
 
-<h2>What data Marlowe accesses</h2>
-<p>Depending on which integrations an invited user connects, Marlowe may access: Gmail/Outlook
+<h2>What data Marlo accesses</h2>
+<p>Depending on which integrations an invited user connects, Marlo may access: Gmail/Outlook
 email, Google/Microsoft calendar events, Google Drive/OneDrive/Teams files, WhatsApp messages
 sent to the assistant's number, documents a user uploads or sends, and location check-ins a
 user opts to send.</p>
@@ -180,7 +181,7 @@ Cloud API to send and receive WhatsApp messages. Data is not sold, shared with a
 used for any purpose beyond operating the assistant for its invited users.</p>
 
 <h2>Storage</h2>
-<p>Data is stored on Marlowe's own server infrastructure, accessible only to its operator.</p>
+<p>Data is stored on Marlo's own server infrastructure, accessible only to its operator.</p>
 
 <h2>Deletion</h2>
 <p>An invited user can request their data be deleted at any time by contacting the address
@@ -202,7 +203,7 @@ app.get("/terms", (_req, res) => {
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Terms of Service — Marlowe</title>
+<title>Terms of Service — Marlo</title>
 <style>
   body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; max-width: 700px; margin: 40px auto; padding: 0 20px; line-height: 1.6; color: #1a1a1a; }
   h1 { font-size: 1.5rem; }
@@ -211,31 +212,31 @@ app.get("/terms", (_req, res) => {
 </style>
 </head>
 <body>
-<h1>Terms of Service — Marlowe</h1>
-<p>Marlowe is a private, invite-only personal assistant operated by Posidonia Environmental
-Services Ltd. By using Marlowe, an invited user agrees to these terms.</p>
+<h1>Terms of Service — Marlo</h1>
+<p>Marlo is a private, invite-only personal assistant operated by Posidonia Environmental
+Services Ltd. By using Marlo, an invited user agrees to these terms.</p>
 
 <h2>Access</h2>
-<p>Marlowe is not available to the public. Access is by invitation only, at the operator's
+<p>Marlo is not available to the public. Access is by invitation only, at the operator's
 discretion, and may be withdrawn at any time.</p>
 
 <h2>Acceptable use</h2>
-<p>Marlowe is provided for personal, non-commercial use by its invited users. Users must not use
+<p>Marlo is provided for personal, non-commercial use by its invited users. Users must not use
 it for unlawful purposes, to send unsolicited messages to others, or to attempt to access
 another user's data or account.</p>
 
 <h2>Your data</h2>
-<p>See the <a href="/privacy">Privacy Policy</a> for what data Marlowe accesses and how it's
+<p>See the <a href="/privacy">Privacy Policy</a> for what data Marlo accesses and how it's
 used.</p>
 
 <h2>No warranty</h2>
-<p>Marlowe is provided "as is," without warranty of any kind. It is an assistant tool and may
+<p>Marlo is provided "as is," without warranty of any kind. It is an assistant tool and may
 make mistakes — users should verify anything important (e.g. dates, amounts, sent messages)
 before relying on it.</p>
 
 <h2>Limitation of liability</h2>
 <p>To the extent permitted by law, Posidonia Environmental Services Ltd is not liable for any
-indirect, incidental, or consequential loss arising from use of Marlowe.</p>
+indirect, incidental, or consequential loss arising from use of Marlo.</p>
 
 <h2>Changes</h2>
 <p>These terms may be updated from time to time. Continued use after a change means acceptance
@@ -256,6 +257,18 @@ of the updated terms.</p>
 // Railway (or any single-service host) only needs to run this one app — no
 // separate static host, no cross-origin config. Falls back to index.html for
 // any non-API route so client-side routing (react-router) still works.
+const websiteDist = path.join(path.dirname(fileURLToPath(import.meta.url)), "../../website/dist");
+// The public Marlo website is the front door: signed-out visitors to "/" get it. Anyone with a session
+// cookie, or arriving with a query string (the sign-in redirects use ?error= and ?not_invited=1, and
+// "/?app=1" is the way to the old sign-in page), falls through to the React app below.
+app.get("/", (req, res, next) => {
+  const hasQuery = Object.keys(req.query).length > 0;
+  if (req.cookies?.[SESSION_COOKIE_NAME] || hasQuery) return next();
+  res.sendFile(path.join(websiteDist, "index.html"), (err) => {
+    if (err) next();
+  });
+});
+app.use(express.static(websiteDist, { index: false }));
 const clientDist = path.join(path.dirname(fileURLToPath(import.meta.url)), "../../client/dist");
 app.use(express.static(clientDist));
 app.get(/^(?!\/api|\/auth|\/health|\/webhooks).*/, (_req, res) => {

@@ -118,7 +118,7 @@ adminRoutes.post("/api/admin/invites", (req, res) => {
   res.json(listInvitedPhones());
 });
 
-// The Waitlist section in Settings — every uninvited number that has messaged Marlowe, newest
+// The Waitlist section in Settings — every uninvited number that has messaged Marlo, newest
 // request first. Read-only here; approving is just POST /api/admin/invites above, which clears
 // the entry and notifies them.
 adminRoutes.get("/api/admin/waitlist", (req, res) => {

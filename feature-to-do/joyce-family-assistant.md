@@ -1,13 +1,13 @@
 # Joyce — the family assistant
 
 Prototype built 2026-09-30, on the `staging` branch. Joyce is a second WhatsApp assistant living
-in the same server as Marlowe but sharing none of its data. Where Marlowe is one person's
+in the same server as Marlo but sharing none of its data. Where Marlo is one person's
 assistant, Joyce belongs to a *family group*: everything any member tells her, every other member
 can ask about.
 
 All the code is in `server/src/joyce/`. Nothing outside that directory changed except a handful of
 small things, listed under "What this touched outside Joyce" below. (Since 2026-10-19 there is also
-an opt-in link to Marlowe, in `server/src/bridge/`: see "Linked to Marlowe".)
+an opt-in link to Marlo, in `server/src/bridge/`: see "Linked to Marlo".)
 
 ## The requirement that shaped everything
 
@@ -15,7 +15,7 @@ an opt-in link to Marlowe, in `server/src/bridge/`: see "Linked to Marlowe".)
 > accidentally take information from another family. It is not enough that the first part of any
 > stored data is the user string. The data must be inaccessible."
 
-That rules out the approach Marlowe uses. Marlowe keeps every tenant in one `app.db` and
+That rules out the approach Marlo uses. Marlo keeps every tenant in one `app.db` and
 separates them with `WHERE owner_id = ?` on every query. It works, but only as long as every
 query author remembers — which is exactly the risk `tenant-isolation-audit.md` in this folder was
 written about. Joyce is built so that class of mistake isn't available.
@@ -46,7 +46,7 @@ family": it isn't that the AI is instructed not to, it's that the AI is not give
 
 Each barrier has its own tests in `server/src/joyce/isolation.test.ts`, so a regression names
 which one broke. There's also a test that fails the build if any file in `src/joyce/` ever imports
-one of Marlowe's modules — importing `db/store.js` alone would open Marlowe's `app.db` as a side
+one of Marlo's modules — importing `db/store.js` alone would open Marlo's `app.db` as a side
 effect and put both products in reach of one request.
 
 ### Where I deliberately differed from the brief
@@ -99,15 +99,15 @@ I ran a real conversation end to end against the live API. All of this is workin
 - **One calendar per family** (2026-10-18): Google once anyone connects it, otherwise Joyce's own,
   with a Portal switch to turn Joyce's own off. See "Which calendar a family uses" below.
 
-Every test passes: 31 Joyce tests, and Marlowe's existing suite still green (1557 total).
+Every test passes: 31 Joyce tests, and Marlo's existing suite still green (1557 total).
 
-## Linked to Marlowe (2026-10-19)
+## Linked to Marlo (2026-10-19)
 
-Joyce still imports nothing from Marlowe. A person who uses both can opt in to a link through
+Joyce still imports nothing from Marlo. A person who uses both can opt in to a link through
 `server/src/bridge/`, which is the only code that imports both. Joyce's side is small: two hooks in
 `joyce/hooks.ts` (someone joined, someone left), a `members.marlowe_linked` flag, and a
 `notes.source = 'marlowe'` marker on notes handed over. Consent, settings and the audit log live in
-Marlowe's database. Details: `changelog/2026-10-19-marlowe-joyce-link.md`.
+Marlo's database. Details: `changelog/2026-10-19-marlowe-joyce-link.md`.
 
 ## Leaving a family
 
@@ -141,8 +141,8 @@ What leaving does and doesn't do:
 
 ## Photos and files
 
-Added 2026-10-03, modelled on Marlowe's but written separately in `joyce/files.ts`, because Joyce
-can't import Marlowe's code.
+Added 2026-10-03, modelled on Marlo's but written separately in `joyce/files.ts`, because Joyce
+can't import Marlo's code.
 
 - A member sends a photo, PDF, Word document or text file. Joyce downloads it, encrypts it with
   *that family's* key, and stores it in a folder belonging to that family alone
@@ -154,7 +154,7 @@ can't import Marlowe's code.
 - Any member can ask for the original back ("send me that letter again"). The model chooses
   *which* file, never *who* gets it: it only ever goes to the person asking.
 - Other types (spreadsheets, zips) are kept and can be sent back, but aren't read.
-- Unlike Marlowe, Joyce doesn't pull travel dates, receipts or bookings out of files. She only
+- Unlike Marlo, Joyce doesn't pull travel dates, receipts or bookings out of files. She only
   needs the family to be able to find things again.
 
 Searching notes and documents now ranks by how many of the search words match. Previously it
@@ -214,10 +214,10 @@ Added 2026-10-17.
 
 **Timezone.** Each family has one, stored encrypted in `family_meta`
 (`joyce/familyTime.ts`). It's guessed from the phone number of whoever Joyce is talking to the
-first time it's needed (a copy of Marlowe's `phoneTimezoneGuess.ts`) and marked as a guess, so
+first time it's needed (a copy of Marlo's `phoneTimezoneGuess.ts`) and marked as a guess, so
 Joyce says which zone she assumed when she sets a time. A member can tell her otherwise
 (`set_family_timezone`); only city zones like `Europe/London` are accepted, never `UTC`/`GMT`,
-because Marlowe once let the model turn "the UK" into "UTC" and reminders fired an hour late. The
+because Marlo once let the model turn "the UK" into "UTC" and reminders fired an hour late. The
 model always works in local wall-clock times; storage is UTC.
 
 **Reminders that arrive.** `joyce/reminderDelivery.ts` runs every minute. It asks the registry's
@@ -274,12 +274,12 @@ reachable from an AI tool or a WhatsApp message, and neither lets a caller name 
 
 ## Admin portal
 
-Added 2026-10-17. Admins get a Joyce portal at `/joyce-portal`, next to Marlowe's Portal in the
+Added 2026-10-17. Admins get a Joyce portal at `/joyce-portal`, next to Marlo's Portal in the
 sidebar, built from the same components in terracotta instead of green. Four sections:
 
-- **Flagged requests.** Joyce has a `flag_unmet_request` tool, like Marlowe's, for things a
+- **Flagged requests.** Joyce has a `flag_unmet_request` tool, like Marlo's, for things a
   family asked for that she couldn't do. Admins can leave notes and mark them resolved.
-- **To-do list.** Its own list, separate from Marlowe's (same table, `product = 'joyce'`).
+- **To-do list.** Its own list, separate from Marlo's (same table, `product = 'joyce'`).
 - **Logs.** The server's log lines that start with `joyce:`. "Explain this" works as in the Portal.
 - **Usage.** Joyce's Claude calls (replies, and reading photos/files) with token counts and an
   approximate cost. Recorded with no family attached, so there is no per-family breakdown.
@@ -293,25 +293,25 @@ without learning which family. This was a deliberate choice (2026-10-17) over a 
 family link at all. Nothing in the portal can open a family's database.
 
 The portal routes are in `server/src/routes/joycePortalRoutes.ts`, outside `src/joyce/`, because
-they need Marlowe's admin auth; Joyce's own code still imports nothing of Marlowe's.
+they need Marlo's admin auth; Joyce's own code still imports nothing of Marlo's.
 
 ## Problems I hit, and what I did about them
 
-**Marlowe would have answered Joyce's messages.** This was the real landmine. Meta configures a
+**Marlo would have answered Joyce's messages.** This was the real landmine. Meta configures a
 webhook URL per *app*, not per phone number. The moment Joyce's number joins the same WhatsApp
-Business Account, both numbers' messages arrive at both endpoints — and Marlowe's code was
-throwing away the field that says which number a message was sent to. Marlowe would have seen
+Business Account, both numbers' messages arrive at both endpoints — and Marlo's code was
+throwing away the field that says which number a message was sent to. Marlo would have seen
 every family member as an unrecognised number and started its own signup flow at them. Fixed:
 `extractIncomingMessages` now keeps `metadata.phone_number_id`, and each product drops anything
 addressed to the other's number. **This is the one thing to verify first when Joyce's real number
 is connected.**
 
-**No timezone.** Reminders are UTC only. Marlowe guesses a timezone from the phone's country code,
-but that code lives in Marlowe's modules and I wasn't willing to import across the boundary for
+**No timezone.** Reminders are UTC only. Marlo guesses a timezone from the phone's country code,
+but that code lives in Marlo's modules and I wasn't willing to import across the boundary for
 it. Joyce currently tells the model the time in UTC and takes UTC back. Fine for testing, wrong
 for real families — see below.
 
-**Sending as Joyce needed its own code.** Marlowe's send functions read
+**Sending as Joyce needed its own code.** Marlo's send functions read
 `WHATSAPP_PHONE_NUMBER_ID` from the environment inline, in about a dozen places. Rather than
 thread a "which number?" argument through all of them, Joyce has her own small sender. That's
 deliberate duplication: a shared sender is a shared code path, and a shared code path is somewhere
@@ -329,9 +329,9 @@ Roughly in the order I'd do them.
    still ignored.
 4. **Expiring or single-use join codes**, if permanent shareable codes feel too loose once real
    people use them.
-5. **Deleting a family**, for the same reasons Marlowe has `deleteUserCompletely`. With one file
+5. **Deleting a family**, for the same reasons Marlo has `deleteUserCompletely`. With one file
    per family this is genuinely easy — delete the file, its files folder, and the registry rows.
-6. **A simulator**, like Marlowe's WhatsApp Simulator, so Joyce can be exercised from a browser
+6. **A simulator**, like Marlo's WhatsApp Simulator, so Joyce can be exercised from a browser
    without a real number.
 
 ## Is a database file per family expensive?
@@ -358,17 +358,17 @@ The real costs aren't disk or memory, they're operational:
   `SCHEMA` is all `CREATE TABLE IF NOT EXISTS` and runs on open, which handles additive changes;
   anything else needs a real migration runner.
 
-**Should Marlowe switch to this?** No. The isolation benefit would be just as real, but the cost
+**Should Marlo switch to this?** No. The isolation benefit would be just as real, but the cost
 is in a different league and the trade lands differently:
-- Marlowe has genuine cross-tenant features — admin todos, API usage and spend rollups, the
+- Marlo has genuine cross-tenant features — admin todos, API usage and spend rollups, the
   waitlist, invites, the portal's pricing tables. Every one of those becomes an N-file scan.
 - It's ~211 `owner_id` references across ~20 tables and 74 store functions, plus a data migration
   that splits a live production database. That's a rewrite, not a refactor.
 - Joyce can do it because she has no cross-family features and never should. That's a property of
   the product, not a cleverer choice of storage.
 
-The right move for Marlowe stays the one in `tenant-isolation-audit.md`: a repeatable check that
-every new query is scoped. Worth saying plainly though — if Marlowe were being built today, per
+The right move for Marlo stays the one in `tenant-isolation-audit.md`: a repeatable check that
+every new query is scoped. Worth saying plainly though — if Marlo were being built today, per
 tenant files would deserve a serious look before committing to the shared table.
 
 ## Going live
@@ -378,18 +378,18 @@ tenant files would deserve a serious look before committing to the shared table.
    Generate the master key fresh — it must **not** be the same value as `ENCRYPTION_KEY`, and
    losing it makes every family's data permanently unreadable, so back it up off the server.
    `server/.env.example` has the full list with instructions.
-3. Route Joyce's number to `/webhooks/joyce`. Meta has **one** callback URL per app (Marlowe's
-   `/webhooks/whatsapp`), so without this every message to Joyce lands on Marlowe's endpoint,
-   Marlowe drops it (wrong `phone_number_id`), and Joyce never hears it. The fix is a
+3. Route Joyce's number to `/webhooks/joyce`. Meta has **one** callback URL per app (Marlo's
+   `/webhooks/whatsapp`), so without this every message to Joyce lands on Marlo's endpoint,
+   Marlo drops it (wrong `phone_number_id`), and Joyce never hears it. The fix is a
    *phone-number-level webhook override*, which applies to Joyce's number only:
    `POST /{JOYCE_PHONE_NUMBER_ID}` with
    `{"webhook_configuration":{"override_callback_uri":"https://<host>/webhooks/joyce","verify_token":"<JOYCE_WHATSAPP_VERIFY_TOKEN>"}}`.
    Meta checks the URL when you set it, so the Joyce env vars must already be deployed. Check
    it with `GET /{JOYCE_PHONE_NUMBER_ID}?fields=webhook_configuration`. Do **not** use the
-   WABA-level override; that would move Marlowe's traffic too. (Corrected 2026-10-16: an earlier
+   WABA-level override; that would move Marlo's traffic too. (Corrected 2026-10-16: an earlier
    version of this step assumed both endpoints receive every message.) The WABA must also be
    subscribed to the app, which it already is.
-4. Send one message to Marlowe and one to Joyce and confirm each is answered by the right one and
+4. Send one message to Marlo and one to Joyce and confirm each is answered by the right one and
    ignored by the other.
 
 ## Which calendar a family uses
@@ -445,7 +445,7 @@ is in `changelog/2026-10-17-joyce-google-calendar.md`. Points that matter for th
 - `server/src/providers/whatsapp.ts` — `extractIncomingMessages` now reads
   `metadata.phone_number_id` and takes an optional number to filter by. A payload without that
   field is still kept, so existing traffic, fixtures and the simulator are unaffected.
-- `server/src/routes/whatsappRoutes.ts` — one line, passing Marlowe's own number to the above.
+- `server/src/routes/whatsappRoutes.ts` — one line, passing Marlo's own number to the above.
 - `server/src/index.ts` — mounts `joyceRoutes`.
 - `server/src/test/setup.ts` — sets `JOYCE_MASTER_KEY` for tests.
 - `server/.env.example` — documents the new variables.

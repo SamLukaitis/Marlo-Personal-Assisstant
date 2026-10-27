@@ -94,12 +94,12 @@ describe("Joyce onboarding", () => {
   });
 });
 
-describe("Joyce is structurally separate from Marlowe", () => {
-  // The isolation claim is only true for as long as nothing in src/joyce/ imports Marlowe. This
+describe("Joyce is structurally separate from Marlo", () => {
+  // The isolation claim is only true for as long as nothing in src/joyce/ imports Marlo. This
   // is cheap to check and easy to break by accident: importing ../db/store.js alone would open
-  // Marlowe's app.db as a module side effect, putting both products' data in reach of one
+  // Marlo's app.db as a module side effect, putting both products' data in reach of one
   // request. Failing the build is the right response.
-  it("imports nothing from Marlowe's modules", () => {
+  it("imports nothing from Marlo's modules", () => {
     const offenders: string[] = [];
     for (const file of fs.readdirSync(here).filter((f) => f.endsWith(".ts"))) {
       const source = fs.readFileSync(path.join(here, file), "utf8");

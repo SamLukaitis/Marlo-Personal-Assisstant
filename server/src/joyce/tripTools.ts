@@ -1,6 +1,6 @@
 // Joyce's two questions about who is away and who is free. Both answer from what members' Marlowes
 // chose to share (joyce/trips.ts) or will say (the availability hook), and are worded so the family
-// can't tell why Joyce knows nothing about someone: no Marlowe, sharing off, declined and "couldn't
+// can't tell why Joyce knows nothing about someone: no Marlo, sharing off, declined and "couldn't
 // tell" all read "nothing shared" / "not sure".
 import type Anthropic from "@anthropic-ai/sdk";
 import { DateTime } from "luxon";
@@ -33,7 +33,7 @@ export const TRIP_TOOLS: Anthropic.Tool[] = [
   {
     name: "check_availability",
     description:
-      `Ask each family member's Marlowe whether they're free for proposed dates (at most ${MAX_RANGE_DAYS} ` +
+      `Ask each family member's Marlo whether they're free for proposed dates (at most ${MAX_RANGE_DAYS} ` +
       "days). Use when someone asks whether dates work for everyone or for a person. Each answer is only " +
       "free, busy, free except certain days, or not sure; it never says why. Dates are YYYY-MM-DD in the " +
       "family's local calendar.",

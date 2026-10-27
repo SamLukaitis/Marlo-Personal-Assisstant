@@ -1,7 +1,7 @@
-// Short links for the long booking and search URLs Marlowe sends (Google Flights and Google Hotels
+// Short links for the long booking and search URLs Marlo sends (Google Flights and Google Hotels
 // URLs run to several hundred characters, Kiwi.com and Booking.com not far behind), so a WhatsApp
 // reply reads as text rather than as a wall of URL. <SERVER_URL>/go/<code> redirects to the stored
-// URL (routes/shortLinkRoutes.ts). Only URLs Marlowe stored are reachable, so it isn't an open
+// URL (routes/shortLinkRoutes.ts). Only URLs Marlo stored are reachable, so it isn't an open
 // redirect.
 import { randomBytes } from "node:crypto";
 import { SERVER_URL } from "../config.js";

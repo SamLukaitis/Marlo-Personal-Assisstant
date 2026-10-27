@@ -494,7 +494,7 @@ function eventToCalendarEvent(account: AccountRow, e: {
 }
 
 // Google Calendar events accept colorId "1".."11" (its 11 predefined event colors). Deriving it
-// from accountId (rather than storing a color) keeps every event Marlowe creates on a given
+// from accountId (rather than storing a color) keeps every event Marlo creates on a given
 // inbox consistently colored, with no schema change and nothing to keep in sync — see
 // client/src/pages/CalendarPage.tsx's swatch, which uses the same `% 11` idea against its own
 // palette so the two stay conceptually aligned without sharing code across server/client.

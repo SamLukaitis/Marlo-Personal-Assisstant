@@ -122,7 +122,7 @@ describe("describeStep", () => {
     expect(describeStep({ type: "alarm", time: "05:15", label: "Flight" })).toBe("set an alarm for 05:15 (Flight)");
     expect(describeStep({ type: "focus", name: "Work", on: true, until: "17:00" })).toBe("turn Work Focus on until 17:00");
     expect(describeStep({ type: "text", to: "Jake", body: "x".repeat(100) })).toBe(`text Jake: "${"x".repeat(60)}…"`);
-    expect(describeStep({ type: "get_location" })).toBe("send Marlowe your location");
+    expect(describeStep({ type: "get_location" })).toBe("send Marlo your location");
     expect(describeStep({ type: "run_shortcut", name: "Home" })).toBe('run your "Home" Shortcut');
   });
 });

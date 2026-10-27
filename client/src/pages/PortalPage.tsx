@@ -77,7 +77,7 @@ const NOTIFY_POLL_MS = 15_000;
 
 /**
  * Toasts when another admin replies to one of YOUR to-dos, whichever section is open. Shared by
- * Marlowe's Portal and Joyce's portal, each watching its own to-do list through `api`.
+ * Marlo's Portal and Joyce's portal, each watching its own to-do list through `api`.
  */
 export function useTodoReplyToasts(api: PortalSectionsApi): Toast[] {
   const { user } = useAuth();
@@ -195,7 +195,7 @@ export function PortalPage() {
               <RequestsTab
                 api={marlowePortalApi}
                 title="Unmet requests"
-                intro="Things users have asked Marlowe for that it couldn't do — a running signal of what to build next."
+                intro="Things users have asked Marlo for that it couldn't do — a running signal of what to build next."
               />
             )}
             {section === "phone" && <PhoneActionsTab />}
@@ -514,8 +514,8 @@ function UpdatesTab() {
     <>
       <h2>Send an update</h2>
       <p className="settings-section-intro">
-        Tell every Marlowe user on WhatsApp what's new. It goes out under the heading "What's new in Marlowe", ending with how to
-        stop these ("stop updates"). People who haven't messaged Marlowe in the last 24 hours get it through the approved
+        Tell every Marlo user on WhatsApp what's new. It goes out under the heading "What's new in Marlo", ending with how to
+        stop these ("stop updates"). People who haven't messaged Marlo in the last 24 hours get it through the approved
         marlowe_whats_new template. Joyce families aren't included.
       </p>
       <div className="card card-padded" style={{ marginBottom: 20 }}>
@@ -523,7 +523,7 @@ function UpdatesTab() {
           rows={6}
           value={text}
           onChange={(e) => setText(e.target.value)}
-          placeholder="e.g. Marlowe can now search live hotel prices. Try: find me a hotel in Lisbon 12–15 Nov."
+          placeholder="e.g. Marlo can now search live hotel prices. Try: find me a hotel in Lisbon 12–15 Nov."
           style={{ width: "100%" }}
         />
         <div className="row" style={{ justifyContent: "space-between", marginTop: 10, gap: 8, flexWrap: "wrap" }}>
@@ -738,7 +738,7 @@ function PhoneActionsTab() {
     <>
       <h2>Phone actions</h2>
       <p className="settings-section-intro">
-        One-tap actions Marlowe offered through the Marlowe Shortcut: what people tapped, and what broke on their phone.
+        One-tap actions Marlo offered through the Marlo Shortcut: what people tapped, and what broke on their phone.
       </p>
       <div className="row" style={{ marginBottom: 14, justifyContent: "flex-end" }}>
         <button className="btn-secondary" onClick={load}>
@@ -880,7 +880,7 @@ export function UsageTab({
   const [recent, setRecent] = useState<ApiUsageCallRow[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [days, setDays] = useState(30);
-  // Message text is only recorded for Marlowe admins' chats, so Joyce's tab never filters on it.
+  // Message text is only recorded for Marlo admins' chats, so Joyce's tab never filters on it.
   const [messagesOnly, setMessagesOnly] = useState(showOwners);
 
   function load(d: number, onlyMessages: boolean) {
@@ -1080,7 +1080,7 @@ export function UsageTab({
           {recent.length === 0 ? (
             <p className="muted">
               {messagesOnly
-                ? "No messages yet. Message text is saved from this update onwards, so send Marlowe something and refresh."
+                ? "No messages yet. Message text is saved from this update onwards, so send Marlo something and refresh."
                 : "No assistant activity yet."}
             </p>
           ) : (
@@ -1148,7 +1148,7 @@ function ShareBar({ share }: { share: number }) {
   );
 }
 
-// What people use Marlowe for, and what they don't. Built from which tools each message used —
+// What people use Marlo for, and what they don't. Built from which tools each message used —
 // never the message text — so it covers every user, not just admins.
 function FeatureUseTab() {
   const [data, setData] = useState<FeatureUsage | null>(null);
@@ -1182,7 +1182,7 @@ function FeatureUseTab() {
     <>
       <h2>Feature use</h2>
       <p className="settings-section-intro">
-        What people use Marlowe for, and what they don't, worked out from which tools each message used. Only tool
+        What people use Marlo for, and what they don't, worked out from which tools each message used. Only tool
         names are recorded, never what anyone said. Counting started with this update.
       </p>
 
@@ -1246,7 +1246,7 @@ function FeatureUseTab() {
         <p className="muted">No messages in this range yet. Counting started with this update.</p>
       ) : (
         <>
-          <h2 style={{ fontSize: 15, marginBottom: 10 }}>What people use Marlowe for</h2>
+          <h2 style={{ fontSize: 15, marginBottom: 10 }}>What people use Marlo for</h2>
           <p className="muted" style={{ marginTop: -6, marginBottom: 10, fontSize: 12 }}>
             Share of messages that touched each area. One message can touch more than one, so these add up to more
             than 100%.

@@ -96,7 +96,7 @@ function HeroThread() {
     <div className="thread">
       <div className="thread-head">
         <span className="thread-head-dot" />
-        Marlowe · WhatsApp
+        Marlo · WhatsApp
       </div>
 
       <div className="bubble bubble-user">
@@ -277,7 +277,7 @@ function TravelFilmstrip() {
               </div>
             </div>
             <p className="filmstrip-card-note">
-              Send a photo, PDF or Word document to Marlowe on WhatsApp, or ask it to save an
+              Send a photo, PDF or Word document to Marlo on WhatsApp, or ask it to save an
               attachment from your email.
             </p>
           </article>
@@ -290,10 +290,10 @@ function TravelFilmstrip() {
                 <Plane size={22} />
               </div>
               <div className="filmstrip-folder-title">Travel Documents</div>
-              <div className="filmstrip-folder-sub">Saved in Marlowe</div>
+              <div className="filmstrip-folder-sub">Saved in Marlo</div>
             </div>
             <p className="filmstrip-card-note">
-              Marlowe reads the dates, reference and details and saves them with the original, so
+              Marlo reads the dates, reference and details and saves them with the original, so
               you can ask about it later or have the file sent back.
             </p>
           </article>
@@ -324,7 +324,7 @@ function TravelFilmstrip() {
               <div className="filmstrip-folder-sub">Rolling 180d window</div>
             </div>
             <p className="filmstrip-card-note">
-              Marlowe synthesizes your data into real-time answers for travel limits and visa
+              Marlo synthesizes your data into real-time answers for travel limits and visa
               requirements.
             </p>
           </article>
@@ -338,14 +338,14 @@ function TravelFilmstrip() {
   );
 }
 
-// Sign-ins the server refused because nothing ties that provider account to the existing Marlowe
+// Sign-ins the server refused because nothing ties that provider account to the existing Marlo
 // account with the same email (server/src/routes/authRoutes.ts's resolveMicrosoftUser /
 // googleMayUseExistingUser).
 const SIGN_IN_ERROR_TEXT: Record<string, string> = {
   microsoft_unverified:
-    "We couldn't confirm that Microsoft account belongs to the Marlowe account with that email. Sign in the way you did before, then connect Outlook from Settings.",
+    "We couldn't confirm that Microsoft account belongs to the Marlo account with that email. Sign in the way you did before, then connect Outlook from Settings.",
   google_unverified:
-    "We couldn't confirm that Google account belongs to the Marlowe account with that email. Sign in the way you did before, then connect Gmail from Settings.",
+    "We couldn't confirm that Google account belongs to the Marlo account with that email. Sign in the way you did before, then connect Gmail from Settings.",
 };
 
 export function HomePage() {
@@ -380,7 +380,7 @@ export function HomePage() {
         <div className="home-shell home-topbar-inner">
           <span className="home-wordmark">
             <span className="home-mark">M</span>
-            Marlowe
+            Marlo
           </span>
           <div className="home-topbar-actions">
             <a href={microsoft} className="home-btn home-btn-quiet">
@@ -397,7 +397,7 @@ export function HomePage() {
         <div className="home-shell">
           {notInvited && (
             <div className="home-banner warn" style={{ marginTop: 24 }}>
-              That account isn't on the invite list yet. Marlowe is in a closed preview — ask
+              That account isn't on the invite list yet. Marlo is in a closed preview — ask
               whoever invited you to add your email address.
             </div>
           )}
@@ -413,7 +413,7 @@ export function HomePage() {
                 The assistant you can just <em>text</em>.
               </h1>
               <p className="home-hero-sub">
-                Marlowe reads your mail, watches your calendar, files whatever you send it, and
+                Marlo reads your mail, watches your calendar, files whatever you send it, and
                 answers on WhatsApp. One conversation instead of six apps.
               </p>
               <div className="home-hero-actions">
@@ -438,7 +438,7 @@ export function HomePage() {
               <span className="home-eyebrow">What it works from</span>
               <h2 className="home-h2">It reads what you already have.</h2>
               <p className="home-lede">
-                Connect the accounts you actually use. Marlowe works across all of them at once, so
+                Connect the accounts you actually use. Marlo works across all of them at once, so
                 you stop remembering which inbox a thing landed in.
               </p>
               <div className="connector-grid">
@@ -460,7 +460,7 @@ export function HomePage() {
           flip
           eyebrow="Ask for the work"
           title="Say what you want. It goes and does it."
-          body="Drafting replies, moving meetings, digging out the invoice from March. Marlowe shows you every email it writes, and only sends it once you tap Send."
+          body="Drafting replies, moving meetings, digging out the invoice from March. Marlo shows you every email it writes, and only sends it once you tap Send."
           ask="Reply to Priya — Thursday works, but make it 3pm"
           reply="Here's the draft — tap Send, Edit, or Leave in Drafts."
         />
@@ -471,7 +471,7 @@ export function HomePage() {
               <span className="home-eyebrow">Built around you</span>
               <h2 className="home-h2">Your hub only has what you asked for.</h2>
               <p className="home-lede">
-                Optional tools stay off until you want them: ask Marlowe, or switch them on in
+                Optional tools stay off until you want them: ask Marlo, or switch them on in
                 Settings. Whatever you don't use never appears — no dead tabs for features you
                 don't use, no settings for accounts you never connected.
               </p>
@@ -488,7 +488,7 @@ export function HomePage() {
                   <span className="tool-card-tag">Optional</span>
                   <h3>Teams chat</h3>
                   <p>
-                    Bring work conversations in alongside your mail. Skip it and Marlowe never
+                    Bring work conversations in alongside your mail. Skip it and Marlo never
                     mentions Teams again.
                   </p>
                 </div>
@@ -521,7 +521,7 @@ export function HomePage() {
                 <li>
                   <h3>Nothing sends without you</h3>
                   <p>
-                    Marlowe shows you every email before it goes. It sends only when you tap Send —
+                    Marlo shows you every email before it goes. It sends only when you tap Send —
                     otherwise it stays in your Drafts.
                   </p>
                 </li>
@@ -541,7 +541,7 @@ export function HomePage() {
           <Reveal extra="home-cta">
             <h2>Stop keeping it all in your head.</h2>
             <p>
-              Marlowe is in a closed preview while we work with early testers. If you've been
+              Marlo is in a closed preview while we work with early testers. If you've been
               invited, this is where you start.
             </p>
             <div className="home-cta-actions">
@@ -562,7 +562,7 @@ export function HomePage() {
             <div className="home-footer-brand">
               <span className="home-wordmark">
                 <span className="home-mark">M</span>
-                Marlowe
+                Marlo
               </span>
               <p>A personal assistant that works across the accounts you already have.</p>
             </div>
@@ -572,15 +572,15 @@ export function HomePage() {
               <ul>
                 <li><a href="#top">How it works</a></li>
                 <li><a href={google}>Sign in</a></li>
-                <li><a href={`mailto:${CONTACT_EMAIL}?subject=Marlowe%20preview%20access`}>Request access</a></li>
+                <li><a href={`mailto:${CONTACT_EMAIL}?subject=Marlo%20preview%20access`}>Request access</a></li>
               </ul>
             </div>
 
             <div>
               <h4>Support</h4>
               <ul>
-                <li><a href={`mailto:${CONTACT_EMAIL}?subject=Marlowe%20help`}>Help</a></li>
-                <li><a href={`mailto:${CONTACT_EMAIL}?subject=Marlowe%20feedback`}>Send feedback</a></li>
+                <li><a href={`mailto:${CONTACT_EMAIL}?subject=Marlo%20help`}>Help</a></li>
+                <li><a href={`mailto:${CONTACT_EMAIL}?subject=Marlo%20feedback`}>Send feedback</a></li>
                 <li><a href={`mailto:${CONTACT_EMAIL}`}>{CONTACT_EMAIL}</a></li>
               </ul>
             </div>
@@ -596,7 +596,7 @@ export function HomePage() {
           </div>
 
           <div className="home-footer-base">
-            <span>© {new Date().getFullYear()} Marlowe</span>
+            <span>© {new Date().getFullYear()} Marlo</span>
             <span>Privacy · Terms · Closed preview</span>
           </div>
         </div>

@@ -187,7 +187,7 @@ describe("attentionFactLines", () => {
 });
 
 describe("briefing with attention items", () => {
-  const voice = { assistantName: "Marlowe", userName: "Sam", persona: "" };
+  const voice = { assistantName: "Marlo", userName: "Sam", persona: "" };
   it("tells the model how to voice upcoming, worth-knowing and noted items", () => {
     const prompt = briefingSystemPrompt(voice);
     expect(prompt).toMatch(/"Coming up soon" items lead/);

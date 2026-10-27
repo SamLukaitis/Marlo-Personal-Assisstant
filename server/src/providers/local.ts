@@ -36,7 +36,7 @@ export function listLocalFolders(ownerId: number): LocalRootRow[] {
 
 export async function addLocalFolder(ownerId: number, rootPath: string): Promise<LocalRootRow> {
   if (!localFoldersEnabled()) {
-    throw new Error("Folders on this computer are only available when Marlowe runs on your own computer.");
+    throw new Error("Folders on this computer are only available when Marlo runs on your own computer.");
   }
   const resolved = path.resolve(rootPath);
   const stat = await fs.stat(resolved);

@@ -1,4 +1,4 @@
-// One-tap phone actions through the "Marlowe" Apple Shortcut. Marlowe stores a validated list of
+// One-tap phone actions through the "Marlo" Apple Shortcut. Marlo stores a validated list of
 // steps under a random one-time code; the link opens a small page (/a/:code) that launches the
 // Shortcut, which fetches the steps from here, runs them and reports each one back. Only the
 // SHA-256 of the code is stored. See docs/superpowers/specs/2026-10-12-marlowe-shortcut-design.md.
@@ -55,7 +55,7 @@ export function actionFetchUrl(code: string): string {
 }
 
 export function shortcutRunUrl(code: string): string {
-  return `shortcuts://run-shortcut?name=Marlowe&input=text&text=${encodeURIComponent(actionFetchUrl(code))}`;
+  return `shortcuts://run-shortcut?name=Marlo&input=text&text=${encodeURIComponent(actionFetchUrl(code))}`;
 }
 
 export function createPhoneAction(
@@ -87,7 +87,7 @@ export type PhoneActionView =
   | { state: "gone"; installUrl: string };
 
 // The landing page only reads: WhatsApp's link preview and a second look must not use up the code.
-// The model sometimes writes a Marlowe link itself, copying the shape of an earlier one, or re-pastes
+// The model sometimes writes a Marlo link itself, copying the shape of an earlier one, or re-pastes
 // a link that was already used. Either way the user taps a dead link. Every action link in a reply
 // must be one that exists and is still unused; anything else is replaced so the user isn't misled.
 export function scrubUnknownActionLinks(text: string, now = Date.now()): string {
@@ -120,7 +120,7 @@ export function fetchPhoneAction(code: string, version: number, now = Date.now()
   // Read before the guard: the guard narrows `row` to null on the failing branch.
   const used = row !== null && row.status !== "offered";
   if (!usable(row, now)) {
-    return { kind: "gone", message: used ? "This link was already used. Ask Marlowe again." : "This link has expired. Ask Marlowe again." };
+    return { kind: "gone", message: used ? "This link was already used. Ask Marlo again." : "This link has expired. Ask Marlo again." };
   }
   recordShortcutSeen(row.ownerId, version, now);
   const missing = unsupportedSteps(row.steps as unknown as PhoneStep[], version);
@@ -129,7 +129,7 @@ export function fetchPhoneAction(code: string, version: number, now = Date.now()
     return {
       kind: "update",
       installUrl: shortcutInstallUrl(),
-      message: "Your Marlowe Shortcut needs an update for this. Add the new version, then tap the link again.",
+      message: "Your Marlo Shortcut needs an update for this. Add the new version, then tap the link again.",
     };
   }
   updatePhoneAction(row.id, { status: "fetched", fetchedAt: now, version });
@@ -210,7 +210,7 @@ export async function sweepStalledPhoneActions(now = Date.now()): Promise<void> 
 const RECENT_RESULTS_MS = 2 * HOUR;
 
 // The Shortcut version this user's phone last reported, or the published one before it ever ran.
-// Everything Marlowe offers is checked against this, so a phone is never sent a step it can't run.
+// Everything Marlo offers is checked against this, so a phone is never sent a step it can't run.
 export function userShortcutVersion(ownerId: number): number {
   return getShortcutStatus(ownerId)?.version ?? currentShortcutVersion();
 }
@@ -220,10 +220,10 @@ export function userShortcutVersion(ownerId: number): number {
 export function phonePromptSection(ownerId: number, now = Date.now()): string {
   if (!isPhoneActionsConfigured()) return "";
   const lines = [
-    "Phone actions: with make_phone_action you can send a one-tap link that runs steps on the user's iPhone through the Marlowe Shortcut " +
+    "Phone actions: with make_phone_action you can send a one-tap link that runs steps on the user's iPhone through the Marlo Shortcut " +
       `(${supportedStepTypes(userShortcutVersion(ownerId)).join(", ")}). Offer one whenever it saves them effort, not only when asked — e.g. an alarm before an early flight, ` +
       "a Focus during a long meeting, a text to say they're running late. Combine related steps into one link. Never say it's done — say \"tap to …\". " +
-      "Put the link on its own line. iPhone only. Never write a Marlowe link yourself or reuse one from earlier in the chat: " +
+      "Put the link on its own line. iPhone only. Never write a Marlo link yourself or reuse one from earlier in the chat: " +
       "every link must be the url make_phone_action just returned, and each link works only once.",
     // Without these the model reaches for email when the user says "message mum", and refuses a
     // calendar event when no Google/Microsoft calendar is connected.
@@ -234,9 +234,9 @@ export function phonePromptSection(ownerId: number, now = Date.now()): string {
   ];
   const status = getShortcutStatus(ownerId);
   if (!status) {
-    lines.push("The user hasn't run the Marlowe Shortcut yet: make_phone_action returns an install_url — send it first (\"first time: add the Marlowe Shortcut\"), then the action link.");
+    lines.push("The user hasn't run the Marlo Shortcut yet: make_phone_action returns an install_url — send it first (\"first time: add the Marlo Shortcut\"), then the action link.");
   } else {
-    lines.push(`Their Marlowe Shortcut is version ${status.version}.`);
+    lines.push(`Their Marlo Shortcut is version ${status.version}.`);
     const problems = status.knownProblems.filter((p) => now - p.at <= PROBLEM_TTL_MS);
     if (problems.length) {
       lines.push(
@@ -268,7 +268,7 @@ export function makePhoneActionForChat(
   if ("error" in validated) {
     // Only point at an update when a newer Shortcut than theirs has actually been published.
     return status && status.version < currentShortcutVersion() && validated.error.includes("can't do")
-      ? { error: `${validated.error} Ask them to add the updated Marlowe Shortcut: ${shortcutInstallUrl()}` }
+      ? { error: `${validated.error} Ask them to add the updated Marlo Shortcut: ${shortcutInstallUrl()}` }
       : validated;
   }
   let label: string;
@@ -297,7 +297,7 @@ export function phoneSuggestionsEnabled(ownerId: number): boolean {
 }
 
 export const PHONE_SUGGESTION_PROMPT = [
-  "The user has the Marlowe Shortcut on their iPhone, so you can offer up to 3 one-tap actions — but only when the calendar or bookings give a concrete reason:",
+  "The user has the Marlo Shortcut on their iPhone, so you can offer up to 3 one-tap actions — but only when the calendar or bookings give a concrete reason:",
   "an early start or flight (an alarm, a Sleep Focus the night before), a long meeting (a Focus for its length), travel to an address (directions). No reason, no suggestion.",
   'Write each one on its own line exactly as [[phone|<what tapping does, a few words starting "Tap to">|<JSON array of steps>]], e.g.',
   '[[phone|Tap to set a 05:15 alarm and Sleep Focus at 22:30|[{"type":"alarm","time":"05:15","label":"Flight BA117"},{"type":"focus","name":"Sleep","on":true}]]]',

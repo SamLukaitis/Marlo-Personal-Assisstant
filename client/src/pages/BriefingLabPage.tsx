@@ -9,7 +9,7 @@ import {
   type LabKind,
 } from "../api/client";
 
-// Ten invented users, rendered through the real prompts for both of Marlowe's proactive messages —
+// Ten invented users, rendered through the real prompts for both of Marlo's proactive messages —
 // the morning briefing and the evening recap of who emailed. They share a voice
 // (server/src/services/proactiveVoice.ts), so they're reviewed side by side here rather than in two
 // separate tools: a change to the shared register moves both, and this is where you'd catch it.

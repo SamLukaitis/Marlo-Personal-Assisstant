@@ -15,7 +15,7 @@ const owner = () => store.findOrCreateUserByEmail(`phone-scrub-${Date.now()}-${+
 const alarm = [{ type: "alarm", time: "07:30" }] as never;
 
 describe("scrubUnknownActionLinks", () => {
-  it("keeps a real, unused link Marlowe just created", () => {
+  it("keeps a real, unused link Marlo just created", () => {
     const { url } = createPhoneAction(owner(), alarm, { source: "chat", label: "x", ttlMs: CHAT_TTL_MS });
     expect(scrubUnknownActionLinks(`Tap to set it:\n${url}`)).toBe(`Tap to set it:\n${url}`);
   });
@@ -33,7 +33,7 @@ describe("scrubUnknownActionLinks", () => {
     expect(scrubUnknownActionLinks(url)).not.toContain(url);
   });
 
-  it("leaves text without Marlowe links byte-identical", () => {
+  it("leaves text without Marlo links byte-identical", () => {
     const text = "No links here, just https://example.com/a/QqLm2wOpD6c3TfXlVzFaBe  and spaces ";
     expect(scrubUnknownActionLinks(text)).toBe(text);
   });

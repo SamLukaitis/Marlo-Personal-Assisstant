@@ -4,11 +4,11 @@
 //   npm run joyce:templates -- <WABA_ID> --create   # submit any that don't exist yet
 //
 // Templates belong to the WhatsApp Business Account, not a phone number, so Joyce's sit beside
-// Marlowe's (marlowe_alert, marlowe_digest) on the same account and are sent from her number.
+// Marlo's (marlowe_alert, marlowe_digest) on the same account and are sent from her number.
 // Approval usually takes minutes to a day; until then joyce/reminderDelivery.ts's template sends
 // fail and those reminders wait for the person's next message instead.
 //
-// Use the WhatsApp Business Account id 1574262347469069 ("Marlowe"). 1576415707195454 reads the
+// Use the WhatsApp Business Account id 1574262347469069 ("Marlo"). 1576415707195454 reads the
 // same numbers and templates but refuses template creation with "WhatsApp accounts cannot be used
 // with this API" (seen 2026-10-17) — it isn't the account the templates actually live on.
 //

@@ -230,13 +230,13 @@ export function saveNote(
   return Number(res.lastInsertRowid);
 }
 
-/** Records on the member's row that they've linked (or unlinked) their Marlowe. */
+/** Records on the member's row that they've linked (or unlinked) their Marlo. */
 export function setMarloweLinked(session: FamilySession, linked: boolean): void {
   session.db.prepare(`UPDATE members SET marlowe_linked = ? WHERE id = ?`).run(linked ? 1 : 0, session.actor.id);
 }
 
 /**
- * Deletes a note this member's Marlowe handed over. Refuses anything else: a note the member typed
+ * Deletes a note this member's Marlo handed over. Refuses anything else: a note the member typed
  * to Joyce themselves, or one handed over by another member, is not theirs to take back this way.
  */
 export function deleteMarloweNote(session: FamilySession, noteId: number): boolean {

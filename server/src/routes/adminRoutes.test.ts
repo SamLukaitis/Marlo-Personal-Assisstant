@@ -188,7 +188,7 @@ describe("/api/admin/invites", () => {
   });
 });
 
-// The waitlist: uninvited numbers that messaged Marlowe get logged (whatsappRegistration.ts) so
+// The waitlist: uninvited numbers that messaged Marlo get logged (whatsappRegistration.ts) so
 // admins can see who asked. Approving is just POST /api/admin/invites — it clears the entry and
 // messages the person that they're in.
 describe("/api/admin/waitlist", () => {
