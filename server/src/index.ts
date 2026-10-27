@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import express from "express";
 import cors from "cors";
 import cookieParser from "cookie-parser";
+import { SESSION_COOKIE_NAME } from "./middleware/auth.js";
 import { authRoutes } from "./routes/authRoutes.js";
 import { meRoutes } from "./routes/meRoutes.js";
 import { accountRoutes } from "./routes/accountRoutes.js";
@@ -256,6 +257,18 @@ of the updated terms.</p>
 // Railway (or any single-service host) only needs to run this one app — no
 // separate static host, no cross-origin config. Falls back to index.html for
 // any non-API route so client-side routing (react-router) still works.
+const websiteDist = path.join(path.dirname(fileURLToPath(import.meta.url)), "../../website/dist");
+// The public Marlo website is the front door: signed-out visitors to "/" get it. Anyone with a session
+// cookie, or arriving with a query string (the sign-in redirects use ?error= and ?not_invited=1, and
+// "/?app=1" is the way to the old sign-in page), falls through to the React app below.
+app.get("/", (req, res, next) => {
+  const hasQuery = Object.keys(req.query).length > 0;
+  if (req.cookies?.[SESSION_COOKIE_NAME] || hasQuery) return next();
+  res.sendFile(path.join(websiteDist, "index.html"), (err) => {
+    if (err) next();
+  });
+});
+app.use(express.static(websiteDist, { index: false }));
 const clientDist = path.join(path.dirname(fileURLToPath(import.meta.url)), "../../client/dist");
 app.use(express.static(clientDist));
 app.get(/^(?!\/api|\/auth|\/health|\/webhooks).*/, (_req, res) => {
