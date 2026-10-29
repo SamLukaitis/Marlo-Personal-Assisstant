@@ -30,12 +30,19 @@ export async function sendAssistantReply(
   inboundMessageId: string,
   earlierParts: SentPart[] = []
 ): Promise<void> {
+  // What history keeps for this reply: the text, plus the note of any files it sent (never sent).
+  const historyText = reply.historyNote ? `${reply.text}\n\n${reply.historyNote}` : reply.text;
   // Synthetic turns (phone-action report-back) have no inbound wamid to react to — fall through to text.
   if (reply.reaction && inboundMessageId) {
     // A reaction replaces the text reply entirely (see assistant.ts's react_to_message) —
     // persist a readable history line rather than an empty row, and target the message that
     // triggered this turn (the wamid the caller passed in), not one of Marlo's own messages.
-    recordAssistantMessage(ownerId, phone, `[reacted ${reply.reaction.emoji}]`, earlierParts);
+    recordAssistantMessage(
+      ownerId,
+      phone,
+      reply.historyNote ? `[reacted ${reply.reaction.emoji}]\n\n${reply.historyNote}` : `[reacted ${reply.reaction.emoji}]`,
+      earlierParts
+    );
     await sendWhatsAppReaction(phone, inboundMessageId, reply.reaction.emoji);
     return;
   }
@@ -44,7 +51,7 @@ export async function sendAssistantReply(
     // Persisted like any reply so the next turn — triggered by the pin the user shares — can see
     // what was asked for (chatDispatch.handleLocation appends the pin right after this row).
     const wamid = await sendWhatsAppLocationRequest(phone, reply.text);
-    recordAssistantMessage(ownerId, phone, reply.text, [...earlierParts, ...(wamid ? [{ wamid }] : [])]);
+    recordAssistantMessage(ownerId, phone, historyText, [...earlierParts, ...(wamid ? [{ wamid }] : [])]);
     return;
   }
 
@@ -55,7 +62,7 @@ export async function sendAssistantReply(
     if (button) {
       try {
         const wamid = await sendWhatsAppCtaUrl(phone, button.body, RUN_BUTTON_LABEL, button.url);
-        recordAssistantMessage(ownerId, phone, reply.text, [...earlierParts, ...(wamid ? [{ wamid, text: button.body }] : [])]);
+        recordAssistantMessage(ownerId, phone, historyText, [...earlierParts, ...(wamid ? [{ wamid, text: button.body }] : [])]);
         return;
       } catch (err) {
         console.error("whatsappReply: Run button send failed; sending the link as text", err);
@@ -76,7 +83,7 @@ export async function sendAssistantReply(
         }
         const wamid = await sendWhatsAppCtaUrl(phone, plan.body, reply.linkButton.label, reply.linkButton.url);
         if (wamid) parts.push({ wamid, text: plan.body });
-        recordAssistantMessage(ownerId, phone, reply.text, parts);
+        recordAssistantMessage(ownerId, phone, historyText, parts);
         return;
       } catch (err) {
         // Part of the reply already went out without the link: send just the link to finish it.
@@ -84,7 +91,7 @@ export async function sendAssistantReply(
           console.error("whatsappReply: search button send failed; sending the link as text", err);
           const wamid = await sendWhatsAppMessage(phone, reply.linkButton.url);
           if (wamid) parts.push({ wamid, text: reply.linkButton.url });
-          recordAssistantMessage(ownerId, phone, reply.text, parts);
+          recordAssistantMessage(ownerId, phone, historyText, parts);
           return;
         }
         console.error("whatsappReply: search button send failed; sending the reply as text", err);
@@ -110,7 +117,7 @@ export async function sendAssistantReply(
         if (wamid) parts.push({ wamid, text: chunks[i] });
       }
     }
-    recordAssistantMessage(ownerId, phone, reply.text, parts);
+    recordAssistantMessage(ownerId, phone, historyText, parts);
     return;
   }
 
@@ -119,7 +126,7 @@ export async function sendAssistantReply(
     id: `pa:${choice.actionId}:${b.key}`,
     title: b.label,
   }));
-  await sendChoiceAndRecord(ownerId, phone, reply.text, choice.question, choices, earlierParts);
+  await sendChoiceAndRecord(ownerId, phone, historyText, choice.question, choices, earlierParts);
 }
 
 // Every message Marlo sends should go through one of the three senders here (or outbound.ts for

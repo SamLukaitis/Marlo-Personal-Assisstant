@@ -254,7 +254,7 @@ describe("sendSavedDocumentFile", () => {
 
     const result = await sendSavedDocumentFile(user.id, "44700", doc.id);
 
-    expect(result).toEqual({ ok: true });
+    expect(result).toEqual({ ok: true, title: "Driving License" });
     expect(mockSendWhatsAppMediaFromBuffer).toHaveBeenCalledWith("44700", plaintext, "image/jpeg", "license.jpg");
     fs.unlinkSync(storedPath);
   });

@@ -348,7 +348,11 @@ export async function renderBriefing(
   const anthropic = getClient();
   const response = await anthropic.messages.create({
     model: MODEL,
-    max_tokens: 1024,
+    // Sonnet 5.5 thinks before writing, and that thinking counts against max_tokens: at the old
+    // small cap it sometimes used all of it thinking and wrote nothing. Low effort is plenty for
+    // turning a list of facts into a few short paragraphs; the higher cap is room, not length.
+    max_tokens: 4096,
+    output_config: { effort: "low" },
     system: extraSystem ? `${briefingSystemPrompt(voice)}
 
 ${extraSystem}` : briefingSystemPrompt(voice),

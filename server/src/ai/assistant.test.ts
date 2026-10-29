@@ -1666,12 +1666,12 @@ describe("send_document dispatch", () => {
 
   it("passes ownerId/phone/document_id through and reports success", async () => {
     const user = findOrCreateUserByEmail(uniqueEmail("send-doc-ok"));
-    mockSendSavedDocumentFile.mockResolvedValue({ ok: true });
+    mockSendSavedDocumentFile.mockResolvedValue({ ok: true, title: "Passport" });
 
     const result = await runTool(user.id, "send_document", { document_id: 42 }, "447000000001");
 
     expect(mockSendSavedDocumentFile).toHaveBeenCalledWith(user.id, "447000000001", 42);
-    expect(result).toEqual({ ok: true });
+    expect(result).toEqual({ ok: true, sent: "Passport" });
   });
 
   it("surfaces a specific error when there's no original file to send", async () => {

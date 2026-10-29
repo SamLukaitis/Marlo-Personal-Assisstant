@@ -346,7 +346,11 @@ export async function renderDigest(
 ): Promise<string> {
   const response = await getClient().messages.create({
     model: MODEL,
-    max_tokens: 512,
+    // Sonnet 5.5 thinks before writing, and that thinking counts against max_tokens: at the old
+    // small cap it sometimes used all of it thinking and wrote nothing. Low effort is plenty for
+    // turning a list of facts into a few short paragraphs; the higher cap is room, not length.
+    max_tokens: 4096,
+    output_config: { effort: "low" },
     system: extraSystem ? `${digestSystemPrompt(voice)}
 
 ${extraSystem}` : digestSystemPrompt(voice),

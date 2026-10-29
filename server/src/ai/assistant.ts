@@ -163,6 +163,10 @@ export const MODEL_SIMPLE = process.env.ASSISTANT_MODEL_SIMPLE ?? "claude-haiku-
 // tool regardless — the rolling summary is conversational continuity, not a replacement for that.
 export const MAX_HISTORY_MESSAGES = 24;
 
+// Starts the history note on a reply that delivered files with send_document (see
+// AssistantReply.historyNote). The system prompt tells the model what it means.
+export const SENT_FILES_NOTE_PREFIX = "[Files sent with this message:";
+
 // search_messages is a targeted query, not a recent-inbox dump — 10 was too shallow (a single
 // broad topic search routinely needs to scan past newsletters/automated mail to find the actual
 // confirmation email). list_recent_messages is also raised, from 10 to 20 — still deliberately
@@ -1816,7 +1820,7 @@ export async function runTool(
         };
         return { error: messages[result.reason] };
       }
-      return { ok: true };
+      return { ok: true, sent: result.title };
     }
     case "search_conversation_history": {
       if (!phone) {
@@ -2267,6 +2271,10 @@ export interface AssistantReply {
   // "View Google Flights"/"View Google Hotels" button and leaves the text (services/linkButton.ts).
   // The web ignores it and shows the link in `text`.
   linkButton?: LinkButton;
+  // Kept in chat history under `text` but never sent: the files send_document delivered during this
+  // reply. History otherwise holds only the words, so on the next turn the model saw "I've sent
+  // it" with no sign the file went, decided it hadn't, apologised and sent it again.
+  historyNote?: string;
 }
 
 // Builds the AssistantReply for an ask_user_choice tool call and persists the pending_actions
@@ -2382,7 +2390,7 @@ function buildRules(enabled: Set<ToolKey>): string {
     "- Use get_current_time whenever the user asks what time or date it is, or you need 'now' for a time-relative answer — you have no built-in clock, so never state a time/date from your own reasoning. It also doubles as how the user can check you have their timezone right.",
     "- Use check_reminder_status or list_active_reminders when the user asks whether a reminder you set actually went out, or what's still scheduled (e.g. \"did that reminder send?\", \"did Henry get texted?\", \"what reminders do I have?\") — never guess from your own context or say you have no way to check.",
     '- Use search_documents/list_recent_documents when the user asks about something they photographed or sent via WhatsApp (boarding passes, licenses, tickets, receipts) — e.g. "when did I fly to X" or "what\'s the code on my license".',
-    "- If the user wants the actual photo/file back rather than just its details (e.g. \"send me that photo again\", \"can I get the original image\"), find the right document with search_documents/list_recent_documents first, then call send_document with its id.",
+    "- If the user wants the actual photo/file back rather than just its details (e.g. \"send me that photo again\", \"can I get the original image\"), find the right document with search_documents/list_recent_documents first, then call send_document with its id. A reply of yours ending in a \"" + SENT_FILES_NOTE_PREFIX + " …]\" line is the record that those files were delivered: they were sent, so never say they weren't, apologise for them or send them again unless the user says one didn't arrive or asks for it again.",
     "- Use search_conversation_history when the user references something they told you earlier (a name, a decision, a date, a specific fact) that isn't in your current context — the visible recent messages or the conversation summary above — instead of saying you don't have it or guessing. WhatsApp-only, same as send_document. Every term must appear in the same message to match, so a full sentence often returns nothing even when the fact is there — if a call comes back empty, retry with different single keywords pulled from the user's question (a name, a place, a specific number) before telling them you don't have it.",
     "- When the user asks about a trip, booking, or receipt and get_message shows a relevant attachment (ticket, confirmation, visa, invoice), call extract_email_attachment on it yourself, immediately, without asking first — the same way you'd read the email body without asking. Do this for every relevant attachment you find in the same turn, not one at a time. Only ask first if there are an unusually large number of attachments (10+) to extract at once. Don't just describe the attachment's filename and stop there, and don't stop to ask permission to do something this low-risk and reversible.",
     "- If extract_email_attachment fails for an attachment, don't just relay a generic failure to the user — retry it once, and if it still fails, say so plainly with the vendor/subject so they know exactly which one needs a manual forward, rather than leaving them to guess.",
@@ -2691,6 +2699,8 @@ export async function runAssistantChat(
   // The main link of each flight/hotel search this reply ran (url -> button label), so finish()
   // can turn the one the reply ends with into a button.
   const searchLinks = new Map<string, string>();
+  // Titles of the files send_document delivered in this reply, for its history note.
+  const sentFiles: string[] = [];
   const channel = phone ? "whatsapp" : "web";
   // Tools this reply used, for the Portal's Feature use tab. Names only, kept for every user.
   const toolsUsed = new Map<string, number>();
@@ -2738,7 +2748,8 @@ export async function runAssistantChat(
     // one button, so they stay as labelled links.
     const shown = [...searchLinks].filter(([url]) => text.includes(url));
     const linkButton = !reply.choice && shown.length === 1 ? { url: shown[0][0], label: shown[0][1] } : undefined;
-    return { ...reply, text, ...(linkButton ? { linkButton } : {}) };
+    const historyNote = sentFiles.length ? `${SENT_FILES_NOTE_PREFIX} ${sentFiles.join(", ")}]` : undefined;
+    return { ...reply, text, ...(linkButton ? { linkButton } : {}), ...(historyNote ? { historyNote } : {}) };
   }
 
   for (let turn = 0; turn < 8; turn++) {
@@ -2923,6 +2934,10 @@ export async function runAssistantChat(
               const url = rec[key];
               if (typeof url === "string") searchLinks.set(url, SEARCH_BUTTON_LABELS[key]);
             }
+          }
+          if (toolUse.name === "send_document") {
+            const sent = ((result ?? {}) as Record<string, unknown>).sent;
+            if (typeof sent === "string") sentFiles.push(sent);
           }
           return {
             type: "tool_result" as const,

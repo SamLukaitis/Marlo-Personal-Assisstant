@@ -83,6 +83,21 @@ describe("sendAssistantReply", () => {
     expect(sendChoiceMessage).not.toHaveBeenCalled();
   });
 
+  it("keeps the note of files sent in history, but never sends it", async () => {
+    vi.mocked(sendWhatsAppMessage).mockResolvedValueOnce("wamid.out");
+    await sendAssistantReply(1, "44700", { text: "Here it is.", historyNote: "[Files sent with this message: Passport]" }, "wamid.in");
+
+    expect(sendWhatsAppMessage).toHaveBeenCalledTimes(1);
+    expect(sendWhatsAppMessage).toHaveBeenCalledWith("44700", "Here it is.");
+    expect(appendWhatsAppMessage).toHaveBeenCalledWith(
+      1,
+      "44700",
+      "assistant",
+      "Here it is.\n\n[Files sent with this message: Passport]",
+      [{ wamid: "wamid.out", text: "Here it is." }]
+    );
+  });
+
   it("renders a choice as pa:-prefixed ids instead of plain text", async () => {
     await sendAssistantReply(1, "44700", {
       text: "Archive 3 emails from Nike? Reply yes or no.",

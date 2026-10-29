@@ -1056,7 +1056,7 @@ export async function sendSavedDocumentFile(
   ownerId: number,
   phone: string,
   documentId: number
-): Promise<{ ok: true } | { ok: false; reason: "not_found" | "no_original_file" | "send_failed" }> {
+): Promise<{ ok: true; title: string } | { ok: false; reason: "not_found" | "no_original_file" | "send_failed" }> {
   const doc = getDocument(ownerId, documentId);
   if (!doc || !fs.existsSync(doc.storedPath)) {
     return { ok: false, reason: "not_found" };
@@ -1087,5 +1087,7 @@ export async function sendSavedDocumentFile(
   }
   // So a swipe on the file ("what's this?") resolves to this document — see quotedMessage.ts.
   if (wamid) recordSentDocumentWamid(ownerId, doc.id, wamid);
-  return { ok: true };
+  // The title goes into chat history with the reply (whatsappReply.ts), so the next turn can see
+  // the file really went.
+  return { ok: true, title: doc.title ?? filename };
 }
