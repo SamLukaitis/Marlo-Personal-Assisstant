@@ -111,6 +111,9 @@ export interface EventInput {
   // an ordinary event in the user's own timezone, preserving the previous UTC/'Z' behavior.
   startTimeZone?: string;
   endTimeZone?: string;
+  // An all-day event: `start`/`end` are plain "YYYY-MM-DD" dates, end exclusive (the day after the
+  // last day). services/calendarTime.ts produces this from what the assistant passes.
+  allDay?: boolean;
   location?: string;
   description?: string;
 }

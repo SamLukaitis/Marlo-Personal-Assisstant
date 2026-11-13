@@ -511,6 +511,12 @@ export function colorForAccount(accountId: number): string {
   return String((accountId % 11) + 1);
 }
 
+// For a patch: an all-day event is a plain date, a timed one a dateTime. The other field is nulled
+// so turning a timed event into an all-day one (or back) doesn't leave both set, which Google rejects.
+function googleEventTime(value: string, timeZone: string | undefined, allDay: boolean | undefined) {
+  return allDay ? { date: value, dateTime: null } : { dateTime: value, timeZone, date: null };
+}
+
 export async function googleCreateEvent(
   account: AccountRow,
   input: EventInput
@@ -522,8 +528,8 @@ export async function googleCreateEvent(
       summary: input.title,
       location: input.location,
       description: input.description,
-      start: { dateTime: input.start, timeZone: input.startTimeZone },
-      end: { dateTime: input.end, timeZone: input.endTimeZone },
+      start: input.allDay ? { date: input.start } : { dateTime: input.start, timeZone: input.startTimeZone },
+      end: input.allDay ? { date: input.end } : { dateTime: input.end, timeZone: input.endTimeZone },
       colorId: colorForAccount(account.id),
     },
   });
@@ -543,10 +549,8 @@ export async function googleUpdateEvent(
       ...(input.title !== undefined ? { summary: input.title } : {}),
       ...(input.location !== undefined ? { location: input.location } : {}),
       ...(input.description !== undefined ? { description: input.description } : {}),
-      ...(input.start !== undefined
-        ? { start: { dateTime: input.start, timeZone: input.startTimeZone } }
-        : {}),
-      ...(input.end !== undefined ? { end: { dateTime: input.end, timeZone: input.endTimeZone } } : {}),
+      ...(input.start !== undefined ? { start: googleEventTime(input.start, input.startTimeZone, input.allDay) } : {}),
+      ...(input.end !== undefined ? { end: googleEventTime(input.end, input.endTimeZone, input.allDay) } : {}),
     },
   });
   return eventToCalendarEvent(account, res.data);

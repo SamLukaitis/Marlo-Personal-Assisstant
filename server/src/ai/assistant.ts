@@ -140,7 +140,8 @@ import {
   hubFlaggedMessages,
 } from "../services/hub.js";
 import { unsubscribeFromMessage } from "../services/unsubscribe.js";
-import type { UnifiedMessage } from "../providers/types.js";
+import type { UnifiedMessage, EventInput } from "../providers/types.js";
+import { normalizeEventTimes, describeEventTimeForUser } from "../services/calendarTime.js";
 import {
   MODEL_FAST,
   MODEL_STRONG,
@@ -419,14 +420,14 @@ const ALWAYS_ON_TOOLS: Anthropic.ToolUnion[] = [
   {
     name: "create_calendar_event",
     description:
-      'Create a new event on the user\'s own calendar. This never invites other people — it only ever creates a personal event on the specified account\'s calendar. For an ordinary event in the user\'s own timezone, pass start/end as ISO 8601 UTC datetimes (e.g. 2026-07-23T14:00:00Z). For an event tied to a specific place in a DIFFERENT timezone — a flight, a trip abroad, anything happening somewhere the user isn\'t — do NOT convert to UTC yourself: pass start/end as the plain LOCAL clock time at that place with no Z/offset (e.g. 2026-09-19T17:29:00) and set start_timezone/end_timezone to the IANA zone for that place (e.g. "America/Bogota"). A flight\'s departure and arrival cities are often in different zones, so start_timezone and end_timezone are independent — get this right so the event shows the correct local time instead of silently defaulting to the user\'s home timezone.',
+      'Create a new event on the user\'s own calendar. This never invites other people — it only ever creates a personal event on the specified account\'s calendar. Pass start/end as the plain LOCAL clock time the user means, with no Z and no offset (e.g. "3pm on 14 Nov" is 2026-11-14T15:00:00). Never convert to UTC or do any timezone arithmetic yourself: the server applies the user\'s own timezone. For an all-day event (a birthday, a day off, a trip spanning days) pass plain dates instead (start 2026-12-19, end 2026-12-22 = the last day, inclusive). For an event happening in a DIFFERENT timezone from the user — a flight, something abroad — still pass the local clock time at that place, and set start_timezone/end_timezone to the IANA zone for that place (e.g. "America/Bogota"). A flight\'s departure and arrival cities are often in different zones, so start_timezone and end_timezone are independent. If the user gave no end time, omit end (it defaults to one hour). For a relative day ("tomorrow", "Friday") call get_current_time first unless today\'s date is already certain. The result\'s saved_as says exactly when the event was saved on the user\'s clock: confirm that time to the user, and if it isn\'t what they asked for, fix it with update_calendar_event before replying. If the result is an error, the event was NOT created — never say it was.',
     input_schema: {
       type: "object",
       properties: {
         account_id: { type: "number", description: "Which connected account's calendar" },
         title: { type: "string" },
-        start: { type: "string", description: "ISO 8601 start datetime" },
-        end: { type: "string", description: "ISO 8601 end datetime" },
+        start: { type: "string", description: "Local start, YYYY-MM-DDTHH:MM:SS with no Z/offset — or YYYY-MM-DD for an all-day event" },
+        end: { type: "string", description: "Local end in the same form as start. Optional: defaults to one hour after start (or the same day, for all-day)" },
         start_timezone: {
           type: "string",
           description:
@@ -440,21 +441,21 @@ const ALWAYS_ON_TOOLS: Anthropic.ToolUnion[] = [
         location: { type: "string" },
         description: { type: "string" },
       },
-      required: ["account_id", "title", "start", "end"],
+      required: ["account_id", "title", "start"],
     },
   },
   {
     name: "update_calendar_event",
     description:
-      "Reschedule or edit an existing calendar event. Get the event_id from list_upcoming_events first. Only pass the fields that should change. See create_calendar_event's description for start_timezone/end_timezone — the same local-time-plus-IANA-zone rule applies whenever start/end are being changed for an event outside the user's home timezone.",
+      "Reschedule or edit an existing calendar event. Get the event_id from list_upcoming_events first. Only pass the fields that should change. start/end follow create_calendar_event's rules exactly: plain local clock time with no Z/offset (the server applies the user's timezone), plain dates for all-day, and start_timezone/end_timezone only for an event in another timezone. When moving an event, pass both start and end so its length stays what the user expects. The result's saved_as says when it is now saved on the user's clock; an error means nothing changed.",
     input_schema: {
       type: "object",
       properties: {
         account_id: { type: "number" },
         event_id: { type: "string" },
         title: { type: "string" },
-        start: { type: "string", description: "ISO 8601 start datetime" },
-        end: { type: "string", description: "ISO 8601 end datetime" },
+        start: { type: "string", description: "Local start, no Z/offset — see create_calendar_event" },
+        end: { type: "string", description: "Local end, no Z/offset — see create_calendar_event" },
         start_timezone: { type: "string", description: "IANA timezone name for `start` — see create_calendar_event" },
         end_timezone: { type: "string", description: "IANA timezone name for `end` — see create_calendar_event" },
         location: { type: "string" },
@@ -1569,25 +1570,36 @@ export async function runTool(
     case "search_contacts":
       return hubSearchContacts(ownerId, input.query as string);
     case "create_calendar_event":
-      return hubCreateEvent(ownerId, input.account_id as number, {
-        title: input.title as string,
-        start: input.start as string,
-        end: input.end as string,
-        startTimeZone: input.start_timezone as string | undefined,
-        endTimeZone: input.end_timezone as string | undefined,
+    case "update_calendar_event": {
+      const creating = name === "create_calendar_event";
+      // The model passes the clock time the user said; the timezone is applied here, never by the
+      // model (services/calendarTime.ts).
+      const homeZone = resolveUserTimezone(ownerId).zone;
+      const times = normalizeEventTimes(
+        {
+          start: input.start as string | undefined,
+          end: input.end as string | undefined,
+          startTimeZone: input.start_timezone as string | undefined,
+          endTimeZone: input.end_timezone as string | undefined,
+        },
+        homeZone,
+        { requireStart: creating }
+      );
+      if ("error" in times) return { error: `Not saved: ${times.error}` };
+      const title = typeof input.title === "string" ? input.title.trim() : "";
+      if (creating && !title) return { error: "Not saved: the event needs a title." };
+      const details = {
+        ...(title ? { title } : {}),
         location: input.location as string | undefined,
         description: input.description as string | undefined,
-      });
-    case "update_calendar_event":
-      return hubUpdateEvent(ownerId, input.account_id as number, input.event_id as string, {
-        title: input.title as string | undefined,
-        start: input.start as string | undefined,
-        end: input.end as string | undefined,
-        startTimeZone: input.start_timezone as string | undefined,
-        endTimeZone: input.end_timezone as string | undefined,
-        location: input.location as string | undefined,
-        description: input.description as string | undefined,
-      });
+      };
+      const event = creating
+        ? await hubCreateEvent(ownerId, input.account_id as number, { ...details, ...times, title } as EventInput)
+        : await hubUpdateEvent(ownerId, input.account_id as number, input.event_id as string, { ...details, ...times });
+      // An update that changed only the title or place comes back without times worth restating.
+      const savedAs = event?.start ? describeEventTimeForUser(event.start, event.end, event.allDay, homeZone) : "";
+      return savedAs ? { ...event, saved_as: savedAs } : event;
+    }
     case "delete_calendar_event":
       await hubDeleteEvent(ownerId, input.account_id as number, input.event_id as string);
       return { ok: true };

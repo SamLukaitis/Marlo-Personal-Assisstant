@@ -325,7 +325,7 @@ describe("create_calendar_event / update_calendar_event — timezone passthrough
     );
   });
 
-  it("passes undefined timezones through when the model omits them (ordinary home-timezone event)", async () => {
+  it("leaves an exact instant (Z or an offset) alone, with no timezone attached", async () => {
     const user = findOrCreateUserByEmail(uniqueEmail("event-tz-create-omitted"));
 
     await runTool(user.id, "create_calendar_event", {
@@ -335,11 +335,66 @@ describe("create_calendar_event / update_calendar_event — timezone passthrough
       end: "2026-09-19T09:30:00Z",
     });
 
+    const eventInput = mockHubCreateEvent.mock.calls[0][2];
+    expect(eventInput).toMatchObject({ title: "Dentist", start: "2026-09-19T09:00:00Z", end: "2026-09-19T09:30:00Z" });
+    expect(eventInput.startTimeZone).toBeUndefined();
+    expect(eventInput.endTimeZone).toBeUndefined();
+  });
+
+  // The reported bug: "add X to my calendar at 3pm" failed or landed at the wrong hour, because the
+  // model was left to convert local time to UTC and often passed the plain clock time instead.
+  it("reads a plain clock time as the user's own local time and reports when it was saved", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("event-local-time"));
+    setUserTimezone(user.id, "America/Argentina/Mendoza");
+    mockHubCreateEvent.mockResolvedValue({ id: "evt-1", start: "2026-11-14T18:00:00Z", end: "2026-11-14T19:00:00Z" });
+
+    const result = (await runTool(user.id, "create_calendar_event", {
+      account_id: 1,
+      title: "Wine tour",
+      start: "2026-11-14T15:00:00",
+    })) as { saved_as?: string };
+
     expect(mockHubCreateEvent).toHaveBeenCalledWith(
       user.id,
       1,
-      expect.objectContaining({ startTimeZone: undefined, endTimeZone: undefined })
+      expect.objectContaining({
+        start: "2026-11-14T15:00:00",
+        startTimeZone: "America/Argentina/Mendoza",
+        end: "2026-11-14T16:00:00",
+        endTimeZone: "America/Argentina/Mendoza",
+      })
     );
+    expect(result.saved_as).toBe("Sat 14 Nov 2026, 15:00–16:00 (America/Argentina/Mendoza time)");
+  });
+
+  it("creates an all-day event from plain dates", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("event-all-day"));
+
+    await runTool(user.id, "create_calendar_event", { account_id: 1, title: "Ibiza", start: "2026-12-19", end: "2026-12-22" });
+
+    expect(mockHubCreateEvent).toHaveBeenCalledWith(
+      user.id,
+      1,
+      expect.objectContaining({ allDay: true, start: "2026-12-19", end: "2026-12-23" })
+    );
+  });
+
+  it("refuses times it can't place instead of sending them to the calendar", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("event-bad-time"));
+    setUserTimezone(user.id, "Europe/London");
+
+    const backwards = await runTool(user.id, "create_calendar_event", {
+      account_id: 1,
+      title: "Lunch",
+      start: "2026-11-14T15:00:00",
+      end: "2026-11-14T03:00:00",
+    });
+    const garbage = await runTool(user.id, "update_calendar_event", { account_id: 1, event_id: "evt-1", start: "tomorrow at 3" });
+
+    expect(backwards).toEqual({ error: expect.stringMatching(/^Not saved: /) });
+    expect(garbage).toEqual({ error: expect.stringMatching(/^Not saved: /) });
+    expect(mockHubCreateEvent).not.toHaveBeenCalled();
+    expect(mockHubUpdateEvent).not.toHaveBeenCalled();
   });
 
   it("threads start_timezone/end_timezone into hubUpdateEvent's EventInput too", async () => {
