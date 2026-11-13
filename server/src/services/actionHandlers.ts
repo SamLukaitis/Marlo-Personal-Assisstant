@@ -178,6 +178,7 @@ async function handleEmailDigestTap(
     const history = getWhatsAppHistory(phone, MAX_HISTORY_MESSAGES).map((m) => ({
       role: m.role,
       content: m.content,
+      at: m.createdAt,
     }));
     const assistantReply = await runAssistantChat(ownerId, history, phone);
     await sendAssistantReply(ownerId, phone, assistantReply, messageId);
@@ -264,6 +265,7 @@ export async function handlePendingActionReply(
       const history = getWhatsAppHistory(phone, MAX_HISTORY_MESSAGES).map((m) => ({
         role: m.role,
         content: m.content,
+        at: m.createdAt,
       }));
       const reply = await runAssistantChat(ownerId, history, phone);
       await sendAssistantReply(ownerId, phone, reply, message.messageId);
@@ -315,6 +317,7 @@ export async function handlePendingActionReply(
   const history = getWhatsAppHistory(phone, MAX_HISTORY_MESSAGES).map((m) => ({
     role: m.role,
     content: m.content,
+    at: m.createdAt,
   }));
   const reply = await runAssistantChat(ownerId, history, phone);
   await sendAssistantReply(ownerId, phone, reply, message.messageId);

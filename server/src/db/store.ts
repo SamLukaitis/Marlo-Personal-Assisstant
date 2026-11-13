@@ -1673,6 +1673,16 @@ export function removeMemoryNote(ownerId: number, id: number): void {
   db.prepare(`DELETE FROM memory_notes WHERE id = ? AND owner_id = ?`).run(id, ownerId);
 }
 
+// How two wordings of a fact are compared: case, spacing and trailing punctuation don't make
+// "The user is vegetarian." a different fact from "the user is vegetarian".
+export function normalizeFactText(content: string): string {
+  return content
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, " ")
+    .replace(/[\s\p{P}]+$/u, "");
+}
+
 // The structured write path — remember and services/memoryExtraction.ts both come through here.
 // supersedesId only ever retires an ACTIVE fact of the SAME owner (the WHERE clause is the guard),
 // so a stale or hallucinated id silently supersedes nothing while the new fact still saves.
@@ -1688,6 +1698,26 @@ export function addFact(
 ): MemoryNoteRow {
   return inTransaction(() => {
     const now = Date.now();
+    // The same fact arrives twice as a matter of course: the assistant's remember tool saves it
+    // during the chat, then background extraction reads the same messages and saves it again.
+    // Two copies crowd the retrieval budget, and when one is later corrected the other lives on
+    // and contradicts it. An exact repeat (ignoring case, spacing, trailing punctuation) returns
+    // the fact already held; it still retires the fact it was meant to replace.
+    const normalized = normalizeFactText(input.content);
+    const existing = (
+      db
+        .prepare(`SELECT ${MEMORY_NOTE_COLUMNS} FROM memory_notes WHERE owner_id = ? AND ${assistantFact()}`)
+        .all(ownerId) as MemoryNoteRow[]
+    ).find((f) => f.id !== input.supersedesId && normalizeFactText(f.content) === normalized);
+    if (existing) {
+      if (input.supersedesId) {
+        db.prepare(
+          `UPDATE memory_notes SET superseded_at = ?, superseded_by = ?
+           WHERE id = ? AND owner_id = ? AND ${activeFact()}`
+        ).run(now, existing.id, input.supersedesId, ownerId);
+      }
+      return existing;
+    }
     const info = db
       .prepare(
         `INSERT INTO memory_notes (owner_id, content, created_at, entity_id, kind, source) VALUES (?, ?, ?, ?, ?, ?)`

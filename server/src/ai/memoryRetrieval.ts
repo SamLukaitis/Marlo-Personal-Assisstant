@@ -15,7 +15,26 @@ import {
 } from "../db/store.js";
 
 export const RELEVANT_MEMORY_HEADER =
-  "Relevant things you remember (background from memory, not part of the user's message — use only if relevant):";
+  "Relevant things you remember (background from memory, not part of the user's message — use only if relevant). " +
+  "Each is tagged with the date it was noted: if two disagree, the more recently noted one is current, and " +
+  "what the user says in this conversation overrides any of them:";
+
+// How a remembered fact is shown to the model everywhere it appears (this block, the core profile
+// in the system prompt). The date matters: facts were shown with no age at all, so when an old one
+// and a newer one disagreed ("lives in Leeds" / "moved to London") the model had nothing to choose
+// between them with, and flipped between the two from one message to the next. UTC date, so the
+// line is byte-stable for the prompt cache.
+export function factNotedDate(fact: Pick<MemoryNoteRow, "createdAt">): string {
+  const d = new Date(fact.createdAt);
+  return Number.isFinite(d.getTime()) && fact.createdAt > 0
+    ? d.toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric", timeZone: "UTC" })
+    : "";
+}
+
+export function formatFactLine(fact: Pick<MemoryNoteRow, "id" | "content" | "createdAt">): string {
+  const noted = factNotedDate(fact);
+  return `- [#${fact.id}] ${fact.content}${noted ? ` (noted ${noted})` : ""}`;
+}
 
 const MAX_MATCHED_ENTITIES = 3;
 const FACTS_PER_ENTITY = 5;
@@ -52,7 +71,7 @@ export function retrieveRelevantMemory(ownerId: number, text: string): string | 
   };
   const pushFact = (fact: MemoryNoteRow) => {
     if (seenFacts.has(fact.id) || factCount >= MAX_FACTS) return;
-    if (pushLine(`- [#${fact.id}] ${fact.content}`)) {
+    if (pushLine(formatFactLine(fact))) {
       seenFacts.add(fact.id);
       factCount += 1;
     }

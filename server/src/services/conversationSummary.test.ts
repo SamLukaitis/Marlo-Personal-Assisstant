@@ -57,3 +57,22 @@ describe("maybeUpdateConversationSummary — below threshold", () => {
     expect(getConversationSummary(phone)).toBeNull();
   });
 });
+
+// The summary is read back on every later message. Undated, it stated week-old plans as current.
+describe("buildSummaryPrompt — staleness", () => {
+  it("dates each message and tells the model to date anything time-bound and keep only corrected versions", () => {
+    const row: WhatsAppMessageRow = {
+      id: 1,
+      phone: "447000000001",
+      role: "user",
+      content: "cheapest car hire in Mendoza today until tomorrow",
+      createdAt: Date.UTC(2026, 10, 10, 15, 47),
+    };
+    const prompt = buildSummaryPrompt("Earlier summary.", [row]);
+
+    expect(prompt).toContain("[2026-11-10] User: cheapest car hire in Mendoza today until tomorrow");
+    expect(prompt).toMatch(/Never write today, tomorrow, currently/);
+    expect(prompt).toMatch(/keep only the final, corrected version/);
+    expect(prompt).toMatch(/the new batch wins/);
+  });
+});

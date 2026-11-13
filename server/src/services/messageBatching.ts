@@ -191,6 +191,12 @@ async function runAfterReplyCallbacks(entries: BufferedEntry[]): Promise<void> {
 // extraction lets it queue, so "the last N rows" is routinely the wrong set. Batched messages go
 // last (in the order they were saved, with overrides swapped in) so the request always ends on what
 // the user is waiting for an answer to; everything else keeps its place.
+// When the row was saved, for the time stamp the model sees on user messages (assistant.ts's
+// stampUserMessage). Left off when the row has no real timestamp.
+function sentAt(row: WhatsAppMessageRow): { at?: number } {
+  return row.createdAt > 0 ? { at: row.createdAt } : {};
+}
+
 function buildBatchHistory(rows: WhatsAppMessageRow[], entries: BufferedEntry[]): ChatMessage[] {
   const overrideByRowId = new Map<number, string | null>();
   for (const entry of entries) {
@@ -201,9 +207,9 @@ function buildBatchHistory(rows: WhatsAppMessageRow[], entries: BufferedEntry[])
   const batch: ChatMessage[] = [];
   for (const row of rows) {
     if (overrideByRowId.has(row.id)) {
-      batch.push({ role: "user", content: overrideByRowId.get(row.id) ?? row.content });
+      batch.push({ role: "user", content: overrideByRowId.get(row.id) ?? row.content, ...sentAt(row) });
     } else {
-      earlier.push({ role: row.role, content: row.content });
+      earlier.push({ role: row.role, content: row.content, ...sentAt(row) });
     }
   }
 

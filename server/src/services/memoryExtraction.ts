@@ -35,6 +35,7 @@ import {
   inTransaction,
   isMemoryKind,
   isReservedEntityType,
+  normalizeFactText,
   type MemoryNoteRow,
   type RememberedEntitySummary,
   type WhatsAppMessageRow,
@@ -102,7 +103,7 @@ const RECORD_MEMORY_TOOL: Anthropic.Tool = {
 // A message can't close (or open) one of the data tags early and put text outside the fence.
 function transcript(rows: WhatsAppMessageRow[]): string {
   return rows
-    .map((m) => `${m.role === "user" ? "User" : "Assistant"}: ${m.content}`)
+    .map((m) => `[${new Date(m.createdAt).toISOString().slice(0, 10)}] ${m.role === "user" ? "User" : "Assistant"}: ${m.content}`)
     .join("\n")
     .replace(/<(\/?)(context_messages|new_messages)>/gi, "[$1$2]");
 }
@@ -148,7 +149,9 @@ export function buildExtractionPrompt(input: {
       "- If the new messages retract something or ask to forget it, record nothing about it.",
       "- Never record secrets: passwords, PINs, card or bank account numbers, one-time codes, security answers.",
       "- kind 'core' is only for identity-level facts: the user's name, partner/children/close family, home city, job/employer, a strong standing preference. Use 'preference' for likes/dislikes/how they want things done, otherwise 'fact'.",
-      "- If a known fact already says it, record nothing. If the new messages change or correct a known fact, add the new fact with supersedes_id set to that fact's id.",
+      "- If a known fact already says it, record nothing — even in different words. If the new messages change, correct or contradict a known fact (they moved, changed job, the earlier fact was wrong), add the new fact with supersedes_id set to that fact's id, so the two never sit side by side. Check every known fact for this before adding anything.",
+      "- Each message starts with the date it was sent. Write facts so they stay true later: never 'today', 'tomorrow', 'next week' or 'currently' — give the actual date, or leave the time-bound part out.",
+      "- Record only what the user stated or clearly confirmed. Never record the assistant's guesses, suggestions or assumptions about the user, and never turn a question the user asked into a fact about them.",
       "- Write each fact as one self-contained third-person sentence, e.g. \"Sarah Jones is the user's accountant at Acme.\"",
       "- When a fact is about a named person/place/organisation/project, set entity, reusing an existing name exactly rather than inventing a variant. Use link for a relationship between two named entities and alias when the user uses another name for a known one.",
       "- Zero operations is a normal, expected answer.",
@@ -163,14 +166,8 @@ function nonEmptyString(value: unknown): string | null {
 }
 
 // How two fact wordings are compared against the forgotten list: case, spacing and trailing
-// punctuation don't make "The user is pregnant." a new fact.
-export function normalizeFactContent(content: string): string {
-  return content
-    .trim()
-    .toLowerCase()
-    .replace(/\s+/g, " ")
-    .replace(/[\s\p{P}]+$/u, "");
-}
+// punctuation don't make "The user is pregnant." a new fact. Shared with addFact's duplicate check.
+export const normalizeFactContent = normalizeFactText;
 
 type OpRecord = Record<string, unknown>;
 const isRecord = (op: unknown): op is OpRecord => typeof op === "object" && op !== null;

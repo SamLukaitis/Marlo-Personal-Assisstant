@@ -113,3 +113,32 @@ describe("retrieveRelevantMemory", () => {
     expect(retrieveRelevantMemory(user.id, "   ")).toBeNull();
   });
 });
+
+// Facts used to be shown with no age, so when an old fact and a newer one disagreed the model had
+// nothing to choose between them with and flipped from one to the other between messages.
+describe("fact dates", () => {
+  it("shows each retrieved fact with the date it was noted", () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("retrieve-dated"));
+    const fact = addFact(user.id, { content: "Allergic to shellfish" });
+    const noted = new Date(fact.createdAt).toLocaleDateString("en-GB", {
+      day: "numeric",
+      month: "short",
+      year: "numeric",
+      timeZone: "UTC",
+    });
+
+    const block = retrieveRelevantMemory(user.id, "any shellfish in that?")!;
+
+    expect(block).toContain(`- [#${fact.id}] Allergic to shellfish (noted ${noted})`);
+    expect(RELEVANT_MEMORY_HEADER).toMatch(/more recently noted one is current/);
+    expect(RELEVANT_MEMORY_HEADER).toMatch(/what the user says in this conversation overrides/);
+  });
+
+  it("formats the date in UTC so the line never changes with the server's or user's timezone", async () => {
+    const { formatFactLine } = await import("./memoryRetrieval.js");
+    expect(formatFactLine({ id: 7, content: "Lives in London", createdAt: Date.UTC(2026, 10, 3, 23, 30) })).toBe(
+      "- [#7] Lives in London (noted 3 Nov 2026)"
+    );
+    expect(formatFactLine({ id: 8, content: "No date", createdAt: 0 })).toBe("- [#8] No date");
+  });
+});

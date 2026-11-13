@@ -50,7 +50,7 @@ import {
   type DocumentRow,
   type RegistrationProvider,
 } from "../db/store.js";
-import { retrieveRelevantMemory } from "./memoryRetrieval.js";
+import { retrieveRelevantMemory, factNotedDate, formatFactLine } from "./memoryRetrieval.js";
 import { allEditionToolNames, applyEditionTools, getEdition, isToolExcluded, runEditionTool } from "../editions/index.js";
 import { DOCUMENT_SENT_MARKER, DOCUMENT_SENT_TOOL, type CatalogTool } from "../services/featureUsage.js";
 import { sendConnectLink } from "../services/connectMailboxLink.js";
@@ -1437,6 +1437,8 @@ function factForModel(ownerId: number, fact: MemoryNoteRow) {
     id: fact.id,
     content: fact.content,
     kind: fact.kind,
+    // When two facts disagree, the more recently noted one is the current one.
+    noted: factNotedDate(fact),
     ...(typeof entity?.data.name === "string" ? { entity: entity.data.name } : {}),
   };
 }
@@ -1631,14 +1633,20 @@ export async function runTool(
           ? findOrCreateEntity(ownerId, entityType, entityName)
           : null;
       const replacesId = input.replaces_id;
+      const supersedesId = typeof replacesId === "number" && Number.isInteger(replacesId) ? replacesId : null;
 
-      addFact(ownerId, {
+      const saved = addFact(ownerId, {
         content: note,
         kind: isMemoryKind(input.kind) ? input.kind : "fact",
         source: "told",
         entityId: entity?.id ?? null,
-        supersedesId: typeof replacesId === "number" && Number.isInteger(replacesId) ? replacesId : null,
+        supersedesId,
       });
+      // Facts already held on the same subject, so a correction saved without replaces_id doesn't
+      // leave the old version active beside the new one — the model can retire it in the same turn.
+      const related = searchActiveFacts(ownerId, note, { mode: "any", limit: 4, excludeIds: [saved.id] })
+        .filter((f) => f.id !== supersedesId)
+        .slice(0, 3);
 
       if (entity) {
         const relation = (input.relation as string | undefined)?.trim() || "relates_to";
@@ -1647,7 +1655,18 @@ export async function runTool(
           if (other) linkEntitiesOnce(ownerId, entity.id, relation, other.id);
         }
       }
-      return { ok: true };
+      return {
+        ok: true,
+        id: saved.id,
+        ...(related.length
+          ? {
+              already_remembered: related.map((f) => factForModel(ownerId, f)),
+              check:
+                "If any of these is now out of date or contradicted by what you just saved, call forget_memory " +
+                "with its id in this same turn. If they're simply other true facts, leave them.",
+            }
+          : {}),
+      };
     }
     case "forget_memory": {
       const ids = Array.isArray(input.ids)
@@ -1785,7 +1804,12 @@ export async function runTool(
       if (!entity) return { error: `no entity found matching "${entityName}"` };
       return {
         entity: { id: entity.id, type: entity.type, name: entity.data.name, aliases: entity.data.aliases },
-        facts: listActiveFactsForEntity(ownerId, entity.id).map((f) => ({ id: f.id, content: f.content, kind: f.kind })),
+        facts: listActiveFactsForEntity(ownerId, entity.id).map((f) => ({
+          id: f.id,
+          content: f.content,
+          kind: f.kind,
+          noted: factNotedDate(f),
+        })),
         related: listEntityRelations(ownerId, entity.id),
       };
     }
@@ -2358,7 +2382,29 @@ function buildChoiceReply(ownerId: number, input: Record<string, unknown>): Assi
 export interface ChatMessage {
   role: "user" | "assistant";
   content: string;
+  // When the message was sent (epoch ms), where the caller knows it (WhatsApp history rows). User
+  // messages that carry one are shown to the model with their time — see stampUserMessage.
+  at?: number;
 }
+
+// The history used to reach the model with no times at all, so a message from three days ago read
+// exactly like one from a minute ago: "tomorrow" in an old message was taken as tomorrow from now,
+// and something settled last week was raised again as if still open. Only user messages are
+// stamped — a stamp on the assistant's own past replies would be copied into new ones. Formatted in
+// the user's timezone from a stored timestamp, so the same message always produces the same bytes
+// (the prompt cache depends on that).
+export function stampUserMessage(content: string, at: number, zone: string | null): string {
+  const sent = DateTime.fromMillis(at, { zone: zone ?? "utc" });
+  if (!sent.isValid) return content;
+  return `[${sent.toFormat("ccc d LLL yyyy, HH:mm")}${zone ? "" : " UTC"}] ${content}`;
+}
+
+const STAMPED_HISTORY_RULE =
+  "Each of the user's messages below starts with the date and time it was sent, in square brackets. The system adds " +
+  "that stamp — it isn't something they typed, and you must never put one on your own replies. Use the stamps to " +
+  "tell how old something is: the newest stamp is effectively now, and a relative word in an older message " +
+  "(\"today\", \"tomorrow\", \"this evening\", \"in an hour\") is relative to that message's own stamp, not to now. " +
+  "Work out the real date before acting on one, and don't treat something from days ago as still pending without checking.";
 
 // Which places rule applies depends on whether Google Maps is configured (providers/maps.ts):
 // without it, web_search stays the places tool and the model hand-builds Maps links.
@@ -2385,6 +2431,7 @@ function buildRules(enabled: Set<ToolKey>): string {
     "- More generally, for ANY email discussed earlier in this conversation (flagged or not), call search_read_emails before restating a specific detail from it — it durably holds every email you've ever listed or opened, so it survives even after the conversation itself has moved on and your only other record is your own paraphrase. If it comes back empty, the email may simply never have been listed/opened yet — fall back to search_messages/get_message rather than assuming the detail doesn't exist.",
     "- After re-running a tool in response to pushback, check what it actually returned before deciding how to respond: if it confirms your original answer was correct, just say so plainly (e.g. \"confirmed — it's still Feb 8\") and move on. Don't apologize or claim you were reciting/guessing/pulling from context you shouldn't have relied on when the tool result backs up what you said — that's confusing and untrue when the original answer was grounded. Reserve the apology for when re-checking actually turns up something different from what you first said.",
     "- list_bookings/list_expenses only cover confirmations and receipts that were already saved as a document AND successfully extracted into a structured record — they do NOT search email. Before telling the user there's no hotel, flight, car rental, invoice, or payment due, also check search_messages/list_recent_messages: the confirmation or invoice email may exist even though nothing has been extracted into list_bookings/list_expenses yet. An empty list_bookings/list_expenses result on its own is not enough to say something doesn't exist.",
+    "- Before acting on a request with several parts or a wide scope (\"check my emails for job stuff\", \"what do I need to sort before the trip\", \"anything I've missed this week\"), work out first what a complete answer has to cover and which lookups that takes, then run all of them before you reply — don't answer from the first search that returns something. For a sweep of mail on a theme, always combine list_recent_messages for the last few days with several search_messages calls using different concrete words for the theme (for job hunting: application, interview, assessment, offer, unsuccessful, recruiter, careers, graduate, plus the names of companies already in play). Before you state a time, date or deadline from an email, open that email with get_message and read it there — never take it from a snippet, an alert or an earlier reply. If the conversation shows the user already dealt with something (they took the call, sent the reply), don't raise it again as outstanding.",
     "- For a broad or topic-level search (a country, region, or trip name — e.g. \"South America\", \"my Lisbon trip\"), call search_messages multiple times with different concrete sub-terms — city/place names, likely vendor names (airlines, hotels, booking sites), reference codes you already know — before concluding nothing was found. A single broad query is not sufficient; a broad topic phrase rarely appears verbatim in a real subject line.",
     '- Whenever you write an email on the user\'s behalf (a new email, or a reply), never send or draft it silently. Instead call ask_user_choice ALONE with the full draft shown IN the question text itself (any other text you write this same turn is discarded — see ask_user_choice\'s own description) — e.g. question="To: jane@x.com\\nSubject: Re: Thursday\\n\\n<body>\\n\\nReady to send this?" — with mode="confirm", confirm_tool="send_email", confirm_input={account_id, to, subject, body}, editable=true, yes_label="Send", no_label="Leave in Drafts", decline_tool="create_email_draft", decline_input={account_id, to, subject, body}. That renders Edit / Send / Leave in Drafts. Send it only if they tap Send — Leave in Drafts saves it in their mailbox without sending, and Edit comes back to you as a follow-up message asking what to change (draft the revised content and ask again the same way). This applies to Gmail and Outlook accounts alike.',
     "- list_needs_attention only covers unread mail from real people — it deliberately excludes automated/system senders (alerts, receipts, notifications). For a broad ask like \"anything important\", \"check my email\", or \"what am I missing\", also call list_recent_messages/search_messages so automated-but-significant mail (crash/deployment alerts, security notices, government or financial mail) isn't missed. Don't treat a clean list_needs_attention result on its own as \"nothing important\".",
@@ -2396,7 +2443,10 @@ function buildRules(enabled: Set<ToolKey>): string {
     "- Use the remember tool proactively whenever the user shares something still worth knowing weeks from now (preferences, which account is which, standing instructions, people in their life) — don't wait to be asked. Don't remember the passing details of a task: trip logistics, where they are today, emails that arrived, bookings, prices, or things already done. When in doubt, don't save it. Use kind 'core' only for identity-level facts (their name, partner/children/close family, home city, job/employer).",
     "- When a remember note is about a specific, nameable, recurring subject (a person, place, organisation, project) the user might ask about again by name, pass entity_name + entity_type on that same remember call; when it relates two such subjects, pass relates_to plus a relation like 'works_at'. Use recall_entity (not search_memory) when the user asks about that subject by name.",
     "- When the user corrects or updates something you remember (they moved, changed jobs, you had it wrong), call remember with replaces_id set to the old fact's id rather than saving a second, conflicting fact. When they say something you remember is wrong or ask you to forget it, call forget_memory and tell them what you forgot.",
+    "- The user is the authority on their own life. When what they say now differs from something you remember or from the conversation summary, take their word, carry on with it, and update memory as above — never argue from memory or 'correct' them with an older fact. When two things you remember disagree with each other, go with the more recently noted one.",
+    "- Don't take back something you said unless you have an actual reason: a tool result that differs, or the user telling you it's wrong. 'Are you sure?', 'really?' or a repeated question is a request to check, not evidence you were wrong — re-check (re-run the tool, or look at what you remember) and if it holds, say plainly that it holds. Never invent a correction, change an answer just to seem agreeable, or apologise for a mistake you haven't found.",
     "- For 'what do you know about me', call search_memory with no query. Otherwise don't recite remembered facts unprompted — just use them.",
+    "- Having no dedicated tool for something is not the same as being unable to help. For live information you have no specific tool for — train or bus times and fares, car hire prices, opening hours, ticket availability, what a song or film is — use web_search and give the best answer it supports, with the source and a link where they can check or book, and say what you couldn't confirm. Only tell the user you can't do something when it needs an action or a kind of input you really don't have (hearing a voice note, watching a video, booking or paying for them).",
     "- Use flag_unmet_request whenever you have to tell the user you can't do something — call it in the same turn as your reply, don't wait to be asked.",
     "- Use set_reminder for anything the user wants to be nudged about at a specific time or on a recurring cadence — a one-shot ('remind me in 20 minutes'), a fixed burst in a window ('every 5 minutes between 10 and 10:30'), or repeat-until-they-reply. Never compute the date/time/timezone math yourself — pass through the raw numbers/clock-times the user said and let the tool do the arithmetic (see its description). remember's triggerAt no longer exists — set_reminder is the only way to schedule a WhatsApp push.",
     "- Use get_current_time whenever the user asks what time or date it is, or you need 'now' for a time-relative answer — you have no built-in clock, so never state a time/date from your own reasoning. It also doubles as how the user can check you have their timezone right.",
@@ -2428,7 +2478,11 @@ function buildRules(enabled: Set<ToolKey>): string {
   return ["Rules:", ...base, ...(enabled.has("travel") ? travel : []), ...tail].join("\n");
 }
 
-export function buildSystemPrompt(ownerId: number, conversationSummary?: string): string {
+export function buildSystemPrompt(
+  ownerId: number,
+  conversationSummary?: string,
+  opts: { stampedHistory?: boolean } = {}
+): string {
   const accounts = listAccounts(ownerId);
   const persona = getSetting(ownerId, "persona");
   const name = getSetting(ownerId, "assistant_name") ?? "Marlo";
@@ -2473,7 +2527,7 @@ export function buildSystemPrompt(ownerId: number, conversationSummary?: string)
   // is retrieved per message (ai/memoryRetrieval.ts) and injected outside the cached prefix.
   const coreProfile = listCoreProfile(ownerId);
   const coreList = coreProfile.length
-    ? coreProfile.map((f) => `- ${f.content}`).join("\n")
+    ? coreProfile.map(formatFactLine).join("\n")
     : "(nothing known yet)";
 
   const xeroEmail = getXeroForwardingEmail(ownerId);
@@ -2549,14 +2603,19 @@ export function buildSystemPrompt(ownerId: number, conversationSummary?: string)
       `attention would — without forcing it or repeating something you've already brought up this ` +
       `conversation. Other things you remember are shown alongside the user's latest message when ` +
       `relevant, and search_memory reaches the rest; the same rule applies equally to the things ` +
-      `shown alongside the user's latest message. The profile:\n${coreList}`,
+      `shown alongside the user's latest message. Each fact carries its id and the date it was ` +
+      `noted: if two disagree, the more recently noted one is current. The profile:\n${coreList}`,
     xeroStatus,
     pendingInvoiceStatus,
     watchStatus,
     conversationSummary
-      ? `Earlier in this conversation, before what's shown in the message history below:\n${conversationSummary}`
+      ? `Summary of the earlier conversation, before the message history below. It is a compressed ` +
+        `record written at the time, so it can be out of date: where it disagrees with a later message, ` +
+        `a tool result, or what the user says now, those win. Don't restate a specific time, date, ` +
+        `amount or code from it without checking the source with a tool first.\n${conversationSummary}`
       : "",
     onboardingNote,
+    opts.stampedHistory ? STAMPED_HISTORY_RULE : "",
     buildRules(getEnabledTools(ownerId)),
     CHAT_VOICE,
     phonePromptSection(ownerId),
@@ -2631,11 +2690,15 @@ export async function runAssistantChat(
 ): Promise<AssistantReply> {
   const anthropic = getClient();
   const conversationSummary = phone ? (getConversationSummary(phone)?.summary ?? undefined) : undefined;
-  const system = buildSystemPrompt(ownerId, conversationSummary);
 
   // Bound history defensively here (not just at the WhatsApp DB-read site) so the web chat
   // route — which resends whatever the client has accumulated — gets the same cap.
   const trimmedHistory = history.slice(-MAX_HISTORY_MESSAGES);
+  const stampedHistory = trimmedHistory.some((m) => m.role === "user" && typeof m.at === "number");
+  const stampZone = stampedHistory ? resolveUserTimezone(ownerId).zone : null;
+  const shown = (m: ChatMessage): string =>
+    m.role === "user" && typeof m.at === "number" ? stampUserMessage(m.content, m.at, stampZone) : m.content;
+  const system = buildSystemPrompt(ownerId, conversationSummary, { stampedHistory });
   const lastUserMessage =
     [...trimmedHistory].reverse().find((m) => m.role === "user")?.content ?? "";
   const route = routeModel(ownerId, lastUserMessage);
@@ -2671,9 +2734,9 @@ export async function runAssistantChat(
       i === latestUserIndex && relevantMemory
         ? [
             { type: "text" as const, text: relevantMemory },
-            { type: "text" as const, text: m.content },
+            { type: "text" as const, text: shown(m) },
           ]
-        : m.content,
+        : shown(m),
   }));
   const stableHistoryIndex = latestUserIndex - 1;
 

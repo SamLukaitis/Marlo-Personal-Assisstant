@@ -26,7 +26,10 @@ export const RAW_HISTORY_WINDOW = 24;
 export const SUMMARY_BATCH_THRESHOLD = 8;
 
 export function buildSummaryPrompt(previousSummary: string | null, batch: WhatsAppMessageRow[]): string {
-  const transcript = batch.map((m) => `${m.role === "user" ? "User" : "Assistant"}: ${m.content}`).join("\n");
+  // Dated, so the summary can say when something happened instead of "tomorrow" or "currently".
+  const transcript = batch
+    .map((m) => `[${new Date(m.createdAt).toISOString().slice(0, 10)}] ${m.role === "user" ? "User" : "Assistant"}: ${m.content}`)
+    .join("\n");
   return [
     previousSummary
       ? `Here is a running summary of an earlier part of this WhatsApp conversation:\n${previousSummary}`
@@ -35,8 +38,19 @@ export function buildSummaryPrompt(previousSummary: string | null, batch: WhatsA
     "Write an updated running summary that folds the new batch into the previous one. Keep it " +
       "compact (a few short paragraphs at most) but preserve concrete facts, names, decisions, " +
       "and anything the user might later refer back to (\"you said X\", \"what did I tell you " +
-      "about Y\") — specific details matter more than prose style. Reply with only the summary " +
-      "text, no preamble.",
+      "about Y\") — specific details matter more than prose style.",
+    // This summary is read back as background on every later message, long after it was written.
+    // Without these rules it stated week-old plans as current and kept answers the user had
+    // already corrected, and the assistant then "corrected" itself to match the stale version.
+    [
+      "The summary will be read days or weeks from now, so:",
+      "- Each message starts with the date it was sent. Give the date for anything time-bound (\"on 10 Nov the user was in Mendoza and asked about car hire for 10-11 Nov\"). Never write today, tomorrow, currently, now or this week.",
+      "- Where the user corrected the assistant or changed their mind, keep only the final, corrected version. Do not keep the wrong version, and do not record that there was a mix-up unless the user is likely to refer back to it.",
+      "- Record what the assistant found or did only as it stood at the time (\"on 5 Nov the assistant found no train confirmation\"), never as a standing fact.",
+      "- When the new batch contradicts the previous summary, the new batch wins: rewrite that part instead of keeping both.",
+      "- Say when something was finished or dealt with, so it isn't raised again as outstanding. Drop small talk and finished one-off errands nobody will refer back to.",
+    ].join("\n"),
+    "Reply with only the summary text, no preamble.",
   ].join("\n\n");
 }
 
