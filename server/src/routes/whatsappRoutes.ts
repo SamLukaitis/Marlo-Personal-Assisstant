@@ -243,7 +243,7 @@ export async function handleIncoming(message: IncomingWhatsAppMessage): Promise<
     }
   } catch (err) {
     console.error("whatsapp: failed to handle message", err);
-    await sendScriptedText(message.from, "Sorry, I hit an error handling that — check the server logs.").catch(() => {});
+    await sendScriptedText(message.from, "Sorry, something went wrong on my side. Send that again in a moment and I'll have another go.").catch(() => {});
   }
 }
 

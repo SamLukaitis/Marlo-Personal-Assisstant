@@ -21,6 +21,15 @@ export const LONG_DEBOUNCE_MS = Number(process.env.WHATSAPP_DEBOUNCE_LONG_MS ?? 
 // Never saved to history as a message of its own, so the model never sees it — its wamid is kept
 // as the first part of the reply that follows, so a swipe on it resolves to that answer.
 export const HOLDING_MESSAGE_MS = Number(process.env.WHATSAPP_HOLDING_MS ?? 10_000);
+// Off unless WHATSAPP_HOLDING_TEXT=on. Sam asked for the filler line to go (26 Oct 2026: "remove
+// the give-me-a-moment message"): it reads as noise, and a second message arriving before the
+// answer makes the wait feel longer. By default a slow reply now just keeps WhatsApp's own "..."
+// indicator alive instead: Meta drops it after ~25s, so it is re-sent every TYPING_REFRESH_MS.
+export function holdingTextEnabled(): boolean {
+  return process.env.WHATSAPP_HOLDING_TEXT === "on";
+}
+export const TYPING_REFRESH_MS = 20_000;
+
 export const HOLDING_MESSAGES = [
   "One sec, working on it…",
   "On it, give me a moment…",
@@ -109,9 +118,13 @@ async function flush(from: string): Promise<void> {
 
   const wait = { done: false };
   let holding: Promise<SentPart | undefined> | undefined;
-  const holdingTimer = setTimeout(() => {
-    holding = sendHoldingMessage(from, replyToMessageId, wait);
-  }, HOLDING_MESSAGE_MS);
+  const holdingTimer = holdingTextEnabled()
+    ? setTimeout(() => {
+        holding = sendHoldingMessage(from, replyToMessageId, wait);
+      }, HOLDING_MESSAGE_MS)
+    : setInterval(() => {
+        if (!wait.done) sendWhatsAppTypingIndicator(replyToMessageId).catch(() => {});
+      }, TYPING_REFRESH_MS);
   // The holding line, if one went out, is recorded as the first part of whatever follows it.
   const holdingParts = async (): Promise<SentPart[]> => {
     const part = await holding;
@@ -135,7 +148,7 @@ async function flush(from: string): Promise<void> {
     await sendTextAndRecord(
       ownerId,
       from,
-      "Sorry, I hit an error handling that — check the server logs.",
+      "Sorry, something went wrong on my side. Send that again in a moment and I'll have another go.",
       undefined,
       await holdingParts()
     ).catch(() => {});

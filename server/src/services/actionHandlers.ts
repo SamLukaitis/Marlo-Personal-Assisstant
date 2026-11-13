@@ -301,7 +301,7 @@ export async function handlePendingActionReply(
         return true;
       }
       console.error("actionHandlers: confirmed tool call failed", err);
-      await sendTextAndRecord(ownerId, phone, "Sorry, that didn't go through — check the server logs.").catch(() => {});
+      await sendTextAndRecord(ownerId, phone, "Sorry, that didn't go through. Try again in a moment.").catch(() => {});
     }
     return true;
   }

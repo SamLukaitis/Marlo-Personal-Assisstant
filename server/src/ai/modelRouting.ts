@@ -36,6 +36,11 @@ const HEAVY_PATTERNS = [
   /\bplan\b/i, /\banaly[sz]e\b/i, /\bcompare\b/i, /\bshould i\b/i, /\bwhy\b/i,
   /\bdecide\b/i, /\bstrategy\b/i, /\bnegotiate\b/i, /\bin depth\b/i, /\bdetailed\b/i,
   /\brecommend\b/i, /\bthink about\b/i, /\bhow many days\b/i,
+  // A sweep for what's been missed: needs several searches and judgement about what counts, which
+  // the fast model at low effort answered from its first search (the missed J&J assessment email).
+  /\bunanswered\b/i, /\boutstanding\b/i, /\bcatch me up\b/i, /\bfollow(ed)?[- ]?ups?\b/i,
+  /\b(anything|everything|something|what)\b.{0,40}\b(miss(ed|ing)?|overlook(ed)?|forgot(ten)?|need to (do|sort|reply|answer|action))\b/i,
+  /\b(go|look|sort|run) through\b/i,
 ];
 // Only used by legacy routing: fast-first sends everything that isn't heavy to the fast model.
 const LEGACY_SIMPLE_PATTERNS = [

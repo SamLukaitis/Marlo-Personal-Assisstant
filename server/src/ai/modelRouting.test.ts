@@ -57,6 +57,23 @@ describe("routeModel", () => {
     expect(routeModel(newUser("r2"), "draft a reply to my landlord")).toEqual({ model: MODEL_STRONG, reason: "heavy-task" });
   });
 
+  // The fast model answered "check my emails for unanswered job items" from its first search and
+  // missed that day's assessment email.
+  it("sends a sweep for what's been missed to the strong model, but not an everyday lookup", () => {
+    for (const message of [
+      "check my emails for unanswered job stuff",
+      "anything I've missed this week?",
+      "what do I still need to reply to",
+      "go through my inbox and tell me what's outstanding",
+      "catch me up",
+    ]) {
+      expect(routeModel(newUser("r2-sweep"), message), message).toEqual({ model: MODEL_STRONG, reason: "heavy-task" });
+    }
+    for (const message of ["any new emails?", "what's on today", "add lunch with Sam at 1pm tomorrow", "what time is it"]) {
+      expect(routeModel(newUser("r2-quick"), message), message).toEqual({ model: MODEL_FAST, reason: "fast" });
+    }
+  });
+
   it("steps up when the user pushes back on a fast-model reply, then stays up", () => {
     const id = newUser("r3");
     recordReplyModel(id, MODEL_FAST);

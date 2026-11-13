@@ -3037,6 +3037,36 @@ export async function runAssistantChat(
     messages.push({ role: "user", content: toolResults });
   }
 
+  // Out of tool rounds. Everything it looked up is still in `messages`, so ask once more for an
+  // answer from that, with tools switched off, rather than throwing the work away and telling the
+  // user to rephrase.
+  try {
+    const response = await anthropic.messages.create({
+      model,
+      max_tokens: 4096,
+      system: [
+        { type: "text", text: system, cache_control: { type: "ephemeral", ttl: "1h" } },
+        {
+          type: "text",
+          text:
+            "You have used all your tool calls for this message. Answer now from what you have already found. " +
+            "Say plainly which part you couldn't finish checking, and don't state anything you didn't look up.",
+        },
+      ],
+      tools: buildToolsForOwner(ownerId, model, phone),
+      tool_choice: { type: "none" },
+      messages: withMessagesCacheBreakpoint(messages, stableHistoryIndex),
+    });
+    const usageTotals = usageFor(model);
+    usageTotals.inputTokens += response.usage?.input_tokens ?? 0;
+    usageTotals.outputTokens += response.usage?.output_tokens ?? 0;
+    usageTotals.cacheReadTokens += response.usage?.cache_read_input_tokens ?? 0;
+    usageTotals.cacheCreationTokens += response.usage?.cache_creation_input_tokens ?? 0;
+    const text = joinTextBlocks(response.content ?? []);
+    if (text.trim()) return finish({ text });
+  } catch (err) {
+    console.error("assistant: final answer after the tool-call limit failed", err);
+  }
   return finish({ text: "I wasn't able to finish that within my tool-call limit — try a more specific request." });
 }
 
