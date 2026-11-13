@@ -95,6 +95,43 @@ describe("microsoftUpdateEvent", () => {
   });
 });
 
+describe("all-day events", () => {
+  it("creates an all-day event as midnight to midnight with isAllDay set", async () => {
+    vi.mocked(fetch).mockResolvedValue(mockGraphResponse({ id: "evt-4" }));
+
+    await microsoftCreateEvent(fakeAccount(), { title: "Ibiza", start: "2026-12-19", end: "2026-12-23", allDay: true });
+
+    const [, requestInit] = vi.mocked(fetch).mock.calls[0];
+    const body = JSON.parse(requestInit!.body as string);
+    expect(body.isAllDay).toBe(true);
+    expect(body.start).toEqual({ dateTime: "2026-12-19T00:00:00", timeZone: "UTC" });
+    expect(body.end).toEqual({ dateTime: "2026-12-23T00:00:00", timeZone: "UTC" });
+  });
+
+  it("clears the all-day flag when an event is moved to a clock time", async () => {
+    vi.mocked(fetch).mockResolvedValue(mockGraphResponse({ id: "evt-5" }));
+
+    await microsoftUpdateEvent(fakeAccount(), "evt-5", {
+      start: "2026-12-19T10:00:00",
+      end: "2026-12-19T11:00:00",
+      startTimeZone: "Europe/London",
+      endTimeZone: "Europe/London",
+    });
+
+    const [, requestInit] = vi.mocked(fetch).mock.calls[0];
+    expect(JSON.parse(requestInit!.body as string).isAllDay).toBe(false);
+  });
+
+  it("leaves the all-day flag alone when only the title changes", async () => {
+    vi.mocked(fetch).mockResolvedValue(mockGraphResponse({ id: "evt-6" }));
+
+    await microsoftUpdateEvent(fakeAccount(), "evt-6", { title: "Renamed" });
+
+    const [, requestInit] = vi.mocked(fetch).mock.calls[0];
+    expect(JSON.parse(requestInit!.body as string)).not.toHaveProperty("isAllDay");
+  });
+});
+
 // Graph returns event times in UTC but with no zone marker ("2026-09-15T09:00:00.0000000"), and
 // everything downstream (the client, findFreeSlots, the briefing, the model) parsed that as local
 // time — so an Outlook event showed at the wrong hour anywhere the server/user wasn't on UTC.

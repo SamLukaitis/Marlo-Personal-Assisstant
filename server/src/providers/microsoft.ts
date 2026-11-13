@@ -958,6 +958,11 @@ function graphEventToCalendarEvent(account: AccountRow, e: GraphEvent): Calendar
   };
 }
 
+// Graph wants an all-day event as midnight to midnight in one timezone, plus isAllDay.
+function graphEventTime(value: string, timeZone: string | undefined, allDay: boolean | undefined) {
+  return allDay ? { dateTime: `${value}T00:00:00`, timeZone: "UTC" } : toGraphDateTime(value, timeZone);
+}
+
 export async function microsoftCreateEvent(
   account: AccountRow,
   input: EventInput
@@ -968,8 +973,9 @@ export async function microsoftCreateEvent(
     body: input.description
       ? { contentType: "Text", content: input.description }
       : undefined,
-    start: toGraphDateTime(input.start, input.startTimeZone),
-    end: toGraphDateTime(input.end, input.endTimeZone),
+    start: graphEventTime(input.start, input.startTimeZone, input.allDay),
+    end: graphEventTime(input.end, input.endTimeZone, input.allDay),
+    ...(input.allDay ? { isAllDay: true } : {}),
   });
   return graphEventToCalendarEvent(account, event);
 }
@@ -985,8 +991,10 @@ export async function microsoftUpdateEvent(
     ...(input.description !== undefined
       ? { body: { contentType: "Text", content: input.description } }
       : {}),
-    ...(input.start !== undefined ? { start: toGraphDateTime(input.start, input.startTimeZone) } : {}),
-    ...(input.end !== undefined ? { end: toGraphDateTime(input.end, input.endTimeZone) } : {}),
+    ...(input.start !== undefined ? { start: graphEventTime(input.start, input.startTimeZone, input.allDay) } : {}),
+    ...(input.end !== undefined ? { end: graphEventTime(input.end, input.endTimeZone, input.allDay) } : {}),
+    // Graph rejects a timed start/end on an event still flagged all-day (and the reverse).
+    ...(input.start !== undefined || input.end !== undefined ? { isAllDay: input.allDay === true } : {}),
   });
   return graphEventToCalendarEvent(account, event);
 }

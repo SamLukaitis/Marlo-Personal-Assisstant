@@ -43,12 +43,33 @@ function isAuthError(err: unknown): boolean {
   );
 }
 
+// One line per failed provider call. Logging the error object itself printed Google's whole request
+// dump (~85 lines) for a dead token on every 5-minute tick, which pushed everything else out of the
+// Railway log window and the Portal's Logs tab. An error with no HTTP status is something
+// unexpected (a bug, a network failure), so that one keeps its stack.
+export function describeProviderError(err: unknown): string {
+  const e = err as {
+    name?: unknown;
+    message?: unknown;
+    stack?: unknown;
+    status?: unknown;
+    code?: unknown;
+    response?: { status?: unknown; data?: { error_description?: unknown } };
+  } | null;
+  const status = e?.response?.status ?? e?.status ?? (typeof e?.code === "number" ? e.code : undefined);
+  if (status === undefined && typeof e?.stack === "string") return e.stack;
+  const name = typeof e?.name === "string" && e.name !== "Error" ? `${e.name}: ` : "";
+  const message = String(e?.message ?? err).slice(0, 300);
+  const detail = e?.response?.data?.error_description;
+  return `${name}${message}${typeof detail === "string" ? ` (${detail})` : ""}${status !== undefined ? ` [${status}]` : ""}`;
+}
+
 // Generic version for calls that don't map 1:1 to a connected account (e.g. local file
 // search) — just logs and drops failures, no auth tracking.
 function settle<T>(results: PromiseSettledResult<T[]>[]): T[] {
   return results.flatMap((r) => {
     if (r.status === "rejected") {
-      console.error("hub: provider call failed:", r.reason);
+      console.error(`hub: provider call failed: ${describeProviderError(r.reason)}`);
       return [];
     }
     return r.value;
@@ -75,7 +96,8 @@ function settleForAccounts<T>(
   return results.flatMap((r, i) => {
     const owner = owners[i];
     if (r.status === "rejected") {
-      console.error("hub: provider call failed:", r.reason);
+      const where = owner ? ` (account ${owner.id}, ${owner.provider}, user ${owner.ownerId})` : "";
+      console.error(`hub: provider call failed${where}: ${describeProviderError(r.reason)}`);
       if (owner && isAuthError(r.reason) && markAccountAuthBroken(owner.ownerId, owner.id)) {
         alertConnectionBroken(owner);
       }
@@ -145,6 +167,27 @@ let tickScope: TickScope | null = null;
 // quota problem the incremental fetch exists to avoid. Past this, the checkpoint moves on anyway.
 const MAX_CHECKPOINT_HOLD_MS = 60 * 60 * 1000;
 const holdStartedAt = new Map<number, number>();
+
+// A connection already flagged as expired fails the same way on every background scan: the user
+// has been told (connectionAlert.ts) and only reconnecting fixes it. The scans skip it rather than
+// calling the provider every 5 minutes, and look again every few hours in case it was flagged by
+// mistake (a success clears the flag, see settleForAccounts). Chat lookups are not affected: they
+// always try, since someone is waiting on the answer.
+const BROKEN_ACCOUNT_REPROBE_MS = 6 * 60 * 60 * 1000;
+const lastBrokenProbeAt = new Map<number, number>();
+
+export function accountsForBackgroundScan(accounts: AccountRow[], now = Date.now()): AccountRow[] {
+  return accounts.filter((a) => {
+    if (!a.authBroken) {
+      lastBrokenProbeAt.delete(a.id);
+      return true;
+    }
+    const last = lastBrokenProbeAt.get(a.id) ?? a.authBrokenAt ?? 0;
+    if (now - last < BROKEN_ACCOUNT_REPROBE_MS) return false;
+    lastBrokenProbeAt.set(a.id, now);
+    return true;
+  });
+}
 
 export function withMessageCache<T>(fn: () => Promise<T>): Promise<T> {
   const isOutermost = tickScope === null;
@@ -238,7 +281,7 @@ export async function hubListMessages(
     const key = `${ownerId}:${opts.query ?? ""}:${opts.limit ?? 20}`;
     const cached = tickScope.cache.get(key);
     if (cached) return cached;
-    const accounts = listAccounts(ownerId).filter((a) => a.canRead);
+    const accounts = accountsForBackgroundScan(listAccounts(ownerId).filter((a) => a.canRead));
     const promise = fetchMessages(accounts, opts);
     tickScope.cache.set(key, promise);
     return promise;
@@ -310,7 +353,7 @@ export function isFromAccountOwner(m: Pick<UnifiedMessage, "from" | "accountEmai
 // that's shared too, not per-caller: whichever of the three runs first within one
 // withMessageCache tick decides it, same as any other cached fetch.
 export async function hubListNewMessages(ownerId: number): Promise<UnifiedMessage[]> {
-  const accounts = listAccounts(ownerId).filter((a) => a.canRead);
+  const accounts = accountsForBackgroundScan(listAccounts(ownerId).filter((a) => a.canRead));
   if (tickScope) {
     const key = `${ownerId}:new`;
     const cached = tickScope.cache.get(key);

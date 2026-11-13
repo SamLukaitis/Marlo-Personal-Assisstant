@@ -101,10 +101,31 @@ describe("googleUpdateEvent", () => {
     expect(requestBody.requestBody.start).toEqual({
       dateTime: "2026-09-19T18:00:00",
       timeZone: "America/Bogota",
+      date: null,
     });
     expect(requestBody.requestBody.end).toEqual({
       dateTime: "2026-09-19T21:00:00",
       timeZone: "America/Lima",
+      date: null,
     });
+  });
+
+  // A patch merges into the existing event, so the timed fields must be cleared explicitly.
+  it("turns an event into an all-day one by sending dates and clearing the times", async () => {
+    await googleUpdateEvent(fakeAccount(), "evt-1", { start: "2026-12-19", end: "2026-12-20", allDay: true });
+
+    const [requestBody] = mockPatch.mock.calls[0];
+    expect(requestBody.requestBody.start).toEqual({ date: "2026-12-19", dateTime: null });
+    expect(requestBody.requestBody.end).toEqual({ date: "2026-12-20", dateTime: null });
+  });
+});
+
+describe("all-day events", () => {
+  it("creates an all-day event with plain dates rather than date-times", async () => {
+    await googleCreateEvent(fakeAccount(), { title: "Ibiza", start: "2026-12-19", end: "2026-12-23", allDay: true });
+
+    const [requestBody] = mockInsert.mock.calls[0];
+    expect(requestBody.requestBody.start).toEqual({ date: "2026-12-19" });
+    expect(requestBody.requestBody.end).toEqual({ date: "2026-12-23" });
   });
 });

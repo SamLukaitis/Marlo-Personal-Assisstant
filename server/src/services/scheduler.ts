@@ -24,6 +24,7 @@ import { sweepStalledPhoneActions } from "./phoneActions.js";
 import { syncBookingReminders } from "./tripPrep.js";
 import { syncTripsForOwner } from "../bridge/index.js";
 import { userLocalClock } from "./userTimezone.js";
+import { DeadlineError, withDeadline } from "./deadline.js";
 import {
   collectAttentionForBriefing,
   commitAttentionBundle,
@@ -175,6 +176,46 @@ async function runImportantEmailAlertsCheckForUser(ownerId: number): Promise<voi
 // block or crash another tenant's briefing/alerts.
 const SERVER_LOG_RETENTION_MS = 30 * 24 * 60 * 60 * 1000; // logs are a debugging aid, not a permanent record
 
+// The longest one step for one user may hold up the tick. On 13 Nov 2026 a provider call that never
+// returned left a tick pending for 15 hours, and tickGuarded skipped every cycle after it: no
+// briefings, alerts or reminders for anyone until the next deploy. A step past this is abandoned
+// (logged by name, so the logs say which call it was) and the tick carries on.
+export const STEP_DEADLINE_MS = 3 * 60 * 1000;
+const SLOW_STEP_MS = 30 * 1000;
+// An abandoned step is not cancelled and may still be running. Don't start the same step for the
+// same user on top of it; if it still hasn't settled after this long, assume it never will.
+const ABANDONED_STEP_RETRY_MS = 30 * 60 * 1000;
+const abandonedSteps = new Map<string, number>();
+
+async function runStep(ownerId: number | null, name: string, fn: () => Promise<unknown>): Promise<void> {
+  const who = ownerId === null ? "" : ` for user ${ownerId}`;
+  const key = `${name}:${ownerId ?? "all"}`;
+  const abandonedAt = abandonedSteps.get(key);
+  if (abandonedAt !== undefined) {
+    if (Date.now() - abandonedAt < ABANDONED_STEP_RETRY_MS) return;
+    abandonedSteps.delete(key);
+  }
+  const startedAt = Date.now();
+  const work = Promise.resolve().then(fn);
+  try {
+    await withDeadline(work, STEP_DEADLINE_MS, `${name}${who}`);
+  } catch (err) {
+    if (err instanceof DeadlineError) {
+      console.error(`scheduler: ${err.message} — moving on`);
+      abandonedSteps.set(key, Date.now());
+      const settled = () => {
+        if (abandonedSteps.get(key) !== undefined) abandonedSteps.delete(key);
+      };
+      work.then(settled, settled);
+    } else {
+      console.error(`scheduler: ${name} failed${who}`, err);
+    }
+    return;
+  }
+  const tookMs = Date.now() - startedAt;
+  if (tookMs > SLOW_STEP_MS) console.warn(`scheduler: ${name}${who} took ${Math.round(tookMs / 1000)}s`);
+}
+
 async function tick(): Promise<void> {
   deleteExpiredPendingActions();
   deleteExpiredSeenWamids();
@@ -184,13 +225,9 @@ async function tick(): Promise<void> {
   let realPersonAlertsOff = 0;
   for (const ownerId of ownerIds) {
     if (!realPersonAlertsEnabled(ownerId)) realPersonAlertsOff++;
-    await runDailyCheckForUser(ownerId).catch((err) =>
-      console.error(`scheduler: daily check failed for user ${ownerId}`, err)
-    );
-    await runTripPrepCheckForUser(ownerId).catch((err) =>
-      console.error(`scheduler: trip-prep check failed for user ${ownerId}`, err)
-    );
-    await runFamilyTripsCheckForUser(ownerId);
+    await runStep(ownerId, "daily briefing", () => runDailyCheckForUser(ownerId));
+    await runStep(ownerId, "trip-prep check", () => runTripPrepCheckForUser(ownerId));
+    await runStep(ownerId, "family trips sync", () => runFamilyTripsCheckForUser(ownerId));
     // alerts/reconciliation/important-email each independently call hubListMessages for this
     // same user — sharing one withMessageCache scope collapses the ones that fetch an identical
     // (query, limit) window (alerts + important-email both use {limit:50}) into a single Gmail
@@ -198,30 +235,20 @@ async function tick(): Promise<void> {
     await withMessageCache(async () => {
       // Important-email first: it records what it alerted on, which the real-person check then
       // reads so a venue's own confirmation of a booking it just announced isn't announced twice.
-      await runImportantEmailAlertsCheckForUser(ownerId).catch((err) =>
-        console.error(`scheduler: important-email check failed for user ${ownerId}`, err)
-      );
-      await runAlertsCheckForUser(ownerId).catch((err) =>
-        console.error(`scheduler: alerts check failed for user ${ownerId}`, err)
-      );
-      await runReconciliationCheckForUser(ownerId).catch((err) =>
-        console.error(`scheduler: reconciliation check failed for user ${ownerId}`, err)
-      );
+      await runStep(ownerId, "important-email check", () => runImportantEmailAlertsCheckForUser(ownerId));
+      await runStep(ownerId, "alerts check", () => runAlertsCheckForUser(ownerId));
+      await runStep(ownerId, "reconciliation check", () => runReconciliationCheckForUser(ownerId));
     });
     // After every source has submitted this tick, so a reminder or deferred alert that fell due
     // goes out once, in order, under the day's cap.
-    await deliverDueAttentionItems(ownerId).catch((err) =>
-      console.error(`scheduler: attention delivery failed for user ${ownerId}`, err)
-    );
+    await runStep(ownerId, "attention delivery", () => deliverDueAttentionItems(ownerId));
     // After the alert scan so mail that arrived just before the digest time is in it. Not gated on
     // the digest mode: a user who switches back to instant with mail still queued still gets it.
-    await flushEmailDigestIfDue(ownerId).catch((err) =>
-      console.error(`scheduler: email digest failed for user ${ownerId}`, err)
-    );
+    await runStep(ownerId, "email digest", () => flushEmailDigestIfDue(ownerId));
   }
   // Not per-owner: a stalled Shortcut run is found across all users in one pass. The tick runs
   // every 5 minutes, so a stalled run is reported 5-10 minutes after the tap.
-  await sweepStalledPhoneActions().catch((err) => console.error("scheduler: phone action sweep failed", err));
+  await runStep(null, "phone action sweep", () => sweepStalledPhoneActions());
   console.log(
     `scheduler: tick finished — ${ownerIds.length} user${ownerIds.length === 1 ? "" : "s"}, ` +
       `real-person alerts off for ${realPersonAlertsOff}, ${Date.now() - startedAt}ms`

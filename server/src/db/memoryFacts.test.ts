@@ -207,3 +207,47 @@ describe("legacy reminder rows stay out of the assistant-facing fact reads", () 
     expect(searchActiveFacts(b.id, "zebra", { mode: "any" })).toEqual([]);
   });
 });
+
+// The remember tool saves a fact during the chat, then background extraction reads the same
+// messages and saves it again. Two copies meant a later correction retired one and left the other
+// active to contradict it.
+describe("addFact — duplicates", () => {
+  it("returns the fact already held instead of saving the same sentence twice", () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("fact-dup"));
+    const first = addFact(user.id, { content: "The user is vegetarian.", kind: "preference" });
+    const again = addFact(user.id, { content: "  the user is  vegetarian ", source: "extracted" });
+
+    expect(again.id).toBe(first.id);
+    expect(listMemoryNotes(user.id)).toHaveLength(1);
+  });
+
+  it("still saves a fact that says something different, and one another user already has", () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("fact-dup-different"));
+    const other = findOrCreateUserByEmail(uniqueEmail("fact-dup-other-user"));
+    addFact(other.id, { content: "The user is vegetarian." });
+    addFact(user.id, { content: "The user is vegetarian." });
+    addFact(user.id, { content: "The user is vegan." });
+
+    expect(listMemoryNotes(user.id)).toHaveLength(2);
+  });
+
+  it("saves a fact again after the earlier copy was forgotten or superseded", () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("fact-dup-after-forget"));
+    const first = addFact(user.id, { content: "Works at Acme" });
+    forgetFacts(user.id, [first.id]);
+    const second = addFact(user.id, { content: "Works at Acme" });
+
+    expect(second.id).not.toBe(first.id);
+    expect(listMemoryNotes(user.id).map((f) => f.id)).toEqual([second.id]);
+  });
+
+  it("a repeat that names a fact to replace still retires that fact", () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("fact-dup-supersede"));
+    const old = addFact(user.id, { content: "Lives in Leeds", kind: "core" });
+    const current = addFact(user.id, { content: "Lives in London", kind: "core" });
+    const again = addFact(user.id, { content: "Lives in London.", kind: "core", supersedesId: old.id });
+
+    expect(again.id).toBe(current.id);
+    expect(listCoreProfile(user.id).map((f) => f.id)).toEqual([current.id]);
+  });
+});

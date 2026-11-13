@@ -39,12 +39,14 @@ import { requireAuth, requireAdmin } from "./middleware/auth.js";
 import { startScheduler } from "./services/scheduler.js";
 import { startReminderScheduler } from "./services/reminderScheduler.js";
 import { installLogCapture } from "./services/logCapture.js";
+import { installFetchTimeout } from "./services/fetchTimeout.js";
 import { configureTrustProxy } from "./config.js";
 import { isFlightsConfigured } from "./providers/flights.js";
 
 // Installed before anything else has a chance to log, so every console.error/console.warn from
 // here on (including ones during route registration below) is captured for the admin Portal.
 installLogCapture();
+installFetchTimeout();
 
 // Safety net: an uncaught async error anywhere (a route handler, the scheduler, a webhook
 // handler) would otherwise crash the whole process — Node's default since v15 is to terminate

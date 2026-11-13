@@ -72,7 +72,7 @@ const { listAllUserIds } = await import("../db/store.js");
 const { checkNewEmailsAgainstRecentDocuments } = await import("./reconciliation.js");
 const { deliverDueAttentionItems } = await import("./attention.js");
 const { checkForNewImportantMessages } = await import("./alerts.js");
-const { tickGuarded } = await import("./scheduler.js");
+const { tickGuarded, STEP_DEADLINE_MS } = await import("./scheduler.js");
 
 beforeEach(() => {
   vi.mocked(listAllUserIds).mockClear();
@@ -135,6 +135,41 @@ describe("tickGuarded", () => {
     }
   });
 
+
+  // Production, 13 Nov 2026: one provider call never returned, the tick never finished, and every
+  // later cycle was skipped for 15 hours (no briefings, alerts or reminders for anyone).
+  it("gives up on a step that never settles and still finishes the tick", async () => {
+    vi.useFakeTimers();
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const first = tickGuarded();
+      await vi.waitFor(() => expect(checkNewEmailsAgainstRecentDocuments).toHaveBeenCalledTimes(1));
+      // Never released: the reconciliation check hangs for good.
+      await vi.advanceTimersByTimeAsync(STEP_DEADLINE_MS + 1000);
+      await first;
+
+      expect(deliverDueAttentionItems).toHaveBeenCalledWith(1);
+      expect(errorSpy.mock.calls.map((c) => c.join(" ")).join("\n")).toMatch(/reconciliation.*user 1.*timed out/);
+
+      // The next cycle runs rather than being skipped, but doesn't start the same step for the same
+      // user on top of the one that is still hanging.
+      await tickGuarded();
+      expect(listAllUserIds).toHaveBeenCalledTimes(2);
+      expect(checkNewEmailsAgainstRecentDocuments).toHaveBeenCalledTimes(1);
+      expect(deliverDueAttentionItems).toHaveBeenCalledTimes(2);
+
+      // Once the hung call finally settles, the step is run again as normal.
+      releaseReconciliationCheck();
+      await vi.advanceTimersByTimeAsync(0);
+      const third = tickGuarded();
+      await vi.waitFor(() => expect(checkNewEmailsAgainstRecentDocuments).toHaveBeenCalledTimes(2));
+      releaseReconciliationCheck();
+      await third;
+    } finally {
+      errorSpy.mockRestore();
+      vi.useRealTimers();
+    }
+  });
 
   // Real-person alerts are on by default now — a tenant who never touched the setting (the mocked
   // getSetting returns undefined for it) must still be checked.

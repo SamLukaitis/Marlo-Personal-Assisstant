@@ -244,7 +244,8 @@ describe("buildSystemPrompt", () => {
     addFact(user.id, { content: "Likes jazz", kind: "preference" });
     const prompt = buildSystemPrompt(user.id);
     expect(prompt).toContain("What you know about the user (core profile)");
-    expect(prompt).toContain("- The user's name is Sam");
+    // Each profile line carries its id and the date it was noted.
+    expect(prompt).toMatch(/- \[#\d+\] The user's name is Sam \(noted \d{1,2} \w{3} \d{4}\)/);
     expect(prompt).not.toContain("Likes jazz");
   });
 
@@ -290,7 +291,7 @@ describe("runTool defense-in-depth", () => {
   it("does not block always-on tools regardless of enabled-tools state", async () => {
     const user = findOrCreateUserByEmail(uniqueEmail("defense-remember"));
     const result = await runTool(user.id, "remember", { note: "test note" });
-    expect(result).toEqual({ ok: true });
+    expect(result).toMatchObject({ ok: true });
   });
 });
 
@@ -325,7 +326,7 @@ describe("create_calendar_event / update_calendar_event — timezone passthrough
     );
   });
 
-  it("passes undefined timezones through when the model omits them (ordinary home-timezone event)", async () => {
+  it("leaves an exact instant (Z or an offset) alone, with no timezone attached", async () => {
     const user = findOrCreateUserByEmail(uniqueEmail("event-tz-create-omitted"));
 
     await runTool(user.id, "create_calendar_event", {
@@ -335,11 +336,66 @@ describe("create_calendar_event / update_calendar_event — timezone passthrough
       end: "2026-09-19T09:30:00Z",
     });
 
+    const eventInput = mockHubCreateEvent.mock.calls[0][2];
+    expect(eventInput).toMatchObject({ title: "Dentist", start: "2026-09-19T09:00:00Z", end: "2026-09-19T09:30:00Z" });
+    expect(eventInput.startTimeZone).toBeUndefined();
+    expect(eventInput.endTimeZone).toBeUndefined();
+  });
+
+  // The reported bug: "add X to my calendar at 3pm" failed or landed at the wrong hour, because the
+  // model was left to convert local time to UTC and often passed the plain clock time instead.
+  it("reads a plain clock time as the user's own local time and reports when it was saved", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("event-local-time"));
+    setUserTimezone(user.id, "America/Argentina/Mendoza");
+    mockHubCreateEvent.mockResolvedValue({ id: "evt-1", start: "2026-11-14T18:00:00Z", end: "2026-11-14T19:00:00Z" });
+
+    const result = (await runTool(user.id, "create_calendar_event", {
+      account_id: 1,
+      title: "Wine tour",
+      start: "2026-11-14T15:00:00",
+    })) as { saved_as?: string };
+
     expect(mockHubCreateEvent).toHaveBeenCalledWith(
       user.id,
       1,
-      expect.objectContaining({ startTimeZone: undefined, endTimeZone: undefined })
+      expect.objectContaining({
+        start: "2026-11-14T15:00:00",
+        startTimeZone: "America/Argentina/Mendoza",
+        end: "2026-11-14T16:00:00",
+        endTimeZone: "America/Argentina/Mendoza",
+      })
     );
+    expect(result.saved_as).toBe("Sat 14 Nov 2026, 15:00–16:00 (America/Argentina/Mendoza time)");
+  });
+
+  it("creates an all-day event from plain dates", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("event-all-day"));
+
+    await runTool(user.id, "create_calendar_event", { account_id: 1, title: "Ibiza", start: "2026-12-19", end: "2026-12-22" });
+
+    expect(mockHubCreateEvent).toHaveBeenCalledWith(
+      user.id,
+      1,
+      expect.objectContaining({ allDay: true, start: "2026-12-19", end: "2026-12-23" })
+    );
+  });
+
+  it("refuses times it can't place instead of sending them to the calendar", async () => {
+    const user = findOrCreateUserByEmail(uniqueEmail("event-bad-time"));
+    setUserTimezone(user.id, "Europe/London");
+
+    const backwards = await runTool(user.id, "create_calendar_event", {
+      account_id: 1,
+      title: "Lunch",
+      start: "2026-11-14T15:00:00",
+      end: "2026-11-14T03:00:00",
+    });
+    const garbage = await runTool(user.id, "update_calendar_event", { account_id: 1, event_id: "evt-1", start: "tomorrow at 3" });
+
+    expect(backwards).toEqual({ error: expect.stringMatching(/^Not saved: /) });
+    expect(garbage).toEqual({ error: expect.stringMatching(/^Not saved: /) });
+    expect(mockHubCreateEvent).not.toHaveBeenCalled();
+    expect(mockHubUpdateEvent).not.toHaveBeenCalled();
   });
 
   it("threads start_timezone/end_timezone into hubUpdateEvent's EventInput too", async () => {
@@ -603,7 +659,7 @@ describe("remember tool — no longer schedules anything", () => {
   it("ignores a triggerAt-shaped field — remember is fact-only now", async () => {
     const user = findOrCreateUserByEmail(uniqueEmail("remember-notrigger"));
     const result = await runTool(user.id, "remember", { note: "Ordinary preference", triggerAt: "2026-09-12T00:00:00Z" });
-    expect(result).toEqual({ ok: true });
+    expect(result).toMatchObject({ ok: true });
 
     const [saved] = listMemoryNotes(user.id);
     expect(saved.triggerAt).toBeNull();
@@ -793,7 +849,7 @@ describe("remember tool — entity linking", () => {
   it("without entity_name/entity_type: behaves exactly as before, no entity created", async () => {
     const user = findOrCreateUserByEmail(uniqueEmail("remember-no-entity"));
     const result = await runTool(user.id, "remember", { note: "Prefers window seats" });
-    expect(result).toEqual({ ok: true });
+    expect(result).toMatchObject({ ok: true });
     expect(findEntityByName(user.id, "Prefers window seats")).toBeNull();
     const [saved] = listMemoryNotes(user.id);
     expect(saved.content).toBe("Prefers window seats");
@@ -806,7 +862,7 @@ describe("remember tool — entity linking", () => {
       entity_name: "Sarah",
       entity_type: "person",
     });
-    expect(result).toEqual({ ok: true });
+    expect(result).toMatchObject({ ok: true });
 
     const entity = findEntityByName(user.id, "Sarah", "person");
     expect(listActiveFactsForEntity(user.id, entity!.id).map((f) => f.content)).toEqual(["Handles invoicing"]);
@@ -861,7 +917,7 @@ describe("remember tool — entity linking", () => {
       entity_type: "person",
       relates_to: ["Nonexistent Project"],
     });
-    expect(result).toEqual({ ok: true });
+    expect(result).toMatchObject({ ok: true });
 
     const sarah = findEntityByName(user.id, "Sarah", "person");
     expect(getRelatedEntities(user.id, { type: "entity", id: sarah!.id })).toEqual([]);
@@ -881,7 +937,7 @@ describe("remember tool — entity linking", () => {
       entity_type: "person",
       relates_to: ["France"],
     });
-    expect(result).toEqual({ ok: true });
+    expect(result).toMatchObject({ ok: true });
 
     const sarah = findEntityByName(user.id, "Sarah", "person");
     expect(getRelatedEntities(user.id, { type: "entity", id: sarah!.id })).toEqual([]);
@@ -912,7 +968,7 @@ describe("remember tool — entity linking", () => {
   it("entity_name without entity_type falls back to the flat-note-only path", async () => {
     const user = findOrCreateUserByEmail(uniqueEmail("remember-entityname-only"));
     const result = await runTool(user.id, "remember", { note: "Prefers window seats", entity_name: "Sarah" });
-    expect(result).toEqual({ ok: true });
+    expect(result).toMatchObject({ ok: true });
     expect(findEntityByName(user.id, "Sarah")).toBeNull();
   });
 
@@ -923,7 +979,7 @@ describe("remember tool — entity linking", () => {
       entity_name: "Hilton",
       entity_type: "expense",
     });
-    expect(result).toEqual({ ok: true });
+    expect(result).toMatchObject({ ok: true });
     expect(findEntityByName(user.id, "Hilton")).toBeNull();
     const [saved] = listMemoryNotes(user.id);
     expect(saved.content).toBe("Booked the Hilton for next week");
@@ -1404,7 +1460,7 @@ describe("search_memory — ids, kinds, entity names, empty query", () => {
     await runTool(user.id, "remember", { note: "Sarah handles invoicing", entity_name: "Sarah", entity_type: "person" });
     const results = (await runTool(user.id, "search_memory", { query: "invoicing" })) as unknown[];
     expect(results).toEqual([
-      { id: expect.any(Number), content: "Sarah handles invoicing", kind: "fact", entity: "Sarah" },
+      { id: expect.any(Number), content: "Sarah handles invoicing", kind: "fact", noted: expect.any(String), entity: "Sarah" },
     ]);
   });
 

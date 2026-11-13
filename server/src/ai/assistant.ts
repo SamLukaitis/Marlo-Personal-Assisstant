@@ -50,7 +50,7 @@ import {
   type DocumentRow,
   type RegistrationProvider,
 } from "../db/store.js";
-import { retrieveRelevantMemory } from "./memoryRetrieval.js";
+import { retrieveRelevantMemory, factNotedDate, formatFactLine } from "./memoryRetrieval.js";
 import { allEditionToolNames, applyEditionTools, getEdition, isToolExcluded, runEditionTool } from "../editions/index.js";
 import { DOCUMENT_SENT_MARKER, DOCUMENT_SENT_TOOL, type CatalogTool } from "../services/featureUsage.js";
 import { sendConnectLink } from "../services/connectMailboxLink.js";
@@ -140,7 +140,8 @@ import {
   hubFlaggedMessages,
 } from "../services/hub.js";
 import { unsubscribeFromMessage } from "../services/unsubscribe.js";
-import type { UnifiedMessage } from "../providers/types.js";
+import type { UnifiedMessage, EventInput } from "../providers/types.js";
+import { normalizeEventTimes, describeEventTimeForUser } from "../services/calendarTime.js";
 import {
   MODEL_FAST,
   MODEL_STRONG,
@@ -419,14 +420,14 @@ const ALWAYS_ON_TOOLS: Anthropic.ToolUnion[] = [
   {
     name: "create_calendar_event",
     description:
-      'Create a new event on the user\'s own calendar. This never invites other people — it only ever creates a personal event on the specified account\'s calendar. For an ordinary event in the user\'s own timezone, pass start/end as ISO 8601 UTC datetimes (e.g. 2026-07-23T14:00:00Z). For an event tied to a specific place in a DIFFERENT timezone — a flight, a trip abroad, anything happening somewhere the user isn\'t — do NOT convert to UTC yourself: pass start/end as the plain LOCAL clock time at that place with no Z/offset (e.g. 2026-09-19T17:29:00) and set start_timezone/end_timezone to the IANA zone for that place (e.g. "America/Bogota"). A flight\'s departure and arrival cities are often in different zones, so start_timezone and end_timezone are independent — get this right so the event shows the correct local time instead of silently defaulting to the user\'s home timezone.',
+      'Create a new event on the user\'s own calendar. This never invites other people — it only ever creates a personal event on the specified account\'s calendar. Pass start/end as the plain LOCAL clock time the user means, with no Z and no offset (e.g. "3pm on 14 Nov" is 2026-11-14T15:00:00). Never convert to UTC or do any timezone arithmetic yourself: the server applies the user\'s own timezone. For an all-day event (a birthday, a day off, a trip spanning days) pass plain dates instead (start 2026-12-19, end 2026-12-22 = the last day, inclusive). For an event happening in a DIFFERENT timezone from the user — a flight, something abroad — still pass the local clock time at that place, and set start_timezone/end_timezone to the IANA zone for that place (e.g. "America/Bogota"). A flight\'s departure and arrival cities are often in different zones, so start_timezone and end_timezone are independent. If the user gave no end time, omit end (it defaults to one hour). For a relative day ("tomorrow", "Friday") call get_current_time first unless today\'s date is already certain. The result\'s saved_as says exactly when the event was saved on the user\'s clock: confirm that time to the user, and if it isn\'t what they asked for, fix it with update_calendar_event before replying. If the result is an error, the event was NOT created — never say it was.',
     input_schema: {
       type: "object",
       properties: {
         account_id: { type: "number", description: "Which connected account's calendar" },
         title: { type: "string" },
-        start: { type: "string", description: "ISO 8601 start datetime" },
-        end: { type: "string", description: "ISO 8601 end datetime" },
+        start: { type: "string", description: "Local start, YYYY-MM-DDTHH:MM:SS with no Z/offset — or YYYY-MM-DD for an all-day event" },
+        end: { type: "string", description: "Local end in the same form as start. Optional: defaults to one hour after start (or the same day, for all-day)" },
         start_timezone: {
           type: "string",
           description:
@@ -440,21 +441,21 @@ const ALWAYS_ON_TOOLS: Anthropic.ToolUnion[] = [
         location: { type: "string" },
         description: { type: "string" },
       },
-      required: ["account_id", "title", "start", "end"],
+      required: ["account_id", "title", "start"],
     },
   },
   {
     name: "update_calendar_event",
     description:
-      "Reschedule or edit an existing calendar event. Get the event_id from list_upcoming_events first. Only pass the fields that should change. See create_calendar_event's description for start_timezone/end_timezone — the same local-time-plus-IANA-zone rule applies whenever start/end are being changed for an event outside the user's home timezone.",
+      "Reschedule or edit an existing calendar event. Get the event_id from list_upcoming_events first. Only pass the fields that should change. start/end follow create_calendar_event's rules exactly: plain local clock time with no Z/offset (the server applies the user's timezone), plain dates for all-day, and start_timezone/end_timezone only for an event in another timezone. When moving an event, pass both start and end so its length stays what the user expects. The result's saved_as says when it is now saved on the user's clock; an error means nothing changed.",
     input_schema: {
       type: "object",
       properties: {
         account_id: { type: "number" },
         event_id: { type: "string" },
         title: { type: "string" },
-        start: { type: "string", description: "ISO 8601 start datetime" },
-        end: { type: "string", description: "ISO 8601 end datetime" },
+        start: { type: "string", description: "Local start, no Z/offset — see create_calendar_event" },
+        end: { type: "string", description: "Local end, no Z/offset — see create_calendar_event" },
         start_timezone: { type: "string", description: "IANA timezone name for `start` — see create_calendar_event" },
         end_timezone: { type: "string", description: "IANA timezone name for `end` — see create_calendar_event" },
         location: { type: "string" },
@@ -1436,6 +1437,8 @@ function factForModel(ownerId: number, fact: MemoryNoteRow) {
     id: fact.id,
     content: fact.content,
     kind: fact.kind,
+    // When two facts disagree, the more recently noted one is the current one.
+    noted: factNotedDate(fact),
     ...(typeof entity?.data.name === "string" ? { entity: entity.data.name } : {}),
   };
 }
@@ -1569,25 +1572,36 @@ export async function runTool(
     case "search_contacts":
       return hubSearchContacts(ownerId, input.query as string);
     case "create_calendar_event":
-      return hubCreateEvent(ownerId, input.account_id as number, {
-        title: input.title as string,
-        start: input.start as string,
-        end: input.end as string,
-        startTimeZone: input.start_timezone as string | undefined,
-        endTimeZone: input.end_timezone as string | undefined,
+    case "update_calendar_event": {
+      const creating = name === "create_calendar_event";
+      // The model passes the clock time the user said; the timezone is applied here, never by the
+      // model (services/calendarTime.ts).
+      const homeZone = resolveUserTimezone(ownerId).zone;
+      const times = normalizeEventTimes(
+        {
+          start: input.start as string | undefined,
+          end: input.end as string | undefined,
+          startTimeZone: input.start_timezone as string | undefined,
+          endTimeZone: input.end_timezone as string | undefined,
+        },
+        homeZone,
+        { requireStart: creating }
+      );
+      if ("error" in times) return { error: `Not saved: ${times.error}` };
+      const title = typeof input.title === "string" ? input.title.trim() : "";
+      if (creating && !title) return { error: "Not saved: the event needs a title." };
+      const details = {
+        ...(title ? { title } : {}),
         location: input.location as string | undefined,
         description: input.description as string | undefined,
-      });
-    case "update_calendar_event":
-      return hubUpdateEvent(ownerId, input.account_id as number, input.event_id as string, {
-        title: input.title as string | undefined,
-        start: input.start as string | undefined,
-        end: input.end as string | undefined,
-        startTimeZone: input.start_timezone as string | undefined,
-        endTimeZone: input.end_timezone as string | undefined,
-        location: input.location as string | undefined,
-        description: input.description as string | undefined,
-      });
+      };
+      const event = creating
+        ? await hubCreateEvent(ownerId, input.account_id as number, { ...details, ...times, title } as EventInput)
+        : await hubUpdateEvent(ownerId, input.account_id as number, input.event_id as string, { ...details, ...times });
+      // An update that changed only the title or place comes back without times worth restating.
+      const savedAs = event?.start ? describeEventTimeForUser(event.start, event.end, event.allDay, homeZone) : "";
+      return savedAs ? { ...event, saved_as: savedAs } : event;
+    }
     case "delete_calendar_event":
       await hubDeleteEvent(ownerId, input.account_id as number, input.event_id as string);
       return { ok: true };
@@ -1619,14 +1633,20 @@ export async function runTool(
           ? findOrCreateEntity(ownerId, entityType, entityName)
           : null;
       const replacesId = input.replaces_id;
+      const supersedesId = typeof replacesId === "number" && Number.isInteger(replacesId) ? replacesId : null;
 
-      addFact(ownerId, {
+      const saved = addFact(ownerId, {
         content: note,
         kind: isMemoryKind(input.kind) ? input.kind : "fact",
         source: "told",
         entityId: entity?.id ?? null,
-        supersedesId: typeof replacesId === "number" && Number.isInteger(replacesId) ? replacesId : null,
+        supersedesId,
       });
+      // Facts already held on the same subject, so a correction saved without replaces_id doesn't
+      // leave the old version active beside the new one — the model can retire it in the same turn.
+      const related = searchActiveFacts(ownerId, note, { mode: "any", limit: 4, excludeIds: [saved.id] })
+        .filter((f) => f.id !== supersedesId)
+        .slice(0, 3);
 
       if (entity) {
         const relation = (input.relation as string | undefined)?.trim() || "relates_to";
@@ -1635,7 +1655,18 @@ export async function runTool(
           if (other) linkEntitiesOnce(ownerId, entity.id, relation, other.id);
         }
       }
-      return { ok: true };
+      return {
+        ok: true,
+        id: saved.id,
+        ...(related.length
+          ? {
+              already_remembered: related.map((f) => factForModel(ownerId, f)),
+              check:
+                "If any of these is now out of date or contradicted by what you just saved, call forget_memory " +
+                "with its id in this same turn. If they're simply other true facts, leave them.",
+            }
+          : {}),
+      };
     }
     case "forget_memory": {
       const ids = Array.isArray(input.ids)
@@ -1773,7 +1804,12 @@ export async function runTool(
       if (!entity) return { error: `no entity found matching "${entityName}"` };
       return {
         entity: { id: entity.id, type: entity.type, name: entity.data.name, aliases: entity.data.aliases },
-        facts: listActiveFactsForEntity(ownerId, entity.id).map((f) => ({ id: f.id, content: f.content, kind: f.kind })),
+        facts: listActiveFactsForEntity(ownerId, entity.id).map((f) => ({
+          id: f.id,
+          content: f.content,
+          kind: f.kind,
+          noted: factNotedDate(f),
+        })),
         related: listEntityRelations(ownerId, entity.id),
       };
     }
@@ -2346,7 +2382,29 @@ function buildChoiceReply(ownerId: number, input: Record<string, unknown>): Assi
 export interface ChatMessage {
   role: "user" | "assistant";
   content: string;
+  // When the message was sent (epoch ms), where the caller knows it (WhatsApp history rows). User
+  // messages that carry one are shown to the model with their time — see stampUserMessage.
+  at?: number;
 }
+
+// The history used to reach the model with no times at all, so a message from three days ago read
+// exactly like one from a minute ago: "tomorrow" in an old message was taken as tomorrow from now,
+// and something settled last week was raised again as if still open. Only user messages are
+// stamped — a stamp on the assistant's own past replies would be copied into new ones. Formatted in
+// the user's timezone from a stored timestamp, so the same message always produces the same bytes
+// (the prompt cache depends on that).
+export function stampUserMessage(content: string, at: number, zone: string | null): string {
+  const sent = DateTime.fromMillis(at, { zone: zone ?? "utc" });
+  if (!sent.isValid) return content;
+  return `[${sent.toFormat("ccc d LLL yyyy, HH:mm")}${zone ? "" : " UTC"}] ${content}`;
+}
+
+const STAMPED_HISTORY_RULE =
+  "Each of the user's messages below starts with the date and time it was sent, in square brackets. The system adds " +
+  "that stamp — it isn't something they typed, and you must never put one on your own replies. Use the stamps to " +
+  "tell how old something is: the newest stamp is effectively now, and a relative word in an older message " +
+  "(\"today\", \"tomorrow\", \"this evening\", \"in an hour\") is relative to that message's own stamp, not to now. " +
+  "Work out the real date before acting on one, and don't treat something from days ago as still pending without checking.";
 
 // Which places rule applies depends on whether Google Maps is configured (providers/maps.ts):
 // without it, web_search stays the places tool and the model hand-builds Maps links.
@@ -2373,6 +2431,7 @@ function buildRules(enabled: Set<ToolKey>): string {
     "- More generally, for ANY email discussed earlier in this conversation (flagged or not), call search_read_emails before restating a specific detail from it — it durably holds every email you've ever listed or opened, so it survives even after the conversation itself has moved on and your only other record is your own paraphrase. If it comes back empty, the email may simply never have been listed/opened yet — fall back to search_messages/get_message rather than assuming the detail doesn't exist.",
     "- After re-running a tool in response to pushback, check what it actually returned before deciding how to respond: if it confirms your original answer was correct, just say so plainly (e.g. \"confirmed — it's still Feb 8\") and move on. Don't apologize or claim you were reciting/guessing/pulling from context you shouldn't have relied on when the tool result backs up what you said — that's confusing and untrue when the original answer was grounded. Reserve the apology for when re-checking actually turns up something different from what you first said.",
     "- list_bookings/list_expenses only cover confirmations and receipts that were already saved as a document AND successfully extracted into a structured record — they do NOT search email. Before telling the user there's no hotel, flight, car rental, invoice, or payment due, also check search_messages/list_recent_messages: the confirmation or invoice email may exist even though nothing has been extracted into list_bookings/list_expenses yet. An empty list_bookings/list_expenses result on its own is not enough to say something doesn't exist.",
+    "- Before acting on a request with several parts or a wide scope (\"check my emails for job stuff\", \"what do I need to sort before the trip\", \"anything I've missed this week\"), work out first what a complete answer has to cover and which lookups that takes, then run all of them before you reply — don't answer from the first search that returns something. For a sweep of mail on a theme, always combine list_recent_messages for the last few days with several search_messages calls using different concrete words for the theme (for job hunting: application, interview, assessment, offer, unsuccessful, recruiter, careers, graduate, plus the names of companies already in play). Before you state a time, date or deadline from an email, open that email with get_message and read it there — never take it from a snippet, an alert or an earlier reply. If the conversation shows the user already dealt with something (they took the call, sent the reply), don't raise it again as outstanding.",
     "- For a broad or topic-level search (a country, region, or trip name — e.g. \"South America\", \"my Lisbon trip\"), call search_messages multiple times with different concrete sub-terms — city/place names, likely vendor names (airlines, hotels, booking sites), reference codes you already know — before concluding nothing was found. A single broad query is not sufficient; a broad topic phrase rarely appears verbatim in a real subject line.",
     '- Whenever you write an email on the user\'s behalf (a new email, or a reply), never send or draft it silently. Instead call ask_user_choice ALONE with the full draft shown IN the question text itself (any other text you write this same turn is discarded — see ask_user_choice\'s own description) — e.g. question="To: jane@x.com\\nSubject: Re: Thursday\\n\\n<body>\\n\\nReady to send this?" — with mode="confirm", confirm_tool="send_email", confirm_input={account_id, to, subject, body}, editable=true, yes_label="Send", no_label="Leave in Drafts", decline_tool="create_email_draft", decline_input={account_id, to, subject, body}. That renders Edit / Send / Leave in Drafts. Send it only if they tap Send — Leave in Drafts saves it in their mailbox without sending, and Edit comes back to you as a follow-up message asking what to change (draft the revised content and ask again the same way). This applies to Gmail and Outlook accounts alike.',
     "- list_needs_attention only covers unread mail from real people — it deliberately excludes automated/system senders (alerts, receipts, notifications). For a broad ask like \"anything important\", \"check my email\", or \"what am I missing\", also call list_recent_messages/search_messages so automated-but-significant mail (crash/deployment alerts, security notices, government or financial mail) isn't missed. Don't treat a clean list_needs_attention result on its own as \"nothing important\".",
@@ -2384,7 +2443,10 @@ function buildRules(enabled: Set<ToolKey>): string {
     "- Use the remember tool proactively whenever the user shares something still worth knowing weeks from now (preferences, which account is which, standing instructions, people in their life) — don't wait to be asked. Don't remember the passing details of a task: trip logistics, where they are today, emails that arrived, bookings, prices, or things already done. When in doubt, don't save it. Use kind 'core' only for identity-level facts (their name, partner/children/close family, home city, job/employer).",
     "- When a remember note is about a specific, nameable, recurring subject (a person, place, organisation, project) the user might ask about again by name, pass entity_name + entity_type on that same remember call; when it relates two such subjects, pass relates_to plus a relation like 'works_at'. Use recall_entity (not search_memory) when the user asks about that subject by name.",
     "- When the user corrects or updates something you remember (they moved, changed jobs, you had it wrong), call remember with replaces_id set to the old fact's id rather than saving a second, conflicting fact. When they say something you remember is wrong or ask you to forget it, call forget_memory and tell them what you forgot.",
+    "- The user is the authority on their own life. When what they say now differs from something you remember or from the conversation summary, take their word, carry on with it, and update memory as above — never argue from memory or 'correct' them with an older fact. When two things you remember disagree with each other, go with the more recently noted one.",
+    "- Don't take back something you said unless you have an actual reason: a tool result that differs, or the user telling you it's wrong. 'Are you sure?', 'really?' or a repeated question is a request to check, not evidence you were wrong — re-check (re-run the tool, or look at what you remember) and if it holds, say plainly that it holds. Never invent a correction, change an answer just to seem agreeable, or apologise for a mistake you haven't found.",
     "- For 'what do you know about me', call search_memory with no query. Otherwise don't recite remembered facts unprompted — just use them.",
+    "- Having no dedicated tool for something is not the same as being unable to help. For live information you have no specific tool for — train or bus times and fares, car hire prices, opening hours, ticket availability, what a song or film is — use web_search and give the best answer it supports, with the source and a link where they can check or book, and say what you couldn't confirm. Only tell the user you can't do something when it needs an action or a kind of input you really don't have (hearing a voice note, watching a video, booking or paying for them).",
     "- Use flag_unmet_request whenever you have to tell the user you can't do something — call it in the same turn as your reply, don't wait to be asked.",
     "- Use set_reminder for anything the user wants to be nudged about at a specific time or on a recurring cadence — a one-shot ('remind me in 20 minutes'), a fixed burst in a window ('every 5 minutes between 10 and 10:30'), or repeat-until-they-reply. Never compute the date/time/timezone math yourself — pass through the raw numbers/clock-times the user said and let the tool do the arithmetic (see its description). remember's triggerAt no longer exists — set_reminder is the only way to schedule a WhatsApp push.",
     "- Use get_current_time whenever the user asks what time or date it is, or you need 'now' for a time-relative answer — you have no built-in clock, so never state a time/date from your own reasoning. It also doubles as how the user can check you have their timezone right.",
@@ -2416,7 +2478,11 @@ function buildRules(enabled: Set<ToolKey>): string {
   return ["Rules:", ...base, ...(enabled.has("travel") ? travel : []), ...tail].join("\n");
 }
 
-export function buildSystemPrompt(ownerId: number, conversationSummary?: string): string {
+export function buildSystemPrompt(
+  ownerId: number,
+  conversationSummary?: string,
+  opts: { stampedHistory?: boolean } = {}
+): string {
   const accounts = listAccounts(ownerId);
   const persona = getSetting(ownerId, "persona");
   const name = getSetting(ownerId, "assistant_name") ?? "Marlo";
@@ -2461,7 +2527,7 @@ export function buildSystemPrompt(ownerId: number, conversationSummary?: string)
   // is retrieved per message (ai/memoryRetrieval.ts) and injected outside the cached prefix.
   const coreProfile = listCoreProfile(ownerId);
   const coreList = coreProfile.length
-    ? coreProfile.map((f) => `- ${f.content}`).join("\n")
+    ? coreProfile.map(formatFactLine).join("\n")
     : "(nothing known yet)";
 
   const xeroEmail = getXeroForwardingEmail(ownerId);
@@ -2537,14 +2603,19 @@ export function buildSystemPrompt(ownerId: number, conversationSummary?: string)
       `attention would — without forcing it or repeating something you've already brought up this ` +
       `conversation. Other things you remember are shown alongside the user's latest message when ` +
       `relevant, and search_memory reaches the rest; the same rule applies equally to the things ` +
-      `shown alongside the user's latest message. The profile:\n${coreList}`,
+      `shown alongside the user's latest message. Each fact carries its id and the date it was ` +
+      `noted: if two disagree, the more recently noted one is current. The profile:\n${coreList}`,
     xeroStatus,
     pendingInvoiceStatus,
     watchStatus,
     conversationSummary
-      ? `Earlier in this conversation, before what's shown in the message history below:\n${conversationSummary}`
+      ? `Summary of the earlier conversation, before the message history below. It is a compressed ` +
+        `record written at the time, so it can be out of date: where it disagrees with a later message, ` +
+        `a tool result, or what the user says now, those win. Don't restate a specific time, date, ` +
+        `amount or code from it without checking the source with a tool first.\n${conversationSummary}`
       : "",
     onboardingNote,
+    opts.stampedHistory ? STAMPED_HISTORY_RULE : "",
     buildRules(getEnabledTools(ownerId)),
     CHAT_VOICE,
     phonePromptSection(ownerId),
@@ -2619,11 +2690,15 @@ export async function runAssistantChat(
 ): Promise<AssistantReply> {
   const anthropic = getClient();
   const conversationSummary = phone ? (getConversationSummary(phone)?.summary ?? undefined) : undefined;
-  const system = buildSystemPrompt(ownerId, conversationSummary);
 
   // Bound history defensively here (not just at the WhatsApp DB-read site) so the web chat
   // route — which resends whatever the client has accumulated — gets the same cap.
   const trimmedHistory = history.slice(-MAX_HISTORY_MESSAGES);
+  const stampedHistory = trimmedHistory.some((m) => m.role === "user" && typeof m.at === "number");
+  const stampZone = stampedHistory ? resolveUserTimezone(ownerId).zone : null;
+  const shown = (m: ChatMessage): string =>
+    m.role === "user" && typeof m.at === "number" ? stampUserMessage(m.content, m.at, stampZone) : m.content;
+  const system = buildSystemPrompt(ownerId, conversationSummary, { stampedHistory });
   const lastUserMessage =
     [...trimmedHistory].reverse().find((m) => m.role === "user")?.content ?? "";
   const route = routeModel(ownerId, lastUserMessage);
@@ -2659,9 +2734,9 @@ export async function runAssistantChat(
       i === latestUserIndex && relevantMemory
         ? [
             { type: "text" as const, text: relevantMemory },
-            { type: "text" as const, text: m.content },
+            { type: "text" as const, text: shown(m) },
           ]
-        : m.content,
+        : shown(m),
   }));
   const stableHistoryIndex = latestUserIndex - 1;
 
@@ -2962,6 +3037,36 @@ export async function runAssistantChat(
     messages.push({ role: "user", content: toolResults });
   }
 
+  // Out of tool rounds. Everything it looked up is still in `messages`, so ask once more for an
+  // answer from that, with tools switched off, rather than throwing the work away and telling the
+  // user to rephrase.
+  try {
+    const response = await anthropic.messages.create({
+      model,
+      max_tokens: 4096,
+      system: [
+        { type: "text", text: system, cache_control: { type: "ephemeral", ttl: "1h" } },
+        {
+          type: "text",
+          text:
+            "You have used all your tool calls for this message. Answer now from what you have already found. " +
+            "Say plainly which part you couldn't finish checking, and don't state anything you didn't look up.",
+        },
+      ],
+      tools: buildToolsForOwner(ownerId, model, phone),
+      tool_choice: { type: "none" },
+      messages: withMessagesCacheBreakpoint(messages, stableHistoryIndex),
+    });
+    const usageTotals = usageFor(model);
+    usageTotals.inputTokens += response.usage?.input_tokens ?? 0;
+    usageTotals.outputTokens += response.usage?.output_tokens ?? 0;
+    usageTotals.cacheReadTokens += response.usage?.cache_read_input_tokens ?? 0;
+    usageTotals.cacheCreationTokens += response.usage?.cache_creation_input_tokens ?? 0;
+    const text = joinTextBlocks(response.content ?? []);
+    if (text.trim()) return finish({ text });
+  } catch (err) {
+    console.error("assistant: final answer after the tool-call limit failed", err);
+  }
   return finish({ text: "I wasn't able to finish that within my tool-call limit — try a more specific request." });
 }
 
