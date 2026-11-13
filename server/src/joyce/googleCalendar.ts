@@ -46,11 +46,13 @@ function oauthClient() {
   if (!isJoyceGoogleConfigured()) {
     throw new Error("GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET are not set in the environment");
   }
-  return new google.auth.OAuth2(
-    process.env.GOOGLE_CLIENT_ID,
-    process.env.GOOGLE_CLIENT_SECRET,
-    redirectUri()
-  );
+  return new google.auth.OAuth2({
+    clientId: process.env.GOOGLE_CLIENT_ID,
+    clientSecret: process.env.GOOGLE_CLIENT_SECRET,
+    redirectUri: redirectUri(),
+    // No timeout by default; a stalled token refresh would otherwise be waited on forever.
+    transporterOptions: { timeout: 30_000 },
+  });
 }
 
 /** The link sent on WhatsApp. It goes to our own server first, which checks it and sets a cookie. */

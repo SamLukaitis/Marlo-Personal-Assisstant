@@ -677,3 +677,52 @@ describe("Teams chats", () => {
     expect(getAccount(user.id, account.id)?.authBroken).toBe(false);
   });
 });
+
+describe("expired connections in background scans", () => {
+  // Production, Nov 2026: one revoked Gmail token was retried on every 5-minute tick for days,
+  // each time logging Google's ~85-line error dump and burying every other log line.
+  it("stops calling a mailbox already flagged as expired, and logs the first failure in one line", async () => {
+    const { describeProviderError, accountsForBackgroundScan } = await import("./hub.js");
+    const user = findOrCreateUserByEmail(uniqueEmail("hub-broken-scan"));
+    const account = upsertAccount(user.id, {
+      provider: "google",
+      email: uniqueEmail("inbox-broken-scan"),
+      accessToken: "t",
+      refreshToken: "r",
+      expiryDate: null,
+    });
+    const invalidGrant = Object.assign(new Error("invalid_grant"), {
+      response: { status: 400, data: { error: "invalid_grant", error_description: "Token has been expired or revoked." } },
+      config: { huge: "x".repeat(5000) },
+    });
+    expect(describeProviderError(invalidGrant)).toBe("invalid_grant (Token has been expired or revoked.) [400]");
+
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    mockGoogleListNewMessages.mockClear();
+    mockGoogleListNewMessages.mockRejectedValue(invalidGrant);
+    try {
+      await expect(hubListNewMessages(user.id)).resolves.toEqual([]);
+      expect(getAccount(user.id, account.id)?.authBroken).toBe(true);
+      const logged = errorSpy.mock.calls.filter((c) => String(c[0]).startsWith("hub: provider call failed"));
+      expect(logged).toHaveLength(1);
+      expect(logged[0]).toHaveLength(1); // one string, never the raw error object
+      expect(String(logged[0][0])).not.toContain("xxxx");
+
+      await hubListNewMessages(user.id);
+      await hubListNewMessages(user.id);
+      expect(mockGoogleListNewMessages).toHaveBeenCalledTimes(1);
+    } finally {
+      errorSpy.mockRestore();
+      mockGoogleListNewMessages.mockReset();
+    }
+
+    // Looked at again after a few hours, in case the flag was a mistake.
+    const broken = getAccount(user.id, account.id)!;
+    expect(accountsForBackgroundScan([broken], Date.now() + 7 * 60 * 60 * 1000)).toHaveLength(1);
+  });
+
+  it("an unexpected error with no HTTP status keeps its stack", async () => {
+    const { describeProviderError } = await import("./hub.js");
+    expect(describeProviderError(new TypeError("x is not a function"))).toContain("TypeError: x is not a function\n");
+  });
+});

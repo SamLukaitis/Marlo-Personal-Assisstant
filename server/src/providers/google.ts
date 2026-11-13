@@ -25,6 +25,13 @@ const SCOPES = [
   "https://www.googleapis.com/auth/userinfo.email",
 ];
 
+// The Google client has no request timeout by default: a connection that stalls is waited on
+// forever. That is the most likely cause of the scheduler freezing for 15 hours on 13 Nov 2026
+// (see scheduler.ts's STEP_DEADLINE_MS). Applies to every Google API call in the process, Joyce's
+// calendar included. Guarded because tests mock googleapis without options().
+export const GOOGLE_TIMEOUT_MS = 30_000;
+if (typeof google.options === "function") google.options({ timeout: GOOGLE_TIMEOUT_MS });
+
 export function isGoogleConfigured(): boolean {
   return !!(process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET);
 }
@@ -33,11 +40,13 @@ function createOAuthClient() {
   if (!isGoogleConfigured()) {
     throw new Error("GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET are not set in the environment");
   }
-  return new google.auth.OAuth2(
-    process.env.GOOGLE_CLIENT_ID,
-    process.env.GOOGLE_CLIENT_SECRET,
-    process.env.GOOGLE_REDIRECT_URI ?? "http://localhost:4000/auth/google/callback"
-  );
+  return new google.auth.OAuth2({
+    clientId: process.env.GOOGLE_CLIENT_ID,
+    clientSecret: process.env.GOOGLE_CLIENT_SECRET,
+    redirectUri: process.env.GOOGLE_REDIRECT_URI ?? "http://localhost:4000/auth/google/callback",
+    // The token refresh goes through the auth client's own transport, not the API one below.
+    transporterOptions: { timeout: GOOGLE_TIMEOUT_MS },
+  });
 }
 
 // loginHint preselects an account on Google's picker (per the WhatsApp registration flow, where
